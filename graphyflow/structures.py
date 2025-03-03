@@ -2,11 +2,7 @@ from __future__ import annotations
 from typing import Callable, List, Optional, Union
 from uuid import UUID
 import uuid as uuid_lib
-
-
-class DataElement:
-    def __init__(self):
-        pass
+from graphyflow.graph import DataElement
 
 
 class Node:
