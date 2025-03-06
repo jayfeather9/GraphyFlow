@@ -2,31 +2,33 @@ from __future__ import annotations
 from typing import Callable, List, Optional, Union
 from uuid import UUID
 import uuid as uuid_lib
-from graphyflow.graph import DataElement
+from graphyflow.datatypes import DataElement
 
 
 class Node:
+    """每个计算图的节点可以单或多输入，但是只有一样输出。任何将该节点作为pred_nodes的节点都将接受到该节点的输出的一份复制"""
+
     def __init__(
         self,
-        multi_input: bool = False,
-        multi_output: bool = False,
-        input_number: int = 1,
-        output_number: int = 1,
     ) -> None:
         self.uuid = uuid_lib.uuid4()
-        self.multi_input = multi_input
-        self.multi_output = multi_output
-        assert (input_number == 1 and not multi_input) or (
-            input_number > 1 and multi_input
-        )
-        assert (output_number == 1 and not multi_output) or (
-            output_number > 1 and multi_output
-        )
-        self.input_number = input_number
-        self.output_number = output_number
+        self._pred_nodes = []
+
+    def set_pred_nodes(self, pred_nodes: List[Node]) -> None:
+        self._pred_nodes = pred_nodes
+
+    @property
+    def class_name(self) -> str:
+        return self.__class__.__name__
 
     def __repr__(self) -> str:
-        return f"Node(name={self.__class__.__name__})"
+        return f"Node(name={self.class_name}, preds={[node.class_name for node in self._pred_nodes]})"
+
+
+class Inputer(Node):
+    def __init__(self, input_type):
+        self.input_type = input_type
+        super().__init__()
 
 
 class Filter(Node):
@@ -55,7 +57,6 @@ class ReduceBy(Node):
 class GlobalGraph:
     def __init__(self):
         self.nodes = {}  # Each node represents a method, nodes = {uuid: node}
-        self.edges = {}  # directed edges
 
     def pseudo_element(self, **kwargs) -> PseudoElement:
         return PseudoElement(graph=self, **kwargs)
@@ -63,13 +64,6 @@ class GlobalGraph:
     def assign_node(self, node: Node):
         assert node.uuid not in self.nodes
         self.nodes[node.uuid] = node
-
-    def add_connection(self, node1: Node, node2: Node):
-        assert node1.uuid in self.nodes
-        assert node2.uuid in self.nodes
-        if node1.uuid not in self.edges:
-            self.edges[node1.uuid] = []
-        self.edges[node1.uuid].append(node2.uuid)
 
     def __repr__(self) -> str:
         return f"GlobalGraph(nodes={self.nodes}, edges={self.edges})"
@@ -85,27 +79,16 @@ class PseudoElement:
         self.cur_node = cur_node
         if cur_node:
             self.graph.assign_node(cur_node)
-        self.succs = None
 
     def _assign_cur_node(self, cur_node: Node):
+        assert self.cur_node is None
         self.graph.assign_node(cur_node)
         self.cur_node = cur_node
-        if self.succs is not None:
-            for succ in self.succs:
-                self.graph.add_connection(self.cur_node, succ)
 
-    def _assign_successor(self, succ_nodes: Union[List[Node], Node]):
-        if isinstance(succ_nodes, Node):
-            succ_nodes = [succ_nodes]
-        self.succs = []
-        for succ_node in succ_nodes:
-            new_one = self.graph.pseudo_element(cur_node=succ_node)
-            self.succs.append(new_one)
-            if self.cur_node is not None:
-                self.graph.add_connection(self.cur_node, succ_node)
-        if len(self.succs) == 1:
-            return self.succs[0]
-        return self.succs
+    def _assign_successor(self, succ_node: Node):
+        if self.cur_node:
+            succ_node.set_pred_nodes([self.cur_node])
+        return self.graph.pseudo_element(cur_node=succ_node)
 
     def filter(self, **kvargs) -> PseudoElement:
         return self._assign_successor(Filter(**kvargs))
