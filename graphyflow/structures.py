@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Callable, List, Optional, Union
 from uuid import UUID
 import uuid as uuid_lib
-from graphyflow.datatypes import DataElement
+from graphyflow.datatypes import *
 
 
 class Node:
@@ -20,6 +20,10 @@ class Node:
     @property
     def class_name(self) -> str:
         return self.__class__.__name__
+    
+    @property
+    def preds(self) -> List[Node]:
+        return self._pred_nodes
 
     def __repr__(self) -> str:
         return f"Node(name={self.class_name}, preds={[node.class_name for node in self._pred_nodes]})"
@@ -28,6 +32,14 @@ class Node:
 class Inputer(Node):
     def __init__(self, input_type):
         self.input_type = input_type
+        super().__init__()
+
+
+class Updater(Node):
+    def __init__(self, type_, attr):
+        assert type_ in ["node", "edge"]
+        self.type_ = type_
+        self.attr = attr
         super().__init__()
 
 
@@ -56,17 +68,37 @@ class ReduceBy(Node):
 
 class GlobalGraph:
     def __init__(self):
+        self.input_nodes = [] # by UUID
         self.nodes = {}  # Each node represents a method, nodes = {uuid: node}
 
     def pseudo_element(self, **kwargs) -> PseudoElement:
         return PseudoElement(graph=self, **kwargs)
+    
+    def add_input(self, type_: str, **kwargs) -> PseudoElement:
+        assert type_ in ["edge", "node"]
+        return self.pseudo_element(cur_node=Inputer(input_type=BasicNode if type_ == "node" else BasicEdge))
 
     def assign_node(self, node: Node):
         assert node.uuid not in self.nodes
         self.nodes[node.uuid] = node
+    
+    def apply_all_edges(self, datas: PseudoElement, attr_name: str):
+        datas._assign_successor(Updater("edge", attr_name))
+    
+    def topo_sort_nodes(self) -> List[Node]:
+        result = []
+        waitings = list(self.nodes.values())
+        while waitings:
+            new_ones = []
+            for n in waitings:
+                if all(pred in result for pred in n.preds):
+                    new_ones.append(n)
+                    waitings.remove(n)
+            result.extend(new_ones)
+        return result
 
     def __repr__(self) -> str:
-        return f"GlobalGraph(nodes={self.nodes}, edges={self.edges})"
+        return f"GlobalGraph(nodes={[node for node in self.nodes.values()]})"
 
 
 class PseudoElement:
