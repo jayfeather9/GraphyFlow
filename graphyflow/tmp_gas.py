@@ -181,7 +181,10 @@ def translate_graph(g: GlobalGraph):
             assert len(prev_node) == 2
             op_node_1 = apply_lambda["nodes"][prev_node[0]]
             op_node_2 = apply_lambda["nodes"][prev_node[1]]
-            apply_code += f"\tprop_t {node_var['var_name']} = {op_node_1['var_name']} {node_var['operator']} {op_node_2['var_name']};\n"
+            if node_var["operator"] == "/":
+                apply_code += f"\tprop_t {node_var['var_name']} = {op_node_2['var_name']} == 0 ? 0 : {op_node_1['var_name']} {node_var['operator']} {op_node_2['var_name']};\n"
+            else:
+                apply_code += f"\tprop_t {node_var['var_name']} = {op_node_1['var_name']} {node_var['operator']} {op_node_2['var_name']};\n"
         else:
             assert False
         if node_id == apply_calc_nodes[-1]:
@@ -204,3 +207,29 @@ def translate_graph(g: GlobalGraph):
     data_prep_arg_code = ""
     if use_out_deg:
         data_prep_arg_code += "unsigned int dataPrepareGetArg(graphInfo *info) {\n\treturn info->vertexNum;\n}"
+
+    data_prep_prop_code = ""
+    for prop, prop_info in g.node_properties.items():
+        if prop_info == "out_degree":
+            pass
+    for prop, prop_info in g.edge_properties.items():
+        prop_type, prop_init = prop_info
+        prop_init = prop_init.replace("node_num", "info->vertexNum")
+        prop_init = prop_init.replace("edge.src.out_degree", "outDeg[i]")
+        data_prep_prop_code += "\tfor (int i = 0; i < vertexNum; i++) {\n"
+        data_prep_prop_code += (
+            "\t\tif outDeg[i] != 0 {\n"
+            + f"\t\t\tvertexPushinProp[i] = {prop_init};\n"
+            + "\t\t}\n"
+            + "\t}\n"
+        )
+    data_prep_prop_code = (
+        "int dataPrepareProperty(graphInfo *info) {\n\tint *outDeg = (int*)get_host_mem_pointer(MEM_ID_OUT_DEG_ORIGIN);\n\tprop_t *vertexPushinProp = (prop_t*)get_host_mem_pointer(MEM_ID_PUSHIN_PROP);\n"
+        + "\tint alignedVertexNum = get_he_mem(MEM_ID_PUSHIN_PROP)->size/sizeof(int);\n"
+        + data_prep_prop_code
+        + "\tfor (int i = vertexNum; i < alignedVertexNum; i++) {\n\t\tvertexPushinProp[i]  = 0;\n\t}\n"
+        + "\n\treturn 0;\n}"
+    )
+    print(l2_code)
+    print(data_prep_arg_code)
+    print(data_prep_prop_code)

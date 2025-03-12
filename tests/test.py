@@ -1,7 +1,12 @@
 from graphyflow.structures import *
 from graphyflow.tmp_gas import *
 
-g = GlobalGraph(properties={"node": {"out_degree": int}, "edge": {"pr": float}})
+g = GlobalGraph(
+    properties={
+        "node": {"out_degree": (int, "out_degree")},
+        "edge": {"pr": (float, "1.0f / node_num / edge.src.out_degree")},
+    }
+)
 # node: node {out_degree: int}
 # edge: edge {src: node, dst: node, pr: float}
 nodes = g.add_input("node")
