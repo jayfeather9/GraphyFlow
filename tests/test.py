@@ -1,7 +1,7 @@
 from graphyflow.structures import *
 from graphyflow.tmp_gas import *
 
-g = GlobalGraph()
+g = GlobalGraph(properties={"node": {"out_degree": int}, "edge": {"pr": float}})
 # node: node {out_degree: int}
 # edge: edge {src: node, dst: node, pr: float}
 nodes = g.add_input("node")
@@ -16,9 +16,10 @@ gathered_node_property = scattered.reduce_by(
 # apply
 apply = gathered_node_property.map_(
     map_func=lambda pr, node: (
-        node,
         (0.15 / nodes.length().to_tracer() + 0.85 * pr) / node.out_degree,
+        node,
     )
 )
 g.apply_all_edges(apply, "pr")
+print(g)
 translate_graph(g)

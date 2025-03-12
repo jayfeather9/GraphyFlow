@@ -85,9 +85,21 @@ class ReduceBy(Node):
 
 
 class GlobalGraph:
-    def __init__(self):
+    def __init__(self, properties: Optional[Dict[str, Dict[str, Any]]] = None):
         self.input_nodes = []  # by UUID
         self.nodes = {}  # Each node represents a method, nodes = {uuid: node}
+        self.node_properties = {}
+        self.edge_properties = {}
+        if properties:
+            self.handle_properties(properties)
+
+    def handle_properties(self, properties: Dict[str, Dict[str, Any]]):
+        for prop_name, prop_info in properties.items():
+            assert prop_name in ["node", "edge"]
+            if prop_name == "node":
+                self.node_properties = prop_info
+            else:
+                self.edge_properties = prop_info
 
     def pseudo_element(self, **kwargs) -> PseudoElement:
         return PseudoElement(graph=self, **kwargs)

@@ -11,7 +11,8 @@ def new_random_name():
 
 def translate_graph(g: GlobalGraph):
     nodes = g.topo_sort_nodes()
-    print(nodes)
+    use_out_deg = False
+    # print(nodes)
     inputs = []
     while isinstance(nodes[0], Inputer) or isinstance(nodes[0], GetLength):
         inputs.append(nodes[0])
@@ -71,6 +72,7 @@ def translate_graph(g: GlobalGraph):
     assert len(apply_lambda["input_ids"]) == 2
 
     def find_ref_line(end_node_id, edges):
+        """find the nodes in the reverse topological order"""
         visited = set()
         results = []
         to_visit = [end_node_id]
@@ -116,7 +118,7 @@ def translate_graph(g: GlobalGraph):
         + scatter_code
         + "}\n"
     )
-    print(scatter_code)
+    # print(scatter_code)
 
     # gather code generation
     gather_code = ""
@@ -154,4 +156,51 @@ def translate_graph(g: GlobalGraph):
     gather_code = (
         "inline prop_t gatherFunc(prop_t ori, prop_t update) {\n" + gather_code + "}\n"
     )
-    print(gather_code)
+    # print(gather_code)
+
+    apply_code = ""
+    apply_calc_nodes = find_ref_line(
+        apply_lambda["output_ids"][0], apply_lambda["edges"]
+    )
+    for node_id in apply_calc_nodes:
+        node_var = apply_lambda["nodes"][node_id]
+        if node_var["type"] == "input":
+            if node_id == apply_lambda["input_ids"][0]:
+                node_var["var_name"] = "tProp"
+        elif node_var["type"] == "constant":
+            node_var["var_name"] = str(node_var["value"])
+        elif node_var["type"] == "attr":
+            assert node_var["attr"] == "out_degree"
+            node_var["var_name"] = "outDeg"
+            use_out_deg = True
+        elif node_var["type"] == "pseudo":
+            node_var["var_name"] = "arg"
+        elif node_var["type"] == "operation":
+            node_var["var_name"] = new_random_name()
+            prev_node = [src for src, dst in apply_lambda["edges"] if dst == node_id]
+            assert len(prev_node) == 2
+            op_node_1 = apply_lambda["nodes"][prev_node[0]]
+            op_node_2 = apply_lambda["nodes"][prev_node[1]]
+            apply_code += f"\tprop_t {node_var['var_name']} = {op_node_1['var_name']} {node_var['operator']} {op_node_2['var_name']};\n"
+        else:
+            assert False
+        if node_id == apply_calc_nodes[-1]:
+            apply_code += f"\treturn {node_var['var_name']};\n"
+    apply_code = (
+        "inline prop_t applyFunc( prop_t tProp, prop_t source, prop_t outDeg, unsigned int (&extra)[APPLY_REF_ARRAY_SIZE], unsigned int arg ) {\n"
+        + apply_code
+        + "}\n"
+    )
+    # print(apply_code)
+
+    l2_code = (
+        "#ifndef __L2_H__\n#define __L2_H__\n\ninline prop_t preprocessProperty(prop_t srcProp) {	return (srcProp); }\n\n"
+        + scatter_code
+        + gather_code
+        + apply_code
+        + "\n\n#endif"
+    )
+
+    data_prep_arg_code = ""
+    if use_out_deg:
+        data_prep_arg_code += "unsigned int dataPrepareGetArg(graphInfo *info) {\n\treturn info->vertexNum;\n}"
