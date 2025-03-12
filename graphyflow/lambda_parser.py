@@ -13,6 +13,7 @@ class Tracer:
         operator=None,
         parents=None,
         value=None,
+        pseudo_element=None,
     ):
         self.id = Tracer._id
         Tracer._id += 1
@@ -22,11 +23,16 @@ class Tracer:
         self.operator = operator
         self.parents = parents or []
         self.value = value
+        self.pseudo_element = pseudo_element
 
     def __getattr__(self, name):
         if name.startswith("__"):
             raise AttributeError(name)
         return Tracer(node_type="attr", attr_name=name, parents=[self])
+
+    def __getitem__(self, index):
+        assert type(index) == int
+        return Tracer(node_type="idx", attr_name=index, parents=[self])
 
     def _bin_op(self, other, op):
         # Non-Tracer -> Constant
@@ -67,6 +73,7 @@ class Tracer:
                 ("attr", self.attr_name),
                 ("operator", self.operator),
                 ("value", self.value),
+                ("pseudo_element", self.pseudo_element),
             ]
             if v is not None
         }

@@ -1,8 +1,10 @@
 from __future__ import annotations
-from typing import Callable, List, Optional, Union
+from typing import Callable, List, Optional, Dict
 from uuid import UUID
 import uuid as uuid_lib
 from graphyflow.datatypes import *
+from graphyflow.lambda_parser import parse_lambda, Tracer
+from pprint import pformat
 
 
 class Node:
@@ -12,7 +14,9 @@ class Node:
         self,
     ) -> None:
         self.uuid = uuid_lib.uuid4()
+        self.is_simple = False
         self._pred_nodes = []
+        self._lambda_funcs = []
 
     def set_pred_nodes(self, pred_nodes: List[Node]) -> None:
         self._pred_nodes = pred_nodes
@@ -20,13 +24,18 @@ class Node:
     @property
     def class_name(self) -> str:
         return self.__class__.__name__
-    
+
     @property
     def preds(self) -> List[Node]:
         return self._pred_nodes
 
+    @property
+    def lambdas(self) -> List[Dict]:
+        return self._lambda_funcs
+
     def __repr__(self) -> str:
-        return f"Node(name={self.class_name}, preds={[node.class_name for node in self._pred_nodes]})"
+        formatted_lambdas = pformat(self._lambda_funcs, indent=2, width=100)
+        return f"Node(name={self.class_name}, preds={[node.class_name for node in self._pred_nodes]}, lambdas = {formatted_lambdas})"
 
 
 class Inputer(Node):
@@ -43,16 +52,24 @@ class Updater(Node):
         super().__init__()
 
 
+class GetLength(Node):
+    def __init__(self) -> None:
+        super().__init__()
+        self.is_simple = True
+
+
 class Filter(Node):
     def __init__(self, filter_func: Callable[[List[DataElement]], DataElement]):
-        self.filter_func = filter_func
+        self.filter_func = parse_lambda(filter_func)
         super().__init__()
+        self.lambdas.append(self.filter_func)
 
 
 class Map_(Node):
     def __init__(self, map_func: Callable[[List[DataElement]], DataElement]):
-        self.map_func = map_func
+        self.map_func = parse_lambda(map_func)
         super().__init__()
+        self.lambdas.append(self.map_func)
 
 
 class ReduceBy(Node):
@@ -61,30 +78,33 @@ class ReduceBy(Node):
         reduce_key: Callable[[List[DataElement]], DataElement],
         reduce_method: Callable[[List[DataElement]], DataElement],
     ):
-        self.reduce_key = reduce_key
-        self.reduce_method = reduce_method
+        self.reduce_key = parse_lambda(reduce_key)
+        self.reduce_method = parse_lambda(reduce_method)
         super().__init__()
+        self.lambdas.extend([self.reduce_key, self.reduce_method])
 
 
 class GlobalGraph:
     def __init__(self):
-        self.input_nodes = [] # by UUID
+        self.input_nodes = []  # by UUID
         self.nodes = {}  # Each node represents a method, nodes = {uuid: node}
 
     def pseudo_element(self, **kwargs) -> PseudoElement:
         return PseudoElement(graph=self, **kwargs)
-    
+
     def add_input(self, type_: str, **kwargs) -> PseudoElement:
         assert type_ in ["edge", "node"]
-        return self.pseudo_element(cur_node=Inputer(input_type=BasicNode if type_ == "node" else BasicEdge))
+        return self.pseudo_element(
+            cur_node=Inputer(input_type=BasicNode if type_ == "node" else BasicEdge)
+        )
 
     def assign_node(self, node: Node):
         assert node.uuid not in self.nodes
         self.nodes[node.uuid] = node
-    
+
     def apply_all_edges(self, datas: PseudoElement, attr_name: str):
         datas._assign_successor(Updater("edge", attr_name))
-    
+
     def topo_sort_nodes(self) -> List[Node]:
         result = []
         waitings = list(self.nodes.values())
@@ -122,6 +142,9 @@ class PseudoElement:
             succ_node.set_pred_nodes([self.cur_node])
         return self.graph.pseudo_element(cur_node=succ_node)
 
+    def length(self) -> PseudoElement:
+        return self._assign_successor(GetLength())
+
     def filter(self, **kvargs) -> PseudoElement:
         return self._assign_successor(Filter(**kvargs))
 
@@ -130,3 +153,6 @@ class PseudoElement:
 
     def reduce_by(self, **kvargs) -> PseudoElement:
         return self._assign_successor(ReduceBy(**kvargs))
+
+    def to_tracer(self) -> Tracer:
+        return Tracer(node_type="pseudo", pseudo_element=self)
