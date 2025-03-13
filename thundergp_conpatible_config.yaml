@@ -1,0 +1,32 @@
+# Configuration for generating MK files
+
+# Content for apply_kernel.mk
+apply_kernel: {}  # Empty as specified
+
+# Content for build.mk
+build:
+  scatter_gather_kernel:
+    have_edge_prop: false
+    have_unsigned_prop: false
+  
+  apply_kernel:
+    have_apply: true
+    customize_apply: false
+    have_apply_outdeg: true
+  
+  scheduler: secondOrderEstimator
+  
+  entry:
+    default_entry: true
+
+# Content for config.mk
+config:
+  freq: 280
+  
+  queue_size:
+    filter: 16
+    memory: 512
+  
+  log_scatter_cache_burst_size: 6
+  
+  apply_ref_array_size: 1

@@ -1,5 +1,9 @@
+import yaml
+import os
 from graphyflow.structures import *
 
+target_path = "./output"
+yaml_path = "./thundergp_conpatible_config.yaml"
 global_cnt = 0
 
 
@@ -9,7 +13,102 @@ def new_random_name():
     return f"tmp_{global_cnt}"
 
 
+def read_yaml_config(yaml_file):
+    """Read and parse the YAML configuration file."""
+    with open(yaml_file, "r") as file:
+        return yaml.safe_load(file)
+
+
+def create_apply_kernel_mk(config, output_file):
+    """Create apply_kernel.mk (empty file)."""
+    with open(output_file, "w") as file:
+        pass  # Write an empty file
+
+
+def create_build_mk(config, output_file):
+    """Create build.mk from the YAML configuration."""
+    build_config = config.get("build", {})
+
+    with open(output_file, "w") as file:
+        # Scatter-gather kernel section
+        sg_kernel = build_config.get("scatter_gather_kernel", {})
+        file.write(f"#scatter-gather kernel\n")
+        file.write(
+            f"HAVE_EDGE_PROP={str(sg_kernel.get('have_edge_prop', False)).lower()}\n"
+        )
+        file.write(
+            f"HAVE_UNSIGNED_PROP={str(sg_kernel.get('have_unsigned_prop', False)).lower()}\n\n"
+        )
+
+        # Apply kernel section
+        apply_kernel = build_config.get("apply_kernel", {})
+        file.write(f"#apply kernel\n")
+        file.write(f"HAVE_APPLY={str(apply_kernel.get('have_apply', True)).lower()}\n")
+        file.write(
+            f"CUSTOMIZE_APPLY={str(apply_kernel.get('customize_apply', False)).lower()}\n"
+        )
+        file.write(
+            f"HAVE_APPLY_OUTDEG={str(apply_kernel.get('have_apply_outdeg', True)).lower()}\n\n"
+        )
+
+        # Scheduler section
+        file.write(f"#scheduler\n")
+        file.write(
+            f"SCHEDULER={build_config.get('scheduler', 'secondOrderEstimator')}\n\n"
+        )
+
+        # Entry section
+        entry_config = build_config.get("entry", {})
+        file.write(f"#entry\n")
+        file.write(
+            f"DEFAULT_ENTRY={str(entry_config.get('default_entry', True)).lower()}\n"
+        )
+
+
+def create_config_mk(config, output_file):
+    """Create config.mk from the YAML configuration."""
+    config_data = config.get("config", {})
+
+    with open(output_file, "w") as file:
+        file.write(f"FREQ={config_data.get('freq', 280)}\n\n")
+
+        queue_size = config_data.get("queue_size", {})
+        file.write(f"QUEUE_SIZE_FILTER={queue_size.get('filter', 16)}\n")
+        file.write(f"QUEUE_SIZE_MEMORY={queue_size.get('memory', 512)}\n\n")
+
+        file.write(
+            f"LOG_SCATTER_CACHE_BURST_SIZE={config_data.get('log_scatter_cache_burst_size', 6)}\n\n"
+        )
+
+        file.write(
+            f"APPLY_REF_ARRAY_SIZE={config_data.get('apply_ref_array_size', 1)}\n"
+        )
+
+
+def generate_mk_files_from_yaml(yaml_config_file="config.yaml", output_dir="."):
+    """Generate .mk files from a YAML configuration file."""
+    # Check if YAML config file exists
+    if not os.path.exists(yaml_config_file):
+        print(f"Error: {yaml_config_file} not found.")
+        return
+
+    # Read YAML configuration
+    config = read_yaml_config(yaml_config_file)
+
+    # Ensure the output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Create the .mk files
+    create_apply_kernel_mk(config, os.path.join(output_dir, "apply_kernel.mk"))
+    create_build_mk(config, os.path.join(output_dir, "build.mk"))
+    create_config_mk(config, os.path.join(output_dir, "config.mk"))
+
+    print(f"Generated .mk files successfully in {output_dir} from YAML configuration.")
+
+
 def translate_graph(g: GlobalGraph):
+    if not os.path.exists(target_path):
+        os.makedirs(target_path)
     nodes = g.topo_sort_nodes()
     use_out_deg = False
     # print(nodes)
@@ -204,9 +303,9 @@ def translate_graph(g: GlobalGraph):
         + "\n\n#endif"
     )
 
-    data_prep_arg_code = ""
+    data_prep_arg_code = "\n"
     if use_out_deg:
-        data_prep_arg_code += "unsigned int dataPrepareGetArg(graphInfo *info) {\n\treturn info->vertexNum;\n}"
+        data_prep_arg_code += "unsigned int dataPrepareGetArg(graphInfo *info) {\n\treturn info->vertexNum;\n}\n\n"
 
     data_prep_prop_code = ""
     for prop, prop_info in g.node_properties.items():
@@ -216,6 +315,8 @@ def translate_graph(g: GlobalGraph):
         prop_type, prop_init = prop_info
         prop_init = prop_init.replace("node_num", "info->vertexNum")
         prop_init = prop_init.replace("edge.src.out_degree", "outDeg[i]")
+        if prop_type == float:
+            prop_init = f"float2int({prop_init})"
         data_prep_prop_code += "\tfor (int i = 0; i < vertexNum; i++) {\n"
         data_prep_prop_code += (
             "\t\tif outDeg[i] != 0 {\n"
@@ -230,6 +331,31 @@ def translate_graph(g: GlobalGraph):
         + "\tfor (int i = vertexNum; i < alignedVertexNum; i++) {\n\t\tvertexPushinProp[i]  = 0;\n\t}\n"
         + "\n\treturn 0;\n}"
     )
-    print(l2_code)
-    print(data_prep_arg_code)
-    print(data_prep_prop_code)
+    # print(l2_code)
+    # print(data_prep_arg_code)
+    # print(data_prep_prop_code)
+    data_prep_code = (
+        """#include "host_graph_api.h"
+#include "fpga_application.h"
+
+#define INT2FLOAT                   (pow(2,30))
+
+int float2int(float a) {
+    return (int)(a * INT2FLOAT);
+}
+
+float int2float(int a) {
+    return ((float)a / INT2FLOAT);
+}
+"""
+        + data_prep_arg_code
+        + data_prep_prop_code
+    )
+
+    # print(data_prep_code)
+
+    with open(os.path.join(target_path, "l2.h"), "w") as f:
+        f.write(l2_code)
+    with open(os.path.join(target_path, "dataPrepare.cpp"), "w") as f:
+        f.write(data_prep_code)
+    generate_mk_files_from_yaml(yaml_path, target_path)
