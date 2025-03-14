@@ -30,3 +30,11 @@ config:
   log_scatter_cache_burst_size: 6
   
   apply_ref_array_size: 1
+
+# hardware config
+hardware:
+  sub_partition_num: 4
+  makefile_mem_instance: 4
+  memory_instances:
+    tmpVertexProp: 4
+    newVertexProp: 4
