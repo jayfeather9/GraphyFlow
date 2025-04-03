@@ -1,7 +1,8 @@
-from typing import Any, Tuple, Union
+from typing import Any, Tuple, Union, Type
 from uuid import UUID
 import uuid as uuid_lib
 from abc import ABC
+import graphyflow.dataflow_ir as dfir
 
 
 class TransportType(ABC):
@@ -12,9 +13,21 @@ class TransportType(ABC):
 class BasicData(TransportType):
     """最基础的数据单元, 可以是int/float"""
 
-    def __init__(self, data_type: str):
-        assert data_type in ["int", "float"]
+    def __init__(self, data_type: Type[Any]):
         self._data_type = data_type
+
+    @property
+    def data_type(self):
+        return self._data_type
+
+    def to_dfir(self) -> dfir.DfirType:
+        assert self.data_type in [int, float, bool]
+        trans_dict = {
+            int: dfir.IntType,
+            float: dfir.FloatType,
+            bool: dfir.BoolType,
+        }
+        return trans_dict[self.data_type]()
 
     def __repr__(self):
         return f"BasicData({self._data_type})"
@@ -24,9 +37,9 @@ class BasicNode(TransportType):
     """图节点单元，代表某个节点，也包括若干个 BasicData"""
 
     def __init__(self, data_types: Union[BasicData, Tuple[BasicData]] = None):
-        assert isinstance(data_types, BasicData) or all(
-            isinstance(d, BasicData) for d in data_types
-        )
+        if isinstance(data_types, BasicData):
+            data_types = [data_types]
+        assert all(isinstance(d, BasicData) for d in data_types)
         self.data_types = data_types
 
     def __repr__(self):
@@ -37,9 +50,9 @@ class BasicEdge(TransportType):
     """图边单元，代表某个边，也包括若干个 BasicData"""
 
     def __init__(self, data_types: Union[BasicData, Tuple[BasicData]] = None):
-        assert isinstance(data_types, BasicData) or all(
-            isinstance(d, BasicData) for d in data_types
-        )
+        if isinstance(data_types, BasicData):
+            data_types = [data_types]
+        assert all(isinstance(d, BasicData) for d in data_types)
         self.data_types = data_types
 
     def __repr__(self):

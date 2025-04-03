@@ -1,5 +1,7 @@
 import inspect
 from warnings import warn
+from graphyflow import dataflow_ir as dfir
+from typing import Dict, List, Tuple, Any
 
 
 class Tracer:
@@ -117,6 +119,52 @@ def parse_lambda(lambda_func):
         "input_ids": [n.id for n in inputs],
         "output_ids": [n.id for n in outputs],
     }
+
+
+def format_lambda(lambda_dict):
+    nodes = lambda_dict["nodes"]
+    node_strs = {}
+
+    node_type_formats = {
+        "input": lambda info: f"Input ({info.get('name', 'unnamed')})",
+        "operation": lambda info: f"Operation ({info.get('operator', '?')})",
+        "attr": lambda info: f"Attribute (.{info.get('attr', '?')})",
+        "idx": lambda info: f"Index ([{info.get('attr', '?')}])",
+        "constant": lambda info: f"Constant ({info.get('value', '?')})",
+        "pseudo": lambda info: f"{info.get('pseudo_element', '?')}",
+    }
+
+    for node_id, node_info in sorted(nodes.items()):
+        node_str = f"Node {node_id}: "
+        node_type = node_info.get("type", "unknown")
+        if node_type in node_type_formats:
+            node_str += node_type_formats[node_type](node_info)
+        else:
+            node_str += str(node_info)
+        if node_id in lambda_dict["input_ids"]:
+            node_str += " [INPUT]"
+        if node_id in lambda_dict["output_ids"]:
+            node_str += " [OUTPUT]"
+        node_strs[node_id] = node_str
+
+    result = ["Lambda Repr: "]
+
+    if len(lambda_dict["edges"]) == 0:
+        result.extend(f"  {node_str}" for node_str in node_strs.values())
+    else:
+        max_src_len = max(len(node_strs[src]) for src, _ in lambda_dict["edges"])
+        for src, dst in sorted(lambda_dict["edges"]):
+            padding = " " * (max_src_len - len(node_strs[src]) + 2)
+            result.append(f"  {node_strs[src]}{padding}→ {node_strs[dst]}")
+
+    result.append(f"Input Nodes: {', '.join(map(str, lambda_dict['input_ids']))}")
+    result.append(f"Output Nodes: {', '.join(map(str, lambda_dict['output_ids']))}")
+
+    return "\n".join(result)
+
+
+def lambda_to_dfir(lambda_dict):
+    pass
 
 
 if __name__ == "__main__":

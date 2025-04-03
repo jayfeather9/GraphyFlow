@@ -1,10 +1,15 @@
 from graphyflow.structures import *
-from graphyflow.tmp_gas import *
 
+# g = GlobalGraph(
+#     properties={
+#         "node": {"out_degree": (int, "out_degree")},
+#         "edge": {"pr": (float, "1.0f / node_num / edge.src.out_degree")},
+#     }
+# )
 g = GlobalGraph(
     properties={
-        "node": {"out_degree": (int, "out_degree")},
-        "edge": {"pr": (float, "1.0f / node_num / edge.src.out_degree")},
+        "node": {"out_degree": int},
+        "edge": {"pr": float},
     }
 )
 # node: node {out_degree: int}
@@ -27,4 +32,3 @@ apply = gathered_node_property.map_(
 )
 g.apply_all_edges(apply, "pr")
 print(g)
-translate_graph(g)

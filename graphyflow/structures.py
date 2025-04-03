@@ -3,8 +3,8 @@ from typing import Callable, List, Optional, Dict
 from uuid import UUID
 import uuid as uuid_lib
 from graphyflow.datatypes import *
-from graphyflow.lambda_parser import parse_lambda, Tracer
-from pprint import pformat
+from graphyflow.lambda_parser import parse_lambda, Tracer, format_lambda
+import graphyflow.dataflow_ir as dfir
 
 
 class Node:
@@ -34,14 +34,31 @@ class Node:
         return self._lambda_funcs
 
     def __repr__(self) -> str:
-        formatted_lambdas = pformat(self._lambda_funcs, indent=2, width=100)
+        formatted_lambdas = "\n".join(
+            format_lambda(lambda_func) for lambda_func in self._lambda_funcs
+        )
         return f"Node(name={self.class_name}, preds={[node.class_name for node in self._pred_nodes]}, lambdas = {formatted_lambdas})"
 
 
 class Inputer(Node):
-    def __init__(self, input_type):
+    def __init__(self, input_type: Union[BasicNode, BasicEdge]):
         self.input_type = input_type
         super().__init__()
+
+    def to_dfir(self) -> dfir.DfirNode:
+        input_types = []
+        if isinstance(self.input_type, BasicNode):
+            input_types.append(dfir.SpecialType("node"))
+        elif isinstance(self.input_type, BasicEdge):
+            input_types.append(dfir.SpecialType("edge"))
+        else:
+            raise RuntimeError("Input type must be BasicNode or BasicEdge")
+        input_types.extend(
+            [data_type.to_dfir() for data_type in self.input_type.data_types]
+        )
+        return dfir.IOComponent(
+            dfir.IOComponent.IOType.INPUT, dfir.TupleType(input_types)
+        )
 
 
 class Updater(Node):
@@ -56,6 +73,9 @@ class GetLength(Node):
     def __init__(self) -> None:
         super().__init__()
         self.is_simple = True
+
+    def to_dfir(self, input_type: dfir.DfirType) -> dfir.DfirNode:
+        return dfir.UnaryOpComponent(dfir.UnaryOp.GET_LENGTH, input_type)
 
 
 class Filter(Node):
@@ -92,8 +112,10 @@ class GlobalGraph:
         self.edge_properties = {}
         if properties:
             self.handle_properties(properties)
+        self.added_input = False
 
     def handle_properties(self, properties: Dict[str, Dict[str, Any]]):
+        assert not self.added_input, "Properties must be set before adding input"
         for prop_name, prop_info in properties.items():
             assert prop_name in ["node", "edge"]
             if prop_name == "node":
@@ -106,8 +128,17 @@ class GlobalGraph:
 
     def add_input(self, type_: str, **kwargs) -> PseudoElement:
         assert type_ in ["edge", "node"]
+        self.added_input = True
+        property_infos = (
+            self.node_properties if type_ == "node" else self.edge_properties
+        )
+        data_types = [BasicData(prop_type) for _, prop_type in property_infos]
         return self.pseudo_element(
-            cur_node=Inputer(input_type=BasicNode if type_ == "node" else BasicEdge)
+            cur_node=Inputer(
+                input_type=(
+                    BasicNode(data_types) if type_ == "node" else BasicEdge(data_types)
+                )
+            )
         )
 
     def assign_node(self, node: Node):
@@ -143,6 +174,9 @@ class PseudoElement:
         self.cur_node = cur_node
         if cur_node:
             self.graph.assign_node(cur_node)
+
+    def __repr__(self) -> str:
+        return f"PseudoElement(cur_node={self.cur_node.class_name})"
 
     def _assign_cur_node(self, cur_node: Node):
         assert self.cur_node is None
