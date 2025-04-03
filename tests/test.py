@@ -1,4 +1,4 @@
-from graphyflow.structures import *
+from graphyflow.global_graph import *
 
 # g = GlobalGraph(
 #     properties={

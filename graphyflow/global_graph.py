@@ -2,8 +2,8 @@ from __future__ import annotations
 from typing import Callable, List, Optional, Dict
 from uuid import UUID
 import uuid as uuid_lib
-from graphyflow.datatypes import *
-from graphyflow.lambda_parser import parse_lambda, Tracer, format_lambda
+from graphyflow.graph_types import *
+from graphyflow.lambda_func import parse_lambda, Tracer, format_lambda
 import graphyflow.dataflow_ir as dfir
 
 
@@ -110,9 +110,9 @@ class GlobalGraph:
         self.nodes = {}  # Each node represents a method, nodes = {uuid: node}
         self.node_properties = {}
         self.edge_properties = {}
+        self.added_input = False
         if properties:
             self.handle_properties(properties)
-        self.added_input = False
 
     def handle_properties(self, properties: Dict[str, Dict[str, Any]]):
         assert not self.added_input, "Properties must be set before adding input"
@@ -132,7 +132,7 @@ class GlobalGraph:
         property_infos = (
             self.node_properties if type_ == "node" else self.edge_properties
         )
-        data_types = [BasicData(prop_type) for _, prop_type in property_infos]
+        data_types = [BasicData(prop_type) for _, prop_type in property_infos.items()]
         return self.pseudo_element(
             cur_node=Inputer(
                 input_type=(
