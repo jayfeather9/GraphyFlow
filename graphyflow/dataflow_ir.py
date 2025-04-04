@@ -165,8 +165,13 @@ class Component(DfirNode):
         self.output_port_num = len(self.out_ports)
         self.parallel = parallel
         if specific_port_types is not None:
-            for port, data_type in specific_port_types.items():
-                self.ports[port].data_type = data_type
+            for port_name, data_type in specific_port_types.items():
+                for port in self.ports:
+                    if port.name == port_name:
+                        port.data_type = data_type
+                        break
+                else:
+                    raise ValueError(f"Port {port_name} not found in {self.ports}")
 
     def connect(self, ports: Union[List[Port], Dict[str, Port]]) -> None:
         if isinstance(ports, list):
@@ -217,6 +222,9 @@ class ConstantComponent(Component):
     def __init__(self, data_type: DfirType, value: Any) -> None:
         super().__init__(None, data_type, ["o_0"])
         self.value = value
+
+    def additional_info(self) -> str:
+        return f"value: {self.value}"
 
 
 class CopyComponent(Component):
@@ -307,7 +315,9 @@ class UnaryOp(Enum):
             UnaryOp.GET_LENGTH: ArrayType,
             UnaryOp.GET_ATTR: SpecialType,
         }
-        assert isinstance(input_type, input_available_dict[self])
+        assert isinstance(
+            input_type, input_available_dict[self]
+        ), f"{self}: input type {input_type} should be one of {input_available_dict[self]}"
         if self in [UnaryOp.NOT, UnaryOp.NEG]:
             return input_type
         elif self == UnaryOp.CAST_BOOL:
@@ -335,19 +345,18 @@ class UnaryOpComponent(Component):
     ) -> None:
         if isinstance(input_type, ArrayType):
             parallel = True
-            output_type = ArrayType(op.output_type(input_type.type_))
             real_input_type = input_type.type_
         else:
             parallel = False
-            output_type = op.output_type(input_type)
             real_input_type = input_type
         if op == UnaryOp.SELECT:
             assert isinstance(real_input_type, TupleType)
             assert select_index is not None
-            output_type = real_input_type.types[select_index]
+            inside_output_type = real_input_type.types[select_index]
         else:
             assert not isinstance(real_input_type, TupleType)
-            output_type = op.output_type(real_input_type)
+            inside_output_type = op.output_type(real_input_type)
+        output_type = ArrayType(inside_output_type) if parallel else inside_output_type
         super().__init__(input_type, output_type, ["i_0", "o_0"], parallel)
         self.op = op
         self.select_index = select_index

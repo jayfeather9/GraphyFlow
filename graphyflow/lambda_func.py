@@ -5,7 +5,7 @@ from typing import Dict, List, Tuple, Any
 
 
 class Tracer:
-    _id = 0  # for generating unique id
+    _tracer_id = 0  # for generating unique id
 
     def __init__(
         self,
@@ -17,15 +17,15 @@ class Tracer:
         value=None,
         pseudo_element=None,
     ):
-        self.id = Tracer._id
-        Tracer._id += 1
-        self.name = name
-        self.node_type = node_type
-        self.attr_name = attr_name
-        self.operator = operator
-        self.parents = parents or []
-        self.value = value
-        self.pseudo_element = pseudo_element
+        self._id = Tracer._tracer_id
+        Tracer._tracer_id += 1
+        self._name = name
+        self._node_type = node_type
+        self._attr_name = attr_name
+        self._operator = operator
+        self._parents = parents or []
+        self._value = value
+        self._pseudo_element = pseudo_element
 
     def __getattr__(self, name):
         if name.startswith("__"):
@@ -45,37 +45,55 @@ class Tracer:
     def __add__(self, other):
         return self._bin_op(other, "+")
 
+    def __radd__(self, other):
+        return self._bin_op(other, "+")
+
     def __sub__(self, other):
+        return self._bin_op(other, "-")
+
+    def __rsub__(self, other):
         return self._bin_op(other, "-")
 
     def __mul__(self, other):
         return self._bin_op(other, "*")
 
-    def __truediv__(self, other):
-        return self._bin_op(other, "/")
-
-    def __radd__(self, other):
-        return self._bin_op(other, "+")
-
-    def __rsub__(self, other):
-        return self._bin_op(other, "-")
-
     def __rmul__(self, other):
         return self._bin_op(other, "*")
 
+    def __truediv__(self, other):
+        return self._bin_op(other, "/")
+
     def __rtruediv__(self, other):
         return self._bin_op(other, "/")
+
+    def __lt__(self, other):
+        return self._bin_op(other, "<")
+
+    def __gt__(self, other):
+        return self._bin_op(other, ">")
+
+    def __le__(self, other):
+        return self._bin_op(other, "<=")
+
+    def __ge__(self, other):
+        return self._bin_op(other, ">=")
+
+    def __eq__(self, other):
+        return self._bin_op(other, "==")
+
+    def __ne__(self, other):
+        return self._bin_op(other, "!=")
 
     def to_dict(self):
         return {
             k: v
             for k, v in [
-                ("type", self.node_type),
-                ("name", self.name),
-                ("attr", self.attr_name),
-                ("operator", self.operator),
-                ("value", self.value),
-                ("pseudo_element", self.pseudo_element),
+                ("type", self._node_type),
+                ("name", self._name),
+                ("attr", self._attr_name),
+                ("operator", self._operator),
+                ("value", self._value),
+                ("pseudo_element", self._pseudo_element),
             ]
             if v is not None
         }
@@ -101,23 +119,23 @@ def parse_lambda(lambda_func):
     visited = set()
 
     def traverse(node):
-        if node.id in visited:
+        if node._id in visited:
             return
-        visited.add(node.id)
+        visited.add(node._id)
         all_nodes.append(node)
-        for parent in node.parents:
+        for parent in node._parents:
             traverse(parent)
 
     for node in outputs:
         traverse(node)
 
-    edges = [(p.id, node.id) for node in all_nodes for p in node.parents]
+    edges = [(p._id, node._id) for node in all_nodes for p in node._parents]
 
     return {
-        "nodes": {n.id: n.to_dict() for n in all_nodes},
+        "nodes": {n._id: n.to_dict() for n in all_nodes},
         "edges": edges,
-        "input_ids": [n.id for n in inputs],
-        "output_ids": [n.id for n in outputs],
+        "input_ids": [n._id for n in inputs],
+        "output_ids": [n._id for n in outputs],
     }
 
 
@@ -169,6 +187,7 @@ def lambda_to_dfir(
 ) -> dfir.ComponentCollection:
     assert len(input_types) == len(lambda_dict["input_ids"])
     assert all(isinstance(t, dfir.DfirType) for t in input_types)
+    is_parallel = isinstance(input_types[0], dfir.ArrayType) and len(input_types) == 1
 
     def translate_constant_val(node, pre_o_types):
         assert node["value"] is not None and type(node["value"]) in [bool, int, float]
@@ -177,18 +196,38 @@ def lambda_to_dfir(
             bool: dfir.BoolType(),
             float: dfir.FloatType(),
         }
-        return dfir.ConstantComponent(
-            value_dfir_dict[type(node["value"])], node["value"]
-        )
+        dfir_type = value_dfir_dict[type(node["value"])]
+        if is_parallel:
+            dfir_type = dfir.ArrayType(dfir_type)
+        return dfir.ConstantComponent(dfir_type, node["value"])
 
     def translate_bin_op(node, pre_o_types):
-        assert node["operator"] in ["+", "-", "*", "/"]
-        assert len(pre_o_types) == 2 and pre_o_types[0] == pre_o_types[1]
+        assert node["operator"] in [
+            "+",
+            "-",
+            "*",
+            "/",
+            "<",
+            "<=",
+            ">",
+            ">=",
+            "==",
+            "!=",
+        ]
+        assert (
+            len(pre_o_types) == 2 and pre_o_types[0] == pre_o_types[1]
+        ), f"{pre_o_types} should be 2 equal types"
         op_dfir_dict = {
             "+": dfir.BinOp.ADD,
             "-": dfir.BinOp.SUB,
             "*": dfir.BinOp.MUL,
             "/": dfir.BinOp.DIV,
+            "<": dfir.BinOp.LT,
+            "<=": dfir.BinOp.LE,
+            ">": dfir.BinOp.GT,
+            ">=": dfir.BinOp.GE,
+            "==": dfir.BinOp.EQ,
+            "!=": dfir.BinOp.NE,
         }
         return dfir.BinOpComponent(op_dfir_dict[node["operator"]], pre_o_types[0])
 

@@ -1,4 +1,5 @@
 from graphyflow.global_graph import *
+import graphyflow.dataflow_ir as dfir
 
 # g = GlobalGraph(
 #     properties={
@@ -12,23 +13,28 @@ g = GlobalGraph(
         "edge": {"pr": float},
     }
 )
+nodes = g.add_input("node")
+apply = nodes.filter(filter_func=lambda node: node.id + 5 > 10)
 # node: node {out_degree: int}
 # edge: edge {src: node, dst: node, pr: float}
-nodes = g.add_input("node")
-edges = g.add_input("edge")
-# scatter
-scattered = edges.map_(map_func=lambda edge: (edge.pr, edge.dst))
-# gather
-gathered_node_property = scattered.reduce_by(
-    reduce_key=lambda src_pr, dst: dst,
-    reduce_method=lambda ori, update: (ori[0] + update[0], ori[1]),
-)
-# apply
-apply = gathered_node_property.map_(
-    map_func=lambda pr, node: (
-        (0.15 / nodes.length().to_tracer() + 0.85 * pr) / node.out_degree,
-        node,
-    )
-)
-g.apply_all_edges(apply, "pr")
+# nodes = g.add_input("node")
+# edges = g.add_input("edge")
+# # scatter
+# scattered = edges.map_(map_func=lambda edge: (edge.pr, edge.dst))
+# # gather
+# gathered_node_property = scattered.reduce_by(
+#     reduce_key=lambda src_pr, dst: dst,
+#     reduce_method=lambda ori, update: (ori[0] + update[0], ori[1]),
+# )
+# # apply
+# apply = gathered_node_property.map_(
+#     map_func=lambda pr, node: (
+#         (0.15 / nodes.length().to_tracer() + 0.85 * pr) / node.out_degree,
+#         node,
+#     )
+# )
+# g.apply_all_edges(apply, "pr")
 print(g)
+for node in g.nodes.values():
+    if isinstance(node, Filter):
+        print(node.to_dfir(dfir.ArrayType(dfir.SpecialType("node"))))

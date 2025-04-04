@@ -85,11 +85,12 @@ class Filter(Node):
         self._lambda_funcs.append(self.filter_func)
 
     def to_dfir(self, input_type: dfir.DfirType) -> dfir.ComponentCollection:
-        assert isinstance(input_type, dfir.TupleType)
+        assert isinstance(input_type, dfir.ArrayType)
+        assert len(self._lambda_funcs) == 1
         if len(self._lambda_funcs[0]["input_ids"]) == 1:
-            dfirs = lambda_to_dfir(self._lambda_funcs, [input_type])
+            dfirs = lambda_to_dfir(self._lambda_funcs[0], [input_type])
             assert len(dfirs.outputs) == 1
-            assert dfirs.outputs[0].data_type == dfir.BoolType()
+            assert dfirs.outputs[0].data_type == dfir.ArrayType(dfir.BoolType())
 
             copy_comp = dfir.CopyComponent(input_type)
             cond_comp = dfir.ConditionalComponent(input_type)
@@ -107,7 +108,7 @@ class Filter(Node):
 
             return dfirs
         else:
-            dfirs = lambda_to_dfir(self._lambda_funcs[0], input_type.types)
+            dfirs = lambda_to_dfir(self._lambda_funcs[0], [input_type])
             assert len(dfirs.outputs) == 1
             assert dfirs.outputs[0].data_type == dfir.BoolType()
 
@@ -210,7 +211,7 @@ class GlobalGraph:
         return result
 
     def __repr__(self) -> str:
-        return f"GlobalGraph(nodes={[node for node in self.nodes.values()]})"
+        return f"GlobalGraph(nodes={self.nodes})"
 
 
 class PseudoElement:
