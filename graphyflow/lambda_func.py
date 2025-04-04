@@ -1,6 +1,6 @@
 import inspect
 from warnings import warn
-from graphyflow import dataflow_ir as dfir
+import graphyflow.dataflow_ir as dfir
 from typing import Dict, List, Tuple, Any
 
 
@@ -163,13 +163,84 @@ def format_lambda(lambda_dict):
     return "\n".join(result)
 
 
-def lambda_to_dfir(lambda_dict):
-    pass
+# TODO: fix the binop order problem
+def lambda_to_dfir(lambda_dict: Dict[str, Any], input_types: List[dfir.DfirType]):
+    assert len(input_types) == len(lambda_dict["input_ids"])
+
+    def translate_constant_val(node, pre_o_types):
+        assert node.value is not None and type(node.value) in [bool, int, float]
+        value_dfir_dict = {
+            int: dfir.IntType(),
+            bool: dfir.BoolType(),
+            float: dfir.FloatType(),
+        }
+        return dfir.ConstantComponent(value_dfir_dict[type(node.value)], node.value)
+
+    def translate_bin_op(node, pre_o_types):
+        assert node.operator in ["+", "-", "*", "/"]
+        assert len(pre_o_types) == 2 and pre_o_types[0] == pre_o_types[1]
+        op_dfir_dict = {
+            "+": dfir.BinOp.ADD,
+            "-": dfir.BinOp.SUB,
+            "*": dfir.BinOp.MUL,
+            "/": dfir.BinOp.DIV,
+        }
+        return dfir.BinOpComponent(op_dfir_dict[node.operator], pre_o_types[0])
+
+    translate_dict = {
+        "input": lambda node, pre_o_types: dfir.PlaceholderComponent(pre_o_types[0]),
+        "attr": lambda node, pre_o_types: dfir.UnaryOpComponent(
+            dfir.UnaryOp.GET_ATTR, pre_o_types[0]
+        ),
+        "idx": lambda node, pre_o_types: dfir.UnaryOpComponent(
+            dfir.UnaryOp.SELECT, pre_o_types[0]
+        ),
+        "constant": translate_constant_val,
+        "operation": translate_bin_op,
+    }
+    nodes, edges = lambda_dict["nodes"], lambda_dict["edges"]
+    dfir_nodes = {}
+    in_degree = {nid: len(dst for _, dst in edges if dst == nid) for nid in nodes}
+    start_queue = [nid for nid, deg in in_degree.items() if deg == 0]
+    # delete the deg==0 nodes from in_degree
+    for nid in start_queue:
+        if nid in in_degree:
+            del in_degree[nid]
+    assert len(input_types) == len(start_queue)
+    queue = []
+    node_tmp_datas = {nid: [nid, [], {}] for nid in nodes.keys()}
+    for name_id in range(len(input_types)):
+        arg_name = f"arg{name_id}"
+        target = [nid for nid in start_queue if nodes[nid].name == arg_name]
+        assert len(target) == 1
+        queue.append(
+            [target[0], [input_types[name_id]], {}]
+        )  # node, prev_type, parent_ports
+    while queue:
+        nid, pre_o_types, p_ports = queue.pop(0)
+        node_type = nodes[nid]["type"]
+        dfir_nodes[nid] = translate_dict[node_type](nodes[nid], pre_o_types)
+        dfir_nodes[nid].connect(p_ports)
+        out_type = dfir_nodes[nid].output_type
+        succ_node_ids = [dst for src, dst in edges if src == nid]
+        for succ_nid in succ_node_ids:
+            node_tmp_datas[succ_nid][1].append(out_type)
+            for p in dfir_nodes[nid].out_ports:
+                in_id = 0
+                while f"i_{in_id}" in node_tmp_datas[succ_nid][2]:
+                    in_id += 1
+                node_tmp_datas[succ_nid][2][f"i_{in_id}"] = p
+            in_degree[succ_nid] -= 1
+            if in_degree[succ_nid] == 0:
+                queue.append(node_tmp_datas[succ_nid])
+                del in_degree[succ_nid]
+    return dfir_nodes
 
 
 if __name__ == "__main__":
     func = lambda a, b: a.x * a.y + 2 / b
     graph = parse_lambda(func)
+    the_dfir = lambda_to_dfir(graph, [dfir.SpecialType("node"), dfir.IntType])
 
     if graph:
         print("Nodes:")

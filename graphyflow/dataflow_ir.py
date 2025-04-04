@@ -1,7 +1,7 @@
 from __future__ import annotations
 import uuid as uuid_lib
 from enum import Enum
-from typing import List, Optional, Union, Dict
+from typing import List, Optional, Union, Dict, Any
 
 
 class DfirType:
@@ -109,6 +109,10 @@ class Component(DfirNode):
         self.input_type = input_type
         self.output_type = output_type
         self.ports = [Port(port, self) for port in ports]
+        self.in_ports = [p for p in self.ports if p.port_type == PortType.IN]
+        self.input_port_num = len(self.in_ports)
+        self.out_ports = [p for p in self.ports if p.port_type == PortType.OUT]
+        self.output_port_num = len(self.out_ports)
         self.parallel = parallel
         if specific_port_types is not None:
             for port, data_type in specific_port_types.items():
@@ -293,3 +297,8 @@ class ReduceComponent(Component):
         output_type = reduce_op.output_type(input_type.type_)
         super().__init__(input_type, output_type, ["i_0", "o_0"])
         self.reduce_op = reduce_op
+
+
+class PlaceholderComponent(Component):
+    def __init__(self, data_type: DfirType) -> None:
+        super().__init__(data_type, data_type, ["i_0", "o_0"])
