@@ -108,6 +108,7 @@ class Filter(Node):
 
             return dfirs
         else:
+            # TODO: fix this part, still not tested
             dfirs = lambda_to_dfir(self._lambda_funcs[0], [input_type])
             assert len(dfirs.outputs) == 1
             assert dfirs.outputs[0].data_type == dfir.BoolType()
@@ -148,7 +149,14 @@ class Map_(Node):
             dfirs = lambda_to_dfir(self._lambda_funcs[0], [input_type])
             return dfirs
         else:
-            pass
+            scatter_comp = dfir.ScatterComponent(input_type)
+            scatter_out_types = [p.data_type for p in scatter_comp.ports[1:]]
+            dfirs = lambda_to_dfir(self._lambda_funcs[0], scatter_out_types)
+            dfirs.add_front(
+                scatter_comp,
+                {f"o_{i}": dfirs.inputs[i] for i in range(len(scatter_out_types))},
+            )
+            return dfirs
 
 
 class ReduceBy(Node):

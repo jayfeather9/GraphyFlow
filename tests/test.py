@@ -37,7 +37,19 @@ apply2 = apply.map_(map_func=lambda a, b, c: (a + b, c))
 # )
 # g.apply_all_edges(apply, "pr")
 print(g)
+i = 0
 for node in g.nodes.values():
     print("=" * 20)
-    if isinstance(node, Map_):
+    i += 1
+    if i == 2:
         print(node.to_dfir(dfir.ArrayType(dfir.SpecialType("node"))))
+    elif i == 3:
+        print(
+            node.to_dfir(
+                dfir.ArrayType(
+                    dfir.TupleType(
+                        [dfir.IntType(), dfir.IntType(), dfir.SpecialType("node")]
+                    )
+                )
+            )
+        )

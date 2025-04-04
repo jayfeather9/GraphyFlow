@@ -236,15 +236,25 @@ class CopyComponent(Component):
 
 
 class ScatterComponent(Component):
-    def __init__(self, input_type: TupleType) -> None:
-        assert isinstance(input_type, TupleType)
+    def __init__(self, input_type: DfirType) -> None:
+        assert isinstance(input_type, (TupleType, ArrayType))
+        real_input_type = input_type
+        if isinstance(input_type, ArrayType):
+            assert isinstance(input_type.type_, TupleType)
+            real_input_type = input_type.type_
         ports = ["i_0"]
-        for i in range(len(input_type.types)):
+        for i in range(len(real_input_type.types)):
             ports.append(f"o_{i}")
-        super().__init__(input_type, None, ports)
-        self.output_types = input_type.types
-        for i, type_ in enumerate(self.output_types):
-            self.ports[i + 1].data_type = type_
+        # output_type = input_type just for assign
+        super().__init__(
+            input_type,
+            input_type,
+            ports,
+            specific_port_types={
+                f"o_{i}": ArrayType(type_)
+                for i, type_ in enumerate(real_input_type.types)
+            },
+        )
 
 
 class BinOp(Enum):
