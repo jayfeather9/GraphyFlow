@@ -95,6 +95,12 @@ class Port(DfirNode):
         self.connection.connection = None
         self.connection = None
 
+    def __repr__(self) -> str:
+        if self.connection is None:
+            return f"Port {self.name} ({self.data_type})"
+        else:
+            return f"Port {self.name} ({self.data_type}) <=> {self.connection.name} ({self.connection.data_type})"
+
 
 class Component(DfirNode):
     def __init__(
@@ -119,12 +125,6 @@ class Component(DfirNode):
                 self.ports[port].data_type = data_type
 
     def connect(self, ports: Union[List[Port], Dict[str, Port]]) -> None:
-        # 打印组件类名和端口信息
-        print(f"组件类名: {self.__class__.__name__}")
-        print("端口列表:")
-        for port in self.ports:
-            port_direction = "输入" if port.port_type == PortType.IN else "输出"
-            print(f"  - {port.name} ({port_direction})")
         if isinstance(ports, list):
             for i, port in enumerate(ports):
                 assert port.data_type == self.ports[i].data_type
@@ -139,6 +139,22 @@ class Component(DfirNode):
                 assert idx is not None
                 assert port.data_type == self.ports[idx].data_type
                 self.ports[idx].connect(port)
+
+    def additional_info(self) -> str:
+        return ""
+
+    def __repr__(self) -> str:
+        add_info = self.additional_info()
+        add_info = add_info if isinstance(add_info, list) else [add_info]
+        add_info = "\n  ".join(add_info)
+        add_info = "\n  " + add_info if add_info else ""
+        return (
+            f"{self.__class__.__name__}(\n  input: {self.input_type},\n"
+            + f"  output: {self.output_type},\n  ports:\n    "
+            + "\n    ".join([str(p) for p in self.ports])
+            + add_info
+            + "\n)"
+        )
 
 
 class IOComponent(Component):
@@ -163,6 +179,7 @@ class BinOp(Enum):
     ADD = "+"
     SUB = "-"
     MUL = "*"
+    DIV = "/"
     AND = "&"
     OR = "|"
     EQ = "=="
@@ -179,7 +196,7 @@ class BinOp(Enum):
         return self in [BinOp.ADD, BinOp.MUL, BinOp.AND, BinOp.OR, BinOp.EQ]
 
     def output_type(self, input_type: DfirType) -> DfirType:
-        if self in [BinOp.ADD, BinOp.SUB, BinOp.MUL, BinOp.AND, BinOp.OR]:
+        if self in [BinOp.ADD, BinOp.SUB, BinOp.MUL, BinOp.DIV, BinOp.AND, BinOp.OR]:
             return input_type
         elif self in [BinOp.EQ, BinOp.NE, BinOp.LT, BinOp.GT, BinOp.LE, BinOp.GE]:
             return BoolType()
@@ -200,6 +217,9 @@ class BinOpComponent(Component):
         )
         super().__init__(input_type, output_type, ["i_0", "i_1", "o_0"], parallel)
         self.op = op
+
+    def additional_info(self) -> str:
+        return f"op: {self.op}"
 
 
 class UnaryOp(Enum):
@@ -270,6 +290,12 @@ class UnaryOpComponent(Component):
         super().__init__(input_type, output_type, ["i_0", "o_0"], parallel)
         self.op = op
         self.select_index = select_index
+
+    def additional_info(self) -> str:
+        if self.op == UnaryOp.SELECT:
+            return [f"op: {self.op}", f"select_index: {self.select_index}"]
+        else:
+            return f"op: {self.op}"
 
 
 class ConditionalComponent(Component):

@@ -166,6 +166,7 @@ def format_lambda(lambda_dict):
 # TODO: fix the binop order problem
 def lambda_to_dfir(lambda_dict: Dict[str, Any], input_types: List[dfir.DfirType]):
     assert len(input_types) == len(lambda_dict["input_ids"])
+    assert all(isinstance(t, dfir.DfirType) for t in input_types)
 
     def translate_constant_val(node, pre_o_types):
         assert node["value"] is not None and type(node["value"]) in [bool, int, float]
@@ -187,7 +188,7 @@ def lambda_to_dfir(lambda_dict: Dict[str, Any], input_types: List[dfir.DfirType]
             "*": dfir.BinOp.MUL,
             "/": dfir.BinOp.DIV,
         }
-        return dfir.BinOpComponent(op_dfir_dict[node.operator], pre_o_types[0])
+        return dfir.BinOpComponent(op_dfir_dict[node["operator"]], pre_o_types[0])
 
     translate_dict = {
         "input": lambda node, pre_o_types: dfir.PlaceholderComponent(pre_o_types[0]),
@@ -225,7 +226,6 @@ def lambda_to_dfir(lambda_dict: Dict[str, Any], input_types: List[dfir.DfirType]
     while queue:
         nid, pre_o_types, p_ports = queue.pop(0)
         node_type = nodes[nid]["type"]
-        print(f"translating {node_type=}")
         dfir_nodes[nid] = translate_dict[node_type](nodes[nid], pre_o_types)
         dfir_nodes[nid].connect(p_ports)
         out_type = dfir_nodes[nid].output_type
@@ -247,7 +247,7 @@ def lambda_to_dfir(lambda_dict: Dict[str, Any], input_types: List[dfir.DfirType]
 if __name__ == "__main__":
     func = lambda a, b: a.x * a.y + 2 / b
     graph = parse_lambda(func)
-    the_dfir = lambda_to_dfir(graph, [dfir.SpecialType("node"), dfir.IntType])
+    the_dfir = lambda_to_dfir(graph, [dfir.SpecialType("node"), dfir.IntType()])
 
     if graph:
         print("Nodes:")
@@ -260,3 +260,6 @@ if __name__ == "__main__":
 
         print("\nInput Node(s):", graph["input_ids"])
         print("Output Node(s)", graph["output_ids"])
+
+    for nid, info in the_dfir.items():
+        print(f"{nid}: {info}")
