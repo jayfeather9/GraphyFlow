@@ -14,7 +14,9 @@ g = GlobalGraph(
     }
 )
 nodes = g.add_input("node")
-apply = nodes.filter(filter_func=lambda node: node.id + 5 > 10)
+# apply = nodes.filter(filter_func=lambda node: node.id + 5 > 10)
+apply = nodes.map_(map_func=lambda node: (node.id + 5, 6, node))
+apply2 = apply.map_(map_func=lambda a, b, c: (a + b, c))
 # node: node {out_degree: int}
 # edge: edge {src: node, dst: node, pr: float}
 # nodes = g.add_input("node")
@@ -36,5 +38,6 @@ apply = nodes.filter(filter_func=lambda node: node.id + 5 > 10)
 # g.apply_all_edges(apply, "pr")
 print(g)
 for node in g.nodes.values():
-    if isinstance(node, Filter):
+    print("=" * 20)
+    if isinstance(node, Map_):
         print(node.to_dfir(dfir.ArrayType(dfir.SpecialType("node"))))

@@ -141,6 +141,15 @@ class Map_(Node):
         super().__init__()
         self.lambdas.append(self.map_func)
 
+    def to_dfir(self, input_type: dfir.DfirType) -> dfir.ComponentCollection:
+        assert isinstance(input_type, dfir.ArrayType)
+        assert len(self._lambda_funcs) == 1
+        if len(self._lambda_funcs[0]["input_ids"]) == 1:
+            dfirs = lambda_to_dfir(self._lambda_funcs[0], [input_type])
+            return dfirs
+        else:
+            pass
+
 
 class ReduceBy(Node):
     def __init__(

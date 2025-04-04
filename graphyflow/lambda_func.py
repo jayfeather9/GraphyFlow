@@ -114,6 +114,8 @@ def parse_lambda(lambda_func):
         raise RuntimeError(f" {str(e)}")
 
     outputs = result if isinstance(result, (tuple, list)) else [result]
+    if isinstance(outputs, tuple):
+        outputs = list(outputs)
 
     all_nodes = []
     visited = set()
@@ -126,8 +128,10 @@ def parse_lambda(lambda_func):
         for parent in node._parents:
             traverse(parent)
 
-    for node in outputs:
-        traverse(node)
+    for i in range(len(outputs)):
+        if not isinstance(outputs[i], Tracer):
+            outputs[i] = Tracer(value=outputs[i], node_type="constant")
+        traverse(outputs[i])
 
     edges = [(p._id, node._id) for node in all_nodes for p in node._parents]
 

@@ -104,10 +104,13 @@ class Port(DfirNode):
         self.connection = None
 
     def __repr__(self) -> str:
+        my_repr = f"Port[{self.readable_id}] {self.name} ({self.data_type})"
+        direction = "=>" if self.port_type == PortType.OUT else "<="
+        tgt = self.connection
         if self.connection is None:
-            return f"Port[{self.readable_id}] {self.name} ({self.data_type})"
+            return my_repr
         else:
-            return f"Port[{self.readable_id}] {self.name} ({self.data_type}) <=> {self.connection.name} ({self.connection.data_type})"
+            return f"{my_repr} {direction} Port[{tgt.readable_id}] {tgt.name} ({tgt.data_type})"
 
 
 class ComponentCollection(DfirNode):
@@ -131,7 +134,7 @@ class ComponentCollection(DfirNode):
         assert all(p in self.inputs for p in ports.values())
         assert all(not p.connected for p in component.in_ports)
         component.connect(ports)
-        self.components.append(component)
+        self.components.insert(0, component)
         self.inputs = [p for p in self.inputs if p not in ports.values()]
         self.inputs.extend(component.in_ports)
         self.outputs.extend([p for p in component.out_ports if not p.connected])
@@ -389,11 +392,9 @@ class ConditionalComponent(Component):
 
 class CollectComponent(Component):
     def __init__(self, input_type: DfirType) -> None:
-        output_type = (
-            ArrayType(input_type)
-            if not isinstance(input_type, OptionalType)
-            else ArrayType(input_type.type_)
-        )
+        assert isinstance(input_type, ArrayType)
+        assert isinstance(input_type.type_, OptionalType)
+        output_type = ArrayType(input_type.type_.type_)
         super().__init__(input_type, output_type, ["i_0", "o_0"])
 
 
