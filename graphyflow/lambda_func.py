@@ -164,7 +164,9 @@ def format_lambda(lambda_dict):
 
 
 # TODO: fix the binop order problem
-def lambda_to_dfir(lambda_dict: Dict[str, Any], input_types: List[dfir.DfirType]):
+def lambda_to_dfir(
+    lambda_dict: Dict[str, Any], input_types: List[dfir.DfirType]
+) -> dfir.ComponentCollection:
     assert len(input_types) == len(lambda_dict["input_ids"])
     assert all(isinstance(t, dfir.DfirType) for t in input_types)
 
@@ -241,7 +243,9 @@ def lambda_to_dfir(lambda_dict: Dict[str, Any], input_types: List[dfir.DfirType]
             if in_degree[succ_nid] == 0:
                 queue.append(node_tmp_datas[succ_nid])
                 del in_degree[succ_nid]
-    return dfir_nodes
+    inputs = sum([dfir_nodes[nid].in_ports for nid in lambda_dict["input_ids"]], [])
+    outputs = sum([dfir_nodes[nid].out_ports for nid in lambda_dict["output_ids"]], [])
+    return dfir.ComponentCollection(list(dfir_nodes.values()), inputs, outputs)
 
 
 if __name__ == "__main__":
@@ -261,5 +265,4 @@ if __name__ == "__main__":
         print("\nInput Node(s):", graph["input_ids"])
         print("Output Node(s)", graph["output_ids"])
 
-    for nid, info in the_dfir.items():
-        print(f"{nid}: {info}")
+    print(the_dfir)

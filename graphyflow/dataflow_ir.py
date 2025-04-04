@@ -62,8 +62,12 @@ class ArrayType(DfirType):
 
 
 class DfirNode:
+    _readable_id = 0
+
     def __init__(self) -> None:
         self.uuid = uuid_lib.uuid4()
+        self.readable_id = DfirNode._readable_id
+        DfirNode._readable_id += 1
 
 
 class PortType(Enum):
@@ -85,6 +89,10 @@ class Port(DfirNode):
         self.parent = parent
         self.connection = None
 
+    @property
+    def connected(self) -> bool:
+        return self.connection is not None
+
     def connect(self, other: Port) -> None:
         assert self.port_type.pluggable(other.port_type)
         self.connection = other
@@ -97,9 +105,45 @@ class Port(DfirNode):
 
     def __repr__(self) -> str:
         if self.connection is None:
-            return f"Port {self.name} ({self.data_type})"
+            return f"Port[{self.readable_id}] {self.name} ({self.data_type})"
         else:
-            return f"Port {self.name} ({self.data_type}) <=> {self.connection.name} ({self.connection.data_type})"
+            return f"Port[{self.readable_id}] {self.name} ({self.data_type}) <=> {self.connection.name} ({self.connection.data_type})"
+
+
+class ComponentCollection(DfirNode):
+    def __init__(
+        self, components: List[Component], inputs: List[Port], outputs: List[Port]
+    ) -> None:
+        super().__init__()
+        self.components = components
+        self.inputs = inputs
+        self.outputs = outputs
+        in_and_out = inputs + outputs
+        assert all(
+            all(p.connected or p in in_and_out for p in c.ports)
+            for c in self.components
+        )
+
+    def __repr__(self) -> str:
+        return f"ComponentCollection(\n  components: {self.components},\n  inputs: {self.inputs},\n  outputs: {self.outputs}\n)"
+
+    def add_front(self, component: Component, ports: Dict[str, Port]) -> None:
+        assert all(p in self.inputs for p in ports.values())
+        assert all(not p.connected for p in component.in_ports)
+        component.connect(ports)
+        self.components.append(component)
+        self.inputs = [p for p in self.inputs if p not in ports.values()]
+        self.inputs.extend(component.in_ports)
+        self.outputs.extend([p for p in component.out_ports if not p.connected])
+
+    def add_back(self, component: Component, ports: Dict[str, Port]) -> None:
+        assert all(p in self.outputs for p in ports.values())
+        assert all(not p.connected for p in component.out_ports)
+        component.connect(ports)
+        self.components.append(component)
+        self.outputs = [p for p in self.outputs if p not in ports.values()]
+        self.outputs.extend(component.out_ports)
+        self.inputs.extend([p for p in component.in_ports if not p.connected])
 
 
 class Component(DfirNode):
@@ -173,6 +217,23 @@ class ConstantComponent(Component):
     def __init__(self, data_type: DfirType, value: Any) -> None:
         super().__init__(None, data_type, ["o_0"])
         self.value = value
+
+
+class CopyComponent(Component):
+    def __init__(self, input_type: DfirType) -> None:
+        super().__init__(input_type, input_type, ["i_0", "o_0", "o_1"])
+
+
+class ScatterComponent(Component):
+    def __init__(self, input_type: TupleType) -> None:
+        assert isinstance(input_type, TupleType)
+        ports = ["i_0"]
+        for i in range(len(input_type.types)):
+            ports.append(f"o_{i}")
+        super().__init__(input_type, None, ports)
+        self.output_types = input_type.types
+        for i, type_ in enumerate(self.output_types):
+            self.ports[i + 1].data_type = type_
 
 
 class BinOp(Enum):

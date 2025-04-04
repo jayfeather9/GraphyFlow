@@ -3,7 +3,7 @@ from typing import Callable, List, Optional, Dict
 from uuid import UUID
 import uuid as uuid_lib
 from graphyflow.graph_types import *
-from graphyflow.lambda_func import parse_lambda, Tracer, format_lambda
+from graphyflow.lambda_func import parse_lambda, Tracer, format_lambda, lambda_to_dfir
 import graphyflow.dataflow_ir as dfir
 
 
@@ -82,7 +82,56 @@ class Filter(Node):
     def __init__(self, filter_func: Callable[[List[DataElement]], DataElement]):
         self.filter_func = parse_lambda(filter_func)
         super().__init__()
-        self.lambdas.append(self.filter_func)
+        self._lambda_funcs.append(self.filter_func)
+
+    def to_dfir(self, input_type: dfir.DfirType) -> dfir.ComponentCollection:
+        assert isinstance(input_type, dfir.TupleType)
+        if len(self._lambda_funcs[0]["input_ids"]) == 1:
+            dfirs = lambda_to_dfir(self._lambda_funcs, [input_type])
+            assert len(dfirs.outputs) == 1
+            assert dfirs.outputs[0].data_type == dfir.BoolType()
+
+            copy_comp = dfir.CopyComponent(input_type)
+            cond_comp = dfir.ConditionalComponent(input_type)
+            collect_comp = dfir.CollectComponent(cond_comp.output_type)
+
+            assert len(dfirs.inputs) == 1
+            copy_ports = {"o_0": dfirs.inputs[0]}
+            dfirs.add_front(copy_comp, copy_ports)
+
+            cond_ports = {"i_data": copy_comp.ports[2], "i_cond": dfirs.outputs[0]}
+            dfirs.add_back(cond_comp, cond_ports)
+
+            collect_ports = {"i_0": cond_comp.ports[2]}
+            dfirs.add_back(collect_comp, collect_ports)
+
+            return dfirs
+        else:
+            dfirs = lambda_to_dfir(self._lambda_funcs[0], input_type.types)
+            assert len(dfirs.outputs) == 1
+            assert dfirs.outputs[0].data_type == dfir.BoolType()
+
+            copy_comp = dfir.CopyComponent(input_type)
+            scatter_comp = dfir.ScatterComponent(input_type)
+            cond_comp = dfir.ConditionalComponent(input_type)
+            collect_comp = dfir.CollectComponent(cond_comp.output_type)
+
+            scatter_ports = {}
+            assert len(dfirs.inputs) == len(input_type.types)
+            for i in range(len(input_type.types)):
+                scatter_ports[f"o_{i}"] = dfirs.inputs[i]
+            dfirs.add_front(scatter_comp, scatter_ports)
+
+            copy_ports = {"o_0": scatter_comp.ports[0]}
+            dfirs.add_front(copy_comp, copy_ports)
+
+            cond_ports = {"i_data": copy_comp.ports[2], "i_cond": dfirs.outputs[0]}
+            dfirs.add_back(cond_comp, cond_ports)
+
+            collect_ports = {"i_0": cond_comp.ports[2]}
+            dfirs.add_back(collect_comp, collect_ports)
+
+            return dfirs
 
 
 class Map_(Node):
