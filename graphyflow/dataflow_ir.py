@@ -86,7 +86,7 @@ class Port(DfirNode):
         self.connection = None
 
     def connect(self, other: Port) -> None:
-        assert self.pluggable(other.port_type)
+        assert self.port_type.pluggable(other.port_type)
         self.connection = other
         other.connection = self
 
@@ -119,15 +119,26 @@ class Component(DfirNode):
                 self.ports[port].data_type = data_type
 
     def connect(self, ports: Union[List[Port], Dict[str, Port]]) -> None:
+        # 打印组件类名和端口信息
+        print(f"组件类名: {self.__class__.__name__}")
+        print("端口列表:")
+        for port in self.ports:
+            port_direction = "输入" if port.port_type == PortType.IN else "输出"
+            print(f"  - {port.name} ({port_direction})")
         if isinstance(ports, list):
             for i, port in enumerate(ports):
                 assert port.data_type == self.ports[i].data_type
                 self.ports[i].connect(port)
         elif isinstance(ports, dict):
             for port_name, port in ports.items():
-                assert port_name in self.ports
-                assert port.data_type == self.ports[port_name].data_type
-                self.ports[port_name].connect(port)
+                idx = None
+                for i, p in enumerate(self.ports):
+                    if p.name == port_name:
+                        idx = i
+                        break
+                assert idx is not None
+                assert port.data_type == self.ports[idx].data_type
+                self.ports[idx].connect(port)
 
 
 class IOComponent(Component):
@@ -206,14 +217,14 @@ class UnaryOp(Enum):
 
     def output_type(self, input_type: DfirType) -> DfirType:
         input_available_dict = {
-            UnaryOp.NOT: [BoolType],
+            UnaryOp.NOT: BoolType,
             UnaryOp.NEG: [IntType, FloatType],
             UnaryOp.CAST_BOOL: [IntType, FloatType, BoolType],
             UnaryOp.CAST_INT: [IntType, FloatType, BoolType],
             UnaryOp.CAST_FLOAT: [IntType, FloatType, BoolType],
-            UnaryOp.SELECT: [TupleType],
-            UnaryOp.GET_LENGTH: [ArrayType],
-            UnaryOp.GET_ATTR: [SpecialType],
+            UnaryOp.SELECT: TupleType,
+            UnaryOp.GET_LENGTH: ArrayType,
+            UnaryOp.GET_ATTR: SpecialType,
         }
         assert isinstance(input_type, input_available_dict[self])
         if self in [UnaryOp.NOT, UnaryOp.NEG]:

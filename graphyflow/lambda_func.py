@@ -168,16 +168,18 @@ def lambda_to_dfir(lambda_dict: Dict[str, Any], input_types: List[dfir.DfirType]
     assert len(input_types) == len(lambda_dict["input_ids"])
 
     def translate_constant_val(node, pre_o_types):
-        assert node.value is not None and type(node.value) in [bool, int, float]
+        assert node["value"] is not None and type(node["value"]) in [bool, int, float]
         value_dfir_dict = {
             int: dfir.IntType(),
             bool: dfir.BoolType(),
             float: dfir.FloatType(),
         }
-        return dfir.ConstantComponent(value_dfir_dict[type(node.value)], node.value)
+        return dfir.ConstantComponent(
+            value_dfir_dict[type(node["value"])], node["value"]
+        )
 
     def translate_bin_op(node, pre_o_types):
-        assert node.operator in ["+", "-", "*", "/"]
+        assert node["operator"] in ["+", "-", "*", "/"]
         assert len(pre_o_types) == 2 and pre_o_types[0] == pre_o_types[1]
         op_dfir_dict = {
             "+": dfir.BinOp.ADD,
@@ -200,18 +202,22 @@ def lambda_to_dfir(lambda_dict: Dict[str, Any], input_types: List[dfir.DfirType]
     }
     nodes, edges = lambda_dict["nodes"], lambda_dict["edges"]
     dfir_nodes = {}
-    in_degree = {nid: len(dst for _, dst in edges if dst == nid) for nid in nodes}
+    in_degree = {nid: len(list(dst for _, dst in edges if dst == nid)) for nid in nodes}
     start_queue = [nid for nid, deg in in_degree.items() if deg == 0]
     # delete the deg==0 nodes from in_degree
     for nid in start_queue:
         if nid in in_degree:
             del in_degree[nid]
-    assert len(input_types) == len(start_queue)
+    constants = [nid for nid in start_queue if nodes[nid]["type"] == "constant"]
+    assert len(input_types) == len(start_queue) - len(constants)
+    start_queue = [nid for nid in start_queue if nid not in constants]
     queue = []
     node_tmp_datas = {nid: [nid, [], {}] for nid in nodes.keys()}
+    for nid in constants:
+        queue.append([nid, [], {}])
     for name_id in range(len(input_types)):
         arg_name = f"arg{name_id}"
-        target = [nid for nid in start_queue if nodes[nid].name == arg_name]
+        target = [nid for nid in start_queue if nodes[nid]["name"] == arg_name]
         assert len(target) == 1
         queue.append(
             [target[0], [input_types[name_id]], {}]
@@ -219,6 +225,7 @@ def lambda_to_dfir(lambda_dict: Dict[str, Any], input_types: List[dfir.DfirType]
     while queue:
         nid, pre_o_types, p_ports = queue.pop(0)
         node_type = nodes[nid]["type"]
+        print(f"translating {node_type=}")
         dfir_nodes[nid] = translate_dict[node_type](nodes[nid], pre_o_types)
         dfir_nodes[nid].connect(p_ports)
         out_type = dfir_nodes[nid].output_type
