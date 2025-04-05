@@ -364,15 +364,23 @@ class BinOp(Enum):
     GT = ">"
     LE = "<="
     GE = ">="
+    MIN = "min"
+    MAX = "max"
 
     def __repr__(self) -> str:
         return self.value
 
-    def can_reduce(self) -> bool:
-        return self in [BinOp.ADD, BinOp.MUL, BinOp.AND, BinOp.OR, BinOp.EQ]
-
     def output_type(self, input_type: DfirType) -> DfirType:
-        if self in [BinOp.ADD, BinOp.SUB, BinOp.MUL, BinOp.DIV, BinOp.AND, BinOp.OR]:
+        if self in [
+            BinOp.ADD,
+            BinOp.SUB,
+            BinOp.MUL,
+            BinOp.DIV,
+            BinOp.AND,
+            BinOp.OR,
+            BinOp.MIN,
+            BinOp.MAX,
+        ]:
             return input_type
         elif self in [BinOp.EQ, BinOp.NE, BinOp.LT, BinOp.GT, BinOp.LE, BinOp.GE]:
             return BoolType()

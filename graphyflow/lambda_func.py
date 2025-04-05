@@ -1,7 +1,32 @@
 import inspect
 from warnings import warn
 import graphyflow.dataflow_ir as dfir
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple, Any, Callable
+
+
+def lambda_min(tracer1, tracer2):
+    return _lambda_binop(tracer1, tracer2, "min", min)
+
+
+def lambda_max(tracer1, tracer2):
+    return _lambda_binop(tracer1, tracer2, "max", max)
+
+
+def _lambda_binop(tracer1, tracer2, op, default_func: Callable):
+    if isinstance(tracer1, Tracer) and isinstance(tracer2, Tracer):
+        return Tracer(node_type="operation", operator=op, parents=[tracer1, tracer2])
+    elif isinstance(tracer1, Tracer):
+        constant_tracer = Tracer(node_type="constant", value=tracer2)
+        return Tracer(
+            node_type="operation", operator=op, parents=[tracer1, constant_tracer]
+        )
+    elif isinstance(tracer2, Tracer):
+        constant_tracer = Tracer(node_type="constant", value=tracer1)
+        return Tracer(
+            node_type="operation", operator=op, parents=[constant_tracer, tracer2]
+        )
+    else:
+        return default_func(tracer1, tracer2)
 
 
 class Tracer:
@@ -230,6 +255,8 @@ def lambda_to_dfir(
             ">=",
             "==",
             "!=",
+            "min",
+            "max",
         ]
         assert (
             len(pre_o_types) == 2 and pre_o_types[0] == pre_o_types[1]
@@ -245,6 +272,8 @@ def lambda_to_dfir(
             ">=": dfir.BinOp.GE,
             "==": dfir.BinOp.EQ,
             "!=": dfir.BinOp.NE,
+            "min": dfir.BinOp.MIN,
+            "max": dfir.BinOp.MAX,
         }
         return dfir.BinOpComponent(op_dfir_dict[node["operator"]], pre_o_types[0])
 

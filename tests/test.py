@@ -1,6 +1,7 @@
 from graphyflow.global_graph import *
 import graphyflow.dataflow_ir as dfir
 from graphyflow.visualize_ir import visualize_components
+from graphyflow.lambda_func import lambda_min, lambda_max
 
 # g = GlobalGraph(
 #     properties={
@@ -27,7 +28,7 @@ apply2 = apply.map_(map_func=lambda a, b, c: (a + b, a + c.id, a < c.id, c))
 apply3 = apply2.filter(filter_func=lambda a, b, c, d: (a > 10 + b))
 apply4 = apply3.reduce_by(
     reduce_key=lambda a, b, c, d: b,
-    reduce_method=lambda a, b: a + b,
+    reduce_method=lambda a, b: lambda_min(a, b),
 )
 
 # node: node {out_degree: int}
