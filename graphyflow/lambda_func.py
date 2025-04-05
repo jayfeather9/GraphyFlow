@@ -255,7 +255,7 @@ def lambda_to_dfir(
             dfir.UnaryOp.GET_ATTR, pre_o_types[0]
         ),
         "idx": lambda node, pre_o_types: dfir.UnaryOpComponent(
-            dfir.UnaryOp.SELECT, pre_o_types[0]
+            dfir.UnaryOp.SELECT, pre_o_types[0], node["attr"]
         ),
         "constant": translate_constant_val,
         "operation": translate_bin_op,

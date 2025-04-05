@@ -141,23 +141,69 @@ class ComponentCollection(DfirNode):
     def __repr__(self) -> str:
         return f"ComponentCollection(\n  components: {self.components},\n  inputs: {self.inputs},\n  outputs: {self.outputs}\n)"
 
+    @property
+    def all_connected_ports(self) -> List[Port]:
+        return [
+            p for p in sum([comp.ports for comp in self.components], []) if p.connected
+        ]
+
+    def added(self, component: Component) -> bool:
+        return component.readable_id in [c.readable_id for c in self.components]
+
+    def update_ports(self) -> None:
+        # delete all connected ports in inputs and outputs, and delete replaced ports
+        self.inputs = list(set([p for p in self.inputs if not p.connected]))
+        self.outputs = list(set([p for p in self.outputs if not p.connected]))
+
     def add_front(self, component: Component, ports: Dict[str, Port]) -> None:
         assert all(p in self.inputs for p in ports.values())
-        assert all(not p.connected for p in component.in_ports)
+        assert all(
+            not p.connected or p in self.all_connected_ports for p in component.in_ports
+        )
         component.connect(ports)
-        self.components.insert(0, component)
+        if not self.added(component):
+            self.components.insert(0, component)
         self.inputs = [p for p in self.inputs if p not in ports.values()]
-        self.inputs.extend(component.in_ports)
-        self.outputs.extend([p for p in component.out_ports if not p.connected])
+        self.inputs.extend([p for p in component.in_ports])
+        self.outputs.extend([p for p in component.out_ports])
+        self.update_ports()
 
     def add_back(self, component: Component, ports: Dict[str, Port]) -> None:
         assert all(p in self.outputs for p in ports.values())
-        assert all(not p.connected for p in component.out_ports)
+        assert all(
+            not p.connected or p in self.all_connected_ports
+            for p in component.out_ports
+        )
         component.connect(ports)
-        self.components.append(component)
+        if not self.added(component):
+            self.components.append(component)
         self.outputs = [p for p in self.outputs if p not in ports.values()]
-        self.outputs.extend(component.out_ports)
-        self.inputs.extend([p for p in component.in_ports if not p.connected])
+        self.outputs.extend([p for p in component.out_ports])
+        self.inputs.extend([p for p in component.in_ports])
+        self.update_ports()
+
+    def concat(
+        self, other: ComponentCollection, port_connections: List[Tuple[Port, Port]]
+    ) -> None:
+        assert all(p in (self.inputs + self.outputs) for p, _ in port_connections)
+        assert all(p in (other.inputs + other.outputs) for _, p in port_connections)
+        for p, q in port_connections:
+            p.connect(q)
+        self.components.extend(other.components)
+        for p in other.inputs:
+            if p not in self.inputs:
+                self.inputs.append(p)
+        for p in other.outputs:
+            if p not in self.outputs:
+                self.outputs.append(p)
+        for p, q in port_connections:
+            for port in [p, q]:
+                while port in self.inputs:
+                    self.inputs.remove(port)
+                while port in self.outputs:
+                    self.outputs.remove(port)
+        self.update_ports()
+        return self
 
 
 class Component(DfirNode):
@@ -200,7 +246,9 @@ class Component(DfirNode):
                         idx = i
                         break
                 assert idx is not None
-                assert port.data_type == self.ports[idx].data_type
+                assert (
+                    port.data_type == self.ports[idx].data_type
+                ), f"{port.data_type} != {self.ports[idx].data_type}"
                 self.ports[idx].connect(port)
 
     def additional_info(self) -> str:
@@ -250,9 +298,11 @@ class ScatterComponent(Component):
     def __init__(self, input_type: DfirType) -> None:
         assert isinstance(input_type, (TupleType, ArrayType))
         real_input_type = input_type
+        parallel = False
         if isinstance(input_type, ArrayType):
             assert isinstance(input_type.type_, TupleType)
             real_input_type = input_type.type_
+            parallel = True
         ports = ["i_0"]
         for i in range(len(real_input_type.types)):
             ports.append(f"o_{i}")
@@ -261,8 +311,9 @@ class ScatterComponent(Component):
             input_type,
             input_type,
             ports,
+            parallel,
             specific_port_types={
-                f"o_{i}": ArrayType(type_)
+                f"o_{i}": ArrayType(type_) if parallel else type_
                 for i, type_ in enumerate(real_input_type.types)
             },
         )
@@ -416,16 +467,30 @@ class CollectComponent(Component):
         assert isinstance(input_type, ArrayType)
         assert isinstance(input_type.type_, OptionalType)
         output_type = ArrayType(input_type.type_.type_)
-        super().__init__(input_type, output_type, ["i_0", "o_0"])
+        super().__init__(input_type, output_type, ["i_0", "o_0"], parallel=True)
 
 
 class ReduceComponent(Component):
-    def __init__(self, input_type: DfirType, reduce_op: BinOp) -> None:
+    def __init__(self, input_type: DfirType, accumulated_type: DfirType) -> None:
         assert isinstance(input_type, ArrayType)
-        assert reduce_op.can_reduce()
-        output_type = reduce_op.output_type(input_type.type_)
-        super().__init__(input_type, output_type, ["i_0", "o_0"])
-        self.reduce_op = reduce_op
+        real_input_type = input_type.type_
+        super().__init__(
+            input_type,
+            accumulated_type,
+            [
+                "i_0",
+                "o_0",
+                "i_reduce_unit_end",
+                "o_reduce_unit_start_accumulated",
+                "o_reduce_unit_start_new",
+            ],
+            parallel=True,
+            specific_port_types={
+                "i_reduce_unit_end": accumulated_type,
+                "o_reduce_unit_start_accumulated": accumulated_type,
+                "o_reduce_unit_start_new": real_input_type,
+            },
+        )
 
 
 class PlaceholderComponent(Component):
