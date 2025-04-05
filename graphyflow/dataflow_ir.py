@@ -147,13 +147,24 @@ class ComponentCollection(DfirNode):
             p for p in sum([comp.ports for comp in self.components], []) if p.connected
         ]
 
+    @property
+    def output_types(self) -> List[DfirType]:
+        return [p.data_type for p in self.outputs]
+
     def added(self, component: Component) -> bool:
         return component.readable_id in [c.readable_id for c in self.components]
 
     def update_ports(self) -> None:
+        def remove_dup(ls: List[Port]) -> List[Port]:
+            ls2 = []
+            for p in ls:
+                if p not in ls2:
+                    ls2.append(p)
+            return ls2
+
         # delete all connected ports in inputs and outputs, and delete replaced ports
-        self.inputs = list(set([p for p in self.inputs if not p.connected]))
-        self.outputs = list(set([p for p in self.outputs if not p.connected]))
+        self.inputs = remove_dup([p for p in self.inputs if not p.connected])
+        self.outputs = remove_dup([p for p in self.outputs if not p.connected])
 
     def add_front(self, component: Component, ports: Dict[str, Port]) -> None:
         assert all(p in self.inputs for p in ports.values())
@@ -274,6 +285,7 @@ class IOComponent(Component):
         OUTPUT = "output"
 
     def __init__(self, io_type: IOType, data_type: DfirType) -> None:
+        self.io_type = io_type
         if self.io_type == self.IOType.INPUT:
             super().__init__(None, data_type, ["o_0"])
         else:
@@ -292,6 +304,26 @@ class ConstantComponent(Component):
 class CopyComponent(Component):
     def __init__(self, input_type: DfirType) -> None:
         super().__init__(input_type, input_type, ["i_0", "o_0", "o_1"])
+
+
+class GatherComponent(Component):
+    def __init__(self, input_types: List[DfirType]) -> None:
+        parallel = all(isinstance(t, ArrayType) for t in input_types)
+        ports = []
+        specific_port_types = {}
+        output_types = []
+        for i in range(len(input_types)):
+            ports.append(f"i_{i}")
+            specific_port_types[f"i_{i}"] = input_types[i]
+            if parallel:
+                output_types.append(input_types[i].type_)
+            else:
+                output_types.append(input_types[i])
+        output_type = TupleType(output_types)
+        if parallel:
+            output_type = ArrayType(output_type)
+        ports.append("o_0")
+        super().__init__(output_type, output_type, ports, parallel, specific_port_types)
 
 
 class ScatterComponent(Component):

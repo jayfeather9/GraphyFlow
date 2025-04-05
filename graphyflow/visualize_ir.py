@@ -202,56 +202,20 @@ def visualize_components(text):
     return dot
 
 
-# Example usage
-component_def = """ComponentCollection(
-  components: [ReduceComponent(
-  input: Array<Tuple<Int, Int, node>>,
-  output: node,
-  ports:
-    Port[55] i_0 (Array<Tuple<Int, Int, node>>)
-    Port[56] o_0 (node) => [57] i_reduce_unit_end (node)
-    Port[57] i_reduce_unit_end (node) <= [56] o_0 (node)
-    Port[58] o_reduce_unit_start_accumulated (node) => [47] i_0 (node)
-    Port[59] o_reduce_unit_start_new (Tuple<Int, Int, node>) => [37] i_0 (Tuple<Int, Int, node>)
-), PlaceholderComponent(
-  input: Tuple<Int, Int, node>,
-  output: Tuple<Int, Int, node>,
-  ports:
-    Port[37] i_0 (Tuple<Int, Int, node>) <= [59] o_reduce_unit_start_new (Tuple<Int, Int, node>)
-    Port[38] o_0 (Tuple<Int, Int, node>) => [40] i_0 (Tuple<Int, Int, node>)
-), UnaryOpComponent(
-  input: Tuple<Int, Int, node>,
-  output: node,
-  ports:
-    Port[40] i_0 (Tuple<Int, Int, node>) <= [38] o_0 (Tuple<Int, Int, node>)
-    Port[41] o_0 (node) => [44] i_0 (node)
-  op: UnaryOp.SELECT
-  select_index: 2
-), PlaceholderComponent(
-  input: node,
-  output: node,
-  ports:
-    Port[44] i_0 (node) <= [41] o_0 (node)
-    Port[45] o_0 (node) => [50] i_0 (node)
-), PlaceholderComponent(
-  input: node,
-  output: node,
-  ports:
-    Port[47] i_0 (node) <= [58] o_reduce_unit_start_accumulated (node)
-    Port[48] o_0 (node) => [51] i_1 (node)
-), BinOpComponent(
-  input: node,
-  output: node,
-  ports:
-    Port[50] i_0 (node) <= [45] o_0 (node)
-    Port[51] i_1 (node) <= [48] o_0 (node)
-    Port[52] o_0 (node)
-  op: BinOp.ADD
-)],
-  inputs: [Port[55] i_0 (Array<Tuple<Int, Int, node>>)],
-  outputs: [Port[52] o_0 (node)]
-)"""  # Paste your full component definition here
+if __name__ == "__main__":
+    from argparse import ArgumentParser
 
-
-dot = visualize_components(component_def)
-dot.render("component_graph", view=False, format="png")
+    parser = ArgumentParser()
+    parser.add_argument("--component_def", type=str)
+    parser.add_argument("--file_path", type=str)
+    args = parser.parse_args()
+    if args.component_def:
+        dot = visualize_components(args.component_def)
+        dot.render("component_graph", view=False, format="png")
+    elif args.file_path:
+        with open(args.file_path, "r") as f:
+            text = f.read()
+        dot = visualize_components(text)
+        dot.render("component_graph", view=False, format="png")
+    else:
+        print("Please provide either a component definition or a file path.")

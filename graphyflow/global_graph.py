@@ -45,7 +45,7 @@ class Inputer(Node):
         self.input_type = input_type
         super().__init__()
 
-    def to_dfir(self) -> dfir.DfirNode:
+    def to_dfir(self, placeholder: List[dfir.DfirType]) -> dfir.DfirNode:
         input_types = []
         if isinstance(self.input_type, BasicNode):
             input_types.append(dfir.SpecialType("node"))
@@ -56,9 +56,12 @@ class Inputer(Node):
         input_types.extend(
             [data_type.to_dfir() for data_type in self.input_type.data_types]
         )
-        return dfir.IOComponent(
-            dfir.IOComponent.IOType.INPUT, dfir.TupleType(input_types)
+        input_type = (
+            dfir.TupleType(input_types) if len(input_types) > 1 else input_types[0]
         )
+        input_type = dfir.ArrayType(input_type)
+        io_comp = dfir.IOComponent(dfir.IOComponent.IOType.INPUT, input_type)
+        return dfir.ComponentCollection([io_comp], [], [io_comp.ports[0]])
 
 
 class Updater(Node):
@@ -75,7 +78,10 @@ class GetLength(Node):
         self.is_simple = True
 
     def to_dfir(self, input_type: dfir.DfirType) -> dfir.DfirNode:
-        return dfir.UnaryOpComponent(dfir.UnaryOp.GET_LENGTH, input_type)
+        u_comp = dfir.UnaryOpComponent(dfir.UnaryOp.GET_LENGTH, input_type)
+        return dfir.ComponentCollection(
+            [u_comp], [u_comp.in_ports[0]], [u_comp.out_ports[0]]
+        )
 
 
 class Filter(Node):
@@ -146,7 +152,6 @@ class Map_(Node):
         assert len(self._lambda_funcs) == 1
         if len(self._lambda_funcs[0]["input_ids"]) == 1:
             dfirs = lambda_to_dfir(self._lambda_funcs[0], [input_type])
-            return dfirs
         else:
             scatter_comp = dfir.ScatterComponent(input_type)
             scatter_out_types = [p.data_type for p in scatter_comp.ports[1:]]
@@ -155,7 +160,13 @@ class Map_(Node):
                 scatter_comp,
                 {f"o_{i}": dfirs.inputs[i] for i in range(len(scatter_out_types))},
             )
-            return dfirs
+        if len(dfirs.outputs) > 1:
+            gather_comp = dfir.GatherComponent(dfirs.output_types)
+            dfirs.add_back(
+                gather_comp,
+                {f"i_{i}": dfirs.outputs[i] for i in range(len(dfirs.outputs))},
+            )
+        return dfirs
 
 
 class ReduceBy(Node):
@@ -275,15 +286,41 @@ class GlobalGraph:
 
     def topo_sort_nodes(self) -> List[Node]:
         result = []
-        waitings = list(self.nodes.values())
+        waitings = list(self.nodes.items())
         while waitings:
             new_ones = []
-            for n in waitings:
-                if all(pred in result for pred in n.preds):
-                    new_ones.append(n)
-                    waitings.remove(n)
+            for nid, n in waitings:
+                if all((pred.uuid, pred) in result for pred in n.preds):
+                    new_ones.append((nid, n))
+            waitings = [w for w in waitings if w not in new_ones]
             result.extend(new_ones)
         return result
+
+    def to_dfir(self) -> dfir.ComponentCollection:
+        nodes = self.topo_sort_nodes()
+        node_dfirs = {}
+        added_nodes = []
+        for nid, n in nodes:
+            input_types = []
+            if len(n.preds) > 0:
+                assert len(n.preds) == 1
+                input_types.extend(node_dfirs[n.preds[0].uuid].output_types)
+                assert len(input_types) == 1, f"{n.class_name} {input_types}"
+                input_types = input_types[0]
+            node_dfirs[nid] = n.to_dfir(input_types)
+            if len(n.preds) > 0:
+                node_dfirs[nid] = node_dfirs[n.preds[0].uuid].concat(
+                    node_dfirs[nid],
+                    [
+                        (
+                            node_dfirs[n.preds[0].uuid].outputs[0],
+                            node_dfirs[nid].inputs[0],
+                        )
+                    ],
+                )
+                added_nodes.append(n.preds[0].uuid)
+        result_dfirs = [d for nid, d in node_dfirs.items() if nid not in added_nodes]
+        return result_dfirs
 
     def __repr__(self) -> str:
         return f"GlobalGraph(nodes={self.nodes})"

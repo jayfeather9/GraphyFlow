@@ -202,7 +202,6 @@ def format_lambda(lambda_dict):
 def lambda_to_dfir(
     lambda_dict: Dict[str, Any], input_types: List[dfir.DfirType]
 ) -> dfir.ComponentCollection:
-    print(format_lambda(lambda_dict))
     assert len(input_types) == len(lambda_dict["input_ids"])
     assert all(isinstance(t, dfir.DfirType) for t in input_types)
     is_parallel = all(isinstance(t, dfir.ArrayType) for t in input_types)
