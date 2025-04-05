@@ -108,21 +108,20 @@ class Filter(Node):
 
             return dfirs
         else:
-            # TODO: fix this part, still not tested
-            dfirs = lambda_to_dfir(self._lambda_funcs[0], [input_type])
+            scatter_comp = dfir.ScatterComponent(input_type)
+            scatter_out_types = [p.data_type for p in scatter_comp.ports[1:]]
+            dfirs = lambda_to_dfir(self._lambda_funcs[0], scatter_out_types)
             assert len(dfirs.outputs) == 1
-            assert dfirs.outputs[0].data_type == dfir.BoolType()
+            assert dfirs.outputs[0].data_type == dfir.ArrayType(dfir.BoolType())
 
             copy_comp = dfir.CopyComponent(input_type)
-            scatter_comp = dfir.ScatterComponent(input_type)
             cond_comp = dfir.ConditionalComponent(input_type)
             collect_comp = dfir.CollectComponent(cond_comp.output_type)
 
-            scatter_ports = {}
-            assert len(dfirs.inputs) == len(input_type.types)
-            for i in range(len(input_type.types)):
-                scatter_ports[f"o_{i}"] = dfirs.inputs[i]
-            dfirs.add_front(scatter_comp, scatter_ports)
+            dfirs.add_front(
+                scatter_comp,
+                {f"o_{i}": dfirs.inputs[i] for i in range(len(scatter_out_types))},
+            )
 
             copy_ports = {"o_0": scatter_comp.ports[0]}
             dfirs.add_front(copy_comp, copy_ports)

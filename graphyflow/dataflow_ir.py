@@ -93,7 +93,18 @@ class Port(DfirNode):
     def connected(self) -> bool:
         return self.connection is not None
 
+    def copy(self, copy_comp: CopyComponent) -> Port:
+        assert self.port_type == PortType.OUT
+        assert self.connected
+        assert self.data_type == copy_comp.input_type
+        assert all(not p.connected for p in copy_comp.ports)
+        original_connection = self.connection
+        self.disconnect()
+        copy_comp.connect({"i_0": self, "o_0": original_connection})
+        return copy_comp.out_ports[1]
+
     def connect(self, other: Port) -> None:
+        assert not self.connected and not other.connected
         assert self.port_type.pluggable(other.port_type)
         self.connection = other
         other.connection = self
@@ -110,7 +121,7 @@ class Port(DfirNode):
         if self.connection is None:
             return my_repr
         else:
-            return f"{my_repr} {direction} Port[{tgt.readable_id}] {tgt.name} ({tgt.data_type})"
+            return f"{my_repr} {direction} [{tgt.readable_id}] {tgt.name} ({tgt.data_type})"
 
 
 class ComponentCollection(DfirNode):
@@ -420,3 +431,8 @@ class ReduceComponent(Component):
 class PlaceholderComponent(Component):
     def __init__(self, data_type: DfirType) -> None:
         super().__init__(data_type, data_type, ["i_0", "o_0"])
+
+
+class UnusedEndMarker(Component):
+    def __init__(self, input_type: DfirType) -> None:
+        super().__init__(input_type, None, ["i_0"])

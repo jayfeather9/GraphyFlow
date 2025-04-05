@@ -133,6 +133,10 @@ def parse_lambda(lambda_func):
             outputs[i] = Tracer(value=outputs[i], node_type="constant")
         traverse(outputs[i])
 
+    for node in inputs:
+        if node._id not in visited:
+            all_nodes.append(node)
+
     edges = [(p._id, node._id) for node in all_nodes for p in node._parents]
 
     return {
@@ -171,6 +175,8 @@ def format_lambda(lambda_dict):
 
     result = ["Lambda Repr: "]
 
+    visited = set()
+
     if len(lambda_dict["edges"]) == 0:
         result.extend(f"  {node_str}" for node_str in node_strs.values())
     else:
@@ -178,6 +184,13 @@ def format_lambda(lambda_dict):
         for src, dst in sorted(lambda_dict["edges"]):
             padding = " " * (max_src_len - len(node_strs[src]) + 2)
             result.append(f"  {node_strs[src]}{padding}→ {node_strs[dst]}")
+            visited.add(src)
+            visited.add(dst)
+    result.append("Unconnected Nodes: {")
+    for node_id in sorted(node_strs.keys()):
+        if node_id not in visited:
+            result.append(f"  {node_strs[node_id]}")
+    result.append("}")
 
     result.append(f"Input Nodes: {', '.join(map(str, lambda_dict['input_ids']))}")
     result.append(f"Output Nodes: {', '.join(map(str, lambda_dict['output_ids']))}")
@@ -189,9 +202,10 @@ def format_lambda(lambda_dict):
 def lambda_to_dfir(
     lambda_dict: Dict[str, Any], input_types: List[dfir.DfirType]
 ) -> dfir.ComponentCollection:
+    print(format_lambda(lambda_dict))
     assert len(input_types) == len(lambda_dict["input_ids"])
     assert all(isinstance(t, dfir.DfirType) for t in input_types)
-    is_parallel = isinstance(input_types[0], dfir.ArrayType) and len(input_types) == 1
+    is_parallel = all(isinstance(t, dfir.ArrayType) for t in input_types)
 
     def translate_constant_val(node, pre_o_types):
         assert node["value"] is not None and type(node["value"]) in [bool, int, float]
@@ -248,6 +262,7 @@ def lambda_to_dfir(
     }
     nodes, edges = lambda_dict["nodes"], lambda_dict["edges"]
     dfir_nodes = {}
+    max_nid = max(nodes.keys())
     in_degree = {nid: len(list(dst for _, dst in edges if dst == nid)) for nid in nodes}
     start_queue = [nid for nid, deg in in_degree.items() if deg == 0]
     # delete the deg==0 nodes from in_degree
@@ -268,10 +283,34 @@ def lambda_to_dfir(
         queue.append(
             [target[0], [input_types[name_id]], {}]
         )  # node, prev_type, parent_ports
+    both_in_out_nids = [
+        nid for nid in lambda_dict["input_ids"] if nid in lambda_dict["output_ids"]
+    ]
+    both_in_out_ports = []
+    both_in_out_ports_waitlist = {}
     while queue:
         nid, pre_o_types, p_ports = queue.pop(0)
         node_type = nodes[nid]["type"]
         dfir_nodes[nid] = translate_dict[node_type](nodes[nid], pre_o_types)
+        if nid in both_in_out_nids:
+            for p in dfir_nodes[nid].ports:
+                both_in_out_ports.append(p)
+                both_in_out_ports_waitlist[p] = []
+
+        for my_port_name, p_port in p_ports.items():
+            if p_port in both_in_out_ports:
+                both_in_out_ports_waitlist[p_port].append((nid, my_port_name))
+            elif p_port.connected:
+                copy_comp = dfir.CopyComponent(p_port.data_type)
+                dfir_nodes[max_nid + 1] = copy_comp
+                max_nid += 1
+                new_port = p_port.copy(copy_comp)
+                p_ports[my_port_name] = new_port
+        p_ports = {
+            mp_name: p_port
+            for mp_name, p_port in p_ports.items()
+            if not p_port in both_in_out_ports
+        }
         dfir_nodes[nid].connect(p_ports)
         out_type = dfir_nodes[nid].output_type
         succ_node_ids = [dst for src, dst in edges if src == nid]
@@ -286,8 +325,44 @@ def lambda_to_dfir(
             if in_degree[succ_nid] == 0:
                 queue.append(node_tmp_datas[succ_nid])
                 del in_degree[succ_nid]
+    port_trans_dict = {}
+    for p_port, waitings in both_in_out_ports_waitlist.items():
+        while len(waitings) > 0:
+            nid, my_port_name = waitings.pop()
+            copy_comp = dfir.CopyComponent(p_port.data_type)
+            dfir_nodes[max_nid + 1] = copy_comp
+            max_nid += 1
+            target_port = (
+                port_trans_dict[p_port] if p_port in port_trans_dict else p_port
+            )
+            dfir_nodes[nid].connect({my_port_name: target_port})
+            new_target_port = target_port.copy(copy_comp)
+            port_trans_dict[p_port] = new_target_port
     inputs = sum([dfir_nodes[nid].in_ports for nid in lambda_dict["input_ids"]], [])
     outputs = sum([dfir_nodes[nid].out_ports for nid in lambda_dict["output_ids"]], [])
+    for i in range(len(outputs)):
+        if outputs[i] in port_trans_dict:
+            outputs[i] = port_trans_dict[outputs[i]]
+    assert all(not p.connected for p in (inputs + outputs))
+    # handle unused input
+    all_ports = sum((node.ports for node in dfir_nodes.values()), [])
+    all_hanged_ports = [
+        p for p in all_ports if (not p.connected and not p in inputs + outputs)
+    ]
+    all_hanged_nodes = [
+        nid
+        for nid in dfir_nodes
+        if any(p in all_hanged_ports for p in dfir_nodes[nid].ports)
+    ]
+    all_input_dfir_nodes = [nid for nid in lambda_dict["input_ids"]]
+    # only input dfir nodes can be hanged
+    assert all(n in all_input_dfir_nodes for n in all_hanged_nodes)
+    # add a unused end marker to the hanged nodes
+    for nid in all_hanged_nodes:
+        dfir_nodes[max_nid + 1] = dfir.UnusedEndMarker(dfir_nodes[nid].output_type)
+        assert len(dfir_nodes[nid].out_ports) == 1
+        dfir_nodes[max_nid + 1].connect({"i_0": dfir_nodes[nid].out_ports[0]})
+        max_nid += 1
     return dfir.ComponentCollection(list(dfir_nodes.values()), inputs, outputs)
 
 
