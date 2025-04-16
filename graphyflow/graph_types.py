@@ -21,13 +21,8 @@ class BasicData(TransportType):
         return self._data_type
 
     def to_dfir(self) -> dfir.DfirType:
-        assert self.data_type in [int, float, bool]
-        trans_dict = {
-            int: dfir.IntType,
-            float: dfir.FloatType,
-            bool: dfir.BoolType,
-        }
-        return trans_dict[self.data_type]()
+        assert self.data_type in [dfir.IntType(), dfir.FloatType(), dfir.BoolType()]
+        return self.data_type
 
     def __repr__(self):
         return f"BasicData({self._data_type})"

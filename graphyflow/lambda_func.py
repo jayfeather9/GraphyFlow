@@ -1,7 +1,7 @@
 import inspect
 from warnings import warn
 import graphyflow.dataflow_ir as dfir
-from typing import Dict, List, Tuple, Any, Callable
+from typing import Dict, List, Tuple, Any, Callable, Optional
 
 
 def lambda_min(tracer1, tracer2):
@@ -225,7 +225,10 @@ def format_lambda(lambda_dict):
 
 # TODO: fix the binop order problem
 def lambda_to_dfir(
-    lambda_dict: Dict[str, Any], input_types: List[dfir.DfirType]
+    lambda_dict: Dict[str, Any],
+    input_types: List[dfir.DfirType],
+    node_prop: Optional[Dict[str, Any]],
+    edge_prop: Optional[Dict[str, Any]],
 ) -> dfir.ComponentCollection:
     assert len(input_types) == len(lambda_dict["input_ids"])
     assert all(isinstance(t, dfir.DfirType) for t in input_types)
@@ -277,11 +280,32 @@ def lambda_to_dfir(
         }
         return dfir.BinOpComponent(op_dfir_dict[node["operator"]], pre_o_types[0])
 
+    def translate_attr(node, pre_o_types):
+        assert pre_o_types[0] in [
+            dfir.SpecialType("node"),
+            dfir.SpecialType("edge"),
+        ] or (
+            isinstance(pre_o_types[0], dfir.ArrayType)
+            and pre_o_types[0].type_
+            in [dfir.SpecialType("node"), dfir.SpecialType("edge")]
+        )
+        if pre_o_types[0] == dfir.SpecialType("node") or (
+            isinstance(pre_o_types[0], dfir.ArrayType)
+            and pre_o_types[0].type_ == dfir.SpecialType("node")
+        ):
+            assert node["attr"] in node_prop, f"{node['attr']} not in {node_prop}"
+            return dfir.UnaryOpComponent(
+                dfir.UnaryOp.GET_ATTR, pre_o_types[0], attr_type=node_prop[node["attr"]]
+            )
+        else:
+            assert node["attr"] in edge_prop, f"{node['attr']} not in {edge_prop}"
+            return dfir.UnaryOpComponent(
+                dfir.UnaryOp.GET_ATTR, pre_o_types[0], attr_type=edge_prop[node["attr"]]
+            )
+
     translate_dict = {
         "input": lambda node, pre_o_types: dfir.PlaceholderComponent(pre_o_types[0]),
-        "attr": lambda node, pre_o_types: dfir.UnaryOpComponent(
-            dfir.UnaryOp.GET_ATTR, pre_o_types[0]
-        ),
+        "attr": translate_attr,
         "idx": lambda node, pre_o_types: dfir.UnaryOpComponent(
             dfir.UnaryOp.SELECT, pre_o_types[0], node["attr"]
         ),

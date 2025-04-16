@@ -456,7 +456,11 @@ class UnaryOp(Enum):
 
 class UnaryOpComponent(Component):
     def __init__(
-        self, op: UnaryOp, input_type: DfirType, select_index: Optional[int] = None
+        self,
+        op: UnaryOp,
+        input_type: DfirType,
+        select_index: Optional[int] = None,
+        attr_type: Optional[DfirType] = None,
     ) -> None:
         if isinstance(input_type, ArrayType):
             parallel = True
@@ -468,8 +472,13 @@ class UnaryOpComponent(Component):
             assert isinstance(real_input_type, TupleType)
             assert select_index is not None
             inside_output_type = real_input_type.types[select_index]
+        elif op == UnaryOp.GET_ATTR:
+            assert attr_type is not None
+            inside_output_type = attr_type
         else:
-            assert not isinstance(real_input_type, TupleType)
+            assert not isinstance(
+                real_input_type, TupleType
+            ), f"input type {real_input_type} is a tuple type for {op}"
             inside_output_type = op.output_type(real_input_type)
         output_type = ArrayType(inside_output_type) if parallel else inside_output_type
         super().__init__(input_type, output_type, ["i_0", "o_0"], parallel)

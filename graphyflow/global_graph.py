@@ -45,20 +45,17 @@ class Inputer(Node):
         self.input_type = input_type
         super().__init__()
 
-    def to_dfir(self, placeholder: List[dfir.DfirType]) -> dfir.DfirNode:
-        input_types = []
+    def to_dfir(
+        self,
+        placeholder: List[dfir.DfirType],
+        props: Tuple[Dict[str, Any], Dict[str, Any]],
+    ) -> dfir.DfirNode:
         if isinstance(self.input_type, BasicNode):
-            input_types.append(dfir.SpecialType("node"))
+            input_type = dfir.SpecialType("node")
         elif isinstance(self.input_type, BasicEdge):
-            input_types.append(dfir.SpecialType("edge"))
+            input_type = dfir.SpecialType("edge")
         else:
             raise RuntimeError("Input type must be BasicNode or BasicEdge")
-        input_types.extend(
-            [data_type.to_dfir() for data_type in self.input_type.data_types]
-        )
-        input_type = (
-            dfir.TupleType(input_types) if len(input_types) > 1 else input_types[0]
-        )
         input_type = dfir.ArrayType(input_type)
         io_comp = dfir.IOComponent(dfir.IOComponent.IOType.INPUT, input_type)
         return dfir.ComponentCollection([io_comp], [], [io_comp.ports[0]])
@@ -90,11 +87,15 @@ class Filter(Node):
         super().__init__()
         self._lambda_funcs.append(self.filter_func)
 
-    def to_dfir(self, input_type: dfir.DfirType) -> dfir.ComponentCollection:
+    def to_dfir(
+        self, input_type: dfir.DfirType, props: Tuple[Dict[str, Any], Dict[str, Any]]
+    ) -> dfir.ComponentCollection:
         assert isinstance(input_type, dfir.ArrayType)
         assert len(self._lambda_funcs) == 1
         if len(self._lambda_funcs[0]["input_ids"]) == 1:
-            dfirs = lambda_to_dfir(self._lambda_funcs[0], [input_type])
+            dfirs = lambda_to_dfir(
+                self._lambda_funcs[0], [input_type], props[0], props[1]
+            )
             assert len(dfirs.outputs) == 1
             assert dfirs.outputs[0].data_type == dfir.ArrayType(dfir.BoolType())
 
@@ -116,7 +117,9 @@ class Filter(Node):
         else:
             scatter_comp = dfir.ScatterComponent(input_type)
             scatter_out_types = [p.data_type for p in scatter_comp.ports[1:]]
-            dfirs = lambda_to_dfir(self._lambda_funcs[0], scatter_out_types)
+            dfirs = lambda_to_dfir(
+                self._lambda_funcs[0], scatter_out_types, props[0], props[1]
+            )
             assert len(dfirs.outputs) == 1
             assert dfirs.outputs[0].data_type == dfir.ArrayType(dfir.BoolType())
 
@@ -147,15 +150,23 @@ class Map_(Node):
         super().__init__()
         self.lambdas.append(self.map_func)
 
-    def to_dfir(self, input_type: dfir.DfirType) -> dfir.ComponentCollection:
-        assert isinstance(input_type, dfir.ArrayType)
+    def to_dfir(
+        self, input_type: dfir.DfirType, props: Tuple[Dict[str, Any], Dict[str, Any]]
+    ) -> dfir.ComponentCollection:
+        assert isinstance(
+            input_type, dfir.ArrayType
+        ), f"{input_type} is not an array type"
         assert len(self._lambda_funcs) == 1
         if len(self._lambda_funcs[0]["input_ids"]) == 1:
-            dfirs = lambda_to_dfir(self._lambda_funcs[0], [input_type])
+            dfirs = lambda_to_dfir(
+                self._lambda_funcs[0], [input_type], props[0], props[1]
+            )
         else:
             scatter_comp = dfir.ScatterComponent(input_type)
             scatter_out_types = [p.data_type for p in scatter_comp.ports[1:]]
-            dfirs = lambda_to_dfir(self._lambda_funcs[0], scatter_out_types)
+            dfirs = lambda_to_dfir(
+                self._lambda_funcs[0], scatter_out_types, props[0], props[1]
+            )
             dfirs.add_front(
                 scatter_comp,
                 {f"o_{i}": dfirs.inputs[i] for i in range(len(scatter_out_types))},
@@ -185,17 +196,23 @@ class ReduceBy(Node):
         super().__init__()
         self.lambdas.extend([self.reduce_key, self.reduce_method])
 
-    def to_dfir(self, input_type: dfir.DfirType) -> dfir.ComponentCollection:
+    def to_dfir(
+        self, input_type: dfir.DfirType, props: Tuple[Dict[str, Any], Dict[str, Any]]
+    ) -> dfir.ComponentCollection:
         assert isinstance(input_type, dfir.ArrayType)
         assert len(self._lambda_funcs) == 2
 
         element_type = input_type.type_
         if len(self.reduce_key["input_ids"]) == 1:
-            reduce_key_dfirs = lambda_to_dfir(self.reduce_key, [element_type])
+            reduce_key_dfirs = lambda_to_dfir(
+                self.reduce_key, [element_type], props[0], props[1]
+            )
         else:
             scatter_comp = dfir.ScatterComponent(element_type)
             scatter_out_types = [p.data_type for p in scatter_comp.ports[1:]]
-            reduce_key_dfirs = lambda_to_dfir(self.reduce_key, scatter_out_types)
+            reduce_key_dfirs = lambda_to_dfir(
+                self.reduce_key, scatter_out_types, props[0], props[1]
+            )
             reduce_key_dfirs.add_front(
                 scatter_comp,
                 {
@@ -211,7 +228,7 @@ class ReduceBy(Node):
 
         assert len(self.reduce_method["input_ids"]) == 2
         reduce_method_dfirs = lambda_to_dfir(
-            self.reduce_method, [reduce_type, reduce_type]
+            self.reduce_method, [reduce_type, reduce_type], props[0], props[1]
         )
         assert len(reduce_method_dfirs.inputs) == 2
         assert len(reduce_method_dfirs.outputs) == 1
@@ -252,6 +269,13 @@ class GlobalGraph:
 
     def handle_properties(self, properties: Dict[str, Dict[str, Any]]):
         assert not self.added_input, "Properties must be set before adding input"
+        if "edge" not in properties.keys():
+            properties["edge"] = {}
+        if "node" not in properties.keys():
+            properties["node"] = {}
+        properties["edge"]["src"] = dfir.SpecialType("node")
+        properties["edge"]["dst"] = dfir.SpecialType("node")
+        properties["node"]["id"] = dfir.IntType()
         for prop_name, prop_info in properties.items():
             assert prop_name in ["node", "edge"]
             if prop_name == "node":
@@ -307,7 +331,9 @@ class GlobalGraph:
                 input_types.extend(node_dfirs[n.preds[0].uuid].output_types)
                 assert len(input_types) == 1, f"{n.class_name} {input_types}"
                 input_types = input_types[0]
-            node_dfirs[nid] = n.to_dfir(input_types)
+            node_dfirs[nid] = n.to_dfir(
+                input_types, (self.node_properties, self.edge_properties)
+            )
             if len(n.preds) > 0:
                 node_dfirs[nid] = node_dfirs[n.preds[0].uuid].concat(
                     node_dfirs[nid],

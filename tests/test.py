@@ -17,19 +17,17 @@ from graphyflow.lambda_func import lambda_min, lambda_max
 # )
 g = GlobalGraph(
     properties={
-        "node": {},
-        "edge": {},
+        "node": {"weight": dfir.IntType()},
+        "edge": {"e_id": dfir.IntType()},
     }
 )
-nodes = g.add_input("node")
+nodes = g.add_input("edge")
 # apply = nodes.filter(filter_func=lambda node: node.id + 5 > 10)
-apply = nodes.map_(map_func=lambda node: (node.id + 5, 6, node))
-apply2 = apply.map_(map_func=lambda a, b, c: (a + b, a + c.id, a < c.id, c))
-apply3 = apply2.filter(filter_func=lambda a, b, c, d: (a > 10 + b))
-apply4 = apply3.reduce_by(
-    reduce_key=lambda a, b, c, d: b,
-    reduce_method=lambda a, b: lambda_min(a, b),
+src_dst_weight = nodes.map_(
+    map_func=lambda edge: (edge.src.weight, edge.dst.weight, edge)
 )
+filtered = src_dst_weight.filter(filter_func=lambda sw, dw, e: sw > dw)
+result = filtered.map_(map_func=lambda sw, dw, e: e.e_id)
 
 # node: node {out_degree: int}
 # edge: edge {src: node, dst: node, pr: float}

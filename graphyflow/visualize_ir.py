@@ -3,6 +3,7 @@ from graphviz import Digraph
 
 
 def parse_components(text):
+    print(text)
     components = []
     port_to_component = {}
 
@@ -51,13 +52,13 @@ def parse_components(text):
     ]
 
     for idx, (comp_type, comp_content) in enumerate(component_matches):
-        print(comp_type, comp_content)
+        # print(comp_type, comp_content)
         comp_id = f"comp_{idx}"
 
         component = {
             "id": comp_id,
             "type": comp_type + "Component",
-            "label": comp_type + "Component",
+            "label": comp_type,
             "ports": {},
             "connections": [],
         }
@@ -72,7 +73,7 @@ def parse_components(text):
         if comp_type == "BinOp" or comp_type == "UnaryOp":
             op_match = re.search(r"op: (\w+)\.(\w+)", comp_content)
             if op_match:
-                component["label"] += f"\nOp: {op_match.group(1)} {op_match.group(2)}"
+                component["label"] += f"\nOp: {op_match.group(2)}"
 
         # Parse ports
         ports = re.findall(
@@ -83,7 +84,7 @@ def parse_components(text):
             port_num, port_name, port_type, target_port, target_name = port
             if port_num in port_to_component:
                 continue
-            print(port_num, port_name)
+            # print(port_num, port_name)
             component["ports"][port_num] = {
                 "name": port_name,
                 "type": port_type,
@@ -127,7 +128,7 @@ def parse_components(text):
 
 def visualize_components(text):
     components, port_to_component, inputs, outputs = parse_components(text)
-    print(inputs, outputs)
+    # print(inputs, outputs)
     dot = Digraph(comment="Component Visualization")
 
     # 添加输入节点
@@ -175,7 +176,7 @@ def visualize_components(text):
                     connections.add((src_comp, tgt_comp))
 
     for port_num, port_name, port_type in inputs:
-        print(port_num, port_name, port_type)
+        # print(port_num, port_name, port_type)
         if port_num in port_to_component:
             comp_id = port_to_component[port_num]
             dot.edge(
@@ -187,7 +188,7 @@ def visualize_components(text):
             )
 
     for port_num, port_name, port_type in outputs:
-        print(port_num, port_name, port_type)
+        # print(port_num, port_name, port_type)
         for comp in components:
             for p_num, p_info in comp["ports"].items():
                 if p_num == port_num and p_info["direction"] == "out":
