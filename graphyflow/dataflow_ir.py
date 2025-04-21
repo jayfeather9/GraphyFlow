@@ -530,7 +530,7 @@ class ReduceComponent(Component):
         real_input_type = input_type.type_
         super().__init__(
             input_type,
-            accumulated_type,
+            ArrayType(accumulated_type),
             [
                 "i_0",
                 "o_0",
