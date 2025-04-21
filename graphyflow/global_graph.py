@@ -182,25 +182,30 @@ class Map_(Node):
 
 class ReduceBy(Node):
     """
-    reduce_key: x -> y, determine which element should be reduced
+    reduce_key: x -> y, determine according to which element (is same) to group by and reduce, if want to reduce all, give lambda x: 1
+    reduce_transform: x -> y, determine which element should be reduced
     reduce_method: a, b -> c, reduce two elements, should be commutative and associative
     """
 
     def __init__(
         self,
         reduce_key: Callable[[List[DataElement]], DataElement],
+        reduce_transform: Callable[[List[DataElement]], DataElement],
         reduce_method: Callable[[List[DataElement]], DataElement],
     ):
         self.reduce_key = parse_lambda(reduce_key)
+        self.reduce_transform = parse_lambda(reduce_transform)
         self.reduce_method = parse_lambda(reduce_method)
         super().__init__()
-        self.lambdas.extend([self.reduce_key, self.reduce_method])
+        self.lambdas.extend(
+            [self.reduce_key, self.reduce_transform, self.reduce_method]
+        )
 
     def to_dfir(
         self, input_type: dfir.DfirType, props: Tuple[Dict[str, Any], Dict[str, Any]]
     ) -> dfir.ComponentCollection:
         assert isinstance(input_type, dfir.ArrayType)
-        assert len(self._lambda_funcs) == 2
+        assert len(self._lambda_funcs) == 3
 
         element_type = input_type.type_
         if len(self.reduce_key["input_ids"]) == 1:
@@ -220,30 +225,66 @@ class ReduceBy(Node):
                     for i in range(len(scatter_out_types))
                 },
             )
-
         assert len(reduce_key_dfirs.inputs) == 1
         assert len(reduce_key_dfirs.outputs) == 1
-        start_new_port = reduce_key_dfirs.inputs[0]
-        reduce_type = reduce_key_dfirs.outputs[0].data_type
+        reduce_key_in_port = reduce_key_dfirs.inputs[0]
+        reduce_key_out_port = reduce_key_dfirs.outputs[0]
+        reduce_key_out_type = reduce_key_dfirs.output_types[0]
+
+        if len(self.reduce_transform["input_ids"]) == 1:
+            reduce_transform_dfirs = lambda_to_dfir(
+                self.reduce_transform,
+                [element_type],
+                props[0],
+                props[1],
+                scatter_outputs=False,
+            )
+        else:
+            scatter_comp = dfir.ScatterComponent(element_type)
+            scatter_out_types = [p.data_type for p in scatter_comp.ports[1:]]
+            reduce_transform_dfirs = lambda_to_dfir(
+                self.reduce_transform,
+                scatter_out_types,
+                props[0],
+                props[1],
+                scatter_outputs=False,
+            )
+            reduce_transform_dfirs.add_front(
+                scatter_comp,
+                {
+                    f"o_{i}": reduce_transform_dfirs.inputs[i]
+                    for i in range(len(scatter_out_types))
+                },
+            )
+        assert len(reduce_transform_dfirs.inputs) == 1
+        assert len(reduce_transform_dfirs.outputs) == 1
+        start_new_port = reduce_transform_dfirs.inputs[0]
+        reduce_type = reduce_transform_dfirs.outputs[0].data_type
 
         assert len(self.reduce_method["input_ids"]) == 2
         reduce_method_dfirs = lambda_to_dfir(
-            self.reduce_method, [reduce_type, reduce_type], props[0], props[1]
+            self.reduce_method,
+            [reduce_type, reduce_type],
+            props[0],
+            props[1],
+            scatter_outputs=False,
         )
         assert len(reduce_method_dfirs.inputs) == 2
         assert len(reduce_method_dfirs.outputs) == 1
         start_accumulated_port = reduce_method_dfirs.inputs[1]
 
-        dfirs = reduce_key_dfirs.concat(
+        dfirs = reduce_transform_dfirs.concat(
             reduce_method_dfirs,
             [
-                (reduce_key_dfirs.outputs[0], reduce_method_dfirs.inputs[0]),
+                (reduce_transform_dfirs.outputs[0], reduce_method_dfirs.inputs[0]),
             ],
         )
-        reduce_comp = dfir.ReduceComponent(input_type, reduce_type)
+        dfirs = dfirs.concat(reduce_key_dfirs, [])
+        reduce_comp = dfir.ReduceComponent(input_type, reduce_type, reduce_key_out_type)
         dfirs.add_front(
             reduce_comp,
             {
+                "o_reduce_key_in": reduce_key_in_port,
                 "o_reduce_unit_start_accumulated": start_accumulated_port,
                 "o_reduce_unit_start_new": start_new_port,
             },
@@ -251,6 +292,7 @@ class ReduceBy(Node):
         dfirs.add_back(
             reduce_comp,
             {
+                "i_reduce_key_out": reduce_key_out_port,
                 "i_reduce_unit_end": dfirs.outputs[0],
             },
         )

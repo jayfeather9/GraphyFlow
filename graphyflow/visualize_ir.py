@@ -170,9 +170,8 @@ def visualize_components(text):
                 src_comp = port_to_component[src_port]
                 tgt_comp = port_to_component[tgt_port]
                 if (src_comp, tgt_comp) not in connections:
-                    dot.edge(
-                        src_comp, tgt_comp, label=f'{comp["ports"][src_port]["type"]}'
-                    )
+                    label = f'{comp["ports"][src_port]["name"]}: {comp["ports"][src_port]["type"]}'
+                    dot.edge(src_comp, tgt_comp, label)
                     connections.add((src_comp, tgt_comp))
 
     for port_num, port_name, port_type in inputs:

@@ -229,6 +229,7 @@ def lambda_to_dfir(
     input_types: List[dfir.DfirType],
     node_prop: Optional[Dict[str, Any]],
     edge_prop: Optional[Dict[str, Any]],
+    scatter_outputs: bool = True,
 ) -> dfir.ComponentCollection:
     assert len(input_types) == len(lambda_dict["input_ids"])
     assert all(isinstance(t, dfir.DfirType) for t in input_types)
@@ -415,6 +416,16 @@ def lambda_to_dfir(
         assert len(dfir_nodes[nid].out_ports) == 1
         dfir_nodes[max_nid + 1].connect({"i_0": dfir_nodes[nid].out_ports[0]})
         max_nid += 1
+    # handle scatter outputs
+    if not scatter_outputs:
+        gather_comp = dfir.GatherComponent(
+            list(map(lambda port: port.data_type, outputs))
+        )
+        for i, p in enumerate(outputs):
+            gather_comp.ports[i].connect(p)
+        dfir_nodes[max_nid + 1] = gather_comp
+        max_nid += 1
+        outputs = gather_comp.out_ports
     return dfir.ComponentCollection(list(dfir_nodes.values()), inputs, outputs)
 
 

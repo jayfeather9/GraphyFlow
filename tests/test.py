@@ -26,8 +26,17 @@ nodes = g.add_input("edge")
 src_dst_weight = nodes.map_(
     map_func=lambda edge: (edge.src.weight, edge.dst.weight, edge)
 )
-filtered = src_dst_weight.filter(filter_func=lambda sw, dw, e: sw > dw)
-result = filtered.map_(map_func=lambda sw, dw, e: e.e_id)
+test = src_dst_weight.reduce_by(
+    reduce_key=lambda data: data[2].dst,
+    reduce_transform=lambda data: (data[0], data[1], data[2].dst),
+    reduce_method=lambda data1, data2: (
+        data1[0] + data2[0],
+        data1[1] + data2[1],
+        data1[2],
+    ),
+)
+# filtered = src_dst_weight.filter(filter_func=lambda sw, dw, e: sw > dw)
+# result = filtered.map_(map_func=lambda sw, dw, e: e.e_id)
 
 # node: node {out_degree: int}
 # edge: edge {src: node, dst: node, pr: float}
@@ -37,7 +46,7 @@ result = filtered.map_(map_func=lambda sw, dw, e: e.e_id)
 # scattered = edges.map_(map_func=lambda edge: (edge.pr, edge.dst))
 # # gather
 # gathered_node_property = scattered.reduce_by(
-#     reduce_key=lambda src_pr, dst: dst,
+#     reduce_transform=lambda src_pr, dst: dst,
 #     reduce_method=lambda ori, update: (ori[0] + update[0], ori[1]),
 # )
 # # apply

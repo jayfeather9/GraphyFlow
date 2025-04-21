@@ -1,7 +1,7 @@
 from __future__ import annotations
 import uuid as uuid_lib
 from enum import Enum
-from typing import List, Optional, Union, Dict, Any
+from typing import List, Optional, Union, Dict, Any, Tuple
 
 
 class DfirType:
@@ -195,7 +195,7 @@ class ComponentCollection(DfirNode):
 
     def concat(
         self, other: ComponentCollection, port_connections: List[Tuple[Port, Port]]
-    ) -> None:
+    ) -> ComponentCollection:
         assert all(p in (self.inputs + self.outputs) for p, _ in port_connections)
         assert all(p in (other.inputs + other.outputs) for _, p in port_connections)
         for p, q in port_connections:
@@ -520,7 +520,12 @@ class CollectComponent(Component):
 
 
 class ReduceComponent(Component):
-    def __init__(self, input_type: DfirType, accumulated_type: DfirType) -> None:
+    def __init__(
+        self,
+        input_type: DfirType,
+        accumulated_type: DfirType,
+        reduce_key_out_type: DfirType,
+    ) -> None:
         assert isinstance(input_type, ArrayType)
         real_input_type = input_type.type_
         super().__init__(
@@ -529,13 +534,17 @@ class ReduceComponent(Component):
             [
                 "i_0",
                 "o_0",
+                "i_reduce_key_out",
                 "i_reduce_unit_end",
+                "o_reduce_key_in",
                 "o_reduce_unit_start_accumulated",
                 "o_reduce_unit_start_new",
             ],
             parallel=True,
             specific_port_types={
+                "i_reduce_key_out": reduce_key_out_type,
                 "i_reduce_unit_end": accumulated_type,
+                "o_reduce_key_in": real_input_type,
                 "o_reduce_unit_start_accumulated": accumulated_type,
                 "o_reduce_unit_start_new": real_input_type,
             },

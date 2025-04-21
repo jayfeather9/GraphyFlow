@@ -32,7 +32,7 @@ scattered = edges.map_(
 
 # Gather阶段：聚合到目标节点，取最小值
 gathered = scattered.reduce_by(
-    reduce_key=lambda new_dist, dst: new_dist,
+    reduce_transform=lambda new_dist, dst: new_dist,
     reduce_method=lambda a, b: lambda_min(a, b),
 )
 
