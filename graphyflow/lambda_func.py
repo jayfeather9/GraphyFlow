@@ -61,35 +61,39 @@ class Tracer:
         assert type(index) == int
         return Tracer(node_type="idx", attr_name=index, parents=[self])
 
-    def _bin_op(self, other, op):
+    def _bin_op(self, other, op, reverse=False):
         # Non-Tracer -> Constant
         if not isinstance(other, Tracer):
             other = Tracer(node_type="constant", value=other)
-        return Tracer(node_type="operation", operator=op, parents=[self, other])
+        return Tracer(
+            node_type="operation",
+            operator=op,
+            parents=[other, self] if reverse else [self, other],
+        )
 
     def __add__(self, other):
         return self._bin_op(other, "+")
 
     def __radd__(self, other):
-        return self._bin_op(other, "+")
+        return self._bin_op(other, "+", reverse=True)
 
     def __sub__(self, other):
         return self._bin_op(other, "-")
 
     def __rsub__(self, other):
-        return self._bin_op(other, "-")
+        return self._bin_op(other, "-", reverse=True)
 
     def __mul__(self, other):
         return self._bin_op(other, "*")
 
     def __rmul__(self, other):
-        return self._bin_op(other, "*")
+        return self._bin_op(other, "*", reverse=True)
 
     def __truediv__(self, other):
         return self._bin_op(other, "/")
 
     def __rtruediv__(self, other):
-        return self._bin_op(other, "/")
+        return self._bin_op(other, "/", reverse=True)
 
     def __lt__(self, other):
         return self._bin_op(other, "<")
@@ -113,6 +117,8 @@ class Tracer:
         return {
             k: v
             for k, v in [
+                ("id", self._id),
+                ("parents", [p._id for p in self._parents]),
                 ("type", self._node_type),
                 ("name", self._name),
                 ("attr", self._attr_name),
@@ -223,7 +229,6 @@ def format_lambda(lambda_dict):
     return "\n".join(result)
 
 
-# TODO: fix the binop order problem
 def lambda_to_dfir(
     lambda_dict: Dict[str, Any],
     input_types: List[dfir.DfirType],
@@ -296,12 +301,18 @@ def lambda_to_dfir(
         ):
             assert node["attr"] in node_prop, f"{node['attr']} not in {node_prop}"
             return dfir.UnaryOpComponent(
-                dfir.UnaryOp.GET_ATTR, pre_o_types[0], attr_type=node_prop[node["attr"]]
+                dfir.UnaryOp.GET_ATTR,
+                pre_o_types[0],
+                select_index=node["attr"],
+                attr_type=node_prop[node["attr"]],
             )
         else:
             assert node["attr"] in edge_prop, f"{node['attr']} not in {edge_prop}"
             return dfir.UnaryOpComponent(
-                dfir.UnaryOp.GET_ATTR, pre_o_types[0], attr_type=edge_prop[node["attr"]]
+                dfir.UnaryOp.GET_ATTR,
+                pre_o_types[0],
+                select_index=node["attr"],
+                attr_type=edge_prop[node["attr"]],
             )
 
     translate_dict = {
@@ -417,7 +428,7 @@ def lambda_to_dfir(
         dfir_nodes[max_nid + 1].connect({"i_0": dfir_nodes[nid].out_ports[0]})
         max_nid += 1
     # handle scatter outputs
-    if not scatter_outputs:
+    if not scatter_outputs and len(outputs) > 1:
         gather_comp = dfir.GatherComponent(
             list(map(lambda port: port.data_type, outputs))
         )
@@ -426,6 +437,12 @@ def lambda_to_dfir(
         dfir_nodes[max_nid + 1] = gather_comp
         max_nid += 1
         outputs = gather_comp.out_ports
+    # rearrange the ports
+    for nid in dfir_nodes:
+        if nid in nodes:
+            dfir_nodes[nid].rearrange_ports(
+                [dfir_nodes[parent_nid] for parent_nid in nodes[nid]["parents"]]
+            )
     return dfir.ComponentCollection(list(dfir_nodes.values()), inputs, outputs)
 
 

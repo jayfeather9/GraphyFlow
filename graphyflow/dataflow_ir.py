@@ -77,6 +77,9 @@ class PortType(Enum):
     def pluggable(self, other: PortType) -> bool:
         return self != other
 
+    def __eq__(self, other: PortType) -> bool:
+        return self.value == other.value
+
 
 class Port(DfirNode):
     def __init__(self, name: str, parent: DfirNode) -> None:
@@ -244,6 +247,12 @@ class Component(DfirNode):
                 else:
                     raise ValueError(f"Port {port_name} not found in {self.ports}")
 
+    def get_port(self, name: str) -> Port:
+        for port in self.ports:
+            if port.name == name:
+                return port
+        raise ValueError(f"Port {name} not found in {self.ports}")
+
     def connect(self, ports: Union[List[Port], Dict[str, Port]]) -> None:
         if isinstance(ports, list):
             for i, port in enumerate(ports):
@@ -261,6 +270,20 @@ class Component(DfirNode):
                     port.data_type == self.ports[idx].data_type
                 ), f"{port.data_type} != {self.ports[idx].data_type}"
                 self.ports[idx].connect(port)
+
+    def rearrange_ports(self, parents: List[Component]) -> None:
+        old_ports = self.ports
+        self.ports = []
+        print(f"parents: {parents}")
+        for parent in parents:
+            for port in old_ports:
+                if port.parent == parent:
+                    self.ports.append(port)
+                    break
+        for port in old_ports:
+            if port not in self.ports:
+                self.ports.append(port)
+        assert len(self.ports) == len(old_ports)
 
     def additional_info(self) -> str:
         return ""
@@ -294,7 +317,9 @@ class IOComponent(Component):
 
 class ConstantComponent(Component):
     def __init__(self, data_type: DfirType, value: Any) -> None:
-        super().__init__(None, data_type, ["o_0"])
+        super().__init__(
+            None, data_type, ["o_0"], parallel=isinstance(data_type, ArrayType)
+        )
         self.value = value
 
     def additional_info(self) -> str:
@@ -535,18 +560,22 @@ class ReduceComponent(Component):
                 "i_0",
                 "o_0",
                 "i_reduce_key_out",
+                "i_reduce_transform_out",
                 "i_reduce_unit_end",
                 "o_reduce_key_in",
-                "o_reduce_unit_start_accumulated",
-                "o_reduce_unit_start_new",
+                "o_reduce_transform_in",
+                "o_reduce_unit_start_0",
+                "o_reduce_unit_start_1",
             ],
-            parallel=True,
+            parallel=False,
             specific_port_types={
                 "i_reduce_key_out": reduce_key_out_type,
+                "i_reduce_transform_out": accumulated_type,
                 "i_reduce_unit_end": accumulated_type,
                 "o_reduce_key_in": real_input_type,
-                "o_reduce_unit_start_accumulated": accumulated_type,
-                "o_reduce_unit_start_new": real_input_type,
+                "o_reduce_transform_in": real_input_type,
+                "o_reduce_unit_start_0": accumulated_type,
+                "o_reduce_unit_start_1": accumulated_type,
             },
         )
 

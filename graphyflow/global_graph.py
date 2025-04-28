@@ -258,42 +258,45 @@ class ReduceBy(Node):
             )
         assert len(reduce_transform_dfirs.inputs) == 1
         assert len(reduce_transform_dfirs.outputs) == 1
-        start_new_port = reduce_transform_dfirs.inputs[0]
-        reduce_type = reduce_transform_dfirs.outputs[0].data_type
+        transform_input_port = reduce_transform_dfirs.inputs[0]
+        transform_output_port = reduce_transform_dfirs.outputs[0]
+        transform_type = transform_output_port.data_type
 
         assert len(self.reduce_method["input_ids"]) == 2
         reduce_method_dfirs = lambda_to_dfir(
             self.reduce_method,
-            [reduce_type, reduce_type],
+            [transform_type, transform_type],
             props[0],
             props[1],
             scatter_outputs=False,
         )
         assert len(reduce_method_dfirs.inputs) == 2
         assert len(reduce_method_dfirs.outputs) == 1
-        start_accumulated_port = reduce_method_dfirs.inputs[1]
+        accumulate_input_port_0 = reduce_method_dfirs.inputs[0]
+        accumulate_input_port_1 = reduce_method_dfirs.inputs[1]
+        accumulate_output_port = reduce_method_dfirs.outputs[0]
 
-        dfirs = reduce_transform_dfirs.concat(
-            reduce_method_dfirs,
-            [
-                (reduce_transform_dfirs.outputs[0], reduce_method_dfirs.inputs[0]),
-            ],
-        )
+        dfirs = reduce_transform_dfirs
+        dfirs = dfirs.concat(reduce_method_dfirs, [])
         dfirs = dfirs.concat(reduce_key_dfirs, [])
-        reduce_comp = dfir.ReduceComponent(input_type, reduce_type, reduce_key_out_type)
+        reduce_comp = dfir.ReduceComponent(
+            input_type, transform_type, reduce_key_out_type
+        )
         dfirs.add_front(
             reduce_comp,
             {
                 "o_reduce_key_in": reduce_key_in_port,
-                "o_reduce_unit_start_accumulated": start_accumulated_port,
-                "o_reduce_unit_start_new": start_new_port,
+                "o_reduce_transform_in": transform_input_port,
+                "o_reduce_unit_start_0": accumulate_input_port_0,
+                "o_reduce_unit_start_1": accumulate_input_port_1,
             },
         )
         dfirs.add_back(
             reduce_comp,
             {
                 "i_reduce_key_out": reduce_key_out_port,
-                "i_reduce_unit_end": dfirs.outputs[0],
+                "i_reduce_transform_out": transform_output_port,
+                "i_reduce_unit_end": accumulate_output_port,
             },
         )
         return dfirs
