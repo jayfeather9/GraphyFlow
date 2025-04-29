@@ -21,7 +21,7 @@ g = GlobalGraph(
         "edge": {"e_id": dfir.IntType()},
     }
 )
-nodes = g.add_input("edge")
+nodes = g.add_graph_input("edge")
 # apply = nodes.filter(filter_func=lambda node: node.id + 5 > 10)
 src_dst_weight = nodes.map_(
     map_func=lambda edge: (edge.src.weight, edge.dst.weight, edge)

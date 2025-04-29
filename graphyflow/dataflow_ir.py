@@ -49,6 +49,13 @@ class OptionalType(DfirType):
         self.type_ = type_
 
 
+class TensorType(DfirType):
+    def __init__(self, type_: DfirType) -> None:
+        assert not isinstance(type_, TensorType)
+        super().__init__(f"Tensor<{type_.type_name}>")
+        self.type_ = type_
+
+
 class TupleType(DfirType):
     def __init__(self, types: List[DfirType]) -> None:
         super().__init__(f"Tuple<{', '.join([t.type_name for t in types])}>")

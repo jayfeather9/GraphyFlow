@@ -62,10 +62,10 @@ class Inputer(Node):
 
 
 class Updater(Node):
-    def __init__(self, type_, attr):
+    def __init__(self, type_: str, attrs: List[str]):
         assert type_ in ["node", "edge"]
         self.type_ = type_
-        self.attr = attr
+        self.attrs = attrs
         super().__init__()
 
 
@@ -302,6 +302,26 @@ class ReduceBy(Node):
         return dfirs
 
 
+class Merge(Node):
+    def __init__(self):
+        super().__init__()
+
+    def to_dfir(
+        self, input_type: dfir.DfirType, props: Tuple[Dict[str, Any], Dict[str, Any]]
+    ) -> dfir.ComponentCollection:
+        pass
+
+
+class Append(Node):
+    def __init__(self):
+        super().__init__()
+
+    def to_dfir(
+        self, input_type: dfir.DfirType, props: Tuple[Dict[str, Any], Dict[str, Any]]
+    ) -> dfir.ComponentCollection:
+        pass
+
+
 class GlobalGraph:
     def __init__(self, properties: Optional[Dict[str, Dict[str, Any]]] = None):
         self.input_nodes = []  # by UUID
@@ -309,11 +329,12 @@ class GlobalGraph:
         self.node_properties = {}
         self.edge_properties = {}
         self.added_input = False
+        self.input_names = ["edge", "node"]
         if properties:
             self.handle_properties(properties)
 
     def handle_properties(self, properties: Dict[str, Dict[str, Any]]):
-        assert not self.added_input, "Properties must be set before adding input"
+        assert not self.added_input, "Properties must be set before adding any input"
         if "edge" not in properties.keys():
             properties["edge"] = {}
         if "node" not in properties.keys():
@@ -331,7 +352,7 @@ class GlobalGraph:
     def pseudo_element(self, **kwargs) -> PseudoElement:
         return PseudoElement(graph=self, **kwargs)
 
-    def add_input(self, type_: str, **kwargs) -> PseudoElement:
+    def add_graph_input(self, type_: str, **kwargs) -> PseudoElement:
         assert type_ in ["edge", "node"]
         self.added_input = True
         property_infos = (
@@ -346,12 +367,28 @@ class GlobalGraph:
             )
         )
 
+    def add_input(self, name: str, type_: str):
+        assert name not in self.input_names
+        self.input_names.append(name)
+        self.input_types[name] = type_
+        return self.pseudo_element(cur_node=Inputer(input_type=type_))
+
     def assign_node(self, node: Node):
         assert node.uuid not in self.nodes
         self.nodes[node.uuid] = node
 
-    def apply_all_edges(self, datas: PseudoElement, attr_name: str):
-        datas._assign_successor(Updater("edge", attr_name))
+    def finish_init(self, datas: PseudoElement, attrs: Dict[str, List[str]]):
+        for attr_name, attr_types in attrs.items():
+            datas._assign_successor(Updater(attr_name, attr_types))
+
+    def finish_iter(
+        self,
+        datas: PseudoElement,
+        attrs: Dict[str, List[str]],
+        end_marker: PseudoElement,
+    ):
+        for attr_name, attr_types in attrs.items():
+            datas._assign_successor(Updater(attr_name, attr_types))
 
     def topo_sort_nodes(self) -> List[Node]:
         result = []
@@ -432,6 +469,16 @@ class PseudoElement:
 
     def reduce_by(self, **kvargs) -> PseudoElement:
         return self._assign_successor(ReduceBy(**kvargs))
+
+    def merge(self, other: PseudoElement) -> PseudoElement:
+        assert self.cur_node is not None and other.cur_node is not None
+        self.cur_node.set_pred_nodes([other.cur_node])
+        return self.graph.pseudo_element(cur_node=Merge())
+
+    def append(self, other: PseudoElement) -> PseudoElement:
+        assert self.cur_node is not None and other.cur_node is not None
+        self.cur_node.set_pred_nodes([other.cur_node])
+        return self.graph.pseudo_element(cur_node=Append())
 
     def to_tracer(self) -> Tracer:
         return Tracer(node_type="pseudo", pseudo_element=self)
