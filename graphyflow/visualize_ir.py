@@ -3,7 +3,7 @@ from graphviz import Digraph
 
 
 def parse_components(text):
-    print(text)
+    # print(text)
     components = []
     port_to_component = {}
 

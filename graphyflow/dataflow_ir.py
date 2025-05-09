@@ -278,20 +278,6 @@ class Component(DfirNode):
                 ), f"{port.data_type} != {self.ports[idx].data_type}"
                 self.ports[idx].connect(port)
 
-    def rearrange_ports(self, parents: List[Component]) -> None:
-        old_ports = self.ports
-        self.ports = []
-        print(f"parents: {parents}")
-        for parent in parents:
-            for port in old_ports:
-                if port.parent == parent:
-                    self.ports.append(port)
-                    break
-        for port in old_ports:
-            if port not in self.ports:
-                self.ports.append(port)
-        assert len(self.ports) == len(old_ports)
-
     def additional_info(self) -> str:
         return ""
 

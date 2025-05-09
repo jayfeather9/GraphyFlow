@@ -381,10 +381,10 @@ def lambda_to_dfir(
         for succ_nid in succ_node_ids:
             node_tmp_datas[succ_nid][1].append(out_type)
             for p in dfir_nodes[nid].out_ports:
-                in_id = 0
-                while f"i_{in_id}" in node_tmp_datas[succ_nid][2]:
-                    in_id += 1
-                node_tmp_datas[succ_nid][2][f"i_{in_id}"] = p
+                succ_parent_list = nodes[succ_nid]["parents"]
+                for in_id, succ_parent_id in enumerate(succ_parent_list):
+                    if succ_parent_id == nid:
+                        node_tmp_datas[succ_nid][2][f"i_{in_id}"] = p
             in_degree[succ_nid] -= 1
             if in_degree[succ_nid] == 0:
                 queue.append(node_tmp_datas[succ_nid])
@@ -437,12 +437,6 @@ def lambda_to_dfir(
         dfir_nodes[max_nid + 1] = gather_comp
         max_nid += 1
         outputs = gather_comp.out_ports
-    # rearrange the ports
-    for nid in dfir_nodes:
-        if nid in nodes:
-            dfir_nodes[nid].rearrange_ports(
-                [dfir_nodes[parent_nid] for parent_nid in nodes[nid]["parents"]]
-            )
     return dfir.ComponentCollection(list(dfir_nodes.values()), inputs, outputs)
 
 

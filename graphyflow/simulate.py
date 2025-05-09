@@ -411,7 +411,7 @@ def run_flow(
             outputs = _simulate_component(
                 component_to_run, current_inputs, node_props, edge_props
             )
-        print(f"Finished running component {component_to_run}, outputs: {outputs}")
+        # print(f"Finished running component {component_to_run}, outputs: {outputs}")
 
         # --- Process outputs and update state ---
         for out_port_name, value in outputs.items():
@@ -573,16 +573,18 @@ if __name__ == "__main__":
     print("Running Simulation Test...")
 
     g = GlobalGraph(properties={"node": {"weight": dfir.IntType()}, "edge": {}})
-    nodes = g.add_input("edge")
+    nodes = g.add_graph_input("edge")
     src_dst_weight = nodes.map_(map_func=lambda edge: (edge.src.weight, edge.dst, edge))
     test = src_dst_weight.reduce_by(
         reduce_key=lambda data: data[1],
         reduce_transform=lambda data: data,
         reduce_method=lambda data1, data2: (data1[0] + data2[0], data1[1], data1[2]),
     )
-    # test2 = test.filter(filter_func=lambda data: data[0] > 10)
+    test2 = test.filter(filter_func=lambda data: data[0] > 10)
+    # test2 = test.filter(filter_func=lambda data: 10 > data[0])
+    # print(g)
     my_dfir = g.to_dfir()[0]
-    print(my_dfir)
+    # print(my_dfir)
     from graphyflow.visualize_ir import visualize_components
 
     dot = visualize_components(str(my_dfir))
@@ -598,8 +600,8 @@ if __name__ == "__main__":
     edges.extend([(i, i + 1) for i in range(node_num - 1)])
     edges.extend([(i, i + 2) for i in range(node_num - 2)])
     simulator.add_edges(
-        edges={i: edges[i] for i in range(len(edges))},
-        props={i: {} for i in range(len(edges))},
+        edges={i * 10: edges[i] for i in range(len(edges))},
+        props={i * 10: {} for i in range(len(edges))},
     )
 
     print(f"Running simulation")
