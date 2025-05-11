@@ -2,70 +2,8 @@ from __future__ import annotations
 import uuid as uuid_lib
 from enum import Enum
 from typing import List, Optional, Union, Dict, Any, Tuple
-
-
-class DfirType:
-    def __init__(self, type_name, is_optional: bool = False) -> None:
-        self.type_name = type_name
-        self.is_optional = is_optional
-
-    def __eq__(self, other: DfirType) -> bool:
-        return self.type_name == other.type_name
-
-    def __ne__(self, other: DfirType) -> bool:
-        return self.type_name != other.type_name
-
-    def __repr__(self) -> str:
-        return self.type_name
-
-
-class SpecialType(DfirType):
-    """Node or Edge"""
-
-    def __init__(self, type_name: str) -> None:
-        assert type_name in ["node", "edge"]
-        super().__init__(type_name)
-
-
-class IntType(DfirType):
-    def __init__(self) -> None:
-        super().__init__("Int")
-
-
-class FloatType(DfirType):
-    def __init__(self) -> None:
-        super().__init__("Float")
-
-
-class BoolType(DfirType):
-    def __init__(self) -> None:
-        super().__init__("Bool")
-
-
-class OptionalType(DfirType):
-    def __init__(self, type_: DfirType) -> None:
-        assert not isinstance(type_, OptionalType)
-        super().__init__(f"Optional<{type_.type_name}>", True)
-        self.type_ = type_
-
-
-class TensorType(DfirType):
-    def __init__(self, type_: DfirType) -> None:
-        assert not isinstance(type_, TensorType)
-        super().__init__(f"Tensor<{type_.type_name}>")
-        self.type_ = type_
-
-
-class TupleType(DfirType):
-    def __init__(self, types: List[DfirType]) -> None:
-        super().__init__(f"Tuple<{', '.join([t.type_name for t in types])}>")
-        self.types = types
-
-
-class ArrayType(DfirType):
-    def __init__(self, type_: DfirType) -> None:
-        super().__init__(f"Array<{type_.type_name}>")
-        self.type_ = type_
+from graphyflow.dataflow_ir_datatype import *
+import graphyflow.hls_utils as hls
 
 
 class DfirNode:
@@ -281,6 +219,19 @@ class Component(DfirNode):
     def additional_info(self) -> str:
         return ""
 
+    @property
+    def name(self) -> str:
+        return f"{self.__class__.__name__}_{self.readable_id}"
+
+    def get_hls_function(self, code_in_loop: List[str]) -> hls.HLSFunction:
+        return hls.HLSFunction(
+            name=self.name,
+            inputs={p.name: p.data_type for p in self.in_ports},
+            outputs={p.name: p.data_type for p in self.out_ports},
+            code_in_loop=code_in_loop,
+            comp=self,
+        )
+
     def __repr__(self) -> str:
         add_info = self.additional_info()
         add_info = add_info if isinstance(add_info, list) else [add_info]
@@ -323,6 +274,14 @@ class CopyComponent(Component):
     def __init__(self, input_type: DfirType) -> None:
         super().__init__(input_type, input_type, ["i_0", "o_0", "o_1"])
 
+    def to_hls(self) -> hls.HLSFunction:
+        code_in_loop = [
+            r"#type:i_0# copy_src = i_0.read();",
+            r"o_0.write(copy_src);",
+            r"o_1.write(copy_src);",
+        ]
+        return self.get_hls_function(code_in_loop)
+
 
 class GatherComponent(Component):
     def __init__(self, input_types: List[DfirType]) -> None:
@@ -342,6 +301,20 @@ class GatherComponent(Component):
             output_type = ArrayType(output_type)
         ports.append("o_0")
         super().__init__(output_type, output_type, ports, parallel, specific_port_types)
+
+    def to_hls(self) -> hls.HLSFunction:
+        code_in_loop = []
+        for i in range(len(self.in_ports)):
+            code_in_loop.append(
+                f"#type:{self.in_ports[i].name}# gather_src_{i} = i_{i}.read();"
+            )
+        code_in_loop.append(
+            r"#type:o_0# gather_result = {"
+            + ", ".join(f"gather_src_{i}" for i in range(len(self.in_ports)))
+            + r"};",
+            r"o_0.write(gather_result);",
+        )
+        return self.get_hls_function(code_in_loop)
 
 
 class ScatterComponent(Component):
@@ -367,6 +340,13 @@ class ScatterComponent(Component):
                 for i, type_ in enumerate(real_input_type.types)
             },
         )
+
+    def to_hls(self) -> hls.HLSFunction:
+        code_in_loop = []
+        code_in_loop.append(r"#type:i_0# scatter_src = i_0.read();")
+        for i in range(len(self.out_ports)):
+            code_in_loop.append(f"o_{i}.write(scatter_src.ele_{i});")
+        return self.get_hls_function(code_in_loop)
 
 
 class BinOp(Enum):
@@ -422,6 +402,14 @@ class BinOpComponent(Component):
 
     def additional_info(self) -> str:
         return f"op: {self.op}"
+
+    def to_hls(self) -> hls.HLSFunction:
+        code_in_loop = [
+            r"#type:i_0# binop_src_0 = i_0.read();",
+            r"#type:i_1# binop_src_1 = i_1.read();",
+            f"o_0.write(binop_src_0 {self.op} binop_src_1);",
+        ]
+        return self.get_hls_function(code_in_loop)
 
 
 class UnaryOp(Enum):
@@ -528,6 +516,15 @@ class ConditionalComponent(Component):
             {"i_cond": cond_type},
         )
 
+    def to_hls(self) -> hls.HLSFunction:
+        code_in_loop = [
+            r"#type:i_data# cond_data = i_data.read();",
+            r"#type:i_cond# cond = i_cond.read();",
+            r"#opt_type:o_0# cond_result = {cond_data, cond};",
+            r"o_0.write(cond_result);",
+        ]
+        return self.get_hls_function(code_in_loop)
+
 
 class CollectComponent(Component):
     def __init__(self, input_type: DfirType) -> None:
@@ -535,6 +532,15 @@ class CollectComponent(Component):
         assert isinstance(input_type.type_, OptionalType)
         output_type = ArrayType(input_type.type_.type_)
         super().__init__(input_type, output_type, ["i_0", "o_0"], parallel=True)
+
+    def to_hls(self) -> hls.HLSFunction:
+        code_in_loop = [
+            r"#opt_type:i_0# collect_src = i_0.read();",
+            r"if (collect_src.valid) {",
+            r"    o_0.write(collect_src.data);",
+            r"}",
+        ]
+        return self.get_hls_function(code_in_loop)
 
 
 class ReduceComponent(Component):
@@ -577,7 +583,13 @@ class PlaceholderComponent(Component):
     def __init__(self, data_type: DfirType) -> None:
         super().__init__(data_type, data_type, ["i_0", "o_0"])
 
+    def to_hls(self) -> hls.HLSFunction:
+        assert False, "PlaceholderComponent should not be used in HLS"
+
 
 class UnusedEndMarker(Component):
     def __init__(self, input_type: DfirType) -> None:
         super().__init__(input_type, None, ["i_0"])
+
+    def to_hls(self) -> hls.HLSFunction:
+        assert False, "UnusedEndMarker should not be used in HLS"
