@@ -423,7 +423,9 @@ def lambda_to_dfir(
     assert all(n in all_input_dfir_nodes for n in all_hanged_nodes)
     # add a unused end marker to the hanged nodes
     for nid in all_hanged_nodes:
-        dfir_nodes[max_nid + 1] = dfir.UnusedEndMarker(dfir_nodes[nid].output_type)
+        dfir_nodes[max_nid + 1] = dfir.UnusedEndMarkerComponent(
+            dfir_nodes[nid].output_type
+        )
         assert len(dfir_nodes[nid].out_ports) == 1
         dfir_nodes[max_nid + 1].connect({"i_0": dfir_nodes[nid].out_ports[0]})
         max_nid += 1

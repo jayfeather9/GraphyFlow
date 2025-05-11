@@ -587,9 +587,9 @@ class PlaceholderComponent(Component):
         assert False, "PlaceholderComponent should not be used in HLS"
 
 
-class UnusedEndMarker(Component):
+class UnusedEndMarkerComponent(Component):
     def __init__(self, input_type: DfirType) -> None:
         super().__init__(input_type, None, ["i_0"])
 
     def to_hls(self) -> hls.HLSFunction:
-        assert False, "UnusedEndMarker should not be used in HLS"
+        assert False, "UnusedEndMarkerComponent should not be used in HLS"
