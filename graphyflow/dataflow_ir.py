@@ -1,5 +1,6 @@
 from __future__ import annotations
 import uuid as uuid_lib
+import copy
 from enum import Enum
 from typing import List, Optional, Union, Dict, Any, Tuple
 from graphyflow.dataflow_ir_datatype import *
@@ -164,6 +165,26 @@ class ComponentCollection(DfirNode):
         self.update_ports()
         return self
 
+    def topo_sort(self) -> List[Component]:
+        result = []
+        waitings = copy.deepcopy(self.components)
+        while waitings:
+            new_ones = []
+            for comp in waitings:
+
+                def port_solved(port: Port) -> bool:
+                    if not port.connected:
+                        assert port in (self.inputs + self.outputs)
+                        return True
+                    else:
+                        return port.connection.parent in result
+
+                if all(port_solved(p) for p in comp.in_ports):
+                    new_ones.append(comp)
+            waitings = [w for w in waitings if w not in new_ones]
+            result.extend(new_ones)
+        return result
+
 
 class Component(DfirNode):
     def __init__(
@@ -223,16 +244,19 @@ class Component(DfirNode):
     def name(self) -> str:
         return f"{self.__class__.__name__}_{self.readable_id}"
 
+    def to_hls(self) -> hls.HLSFunction:
+        assert (
+            False
+        ), f"Abstract method to_hls() should be implemented for {self.__class__.__name__}"
+
     def get_hls_function(
         self,
         code_in_loop: List[str],
-        code_before_loop: Optional[List[str]] = None,
-        code_after_loop: Optional[List[str]] = None,
+        code_before_loop: Optional[List[str]] = [],
+        code_after_loop: Optional[List[str]] = [],
     ) -> hls.HLSFunction:
         return hls.HLSFunction(
             name=self.name,
-            inputs={p.name: p.data_type for p in self.in_ports},
-            outputs={p.name: p.data_type for p in self.out_ports},
             comp=self,
             code_in_loop=code_in_loop,
             code_before_loop=code_before_loop,
@@ -265,6 +289,9 @@ class IOComponent(Component):
         else:
             super().__init__(data_type, None, ["i_0"])
 
+    def to_hls(self) -> hls.HLSFunction:
+        assert False, "IOComponent should not be used in HLS"
+
 
 class ConstantComponent(Component):
     def __init__(self, data_type: DfirType, value: Any) -> None:
@@ -276,6 +303,9 @@ class ConstantComponent(Component):
     def additional_info(self) -> str:
         return f"value: {self.value}"
 
+    def to_hls(self) -> hls.HLSFunction:
+        assert False, "ConstantComponent should not be used in HLS"
+
 
 class CopyComponent(Component):
     def __init__(self, input_type: DfirType) -> None:
@@ -283,7 +313,7 @@ class CopyComponent(Component):
 
     def to_hls(self) -> hls.HLSFunction:
         code_in_loop = [
-            r"#type:i_0# copy_src = i_0.read();",
+            r"#type:i_0# copy_src = #read:i_0#;",
             r"o_0.write(copy_src);",
             r"o_1.write(copy_src);",
         ]
@@ -313,14 +343,14 @@ class GatherComponent(Component):
         code_in_loop = []
         for i in range(len(self.in_ports)):
             code_in_loop.append(
-                f"#type:{self.in_ports[i].name}# gather_src_{i} = i_{i}.read();"
+                f"#type:{self.in_ports[i].name}# gather_src_{i} = #read:i_{i}#;"
             )
-        code_in_loop.append(
+        code_in_loop += [
             r"#type:o_0# gather_result = {"
             + ", ".join(f"gather_src_{i}" for i in range(len(self.in_ports)))
             + r"};",
             r"o_0.write(gather_result);",
-        )
+        ]
         return self.get_hls_function(code_in_loop)
 
 
@@ -350,7 +380,7 @@ class ScatterComponent(Component):
 
     def to_hls(self) -> hls.HLSFunction:
         code_in_loop = []
-        code_in_loop.append(r"#type:i_0# scatter_src = i_0.read();")
+        code_in_loop.append(r"#type:i_0# scatter_src = #read:i_0#;")
         for i in range(len(self.out_ports)):
             code_in_loop.append(f"o_{i}.write(scatter_src.ele_{i});")
         return self.get_hls_function(code_in_loop)
@@ -412,8 +442,8 @@ class BinOpComponent(Component):
 
     def to_hls(self) -> hls.HLSFunction:
         code_in_loop = [
-            r"#type:i_0# binop_src_0 = i_0.read();",
-            r"#type:i_1# binop_src_1 = i_1.read();",
+            r"#type:i_0# binop_src_0 = #read:i_0#;",
+            r"#type:i_1# binop_src_1 = #read:i_1#;",
             f"o_0.write(binop_src_0 {self.op} binop_src_1);",
         ]
         return self.get_hls_function(code_in_loop)
@@ -504,6 +534,37 @@ class UnaryOpComponent(Component):
         else:
             return f"op: {self.op}"
 
+    def to_hls(self) -> hls.HLSFunction:
+        if self.op == UnaryOp.GET_LENGTH:
+            code_before_loop = [
+                r"uint32_t length = 0;",
+            ]
+            code_in_loop = [
+                r"#read:i_0#;",
+                r"length++;",
+            ]
+            code_after_loop = [
+                r"#output_length# = 1;",
+                r"o_0.write(length);",
+            ]
+            return self.get_hls_function(
+                code_in_loop, code_before_loop, code_after_loop
+            )
+        else:
+            trans_dict = {
+                UnaryOp.NOT: "!#read:i_0#",
+                UnaryOp.NEG: "-#read:i_0#",
+                UnaryOp.CAST_BOOL: "(bool)(#read:i_0#)",
+                UnaryOp.CAST_INT: "(int32_t)(#read:i_0#)",
+                UnaryOp.CAST_FLOAT: "(ap_fixed<32, 16>)(#read:i_0#)",
+                UnaryOp.SELECT: "#read:i_0#.ele_{self.select_index}",
+                UnaryOp.GET_ATTR: "#read:i_0#.{self.select_index}",
+            }
+            code_in_loop = [
+                f"o_0.write({trans_dict[self.op]});",
+            ]
+            return self.get_hls_function(code_in_loop)
+
 
 class ConditionalComponent(Component):
     def __init__(self, input_type: DfirType) -> None:
@@ -525,8 +586,8 @@ class ConditionalComponent(Component):
 
     def to_hls(self) -> hls.HLSFunction:
         code_in_loop = [
-            r"#type:i_data# cond_data = i_data.read();",
-            r"#type:i_cond# cond = i_cond.read();",
+            r"#type:i_data# cond_data = #read:i_data#;",
+            r"#type:i_cond# cond = #read:i_cond#;",
             r"#opt_type:o_0# cond_result = {cond_data, cond};",
             r"o_0.write(cond_result);",
         ]
@@ -542,9 +603,11 @@ class CollectComponent(Component):
 
     def to_hls(self) -> hls.HLSFunction:
         code_in_loop = [
-            r"#opt_type:i_0# collect_src = i_0.read();",
+            r"#output_length# = 0;",
+            r"#opt_type:i_0# collect_src = #read:i_0#;",
             r"if (collect_src.valid) {",
             r"    o_0.write(collect_src.data);",
+            r"    #output_length#++;",
             r"}",
         ]
         return self.get_hls_function(code_in_loop)
@@ -596,7 +659,7 @@ class ReduceComponent(Component):
     ) -> List[hls.HLSFunction]:
         # Generate 1st func for key & transform pre-process
         code_in_loop = [
-            r"#type:i_0# reduce_src = i_0.read();",
+            r"#type:i_0# reduce_src = #read:i_0#;",
             f'hls::stream<#type:i_0#> reduce_key_in_stream("reduce_key_in_stream");',
             f'hls::stream<#type:i_0#> reduce_transform_in_stream("reduce_transform_in_stream");',
             f"reduce_key_in_stream.write(reduce_src);",
@@ -618,8 +681,8 @@ class ReduceComponent(Component):
             r"}",
             # the reduce_key_struct is {key, data, valid}, the loop uses one loop ahead
             # to clear the valid bit to 0 with pipeline
-            f"#type:i_reduce_key_out# reduce_key_out = {inter_key_var_name}.read();",
-            f"#type:i_reduce_transform_out# reduce_transform_out = {inter_transform_var_name}.read();",
+            f"#type:i_reduce_key_out# reduce_key_out = #read:{inter_key_var_name}#;",
+            f"#type:i_reduce_transform_out# reduce_transform_out = #read:{inter_transform_var_name}#;",
             r"bool merged = false;",
             r"SCAN_BRAM_INTER_LOOP: for (int i_in_reduce = 0; i_in_reduce < MAX_NUM; i_in_reduce++) {",
             r"  #pragma HLS PIPELINE",
@@ -637,16 +700,17 @@ class ReduceComponent(Component):
             r"    reduce_unit_stream_0.write(cur_ele.data);",
             r"    reduce_unit_stream_1.write(reduce_transform_out.data);",
             r"    #call:{func_unit_name},reduce_unit_stream_0,reduce_unit_stream_1,reduce_unit_stream_out#;",
-            r"    #type:o_reduce_unit_end# reduce_unit_out = reduce_unit_stream_out.read();",
+            r"    #type:o_reduce_unit_end# reduce_unit_out = #read:reduce_unit_stream_out#;",
             r"    key_mem[i_in_reduce].data = reduce_unit_out.data;",
             r"    merged = true;",
             r"  }",
         ]
         code_after_loop = [
-            # write the key_mem to the output
+            r"#output_length# = 0;",
             r"WRITE_KEY_MEM_LOOP: for (int i_write_key_mem = 0; i_write_key_mem < MAX_NUM; i_write_key_mem++) {",
             r"  if (key_mem[i_write_key_mem].valid) {",
             f"    {out_stream_name}.write(key_mem[i_write_key_mem].data);",
+            r"    #output_length#++;",
             r"  }",
             r"}",
         ]

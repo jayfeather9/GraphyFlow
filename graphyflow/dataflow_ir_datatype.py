@@ -10,8 +10,8 @@ class DfirType:
     def __eq__(self, other: DfirType) -> bool:
         return self.type_name == other.type_name
 
-    def __ne__(self, other: DfirType) -> bool:
-        return self.type_name != other.type_name
+    def __hash__(self) -> int:
+        return hash(self.type_name)
 
     def __repr__(self) -> str:
         return self.type_name
