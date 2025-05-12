@@ -223,13 +223,20 @@ class Component(DfirNode):
     def name(self) -> str:
         return f"{self.__class__.__name__}_{self.readable_id}"
 
-    def get_hls_function(self, code_in_loop: List[str]) -> hls.HLSFunction:
+    def get_hls_function(
+        self,
+        code_in_loop: List[str],
+        code_before_loop: Optional[List[str]] = None,
+        code_after_loop: Optional[List[str]] = None,
+    ) -> hls.HLSFunction:
         return hls.HLSFunction(
             name=self.name,
             inputs={p.name: p.data_type for p in self.in_ports},
             outputs={p.name: p.data_type for p in self.out_ports},
-            code_in_loop=code_in_loop,
             comp=self,
+            code_in_loop=code_in_loop,
+            code_before_loop=code_before_loop,
+            code_after_loop=code_after_loop,
         )
 
     def __repr__(self) -> str:
@@ -577,6 +584,76 @@ class ReduceComponent(Component):
                 "o_reduce_unit_start_1": accumulated_type,
             },
         )
+
+    def to_hls_list(
+        self,
+        func_key_name: str,
+        func_transform_name: str,
+        func_unit_name: str,
+        inter_key_var_name: str,
+        inter_transform_var_name: str,
+        out_stream_name: str,
+    ) -> List[hls.HLSFunction]:
+        # Generate 1st func for key & transform pre-process
+        code_in_loop = [
+            r"#type:i_0# reduce_src = i_0.read();",
+            f'hls::stream<#type:i_0#> reduce_key_in_stream("reduce_key_in_stream");',
+            f'hls::stream<#type:i_0#> reduce_transform_in_stream("reduce_transform_in_stream");',
+            f"reduce_key_in_stream.write(reduce_src);",
+            f"reduce_transform_in_stream.write(reduce_src);",
+            f"#call:{func_key_name},reduce_key_in_stream,{inter_key_var_name}#;",
+            f"#call:{func_transform_name},reduce_transform_in_stream,{inter_transform_var_name}#;",
+        ]
+        stage_1_func = self.get_hls_function(code_in_loop)
+
+        # Generate 2nd func for unit-reduce
+        code_before_loop = [
+            r"static #reduce_key_struct:i_reduce_transform_out# key_mem[MAX_NUM];"
+            r"#pragma HLS ARRAY_PARTITION variable=key_mem block factor=#partition_factor# dim=0",
+        ]
+        code_in_loop = [
+            r"CLEAR_REDUCE_VALID: for (int i_reduce_clear = 0; i_reduce_clear < MAX_NUM; i_reduce_clear++) {",
+            r"  #pragma HLS PIPELINE",
+            r"  key_mem[i_reduce_clear].valid = 0;",
+            r"}",
+            # the reduce_key_struct is {key, data, valid}, the loop uses one loop ahead
+            # to clear the valid bit to 0 with pipeline
+            f"#type:i_reduce_key_out# reduce_key_out = {inter_key_var_name}.read();",
+            f"#type:i_reduce_transform_out# reduce_transform_out = {inter_transform_var_name}.read();",
+            r"bool merged = false;",
+            r"SCAN_BRAM_INTER_LOOP: for (int i_in_reduce = 0; i_in_reduce < MAX_NUM; i_in_reduce++) {",
+            r"  #pragma HLS PIPELINE",
+            r"  #reduce_key_struct:i_reduce_transform_out# cur_ele = key_mem[i_in_reduce];",
+            r"  if (!merged && !cur_ele.valid) {",
+            r"    key_mem[i_in_reduce].valid = 1;",
+            r"    key_mem[i_in_reduce].key = reduce_key_out.key;",
+            r"    key_mem[i_in_reduce].data = reduce_transform_out.data;",
+            r"    merged = true;",
+            r"  } else if (!merged && cur_ele.valid && cur_ele.key == reduce_key_out.key) {",
+            # new a stream to call the reduce unit
+            r"    hls::stream<#type:o_reduce_unit_start_0#> reduce_unit_stream_0(\"reduce_unit_stream_0\");",
+            r"    hls::stream<#type:o_reduce_unit_start_1#> reduce_unit_stream_1(\"reduce_unit_stream_1\");",
+            r"    hls::stream<#type:o_reduce_unit_end#> reduce_unit_stream_out(\"reduce_unit_stream_out\");",
+            r"    reduce_unit_stream_0.write(cur_ele.data);",
+            r"    reduce_unit_stream_1.write(reduce_transform_out.data);",
+            r"    #call:{func_unit_name},reduce_unit_stream_0,reduce_unit_stream_1,reduce_unit_stream_out#;",
+            r"    #type:o_reduce_unit_end# reduce_unit_out = reduce_unit_stream_out.read();",
+            r"    key_mem[i_in_reduce].data = reduce_unit_out.data;",
+            r"    merged = true;",
+            r"  }",
+        ]
+        code_after_loop = [
+            # write the key_mem to the output
+            r"WRITE_KEY_MEM_LOOP: for (int i_write_key_mem = 0; i_write_key_mem < MAX_NUM; i_write_key_mem++) {",
+            r"  if (key_mem[i_write_key_mem].valid) {",
+            f"    {out_stream_name}.write(key_mem[i_write_key_mem].data);",
+            r"  }",
+            r"}",
+        ]
+        stage_2_func = self.get_hls_function(
+            code_in_loop, code_before_loop, code_after_loop
+        )
+        return [stage_1_func, stage_2_func]
 
 
 class PlaceholderComponent(Component):

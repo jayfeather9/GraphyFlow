@@ -36,8 +36,10 @@ class HLSFunction:
         name: str,
         inputs: Dict[str, dftype.DfirType],
         outputs: Dict[str, dftype.DfirType],
-        code_in_loop: List[str],
         comp: dfir.Component,
+        code_in_loop: List[str],
+        code_before_loop: Optional[List[str]] = [],
+        code_after_loop: Optional[List[str]] = [],
     ) -> None:
         assert (
             name not in global_hls_config.functions
@@ -46,6 +48,8 @@ class HLSFunction:
         self.inputs = inputs
         self.outputs = outputs
         self.code_in_loop = code_in_loop
+        self.code_before_loop = code_before_loop
+        self.code_after_loop = code_after_loop
         self.comp = comp
         global_hls_config.functions[name] = self
 
@@ -69,12 +73,3 @@ class HLSConfig:
 
 
 global_hls_config = HLSConfig("graphyflow.h", "graphyflow.cpp")
-
-if __name__ == "__main__":
-    hls_func = HLSFunction(
-        "test",
-        {"a": dftype.IntType(), "b": dftype.IntType()},
-        {"c": dftype.IntType()},
-        dfir.IOComponent(dfir.IOComponent.IOType.INPUT, dftype.IntType()),
-    )
-    print(hls_func)
