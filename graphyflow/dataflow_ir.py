@@ -166,20 +166,24 @@ class ComponentCollection(DfirNode):
         return self
 
     def topo_sort(self) -> List[Component]:
+        def port_solved(port: Port) -> bool:
+            if not port.connected:
+                assert port in (self.inputs + self.outputs)
+                return True
+            else:
+                return port.connection.parent in result
+
+        def check_reduce(comp: Component) -> bool:
+            if not isinstance(comp, ReduceComponent):
+                return False
+            return port_solved(comp.get_port("i_0"))
+
         result = []
         waitings = copy.deepcopy(self.components)
         while waitings:
             new_ones = []
             for comp in waitings:
-
-                def port_solved(port: Port) -> bool:
-                    if not port.connected:
-                        assert port in (self.inputs + self.outputs)
-                        return True
-                    else:
-                        return port.connection.parent in result
-
-                if all(port_solved(p) for p in comp.in_ports):
+                if all(port_solved(p) for p in comp.in_ports) or check_reduce(comp):
                     new_ones.append(comp)
             waitings = [w for w in waitings if w not in new_ones]
             result.extend(new_ones)
@@ -254,9 +258,10 @@ class Component(DfirNode):
         code_in_loop: List[str],
         code_before_loop: Optional[List[str]] = [],
         code_after_loop: Optional[List[str]] = [],
+        name_tail: Optional[str] = None,
     ) -> hls.HLSFunction:
         return hls.HLSFunction(
-            name=self.name,
+            name=self.name + (f"_{name_tail}" if name_tail else ""),
             comp=self,
             code_in_loop=code_in_loop,
             code_before_loop=code_before_loop,
@@ -667,7 +672,7 @@ class ReduceComponent(Component):
             f"#call:{func_key_name},reduce_key_in_stream,{inter_key_var_name}#;",
             f"#call:{func_transform_name},reduce_transform_in_stream,{inter_transform_var_name}#;",
         ]
-        stage_1_func = self.get_hls_function(code_in_loop)
+        stage_1_func = self.get_hls_function(code_in_loop, name_tail="pre_process")
 
         # Generate 2nd func for unit-reduce
         code_before_loop = [
@@ -699,7 +704,7 @@ class ReduceComponent(Component):
             r"    hls::stream<#type:o_reduce_unit_end#> reduce_unit_stream_out(\"reduce_unit_stream_out\");",
             r"    reduce_unit_stream_0.write(cur_ele.data);",
             r"    reduce_unit_stream_1.write(reduce_transform_out.data);",
-            r"    #call:{func_unit_name},reduce_unit_stream_0,reduce_unit_stream_1,reduce_unit_stream_out#;",
+            f"    #call:{func_unit_name},reduce_unit_stream_0,reduce_unit_stream_1,reduce_unit_stream_out#;",
             r"    #type:o_reduce_unit_end# reduce_unit_out = #read:reduce_unit_stream_out#;",
             r"    key_mem[i_in_reduce].data = reduce_unit_out.data;",
             r"    merged = true;",
@@ -715,7 +720,7 @@ class ReduceComponent(Component):
             r"}",
         ]
         stage_2_func = self.get_hls_function(
-            code_in_loop, code_before_loop, code_after_loop
+            code_in_loop, code_before_loop, code_after_loop, name_tail="unit_reduce"
         )
         return [stage_1_func, stage_2_func]
 

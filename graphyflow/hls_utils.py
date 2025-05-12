@@ -3,6 +3,7 @@ from enum import Enum
 from typing import List, Optional, Union, Dict, Any, Tuple
 import graphyflow.dataflow_ir_datatype as dftype
 import graphyflow.dataflow_ir as dfir
+import re
 
 
 class HLSDataType(Enum):
@@ -109,12 +110,13 @@ class HLSConfig:
         )
 
     def generate_hls_code(self, comp_col: dfir.ComponentCollection) -> str:
-        hls_data_type_manager = HLSDataTypeManager()
+        dt_manager = HLSDataTypeManager()
         header_code = ""
         source_code = ""
         constants_from_ports = {}
         source_code += f'#include "{self.header_name}"\n\n'
         source_code += "using namespace hls;\n\n"
+        reduce_sub_funcs = {}
         for comp in comp_col.topo_sort():
             assert not isinstance(comp, dfir.PlaceholderComponent)
             if isinstance(comp, dfir.UnusedEndMarkerComponent):
@@ -126,16 +128,81 @@ class HLSConfig:
                 pass
             elif isinstance(comp, dfir.ReduceComponent):
                 # handle #read speacial: maybe not port name
-                pass
+                reduce_key_func_name = f"{comp.name}_key_sub_func"
+                reduce_transform_func_name = f"{comp.name}_transform_sub_func"
+                reduce_unit_func_name = f"{comp.name}_unit_sub_func"
+                reduce_sub_funcs[comp.name] = {
+                    "key": reduce_key_func_name,
+                    "transform": reduce_transform_func_name,
+                    "unit": reduce_unit_func_name,
+                }
+                inter_key_var_name = f"{comp.name}_key"
+                inter_transform_var_name = f"{comp.name}_transform"
+                out_stream_name = f"{comp.name}_out"
+                reduce_pre_func, reduce_unit_func = comp.to_hls_list(
+                    func_key_name=reduce_key_func_name,
+                    func_transform_name=reduce_transform_func_name,
+                    func_unit_name=reduce_unit_func_name,
+                    inter_key_var_name=inter_key_var_name,
+                    inter_transform_var_name=inter_transform_var_name,
+                    out_stream_name=out_stream_name,
+                )
+                reduce_pre_func_str = f"static void {reduce_pre_func.name}(\n"
+                in_port = comp.get_port("i_0")
+                input_type = in_port.data_type
+                key_out_type = comp.get_port("i_reduce_key_out").data_type
+                accumulate_type = comp.get_port("i_reduce_unit_end").data_type
+                reduce_pre_func_str += "".join(
+                    [
+                        f"    stream<{dt_manager.from_dfir_type(input_type)}> &i_0,\n"
+                        f"    stream<{dt_manager.from_dfir_type(key_out_type)}> &{inter_key_var_name},\n"
+                        f"    stream<{dt_manager.from_dfir_type(accumulate_type)}> &{inter_transform_var_name},\n"
+                        "    uint32_t input_length\n"
+                        ") {\n",
+                        f"    LOOP_{reduce_pre_func.name}:\n",
+                        "    for (uint32_t i = 0; i < input_length; i++) {\n",
+                        "#pragma HLS PIPELINE\n",
+                    ]
+                )
+
+                call_regex = r"#call:([\w_,]+)#"
+
+                def manage_call(line: str) -> str:
+                    match = re.search(call_regex, line)
+                    if match:
+                        args = match.group(1).split(",")
+                        func_name = args[0]
+                        args = args[1:]
+                        return f"{func_name}({', '.join(args)}, input_length)"
+                    return line
+
+                for line in reduce_pre_func.code_in_loop:
+                    # replace #type# and #read#, only i_0 in reduce_pre_func
+                    line = line.replace(
+                        "#type:i_0#", dt_manager.from_dfir_type(input_type)
+                    )
+                    if in_port in constants_from_ports:
+                        line = line.replace(
+                            f"#read:i_0#", f"{constants_from_ports[in_port]}"
+                        )
+                    else:
+                        line = line.replace(f"#read:i_0#", f"i_0.read()")
+                    line = manage_call(line)
+                    reduce_pre_func_str += f"        {line}\n"
+                reduce_pre_func_str += "    }\n"
+                reduce_pre_func_str += "}\n"
+
+                source_code += reduce_pre_func_str + "\n\n"
+
+                # TODO: reduce_unit_func
+
             else:
                 func = comp.to_hls()
                 func_str = f"static void {func.name}(\n"
                 # type, read, output_length, opt_type
                 port2type = {}
                 for port in func.comp.ports:
-                    port2type[port.name] = hls_data_type_manager.from_dfir_type(
-                        port.data_type
-                    )
+                    port2type[port.name] = dt_manager.from_dfir_type(port.data_type)
                     func_str += f"    stream<{port2type[port.name]}> {port.name},\n"
                 if any("#output_length#" in line for line in func.code_in_loop):
                     func_str += "    uint32_t &output_length,\n"

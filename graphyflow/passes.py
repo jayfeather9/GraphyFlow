@@ -63,7 +63,12 @@ if __name__ == "__main__":
         map_func=lambda edge: (edge.src.weight, edge.dst.weight, edge)
     )
     filtered = src_dst_weight.filter(filter_func=lambda sw, dw, e: sw > dw)
-    result = filtered.map_(map_func=lambda sw, dw, e: e.e_id)
+    reduced_result = filtered.reduce_by(
+        reduce_key=lambda sw, dw, e: e.dst,
+        reduce_transform=lambda sw, dw, e: (sw, e.dst),
+        reduce_method=lambda x, y: (x[0] + y[0], x[1]),
+    )
+    result = reduced_result.map_(map_func=lambda w, dst: (w, dst.weight, dst))
 
     dfirs = g.to_dfir()
     dfirs[0] = delete_placeholder_components_pass(dfirs[0])
