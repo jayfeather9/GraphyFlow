@@ -77,6 +77,12 @@ if __name__ == "__main__":
     # print(dfirs[0].topo_sort())
     import graphyflow.hls_utils as hls
 
-    header, source = hls.global_hls_config.generate_hls_code(dfirs[0])
-    print(header)
-    print(source)
+    header, source = hls.global_hls_config.generate_hls_code(g, dfirs[0])
+    import os
+
+    if not os.path.exists("output"):
+        os.makedirs("output")
+    with open("output/graphyflow.h", "w") as f:
+        f.write(header)
+    with open("output/graphyflow.cpp", "w") as f:
+        f.write(source)

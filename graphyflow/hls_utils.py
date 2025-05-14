@@ -18,31 +18,85 @@ class HLSDataType(Enum):
         return self.value
 
 
+STD_TYPE_TRANSLATE_MAP = (
+    (dftype.IntType(), HLSDataType.INT),
+    (dftype.FloatType(), HLSDataType.FLOAT),
+    (dftype.BoolType(), HLSDataType.BOOL),
+    (dftype.SpecialType("edge"), HLSDataType.EDGE),
+    (dftype.SpecialType("node"), HLSDataType.NODE),
+)
+STD_TYPES = ["uint32_t", "int32_t", "ap_fixed<32, 16>", "bool"]
+
+
 class HLSDataTypeManager:
     _cnt = 0
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        node_props: Dict[str, dftype.DfirType],
+        edge_props: Dict[str, dftype.DfirType],
+    ) -> None:
         self.define_map = {}
         self.translate_map = {}
+        self.type_preds = {}
+        self.node_properties = {
+            p_name: self.from_dfir_type(p_type) for p_name, p_type in node_props.items()
+        }
+        self.edge_properties = {
+            p_name: self.from_dfir_type(p_type) for p_name, p_type in edge_props.items()
+        }
 
     @classmethod
     def get_next_id(cls) -> int:
         cls._cnt += 1
         return cls._cnt
 
+    def get_all_defines(self) -> List[str]:
+        # first generate node_t & edge_t define, add to type_preds
+        self.define_map[dftype.SpecialType("node")] = (
+            "typedef struct {\n"
+            + "\n".join(
+                [f"    {t} {p_name};" for p_name, t in self.node_properties.items()]
+            )
+            + "\n} node_t;"
+        )
+        self.type_preds["node_t"] = list(self.node_properties.values())
+        self.type_preds["node_t"] = [
+            t for t in self.type_preds["node_t"] if t not in STD_TYPES
+        ]
+        self.translate_map[dftype.SpecialType("node")] = "node_t"
+        self.define_map[dftype.SpecialType("edge")] = (
+            "typedef struct {\n"
+            + "\n".join(
+                [f"    {t} {p_name};" for p_name, t in self.edge_properties.items()]
+            )
+            + "\n} edge_t;"
+        )
+        self.type_preds["edge_t"] = list(self.edge_properties.values())
+        self.type_preds["edge_t"] = [
+            t for t in self.type_preds["edge_t"] if t not in STD_TYPES
+        ]
+        self.translate_map[dftype.SpecialType("edge")] = "edge_t"
+        # then iterate all translate_map
+        all_defines = []
+        waitings = list(self.translate_map.items())
+        finished = []
+        while waitings:
+            dfir_type, type_name = waitings.pop(0)
+            assert dfir_type in self.define_map
+            if not all(t in finished for t in self.type_preds[type_name]):
+                waitings.append((dfir_type, type_name))
+                continue
+            all_defines.append(self.define_map[dfir_type])
+            finished.append(type_name)
+        return all_defines
+
     def from_dfir_type(
         self, dfir_type: dftype.DfirType, sub_names: Optional[List[str]] = None
     ) -> str:
-        translate_map = (
-            (dftype.IntType(), HLSDataType.INT),
-            (dftype.FloatType(), HLSDataType.FLOAT),
-            (dftype.BoolType(), HLSDataType.BOOL),
-            (dftype.SpecialType("edge"), HLSDataType.EDGE),
-            (dftype.SpecialType("node"), HLSDataType.NODE),
-        )
         if isinstance(dfir_type, dftype.ArrayType):
             dfir_type = dfir_type.type_
-        for t, f in translate_map:
+        for t, f in STD_TYPE_TRANSLATE_MAP:
             if dfir_type == t:
                 return f.value
         if dfir_type in self.translate_map:
@@ -57,9 +111,12 @@ class HLSDataTypeManager:
                 name_id = HLSDataTypeManager.get_next_id()
                 type_name = f'tuple_{"".join(st[:1] for st in sub_types)}_{name_id}_t'
                 self.translate_map[dfir_type] = type_name
+                self.type_preds[type_name] = [
+                    t for t in sub_types if t not in STD_TYPES
+                ]
                 self.define_map[dfir_type] = (
                     (
-                        r"typedef struct {\n"
+                        "typedef struct {\n"
                         + "\n".join(
                             [f"    {t} ele_{i};" for i, t in enumerate(sub_types)]
                         )
@@ -69,7 +126,7 @@ class HLSDataTypeManager:
                     )
                     if sub_names is None
                     else (
-                        r"typedef struct {\n"
+                        "typedef struct {\n"
                         + "\n".join(
                             [
                                 f"    {t} {sub_names[i]};"
@@ -86,11 +143,12 @@ class HLSDataTypeManager:
                 sub_type = self.from_dfir_type(dfir_type.type_)
                 type_name = f"opt__of_{sub_type[:3]}_t"
                 self.translate_map[dfir_type] = type_name
+                self.type_preds[type_name] = [sub_type]
                 self.define_map[dfir_type] = (
-                    r"typedef struct {\n"
+                    "typedef struct {\n"
                     + f"    {sub_type} data;\n"
-                    + r"    bool valid;\n"
-                    + r"} "
+                    + "    bool valid;\n"
+                    + "} "
                     + type_name
                     + ";"
                 )
@@ -215,8 +273,12 @@ class HLSConfig:
                 reduce_unit_func_name,
             )
 
-    def generate_hls_code(self, comp_col: dfir.ComponentCollection) -> str:
-        dt_manager = HLSDataTypeManager()
+    def generate_hls_code(
+        self, global_graph, comp_col: dfir.ComponentCollection
+    ) -> str:
+        dt_manager = HLSDataTypeManager(
+            global_graph.node_properties, global_graph.edge_properties
+        )
         header_code = ""
         source_code = ""
         top_func_code = f"void {self.top_name}(\n"
@@ -453,6 +515,23 @@ class HLSConfig:
             )
             sub_func_code += "}\n"
             source_code += sub_func_code + "\n\n"
+
+        # manage structure defines
+        all_defines = dt_manager.get_all_defines()
+        header_code += "\n\n".join(all_defines)
+
+        # add start & end define for header
+        header_name_for_define = f'__{self.header_name.upper().replace(".", "_")}__'
+        header_code = (
+            f"#ifndef {header_name_for_define}"
+            + f"\n#define {header_name_for_define}\n\n"
+            + "#include <stdint.h>\n#include <ap_int.h>\n#include <hls_stream.h>\n\n"
+            + "using namespace hls;\nusing namespace std;\n\n"
+            + "#define MAX_NUM 1024\n\n"
+            + header_code
+            + "\n\n"
+            + f"#endif // {header_name_for_define}\n"
+        )
         return header_code, source_code
 
     def generate_sub_func_code(
@@ -506,4 +585,8 @@ class HLSConfig:
         return adding_codes
 
 
-global_hls_config = HLSConfig("graphyflow.h", "graphyflow.cpp", "graphyflow")
+global_hls_config = HLSConfig(
+    header_name="graphyflow.h",
+    source_name="graphyflow.cpp",
+    top_name="graphyflow",
+)
