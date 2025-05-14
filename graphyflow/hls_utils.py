@@ -19,11 +19,20 @@ class HLSDataType(Enum):
 
 
 class HLSDataTypeManager:
+    _cnt = 0
+
     def __init__(self) -> None:
         self.define_map = {}
         self.translate_map = {}
 
-    def from_dfir_type(self, dfir_type: dftype.DfirType) -> str:
+    @classmethod
+    def get_next_id(cls) -> int:
+        cls._cnt += 1
+        return cls._cnt
+
+    def from_dfir_type(
+        self, dfir_type: dftype.DfirType, sub_names: Optional[List[str]] = None
+    ) -> str:
         translate_map = (
             (dftype.IntType(), HLSDataType.INT),
             (dftype.FloatType(), HLSDataType.FLOAT),
@@ -45,14 +54,32 @@ class HLSDataTypeManager:
             assert dfir_type not in self.define_map, f"Type {dfir_type} already defined"
             if isinstance(dfir_type, dftype.TupleType):
                 sub_types = [self.from_dfir_type(t) for t in dfir_type.types]
-                type_name = f'tuple__with_{"_".join(st[:3] for st in sub_types)}_t'
+                name_id = HLSDataTypeManager.get_next_id()
+                type_name = f'tuple_{"".join(st[:1] for st in sub_types)}_{name_id}_t'
                 self.translate_map[dfir_type] = type_name
                 self.define_map[dfir_type] = (
-                    r"typedef struct {\n"
-                    + "\n".join([f"    {t} ele_{i};" for i, t in enumerate(sub_types)])
-                    + "\n} "
-                    + type_name
-                    + ";"
+                    (
+                        r"typedef struct {\n"
+                        + "\n".join(
+                            [f"    {t} ele_{i};" for i, t in enumerate(sub_types)]
+                        )
+                        + "\n} "
+                        + type_name
+                        + ";"
+                    )
+                    if sub_names is None
+                    else (
+                        r"typedef struct {\n"
+                        + "\n".join(
+                            [
+                                f"    {t} {sub_names[i]};"
+                                for i, t in enumerate(sub_types)
+                            ]
+                        )
+                        + "\n} "
+                        + type_name
+                        + ";"
+                    )
                 )
                 return type_name
             elif isinstance(dfir_type, dftype.OptionalType):
@@ -100,9 +127,10 @@ class HLSConfig:
         self.header_name = header_name
         self.source_name = source_name
         self.includes = []
-        self.defines = []
+        self.defines = []  # TODO: MAX_NUM
         self.structs = {}
         self.functions = {}
+        self.PARTITION_FACTOR = 16
 
     def __repr__(self) -> str:
         return (
@@ -118,6 +146,7 @@ class HLSConfig:
         source_code += "using namespace hls;\n\n"
         reduce_sub_funcs = {}
         for comp in comp_col.topo_sort():
+
             assert not isinstance(comp, dfir.PlaceholderComponent)
             if isinstance(comp, dfir.UnusedEndMarkerComponent):
                 pass
@@ -127,7 +156,6 @@ class HLSConfig:
             elif isinstance(comp, dfir.IOComponent):
                 pass
             elif isinstance(comp, dfir.ReduceComponent):
-                # handle #read speacial: maybe not port name
                 reduce_key_func_name = f"{comp.name}_key_sub_func"
                 reduce_transform_func_name = f"{comp.name}_transform_sub_func"
                 reduce_unit_func_name = f"{comp.name}_unit_sub_func"
@@ -194,8 +222,55 @@ class HLSConfig:
 
                 source_code += reduce_pre_func_str + "\n\n"
 
-                # TODO: reduce_unit_func
-
+                reduce_key_struct = dt_manager.from_dfir_type(
+                    dftype.TupleType(
+                        [
+                            key_out_type,
+                            accumulate_type,
+                            dftype.BoolType(),
+                        ]
+                    ),
+                    sub_names=["key", "data", "valid"],
+                )
+                codes_before_loop = [
+                    line.replace("#reduce_key_struct#", reduce_key_struct).replace(
+                        "#partition_factor#", str(self.PARTITION_FACTOR)
+                    )
+                    for line in reduce_unit_func.code_before_loop
+                ]
+                reduce_unit_func_str = "".join(
+                    [
+                        f"static void {reduce_unit_func.name}(\n",
+                        f"    stream<{dt_manager.from_dfir_type(key_out_type)}> &{inter_key_var_name},\n",
+                        f"    stream<{dt_manager.from_dfir_type(accumulate_type)}> &{inter_transform_var_name},\n",
+                        f"    stream<{dt_manager.from_dfir_type(accumulate_type)}> &{out_stream_name},\n",
+                        "    uint32_t input_length\n",
+                        ") {\n",
+                    ]
+                    + [f"    {line}\n" for line in codes_before_loop]
+                    + [
+                        f"    LOOP_{reduce_unit_func.name}:\n",
+                        "    for (uint32_t i = 0; i < input_length; i++) {\n",
+                        "#pragma HLS PIPELINE\n",
+                    ]
+                )
+                port2type = {
+                    port.name: dt_manager.from_dfir_type(port.data_type)
+                    for port in reduce_unit_func.comp.ports
+                }
+                for line in reduce_unit_func.code_in_loop:
+                    for port, type in port2type.items():
+                        line = line.replace(f"#type:{port}#", type)
+                        line = manage_call(line)
+                    # find #read:xxx#, change to xxx.read()
+                    line = re.sub(r"#read:(\w+)#", r"\1.read()", line)
+                    reduce_unit_func_str += f"        {line}\n"
+                reduce_unit_func_str += "    }\n"
+                for line in reduce_unit_func.code_after_loop:
+                    line = line.replace("#output_length#", "output_length")
+                    reduce_unit_func_str += f"    {line}\n"
+                reduce_unit_func_str += "}\n"
+                source_code += reduce_unit_func_str + "\n\n"
             else:
                 func = comp.to_hls()
                 func_str = f"static void {func.name}(\n"
@@ -203,6 +278,8 @@ class HLSConfig:
                 port2type = {}
                 for port in func.comp.ports:
                     port2type[port.name] = dt_manager.from_dfir_type(port.data_type)
+                    if port in constants_from_ports:
+                        continue
                     func_str += f"    stream<{port2type[port.name]}> {port.name},\n"
                 if any("#output_length#" in line for line in func.code_in_loop):
                     func_str += "    uint32_t &output_length,\n"
