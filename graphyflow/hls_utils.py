@@ -116,6 +116,11 @@ class HLSFunction:
         self.code_before_loop = code_before_loop
         self.code_after_loop = code_after_loop
         self.comp = comp
+        self.params = []
+        self.change_length = any(
+            "#output_length#" in line
+            for line in (code_before_loop + code_in_loop + code_after_loop)
+        )
         global_hls_config.functions[name] = self
 
     def __repr__(self) -> str:
@@ -123,9 +128,10 @@ class HLSFunction:
 
 
 class HLSConfig:
-    def __init__(self, header_name: str, source_name: str) -> None:
+    def __init__(self, header_name: str, source_name: str, top_name: str) -> None:
         self.header_name = header_name
         self.source_name = source_name
+        self.top_name = top_name
         self.includes = []
         self.defines = []  # TODO: MAX_NUM
         self.structs = {}
@@ -137,16 +143,88 @@ class HLSConfig:
             f"HLSConfig(header_name={self.header_name}, source_name={self.source_name})"
         )
 
+    class ReduceSubFunc:
+        def __init__(
+            self, name: str, start_ports: List[dfir.Port], end_ports: List[dfir.Port]
+        ) -> None:
+            self.name = name
+            self.start_ports = start_ports
+            self.nxt_ports = start_ports
+            self.end_ports = end_ports
+            self.satisfieds = []
+            self.sub_funcs: List[HLSFunction] = []
+
+        def check_comp(self, comp: dfir.Component, sub_func: HLSFunction) -> None:
+            if not any(p in self.nxt_ports for p in comp.in_ports):
+                return
+            assert all(
+                p in self.nxt_ports
+                or isinstance(p.connection.parent, dfir.ConstantComponent)
+                for p in comp.in_ports
+            )
+            assert not isinstance(comp, dfir.ReduceComponent)
+            self.sub_funcs.append(sub_func)
+            self.nxt_ports = [p for p in self.nxt_ports if p not in comp.in_ports]
+            for p in comp.out_ports:
+                if p in self.end_ports:
+                    self.satisfieds.append(p)
+                else:
+                    assert p.connected
+                    self.nxt_ports.append(p.connection)
+            self.nxt_ports = list(set(self.nxt_ports))
+
+        def check_satisfied(self) -> bool:
+            return self.satisfieds == self.end_ports
+
+        def __repr__(self) -> str:
+            return f"HLSConfig.ReduceSubFunc(name={self.name}, start_ports={self.start_ports}, end_ports={self.end_ports}, satisfieds={self.satisfieds}, sub_funcs={self.sub_funcs})"
+
+        @classmethod
+        def from_reduce(cls, comp: dfir.ReduceComponent) -> Tuple[
+            Tuple[
+                HLSConfig.ReduceSubFunc,
+                HLSConfig.ReduceSubFunc,
+                HLSConfig.ReduceSubFunc,
+            ],
+            Tuple[str, str, str],
+        ]:
+            reduce_key_func_name = f"{comp.name}_key_sub_func"
+            reduce_transform_func_name = f"{comp.name}_transform_sub_func"
+            reduce_unit_func_name = f"{comp.name}_unit_sub_func"
+            key_func = cls(
+                name=reduce_key_func_name,
+                start_ports=[comp.get_port("o_reduce_key_in").connection],
+                end_ports=[comp.get_port("i_reduce_key_out").connection],
+            )
+            transform_func = cls(
+                name=reduce_transform_func_name,
+                start_ports=[comp.get_port("o_reduce_transform_in").connection],
+                end_ports=[comp.get_port("i_reduce_transform_out").connection],
+            )
+            unit_func = cls(
+                name=reduce_unit_func_name,
+                start_ports=[
+                    comp.get_port("o_reduce_unit_start_0").connection,
+                    comp.get_port("o_reduce_unit_start_1").connection,
+                ],
+                end_ports=[comp.get_port("i_reduce_unit_end").connection],
+            )
+            return (key_func, transform_func, unit_func), (
+                reduce_key_func_name,
+                reduce_transform_func_name,
+                reduce_unit_func_name,
+            )
+
     def generate_hls_code(self, comp_col: dfir.ComponentCollection) -> str:
         dt_manager = HLSDataTypeManager()
         header_code = ""
         source_code = ""
+        top_func_code = f"void {self.top_name}(\n"
         constants_from_ports = {}
         source_code += f'#include "{self.header_name}"\n\n'
         source_code += "using namespace hls;\n\n"
-        reduce_sub_funcs = {}
+        reduce_sub_funcs: List[HLSConfig.ReduceSubFunc] = []
         for comp in comp_col.topo_sort():
-
             assert not isinstance(comp, dfir.PlaceholderComponent)
             if isinstance(comp, dfir.UnusedEndMarkerComponent):
                 pass
@@ -154,26 +232,21 @@ class HLSConfig:
                 assert comp.out_ports[0].connection not in constants_from_ports
                 constants_from_ports[comp.out_ports[0].connection] = comp.value
             elif isinstance(comp, dfir.IOComponent):
-                pass
+                assert comp.io_type == dfir.IOComponent.IOType.INPUT
+                for port in comp.ports:
+                    top_func_code += f"    stream<{dt_manager.from_dfir_type(port.data_type)}> &{comp.name}_{port.name},\n"
             elif isinstance(comp, dfir.ReduceComponent):
-                reduce_key_func_name = f"{comp.name}_key_sub_func"
-                reduce_transform_func_name = f"{comp.name}_transform_sub_func"
-                reduce_unit_func_name = f"{comp.name}_unit_sub_func"
-                reduce_sub_funcs[comp.name] = {
-                    "key": reduce_key_func_name,
-                    "transform": reduce_transform_func_name,
-                    "unit": reduce_unit_func_name,
-                }
-                inter_key_var_name = f"{comp.name}_key"
-                inter_transform_var_name = f"{comp.name}_transform"
-                out_stream_name = f"{comp.name}_out"
+                sub_funcs, sub_func_names = HLSConfig.ReduceSubFunc.from_reduce(comp)
+                reduce_sub_funcs.extend(sub_funcs)
+                (
+                    reduce_key_func_name,
+                    reduce_transform_func_name,
+                    reduce_unit_func_name,
+                ) = sub_func_names
                 reduce_pre_func, reduce_unit_func = comp.to_hls_list(
                     func_key_name=reduce_key_func_name,
                     func_transform_name=reduce_transform_func_name,
                     func_unit_name=reduce_unit_func_name,
-                    inter_key_var_name=inter_key_var_name,
-                    inter_transform_var_name=inter_transform_var_name,
-                    out_stream_name=out_stream_name,
                 )
                 reduce_pre_func_str = f"static void {reduce_pre_func.name}(\n"
                 in_port = comp.get_port("i_0")
@@ -183,8 +256,8 @@ class HLSConfig:
                 reduce_pre_func_str += "".join(
                     [
                         f"    stream<{dt_manager.from_dfir_type(input_type)}> &i_0,\n"
-                        f"    stream<{dt_manager.from_dfir_type(key_out_type)}> &{inter_key_var_name},\n"
-                        f"    stream<{dt_manager.from_dfir_type(accumulate_type)}> &{inter_transform_var_name},\n"
+                        f"    stream<{dt_manager.from_dfir_type(key_out_type)}> &intermediate_key,\n"
+                        f"    stream<{dt_manager.from_dfir_type(accumulate_type)}> &intermediate_transform,\n"
                         "    uint32_t input_length\n"
                         ") {\n",
                         f"    LOOP_{reduce_pre_func.name}:\n",
@@ -219,6 +292,22 @@ class HLSConfig:
                     reduce_pre_func_str += f"        {line}\n"
                 reduce_pre_func_str += "    }\n"
                 reduce_pre_func_str += "}\n"
+                reduce_pre_func.params = [
+                    ("i_0", dt_manager.from_dfir_type(input_type), in_port, True),
+                    (
+                        "intermediate_key",
+                        dt_manager.from_dfir_type(key_out_type),
+                        None,
+                        False,
+                    ),
+                    (
+                        "intermediate_transform",
+                        dt_manager.from_dfir_type(accumulate_type),
+                        None,
+                        False,
+                    ),
+                    ("input_length", True),
+                ]
 
                 source_code += reduce_pre_func_str + "\n\n"
 
@@ -241,9 +330,10 @@ class HLSConfig:
                 reduce_unit_func_str = "".join(
                     [
                         f"static void {reduce_unit_func.name}(\n",
-                        f"    stream<{dt_manager.from_dfir_type(key_out_type)}> &{inter_key_var_name},\n",
-                        f"    stream<{dt_manager.from_dfir_type(accumulate_type)}> &{inter_transform_var_name},\n",
-                        f"    stream<{dt_manager.from_dfir_type(accumulate_type)}> &{out_stream_name},\n",
+                        f"    stream<{dt_manager.from_dfir_type(key_out_type)}> &intermediate_key,\n",
+                        f"    stream<{dt_manager.from_dfir_type(accumulate_type)}> &intermediate_transform,\n",
+                        f"    stream<{dt_manager.from_dfir_type(accumulate_type)}> &o_0,\n",
+                        "    uint32_t &output_length,\n",
                         "    uint32_t input_length\n",
                         ") {\n",
                     ]
@@ -258,6 +348,28 @@ class HLSConfig:
                     port.name: dt_manager.from_dfir_type(port.data_type)
                     for port in reduce_unit_func.comp.ports
                 }
+                reduce_unit_func.params = [
+                    (
+                        "intermediate_key",
+                        dt_manager.from_dfir_type(key_out_type),
+                        None,
+                        True,
+                    ),
+                    (
+                        "intermediate_transform",
+                        dt_manager.from_dfir_type(accumulate_type),
+                        None,
+                        True,
+                    ),
+                    (
+                        "o_0",
+                        port2type["o_0"],
+                        reduce_unit_func.comp.get_port("o_0"),
+                        False,
+                    ),
+                    ("output_length", False),
+                    ("input_length", True),
+                ]
                 for line in reduce_unit_func.code_in_loop:
                     for port, type in port2type.items():
                         line = line.replace(f"#type:{port}#", type)
@@ -273,6 +385,8 @@ class HLSConfig:
                 source_code += reduce_unit_func_str + "\n\n"
             else:
                 func = comp.to_hls()
+                for sub_func in reduce_sub_funcs:
+                    sub_func.check_comp(comp, func)
                 func_str = f"static void {func.name}(\n"
                 # type, read, output_length, opt_type
                 port2type = {}
@@ -281,9 +395,19 @@ class HLSConfig:
                     if port in constants_from_ports:
                         continue
                     func_str += f"    stream<{port2type[port.name]}> {port.name},\n"
+                    func.params.append(
+                        (
+                            port.name,
+                            port2type[port.name],
+                            port,
+                            port.port_type == dfir.PortType.IN,
+                        )
+                    )
                 if any("#output_length#" in line for line in func.code_in_loop):
                     func_str += "    uint32_t &output_length,\n"
+                    func.params.append(("output_length", False))
                 func_str += "    uint32_t input_length\n"
+                func.params.append(("input_length", True))
                 func_str += "){\n"
 
                 def manage_line(line: str) -> str:
@@ -310,7 +434,76 @@ class HLSConfig:
                     func_str += f"    {manage_line(line)}\n"
                 func_str += "}\n"
                 source_code += func_str + "\n\n"
+        top_func_code += "    uint32_t input_length\n"
+        top_func_code += ");\n"
+        source_code += top_func_code + "\n\n"
+
+        # manage reduce sub functions
+        assert all(sub_func.check_satisfied() for sub_func in reduce_sub_funcs)
+        for sub_func in reduce_sub_funcs:
+            sub_func_code = f"static void {sub_func.name}(\n"
+            for port in sub_func.start_ports + sub_func.end_ports:
+                sub_func_code += f"    stream<{dt_manager.from_dfir_type(port.data_type)}> &{port.name},\n"
+            if any(sub_sub_func.change_length for sub_sub_func in sub_func.sub_funcs):
+                sub_func_code += "    uint32_t &output_length,\n"
+            sub_func_code += "    uint32_t input_length\n"
+            sub_func_code += ") {\n"
+            sub_func_code += self.generate_sub_func_code(
+                sub_func.start_ports, sub_func.end_ports, sub_func.sub_funcs
+            )
+            sub_func_code += "}\n"
+            source_code += sub_func_code + "\n\n"
         return header_code, source_code
 
+    def generate_sub_func_code(
+        self,
+        start_ports: List[dfir.Port],
+        end_ports: List[dfir.Port],
+        functions: List[HLSFunction],
+    ) -> str:
+        output_len_name = (
+            "output_length"
+            if any(sub_sub_func.change_length for sub_sub_func in functions)
+            else "input_length"
+        )
+        port2var_name = {}
+        adding_codes = ""
+        for sub_sub_func in functions:
+            adding_codes += (
+                f"    uint32_t {sub_sub_func.name}_input_len = {output_len_name};\n"
+            )
+            call_code = f"    {sub_sub_func.name}(\n"
+            call_params = []
+            for param in sub_sub_func.params:
+                if len(param) == 2 and param[1] == True:
+                    call_params.append(f"{sub_sub_func.name}_input_len")
+                elif len(param) == 2 and param[1] == False:
+                    call_params.append("output_length")
+                else:
+                    port_name, port_type, cur_port, is_in = param
+                    if is_in:
+                        if cur_port in start_ports:
+                            sub_sub_func_var_name = f"{cur_port.name}"
+                        else:
+                            sub_sub_func_var_name = port2var_name[cur_port.connection]
+                        call_params.append(sub_sub_func_var_name)
+                    else:
+                        if cur_port in end_ports:
+                            sub_sub_func_var_name = f"{cur_port.name}"
+                        else:
+                            sub_sub_func_var_name = (
+                                f"{sub_sub_func.name}_{cur_port.name}"
+                            )
+                            port2var_name[cur_port] = sub_sub_func_var_name
+                            adding_codes += (
+                                f"    stream<{port_type}> {sub_sub_func_var_name};\n"
+                            )
+                        call_params.append(sub_sub_func_var_name)
 
-global_hls_config = HLSConfig("graphyflow.h", "graphyflow.cpp")
+            call_code += ",\n".join(f"        {param}" for param in call_params)
+            call_code += "\n    );\n"
+            adding_codes += call_code
+        return adding_codes
+
+
+global_hls_config = HLSConfig("graphyflow.h", "graphyflow.cpp", "graphyflow")

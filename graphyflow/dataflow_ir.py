@@ -562,8 +562,8 @@ class UnaryOpComponent(Component):
                 UnaryOp.CAST_BOOL: "(bool)(#read:i_0#)",
                 UnaryOp.CAST_INT: "(int32_t)(#read:i_0#)",
                 UnaryOp.CAST_FLOAT: "(ap_fixed<32, 16>)(#read:i_0#)",
-                UnaryOp.SELECT: "#read:i_0#.ele_{self.select_index}",
-                UnaryOp.GET_ATTR: "#read:i_0#.{self.select_index}",
+                UnaryOp.SELECT: f"#read:i_0#.ele_{self.select_index}",
+                UnaryOp.GET_ATTR: f"#read:i_0#.{self.select_index}",
             }
             code_in_loop = [
                 f"o_0.write({trans_dict[self.op]});",
@@ -658,9 +658,6 @@ class ReduceComponent(Component):
         func_key_name: str,
         func_transform_name: str,
         func_unit_name: str,
-        inter_key_var_name: str,
-        inter_transform_var_name: str,
-        out_stream_name: str,
     ) -> List[hls.HLSFunction]:
         # Generate 1st func for key & transform pre-process
         code_in_loop = [
@@ -669,8 +666,8 @@ class ReduceComponent(Component):
             f'hls::stream<#type:i_0#> reduce_transform_in_stream("reduce_transform_in_stream");',
             f"reduce_key_in_stream.write(reduce_src);",
             f"reduce_transform_in_stream.write(reduce_src);",
-            f"#call:{func_key_name},reduce_key_in_stream,{inter_key_var_name}#;",
-            f"#call:{func_transform_name},reduce_transform_in_stream,{inter_transform_var_name}#;",
+            f"#call:{func_key_name},reduce_key_in_stream,intermediate_key#;",
+            f"#call:{func_transform_name},reduce_transform_in_stream,intermediate_transform#;",
         ]
         stage_1_func = self.get_hls_function(code_in_loop, name_tail="pre_process")
 
@@ -686,8 +683,8 @@ class ReduceComponent(Component):
             r"}",
             # the reduce_key_struct is {key, data, valid}, the loop uses one loop ahead
             # to clear the valid bit to 0 with pipeline
-            f"#type:i_reduce_key_out# reduce_key_out = #read:{inter_key_var_name}#;",
-            f"#type:i_reduce_transform_out# reduce_transform_out = #read:{inter_transform_var_name}#;",
+            f"#type:i_reduce_key_out# reduce_key_out = #read:intermediate_key#;",
+            f"#type:i_reduce_transform_out# reduce_transform_out = #read:intermediate_transform#;",
             r"bool merged = false;",
             r"SCAN_BRAM_INTER_LOOP: for (int i_in_reduce = 0; i_in_reduce < MAX_NUM; i_in_reduce++) {",
             r"#pragma HLS PIPELINE",
@@ -716,7 +713,7 @@ class ReduceComponent(Component):
             r"WRITE_KEY_MEM_LOOP: for (int i_write_key_mem = 0; i_write_key_mem < MAX_NUM; i_write_key_mem++) {",
             r"#pragma HLS PIPELINE",
             r"    if (key_mem[i_write_key_mem].valid) {",
-            f"        {out_stream_name}.write(key_mem[i_write_key_mem].data);",
+            f"        o_0.write(key_mem[i_write_key_mem].data);",
             r"        #output_length#++;",
             r"    }",
             r"}",
