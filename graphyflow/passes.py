@@ -62,6 +62,11 @@ if __name__ == "__main__":
     src_dst_weight = nodes.map_(
         map_func=lambda edge: (edge.src.weight, edge.dst.weight, edge)
     )
+    # first_reduce = src_dst_weight.reduce_by(
+    #     reduce_key=lambda sw, dw, e: sw,
+    #     reduce_transform=lambda sw, dw, e: (sw, dw, e),
+    #     reduce_method=lambda x, y: (x[0], x[1], x[2]),
+    # )
     filtered = src_dst_weight.filter(filter_func=lambda sw, dw, e: sw > dw)
     reduced_result = filtered.reduce_by(
         reduce_key=lambda sw, dw, e: e.dst,

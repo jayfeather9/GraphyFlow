@@ -69,6 +69,18 @@ updated_node_distances = min_potential_distances.map_(
 # 完成一次迭代的定义：指定使用 updated_node_distances 更新节点的 "distance" 属性，并提供 end_marker 作为终止条件
 g.finish_iter(updated_node_distances, {"node": ["distance"]}, end_marker)
 
-dfir = g.to_dfir()
-dot = visualize_components(str(dfir[0]))
+dfirs = g.to_dfir()
+dot = visualize_components(str(dfirs[0]))
 dot.render("component_graph", view=False, format="png")
+
+import graphyflow.hls_utils as hls
+
+header, source = hls.global_hls_config.generate_hls_code(g, dfirs[0])
+import os
+
+if not os.path.exists("output"):
+    os.makedirs("output")
+with open("output/graphyflow.h", "w") as f:
+    f.write(header)
+with open("output/graphyflow.cpp", "w") as f:
+    f.write(source)
