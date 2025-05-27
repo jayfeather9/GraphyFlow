@@ -169,3 +169,11 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Output
+output/
+out.txt
+
+# Graphviz
+component_graph
+component_graph.png
