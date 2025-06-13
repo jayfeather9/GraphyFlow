@@ -196,7 +196,8 @@ class HLSConfig:
         self.functions = {}
         self.PARTITION_FACTOR = 16
         self.STREAM_DEPTH = 4
-        self.MAX_NUM = 32
+        self.MAX_NODE_NUM = 32
+        self.MAX_EDGE_NUM = 256
 
     def __repr__(self) -> str:
         return (
@@ -626,7 +627,7 @@ class HLSConfig:
             + f"\n#define {header_name_for_define}\n\n"
             + "#include <stdint.h>\n#include <ap_int.h>\n#include <hls_stream.h>\n\n"
             + "using namespace hls;\nusing namespace std;\n\n"
-            + f"#define MAX_NUM {self.MAX_NUM}\n\n"
+            + f"#define MAX_NUM {self.MAX_NODE_NUM}\n\n"
             + header_code
             + "\n\n"
             + f"#endif // {header_name_for_define}\n"
@@ -648,11 +649,15 @@ class HLSConfig:
         port2var_name = {}
         adding_codes = ""
         for sub_sub_func in functions:
+            need_output_length = False
             adding_codes += (
                 f"    uint16_t {sub_sub_func.name}_input_len = {output_len_name};\n"
             )
             call_code = f"    {sub_sub_func.name}(\n"
             call_params = []
+            need_output_length = any(
+                (len(param) == 2 and param[1] == False) for param in sub_sub_func.params
+            )
             for param in sub_sub_func.params:
                 if len(param) == 2 and param[1] == True:
                     call_params.append(f"{sub_sub_func.name}_input_len")
@@ -676,7 +681,7 @@ class HLSConfig:
                             port2var_name[cur_port] = sub_sub_func_var_name
                             adding_codes += (
                                 f"    stream<{port_type}> {sub_sub_func_var_name};\n"
-                                f"    #pragma HLS STREAM variable={sub_sub_func_var_name} depth={self.STREAM_DEPTH} \n"
+                                f"    #pragma HLS STREAM variable={sub_sub_func_var_name} depth={self.STREAM_DEPTH if not need_output_length else self.MAX_EDGE_NUM}\n"
                             )
                         call_params.append(sub_sub_func_var_name)
 
