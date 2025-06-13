@@ -428,6 +428,12 @@ class BinOp(Enum):
     def __repr__(self) -> str:
         return self.value
 
+    def gen_repr(self, part_a, part_b):
+        if self.value in ["min", "max"]:
+            translate_dict = {"min": "<", "max": ">"}
+            return f"(({part_a}) {translate_dict[self.value]} ({part_b}) ? {part_a} : {part_b})"
+        return f"{part_a} {self.value} {part_b}"
+
     def output_type(self, input_type: DfirType) -> DfirType:
         if self in [
             BinOp.ADD,
@@ -467,7 +473,7 @@ class BinOpComponent(Component):
         code_in_loop = [
             r"#type:i_0# binop_src_0 = #read:i_0#;",
             r"#type:i_1# binop_src_1 = #read:i_1#;",
-            f"o_0.write(binop_src_0 {self.op.value} binop_src_1);",
+            f"o_0.write({self.op.gen_repr('binop_src_0', 'binop_src_1')});",
         ]
         return self.get_hls_function(code_in_loop)
 

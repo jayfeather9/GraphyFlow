@@ -1,4 +1,4 @@
-import dataflow_ir as dfir
+import graphyflow.dataflow_ir as dfir
 from typing import List, Tuple, Set
 
 
