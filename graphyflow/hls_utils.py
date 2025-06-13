@@ -22,8 +22,8 @@ STD_TYPE_TRANSLATE_MAP = (
     (dftype.IntType(), HLSDataType.INT),
     (dftype.FloatType(), HLSDataType.FLOAT),
     (dftype.BoolType(), HLSDataType.BOOL),
-    (dftype.SpecialType("edge"), HLSDataType.EDGE),
     (dftype.SpecialType("node"), HLSDataType.NODE),
+    (dftype.SpecialType("edge"), HLSDataType.EDGE),
 )
 STD_TYPES = ["uint16_t", "int16_t", "ap_fixed<32, 16>", "bool"]
 
@@ -39,11 +39,24 @@ class HLSDataTypeManager:
         self.define_map = {}
         self.translate_map = {}
         self.type_preds = {}
+        self.to_outer_type = {}
+        self.basic_type_names = []
+        for dfir_type, hls_type in STD_TYPE_TRANSLATE_MAP:
+            type_name = f"basic_{hls_type.value[:5]}_t"
+            self.define_map[dfir_type] = (
+                [f"    {hls_type.value} ele;"],
+                f"{type_name}",
+            )
+            self.type_preds[type_name] = []
+            self.translate_map[dfir_type] = type_name
+            self.basic_type_names.append(type_name)
         self.node_properties = {
-            p_name: self.from_dfir_type(p_type) for p_name, p_type in node_props.items()
+            p_name: self.from_dfir_type(p_type, outer=False)
+            for p_name, p_type in node_props.items()
         }
         self.edge_properties = {
-            p_name: self.from_dfir_type(p_type) for p_name, p_type in edge_props.items()
+            p_name: self.from_dfir_type(p_type, outer=False)
+            for p_name, p_type in edge_props.items()
         }
 
     @classmethod
@@ -52,54 +65,90 @@ class HLSDataTypeManager:
         return cls._cnt
 
     def get_all_defines(self) -> List[str]:
+        def gen_define(def_map_ele):
+            return (
+                "typedef struct {\n"
+                + "\n".join(def_map_ele[0])
+                + "\n} "
+                + f"{def_map_ele[1]};"
+            )
+
         # first generate node_t & edge_t define, add to type_preds
         self.define_map[dftype.SpecialType("node")] = (
-            "typedef struct {\n"
-            + "\n".join(
-                [f"    {t} {p_name};" for p_name, t in self.node_properties.items()]
-            )
-            + "\n} node_t;"
+            [f"    {t} {p_name};" for p_name, t in self.node_properties.items()],
+            "basic_node__t",
         )
-        self.type_preds["node_t"] = list(self.node_properties.values())
-        self.type_preds["node_t"] = [
-            t for t in self.type_preds["node_t"] if t not in STD_TYPES
+        self.type_preds["basic_node__t"] = list(self.node_properties.values())
+        self.type_preds["basic_node__t"] = [
+            t for t in self.type_preds["basic_node__t"] if t not in STD_TYPES
         ]
-        self.translate_map[dftype.SpecialType("node")] = "node_t"
+        self.translate_map[dftype.SpecialType("node")] = "basic_node__t"
         self.define_map[dftype.SpecialType("edge")] = (
-            "typedef struct {\n"
-            + "\n".join(
-                [f"    {t} {p_name};" for p_name, t in self.edge_properties.items()]
-            )
-            + "\n} edge_t;"
+            [f"    {t} {p_name};" for p_name, t in self.edge_properties.items()],
+            "basic_edge__t",
         )
-        self.type_preds["edge_t"] = list(self.edge_properties.values())
-        self.type_preds["edge_t"] = [
-            t for t in self.type_preds["edge_t"] if t not in STD_TYPES
+        self.type_preds["basic_edge__t"] = list(self.edge_properties.values())
+        self.type_preds["basic_edge__t"] = [
+            t for t in self.type_preds["basic_edge__t"] if t not in STD_TYPES
         ]
-        self.translate_map[dftype.SpecialType("edge")] = "edge_t"
+        self.translate_map[dftype.SpecialType("edge")] = "basic_edge__t"
         # then iterate all translate_map
         all_defines = []
         waitings = list(self.translate_map.items())
-        finished = []
+        finished = self.basic_type_names[:]
+        # print(finished)
         while waitings:
             dfir_type, type_name = waitings.pop(0)
-            assert dfir_type in self.define_map
-            if not all(t in finished for t in self.type_preds[type_name]):
+            assert (
+                dfir_type in self.define_map
+            ), f"dfir_type {dfir_type} with type_name {type_name} not in define map"
+            # print(dfir_type, type_name, self.type_preds[type_name])
+            if not all(
+                t in finished for t in self.type_preds[type_name]
+            ) and type_name not in ["basic_int16_t", "basic_ap_fi_t", "basic_bool_t"]:
                 waitings.append((dfir_type, type_name))
                 continue
-            all_defines.append(self.define_map[dfir_type])
+            all_defines.append(gen_define(self.define_map[dfir_type]))
             finished.append(type_name)
+        for dfir_type, outer_name in self.to_outer_type.items():
+            ori_type_name = self.translate_map[dfir_type]
+            assert ori_type_name in finished
+            new_map_ele = list(self.define_map[dfir_type])
+            ori_params = []
+            for param_line in new_map_ele[0]:
+                ori_params.append(param_line.split(" ")[-1][:-1])
+            transition_func = (
+                f"#define {ori_type_name}_to_{outer_name}(origin_name, new_name, end_flag_val) \\\n"
+                + f"    {outer_name} new_name;\\\n"
+                + "\\\n".join(
+                    [
+                        f"    new_name.{param} = origin_name.{param};"
+                        for param in ori_params
+                    ]
+                )
+                + "\\\n    new_name.end_flag = end_flag_val;\\\n"
+            )
+            new_map_ele[0].append("    bool end_flag;")
+            new_map_ele[1] = outer_name
+            all_defines.append(gen_define(new_map_ele))
+            all_defines.append(transition_func)
         return all_defines
 
     def from_dfir_type(
-        self, dfir_type: dftype.DfirType, sub_names: Optional[List[str]] = None
+        self,
+        dfir_type: dftype.DfirType,
+        outer=True,
+        sub_names: Optional[List[str]] = None,
     ) -> str:
         if isinstance(dfir_type, dftype.ArrayType):
             dfir_type = dfir_type.type_
-        for t, f in STD_TYPE_TRANSLATE_MAP:
-            if dfir_type == t:
-                return f.value
         if dfir_type in self.translate_map:
+            if outer:
+                if not dfir_type in self.to_outer_type:
+                    self.to_outer_type[dfir_type] = (
+                        "outer_" + self.translate_map[dfir_type]
+                    )
+                return self.to_outer_type[dfir_type]
             return self.translate_map[dfir_type]
         else:
             assert isinstance(
@@ -107,7 +156,9 @@ class HLSDataTypeManager:
             ), f"Unsupported type: {dfir_type}"
             assert dfir_type not in self.define_map, f"Type {dfir_type} already defined"
             if isinstance(dfir_type, dftype.TupleType):
-                sub_types = [self.from_dfir_type(t) for t in dfir_type.types]
+                sub_types = [
+                    self.from_dfir_type(t, outer=False) for t in dfir_type.types
+                ]
                 name_id = HLSDataTypeManager.get_next_id()
                 type_name = f'tuple_{"".join(st[:1] for st in sub_types)}_{name_id}_t'
                 self.translate_map[dfir_type] = type_name
@@ -115,43 +166,35 @@ class HLSDataTypeManager:
                     t for t in sub_types if t not in STD_TYPES
                 ]
                 self.define_map[dfir_type] = (
-                    (
-                        "typedef struct {\n"
-                        + "\n".join(
-                            [f"    {t} ele_{i};" for i, t in enumerate(sub_types)]
-                        )
-                        + "\n} "
-                        + type_name
-                        + ";"
-                    )
+                    ([f"    {t} ele_{i};" for i, t in enumerate(sub_types)], type_name)
                     if sub_names is None
                     else (
-                        "typedef struct {\n"
-                        + "\n".join(
-                            [
-                                f"    {t} {sub_names[i]};"
-                                for i, t in enumerate(sub_types)
-                            ]
-                        )
-                        + "\n} "
-                        + type_name
-                        + ";"
+                        [f"    {t} {sub_names[i]};" for i, t in enumerate(sub_types)],
+                        type_name,
                     )
                 )
+                if outer:
+                    if not dfir_type in self.to_outer_type:
+                        self.to_outer_type[dfir_type] = (
+                            "outer_" + self.translate_map[dfir_type]
+                        )
+                    return self.to_outer_type[dfir_type]
                 return type_name
             elif isinstance(dfir_type, dftype.OptionalType):
-                sub_type = self.from_dfir_type(dfir_type.type_)
+                sub_type = self.from_dfir_type(dfir_type.type_, False)
                 type_name = f"opt__of_{sub_type[:3]}_t"
                 self.translate_map[dfir_type] = type_name
                 self.type_preds[type_name] = [sub_type]
                 self.define_map[dfir_type] = (
-                    "typedef struct {\n"
-                    + f"    {sub_type} data;\n"
-                    + "    bool valid;\n"
-                    + "} "
-                    + type_name
-                    + ";"
+                    [f"    {sub_type} data;\n" + "    bool valid;"],
+                    type_name,
                 )
+                if outer:
+                    if not dfir_type in self.to_outer_type:
+                        self.to_outer_type[dfir_type] = (
+                            "outer_" + self.translate_map[dfir_type]
+                        )
+                    return self.to_outer_type[dfir_type]
                 return type_name
             else:
                 raise ValueError(f"Unsupported type: {dfir_type}")
@@ -279,6 +322,11 @@ class HLSConfig:
     def generate_hls_code(
         self, global_graph, comp_col: dfir.ComponentCollection
     ) -> str:
+        def gen_read_name(name: str, port: dfir.Port) -> str:
+            if port.data_type.is_basic_type:
+                name = name + ".ele"
+            return f"{name}.read()"
+
         dt_manager = HLSDataTypeManager(
             global_graph.node_properties, global_graph.edge_properties
         )
@@ -366,7 +414,9 @@ class HLSConfig:
                             f"#read:i_0#", f"{constants_from_ports[in_port]}"
                         )
                     else:
-                        line = line.replace(f"#read:i_0#", f"i_0.read()")
+                        line = line.replace(
+                            f"#read:i_0#", f"{gen_read_name('i_0', in_port)}"
+                        )
                     line = manage_call(line)
                     reduce_pre_func_str += f"        {line}\n"
                 reduce_pre_func_str += "    }\n"
@@ -467,10 +517,39 @@ class HLSConfig:
                     ("input_length", True),
                 ]
                 for line in reduce_unit_func.code_in_loop:
-                    for port, type in port2type.items():
-                        line = line.replace(f"#type:{port}#", type)
+                    for inter_name, inter_p in [
+                        ("intermediate_key", intermediate_key_i_port),
+                        ("intermediate_transform", intermediate_transform_i_port),
+                        (
+                            "reduce_unit_stream_out",
+                            reduce_unit_func.comp.get_port("i_reduce_unit_end"),
+                        ),
+                    ]:
+                        line = line.replace(
+                            f"#read:{inter_name}#",
+                            f"{gen_read_name(inter_name, inter_p)}",
+                        )
+                    for port, p_type in port2type.items():
+                        line = line.replace(f"#type:{port}#", p_type)
                         line = line.replace("#reduce_key_struct#", reduce_key_struct)
+                        if f"#may_ele:{port}#" in line:
+                            print(reduce_unit_func.comp.get_port(port))
+                            print(line)
+                        line = line.replace(
+                            f"#may_ele:{port}#",
+                            (
+                                ".ele"
+                                if reduce_unit_func.comp.get_port(
+                                    port
+                                ).data_type.is_basic_type
+                                else ""
+                            ),
+                        )
                         # look for #cmpeq:type_port,a,b# and if type is edge, assert False, if node, use a.id == b.id, otherwise use a == b
+                        line = line.replace(
+                            f"#read:{port}#",
+                            f"{gen_read_name(port, reduce_unit_func.comp.get_port(port))}",
+                        )
                         cmp_regex = r"#cmpeq:([\w_]+),([\w_\.]+),([\w_\.]+)#"
                         match = re.search(cmp_regex, line)
                         if match and port == match.group(1):
@@ -491,8 +570,6 @@ class HLSConfig:
                             else:
                                 assert False, "Not supported type comparing"
                         line = manage_call(line)
-                    # find #read:xxx#, change to xxx.read()
-                    line = re.sub(r"#read:(\w+)#", r"\1.read()", line)
                     reduce_unit_func_str += f"        {line}\n"
                 reduce_unit_func_str += "    }\n"
                 for line in reduce_unit_func.code_after_loop:
@@ -555,7 +632,10 @@ class HLSConfig:
                                 f"#read:{port}#", f"{constants_from_ports[port]}"
                             )
                         else:
-                            line = line.replace(f"#read:{port}#", f"{port}.read()")
+                            line = line.replace(
+                                f"#read:{port}#",
+                                f"{gen_read_name(port, comp.get_port(port))}",
+                            )
                         line = line.replace(f"#opt_type:{port}#", port2type[port])
                     return line
 

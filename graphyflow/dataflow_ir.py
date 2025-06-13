@@ -405,7 +405,7 @@ class ScatterComponent(Component):
         code_in_loop = []
         code_in_loop.append(r"#type:i_0# scatter_src = #read:i_0#;")
         for i in range(len(self.out_ports)):
-            code_in_loop.append(f"o_{i}.write(scatter_src.ele_{i});")
+            code_in_loop.extend([f"#type:o_{i}# " "o_{i}.write(scatter_src.ele_{i});"])
         return self.get_hls_function(code_in_loop)
 
 
@@ -636,7 +636,7 @@ class CollectComponent(Component):
         ]
         code_in_loop = [
             r"#opt_type:i_0# collect_src = #read:i_0#;",
-            r"if (collect_src.valid) {",
+            r"if (collect_src.valid.ele) {",
             r"    o_0.write(collect_src.data);",
             r"    #output_length#++;",
             r"}",
@@ -705,7 +705,7 @@ class ReduceComponent(Component):
             r"#pragma HLS ARRAY_PARTITION variable=key_mem block factor=#partition_factor# dim=0",
             r"CLEAR_REDUCE_VALID: for (int i_reduce_clear = 0; i_reduce_clear < MAX_NUM; i_reduce_clear++) {",
             r"#pragma HLS PIPELINE",
-            r"    key_mem[i_reduce_clear].valid = 0;",
+            r"    key_mem[i_reduce_clear].valid.ele = 0;",
             r"}",
         ]
         code_in_loop = [
@@ -717,12 +717,12 @@ class ReduceComponent(Component):
             r"SCAN_BRAM_INTER_LOOP: for (int i_in_reduce = 0; i_in_reduce < MAX_NUM; i_in_reduce++) {",
             r"#pragma HLS PIPELINE",
             r"    #reduce_key_struct# cur_ele = key_mem[i_in_reduce];",
-            r"    if (!merged && !cur_ele.valid) {",
-            r"        key_mem[i_in_reduce].valid = 1;",
-            r"        key_mem[i_in_reduce].key = reduce_key_out;",
-            r"        key_mem[i_in_reduce].data = reduce_transform_out;",
+            r"    if (!merged && !cur_ele.valid.ele) {",
+            r"        key_mem[i_in_reduce].valid.ele = 1;",
+            r"        key_mem[i_in_reduce].key#may_ele:i_reduce_key_out# = reduce_key_out;",
+            r"        key_mem[i_in_reduce].data#may_ele:i_reduce_transform_out# = reduce_transform_out;",
             r"        merged = true;",
-            r"    } else if (!merged && cur_ele.valid && #cmpeq:i_reduce_key_out,cur_ele.key,reduce_key_out#) {",
+            r"    } else if (!merged && cur_ele.valid.ele && #cmpeq:i_reduce_key_out,cur_ele.key,reduce_key_out#) {",
             # new a stream to call the reduce unit
             '        hls::stream<#type:o_reduce_unit_start_0#> reduce_unit_stream_0("reduce_unit_stream_0");',
             r"#pragma HLS STREAM variable=reduce_unit_stream_0 depth=4",
@@ -730,11 +730,11 @@ class ReduceComponent(Component):
             r"#pragma HLS STREAM variable=reduce_unit_stream_1 depth=4",
             '        hls::stream<#type:i_reduce_unit_end#> reduce_unit_stream_out("reduce_unit_stream_out");',
             r"#pragma HLS STREAM variable=reduce_unit_stream_out depth=4",
-            r"        reduce_unit_stream_0.write(cur_ele.data);",
+            r"        reduce_unit_stream_0.write(cur_ele.data#may_ele:i_reduce_transform_out#);",
             r"        reduce_unit_stream_1.write(reduce_transform_out);",
             f"        #call_once:{func_unit_name},reduce_unit_stream_0,reduce_unit_stream_1,reduce_unit_stream_out#;",
             r"        #type:i_reduce_unit_end# reduce_unit_out = #read:reduce_unit_stream_out#;",
-            r"        key_mem[i_in_reduce].data = reduce_unit_out;",
+            r"        key_mem[i_in_reduce].data#may_ele:i_reduce_transform_out# = reduce_unit_out;",
             r"        merged = true;",
             r"    }",
             r"}",
@@ -743,8 +743,8 @@ class ReduceComponent(Component):
             r"#output_length# = 0;",
             r"WRITE_KEY_MEM_LOOP: for (int i_write_key_mem = 0; i_write_key_mem < MAX_NUM; i_write_key_mem++) {",
             r"#pragma HLS PIPELINE",
-            r"    if (key_mem[i_write_key_mem].valid) {",
-            f"        o_0.write(key_mem[i_write_key_mem].data);",
+            r"    if (key_mem[i_write_key_mem].valid.ele) {",
+            r"        o_0.write(key_mem[i_write_key_mem].data#may_ele:i_reduce_transform_out#);",
             r"        #output_length#++;",
             r"    }",
             r"}",
