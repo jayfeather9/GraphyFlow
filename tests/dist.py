@@ -46,6 +46,9 @@ edges = g.add_graph_input("edge")  # 获取图的所有边作为数据流输入
 potential_dst_updates = edges.map_(
     map_func=lambda edge: (edge.src.distance, edge.dst, edge.weight)
 )
+potential_dst_updates = potential_dst_updates.filter(
+    filter_func=lambda x, y, z: z >= 0.0,
+)
 # 按目标节点聚合，计算到达每个目标节点的所有路径中的最小潜在距离
 min_potential_distances = potential_dst_updates.reduce_by(
     reduce_key=lambda src_dist, dst, edge_w: dst,  # 使用目标节点 (dst) 作为聚合的键

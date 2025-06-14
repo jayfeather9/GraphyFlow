@@ -117,7 +117,8 @@ class HLSDataTypeManager:
             ori_params = []
             for param_line in new_map_ele[0]:
                 ori_params.append(param_line.split(" ")[-1][:-1])
-            transition_func = (
+            # add transition funcs
+            transition_func1 = (
                 f"#define {ori_type_name}_to_{outer_name}(origin_name, new_name, end_flag_val) \\\n"
                 + f"    {outer_name} new_name;\\\n"
                 + "\\\n".join(
@@ -126,12 +127,22 @@ class HLSDataTypeManager:
                         for param in ori_params
                     ]
                 )
-                + "\\\n    new_name.end_flag = end_flag_val;\\\n"
+                + "\\\n    new_name.end_flag = end_flag_val;\n\n"
+            )
+            transition_func2 = (
+                f"#define {outer_name}_to_{ori_type_name}(origin_name, new_name) \\\n"
+                + f"    {ori_type_name} new_name;\\\n"
+                + "\\\n".join(
+                    [
+                        f"    new_name.{param} = origin_name.{param};"
+                        for param in ori_params
+                    ]
+                )
             )
             new_map_ele[0].append("    bool end_flag;")
             new_map_ele[1] = outer_name
             all_defines.append(gen_define(new_map_ele))
-            all_defines.append(transition_func)
+            all_defines.append(transition_func1 + transition_func2)
         return all_defines
 
     def from_dfir_type(
@@ -323,8 +334,8 @@ class HLSConfig:
         self, global_graph, comp_col: dfir.ComponentCollection
     ) -> str:
         def gen_read_name(name: str, port: dfir.Port) -> str:
-            if port.data_type.is_basic_type:
-                name = name + ".ele"
+            # if port.data_type.is_basic_type:
+            #     name = name + ".ele"
             return f"{name}.read()"
 
         dt_manager = HLSDataTypeManager(
@@ -390,18 +401,23 @@ class HLSConfig:
                 call_once_regex = r"#call_once:([\w_,]+)#"
 
                 def manage_call(line: str) -> str:
+                    i = 0
+                    while i < len(line) and line[i] == " ":
+                        i += 1
                     match = re.search(call_regex, line)
                     if match:
                         args = match.group(1).split(",")
                         func_name = args[0]
                         args = args[1:]
-                        return f"{func_name}({', '.join(args)}, input_length);"
+                        return (
+                            " " * i + f"{func_name}({', '.join(args)}, input_length);"
+                        )
                     match = re.search(call_once_regex, line)
                     if match:
                         args = match.group(1).split(",")
                         func_name = args[0]
                         args = args[1:]
-                        return f"{func_name}({', '.join(args)}, 1);"
+                        return " " * i + f"{func_name}({', '.join(args)}, 1);"
                     return line
 
                 for line in reduce_pre_func.code_in_loop:
@@ -409,6 +425,7 @@ class HLSConfig:
                     line = line.replace(
                         "#type:i_0#", dt_manager.from_dfir_type(input_type)
                     )
+                    line = line.replace("#end_flag_val#", "end_flag_val")
                     if in_port in constants_from_ports:
                         line = line.replace(
                             f"#read:i_0#", f"{constants_from_ports[in_port]}"
@@ -532,9 +549,10 @@ class HLSConfig:
                     for port, p_type in port2type.items():
                         line = line.replace(f"#type:{port}#", p_type)
                         line = line.replace("#reduce_key_struct#", reduce_key_struct)
-                        if f"#may_ele:{port}#" in line:
-                            print(reduce_unit_func.comp.get_port(port))
-                            print(line)
+                        line = line.replace("#end_flag_val#", "end_flag_val")
+                        # if f"#may_ele:{port}#" in line:
+                        #     print(reduce_unit_func.comp.get_port(port))
+                        #     print(line)
                         line = line.replace(
                             f"#may_ele:{port}#",
                             (
@@ -570,11 +588,112 @@ class HLSConfig:
                             else:
                                 assert False, "Not supported type comparing"
                         line = manage_call(line)
-                    reduce_unit_func_str += f"        {line}\n"
+                    # for write
+                    if "#write" in line:
+                        pattern = re.compile(
+                            r"^#write:([a-zA-Z\_0-9]+),([a-zA-Z\.\_0-9]+),([a-zA-Z\_0-9]+)#$"
+                        )
+                        i = 0
+                        while i < len(line) and line[i] == " ":
+                            i += 1
+                        indent_space = " " * (i + 8)
+                        potential_match_str = line[i:]
+                        match = pattern.match(potential_match_str)
+                        assert (
+                            match
+                        ), f"Error: Line '{line.strip()}' include '#write' but with wrong format."
+
+                        tgt_port_name, ori_var, tgt_outer_type = (
+                            match.group(1),
+                            match.group(2),
+                            match.group(3),
+                        )
+                        assert tgt_outer_type[:6] == "outer_"
+                        tgt_inner_type = tgt_outer_type[6:]
+                        line = indent_space + r"{" + "\n"
+                        line += (
+                            indent_space
+                            + f"    {tgt_inner_type}_to_{tgt_outer_type}({ori_var}, tmp_{tgt_outer_type}_var, true);\n"
+                        )
+                        line += (
+                            indent_space
+                            + f"    {tgt_port_name}.write(tmp_{tgt_outer_type}_var);\n"
+                        )
+                        line += indent_space + r"}" + "\n"
+                        reduce_unit_func_str += line
+                    elif "#peel" in line:
+                        pattern = re.compile(
+                            r"^#peel:([a-zA-Z\_0-9]+),([a-zA-Z\.\_0-9]+),([a-zA-Z\_0-9]+)#$"
+                        )
+                        i = 0
+                        while i < len(line) and line[i] == " ":
+                            i += 1
+                        indent_space = " " * (i + 8)
+                        potential_match_str = line[i:]
+                        match = pattern.match(potential_match_str)
+                        assert (
+                            match
+                        ), f"Error: Line '{line.strip()}' include '#peel' but with wrong format."
+
+                        tgt_port_name, ori_var, new_var = (
+                            match.group(1),
+                            match.group(2),
+                            match.group(3),
+                        )
+                        tgt_outer_type = port2type[tgt_port_name]
+                        assert tgt_outer_type[:6] == "outer_"
+                        tgt_inner_type = tgt_outer_type[6:]
+                        reduce_unit_func_str += (
+                            indent_space
+                            + f"{tgt_outer_type}_to_{tgt_inner_type}({ori_var}, {new_var});\n"
+                        )
+                    else:
+                        reduce_unit_func_str += f"        {line}\n"
                 reduce_unit_func_str += "    }\n"
                 for line in reduce_unit_func.code_after_loop:
-                    line = line.replace("#output_length#", "output_length")
-                    reduce_unit_func_str += f"    {line}\n"
+                    # line = line.replace("#output_length#", "output_length")
+                    for port, p_type in port2type.items():
+                        line = line.replace(
+                            f"#may_ele:{port}#",
+                            (
+                                ".ele"
+                                if reduce_unit_func.comp.get_port(
+                                    port
+                                ).data_type.is_basic_type
+                                else ""
+                            ),
+                        )
+                    if "#write" in line:
+                        pattern = re.compile(
+                            r"^#write:([a-zA-Z\_0-9]+),([a-zA-Z\.\[\]\_0-9]+)#$"
+                        )
+                        i = 0
+                        while i < len(line) and line[i] == " ":
+                            i += 1
+                        indent_space = " " * (i + 4)
+                        potential_match_str = line[i:]
+                        match = pattern.match(potential_match_str)
+                        assert (
+                            match
+                        ), f"Error: Line '{line.strip()}' include '#write' but with wrong format."
+
+                        tgt_port_name, ori_var = match.group(1), match.group(2)
+                        tgt_outer_type = port2type[tgt_port_name]
+                        assert tgt_outer_type[:6] == "outer_"
+                        tgt_inner_type = tgt_outer_type[6:]
+                        line = indent_space + r"{" + "\n"
+                        line += (
+                            indent_space
+                            + f"    {tgt_inner_type}_to_{tgt_outer_type}({ori_var}, tmp_{tgt_outer_type}_var, true);\n"
+                        )
+                        line += (
+                            indent_space
+                            + f"    {tgt_port_name}.write(tmp_{tgt_outer_type}_var);\n"
+                        )
+                        line += indent_space + r"}" + "\n"
+                        reduce_unit_func_str += line
+                    else:
+                        reduce_unit_func_str += f"    {line}\n"
                 reduce_unit_func_str += "}\n"
                 source_code_funcs_part += reduce_unit_func_str + "\n\n"
                 top_func_sub_funcs.extend([reduce_pre_func, reduce_unit_func])
@@ -616,17 +735,27 @@ class HLSConfig:
 
                 source_code += func_str + ";\n\n"
                 func_str += " {\n"
+                has_end_flag = False
 
-                def manage_line(line: str) -> str:
+                def manage_line(line: str, indent: int) -> str:
+                    # for unused ports
                     for port_name in unused_ports:
                         if (
                             f"#read:{port_name}#" in line
                             or f"{port_name}.write" in line
                         ):
                             return ""
-                    line = line.replace(f"#output_length#", "output_length")
+                    # # output_length
+                    # line = line.replace(f"#output_length#", "output_length")
+                    # end flag val
+                    nonlocal has_end_flag
+                    if "#end_flag_val#" in line:
+                        has_end_flag = True
+                    line = line.replace("#end_flag_val#", "end_flag_val")
+                    # type declaration & read
                     for port, type in port2type.items():
                         line = line.replace(f"#type:{port}#", type)
+                        line = line.replace(f"#type_inner:{port}#", type[6:])
                         if port in constants_from_ports:
                             line = line.replace(
                                 f"#read:{port}#", f"{constants_from_ports[port]}"
@@ -636,19 +765,88 @@ class HLSConfig:
                                 f"#read:{port}#",
                                 f"{gen_read_name(port, comp.get_port(port))}",
                             )
-                        line = line.replace(f"#opt_type:{port}#", port2type[port])
-                    return line
+                        line = line.replace(f"#opt_type:{port}#", port2type[port][6:])
+
+                        port_type = comp.get_port(port).data_type
+                        if isinstance(port_type, dfir.ArrayType):
+                            port_type = port_type.type_
+                        line = line.replace(
+                            f"#may_ele:{port}#",
+                            (".ele" if port_type.is_basic_type else ""),
+                        )
+                    indent_space = " " * 4 * indent
+                    # for write
+                    if "#write" in line:
+                        pattern = re.compile(
+                            r"^#write:([a-zA-Z\_0-9]+),([a-zA-Z\.\_0-9]+)#$"
+                        )
+                        i = 0
+                        while i < len(line) and line[i] == " ":
+                            i += 1
+                        indent_space += " " * i
+                        potential_match_str = line[i:]
+                        match = pattern.match(potential_match_str)
+                        assert (
+                            match
+                        ), f"Error: Line '{line.strip()}' include '#write' but with wrong format."
+
+                        tgt_port_name, ori_var = match.group(1), match.group(2)
+                        tgt_outer_type = port2type[tgt_port_name]
+                        assert tgt_outer_type[:6] == "outer_"
+                        tgt_inner_type = tgt_outer_type[6:]
+                        line = indent_space + r"{" + "\n"
+                        line += (
+                            indent_space
+                            + f"    {tgt_inner_type}_to_{tgt_outer_type}({ori_var}, tmp_{tgt_outer_type}_var, end_flag_val);\n"
+                        )
+                        line += (
+                            indent_space
+                            + f"    {tgt_port_name}.write(tmp_{tgt_outer_type}_var);\n"
+                        )
+                        line += indent_space + r"}" + "\n"
+                        return line
+                    elif "#peel" in line:
+                        pattern = re.compile(
+                            r"^#peel:([a-zA-Z\_0-9]+),([a-zA-Z\.\_0-9]+),([a-zA-Z\_0-9]+)#$"
+                        )
+                        i = 0
+                        while i < len(line) and line[i] == " ":
+                            i += 1
+                        indent_space += " " * i
+                        potential_match_str = line[i:]
+                        match = pattern.match(potential_match_str)
+                        assert (
+                            match
+                        ), f"Error: Line '{line.strip()}' include '#peel' but with wrong format."
+
+                        tgt_port_name, ori_var, new_var = (
+                            match.group(1),
+                            match.group(2),
+                            match.group(3),
+                        )
+                        tgt_outer_type = port2type[tgt_port_name]
+                        assert tgt_outer_type[:6] == "outer_"
+                        tgt_inner_type = tgt_outer_type[6:]
+                        return (
+                            indent_space
+                            + f"{tgt_outer_type}_to_{tgt_inner_type}({ori_var}, {new_var});\n"
+                        )
+                    else:
+                        return indent_space + line + "\n"
 
                 for line in func.code_before_loop:
-                    func_str += f"    {manage_line(line)}\n"
+                    func_str += f"{manage_line(line, 1)}"
                 func_str += f"    LOOP_{func.name}:\n"
-                func_str += "    for (uint16_t i = 0; i < input_length; i++) {\n"
+                # func_str += "    for (uint16_t i = 0; i < input_length; i++) {\n"
+                func_str += "    while (true) {\n"
                 func_str += "#pragma HLS PIPELINE\n"
                 for line in func.code_in_loop:
-                    func_str += f"        {manage_line(line)}\n"
+                    func_str += f"{manage_line(line, 2)}"
+                assert has_end_flag
+                func_str += "        if (end_flag_val) break;\n"
                 func_str += "    }\n"
                 for line in func.code_after_loop:
-                    func_str += f"    {manage_line(line)}\n"
+                    func_str += f"{manage_line(line, 1)}"
                 func_str += "}\n"
                 source_code_funcs_part += func_str + "\n\n"
                 top_func_sub_funcs.append(func)
