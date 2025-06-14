@@ -710,10 +710,20 @@ class ReduceComponent(Component):
             r"#pragma HLS STREAM variable=reduce_key_in_stream depth=4",
             f'hls::stream<#type:i_0#> reduce_transform_in_stream("reduce_transform_in_stream");',
             r"#pragma HLS STREAM variable=reduce_transform_in_stream depth=4",
-            f"reduce_key_in_stream.write(reduce_src);",
+            r"reduce_src.end_flag = true;" f"reduce_key_in_stream.write(reduce_src);",
             f"reduce_transform_in_stream.write(reduce_src);",
-            f"#call_once:{func_key_name},reduce_key_in_stream,intermediate_key#;",
-            f"#call_once:{func_transform_name},reduce_transform_in_stream,intermediate_transform#;",
+            f'hls::stream<#type:i_reduce_key_out#> reduce_key_out_stream("reduce_key_out_stream");',
+            r"#pragma HLS STREAM variable=reduce_key_out_stream depth=4",
+            f'hls::stream<#type:i_reduce_transform_out#> reduce_transform_out_stream("reduce_transform_out_stream");',
+            r"#pragma HLS STREAM variable=reduce_transform_out_stream depth=4",
+            f"#call_once:{func_key_name},reduce_key_in_stream,reduce_key_out_stream#;",
+            f"#call_once:{func_transform_name},reduce_transform_in_stream,reduce_transform_out_stream#;",
+            r"#type:i_reduce_key_out# reduce_key_out = reduce_key_out_stream.read();",
+            r"reduce_key_out.end_flag = #end_flag_val#;",
+            r"intermediate_key.write(reduce_key_out);",
+            r"#type:i_reduce_transform_out# reduce_transform_out = reduce_transform_out_stream.read();",
+            r"reduce_transform_out.end_flag = #end_flag_val#;",
+            r"intermediate_transform.write(reduce_transform_out);",
         ]
         stage_1_func = self.get_hls_function(code_in_loop, name_tail="pre_process")
 

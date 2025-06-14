@@ -360,7 +360,7 @@ class HLSConfig:
             elif isinstance(comp, dfir.ConstantComponent):
                 assert comp.out_ports[0].connection not in constants_from_ports
                 constants_from_ports[comp.out_ports[0].connection] = (
-                    "{ " + f"{comp.value}" + " }"
+                    "{ " + f"{comp.value}" + ", false }"
                 )
             elif isinstance(comp, dfir.IOComponent):
                 assert comp.io_type == dfir.IOComponent.IOType.INPUT
@@ -370,6 +370,10 @@ class HLSConfig:
                     top_func_def += f"    stream<{dt_manager.from_dfir_type(port.data_type)}> &{port.connection.unique_name},\n"
             elif isinstance(comp, dfir.ReduceComponent):
                 sub_funcs, sub_func_names = HLSConfig.ReduceSubFunc.from_reduce(comp)
+                port2type = {
+                    port.name: dt_manager.from_dfir_type(port.data_type)
+                    for port in comp.ports
+                }
                 reduce_sub_funcs.extend(sub_funcs)
                 (
                     reduce_key_func_name,
@@ -394,7 +398,7 @@ class HLSConfig:
                         "    uint16_t input_length\n"
                         ") {\n",
                         f"    LOOP_{reduce_pre_func.name}:\n",
-                        "    for (uint16_t i = 0; i < input_length; i++) {\n",
+                        "    while (true) {\n",
                         "#pragma HLS PIPELINE\n",
                     ]
                 )
@@ -424,9 +428,8 @@ class HLSConfig:
 
                 for line in reduce_pre_func.code_in_loop:
                     # replace #type# and #read#, only i_0 in reduce_pre_func
-                    line = line.replace(
-                        "#type:i_0#", dt_manager.from_dfir_type(input_type)
-                    )
+                    for port, p_type in port2type.items():
+                        line = line.replace(f"#type:{port}#", p_type)
                     line = line.replace("#end_flag_val#", "end_flag_val")
                     if in_port in constants_from_ports:
                         line = line.replace(
@@ -438,6 +441,7 @@ class HLSConfig:
                         )
                     line = manage_call(line)
                     reduce_pre_func_str += f"        {line}\n"
+                reduce_pre_func_str += "        if (end_flag_val) break;\n"
                 reduce_pre_func_str += "    }\n"
                 reduce_pre_func_str += "}\n"
                 intermediate_key_port = dfir.Port(
@@ -505,14 +509,10 @@ class HLSConfig:
                     + [f"    {line}\n" for line in codes_before_loop]
                     + [
                         f"    LOOP_{reduce_unit_func.name}:\n",
-                        "    for (uint16_t i = 0; i < input_length; i++) {\n",
+                        "    while (true) {\n",
                         "#pragma HLS PIPELINE\n",
                     ]
                 )
-                port2type = {
-                    port.name: dt_manager.from_dfir_type(port.data_type)
-                    for port in comp.ports
-                }
                 reduce_unit_func.params = [
                     (
                         "intermediate_key",
@@ -651,6 +651,7 @@ class HLSConfig:
                         )
                     else:
                         reduce_unit_func_str += f"        {line}\n"
+                reduce_unit_func_str += "        if (end_flag_val) break;\n"
                 reduce_unit_func_str += "    }\n"
                 for line in reduce_unit_func.code_after_loop:
                     # line = line.replace("#output_length#", "output_length")
@@ -740,12 +741,14 @@ class HLSConfig:
                 has_end_flag = False
 
                 def manage_line(line: str, indent: int) -> str:
+                    if "write" in line:
+                        print(func.name, line, unused_ports)
                     # for unused ports
                     for port_name in unused_ports:
                         if (
                             f"#read:{port_name}#" in line
                             or f"{port_name}.write" in line
-                            or line[:6] == "#write"
+                            or f"#write:{port_name}" in line
                         ):
                             return ""
                     # # output_length
