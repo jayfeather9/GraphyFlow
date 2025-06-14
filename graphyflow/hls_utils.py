@@ -197,7 +197,7 @@ class HLSDataTypeManager:
                 self.translate_map[dfir_type] = type_name
                 self.type_preds[type_name] = [sub_type]
                 self.define_map[dfir_type] = (
-                    [f"    {sub_type} data;\n" + "    bool valid;"],
+                    [f"    {sub_type} data;\n" + "    basic_bool_t valid;"],
                     type_name,
                 )
                 if outer:
@@ -359,7 +359,9 @@ class HLSConfig:
                 pass
             elif isinstance(comp, dfir.ConstantComponent):
                 assert comp.out_ports[0].connection not in constants_from_ports
-                constants_from_ports[comp.out_ports[0].connection] = comp.value
+                constants_from_ports[comp.out_ports[0].connection] = (
+                    "{ " + f"{comp.value}" + " }"
+                )
             elif isinstance(comp, dfir.IOComponent):
                 assert comp.io_type == dfir.IOComponent.IOType.INPUT
                 for port in comp.ports:
@@ -496,7 +498,7 @@ class HLSConfig:
                         f"    stream<{dt_manager.from_dfir_type(key_out_type)}> &intermediate_key,\n",
                         f"    stream<{dt_manager.from_dfir_type(accumulate_type)}> &intermediate_transform,\n",
                         f"    stream<{dt_manager.from_dfir_type(accumulate_type)}> &o_0,\n",
-                        "    uint16_t &output_length,\n",
+                        # "    uint16_t &output_length,\n",
                         "    uint16_t input_length\n",
                         ") {\n",
                     ]
@@ -530,7 +532,7 @@ class HLSConfig:
                         reduce_unit_func.comp.get_port("o_0"),
                         False,
                     ),
-                    ("output_length", False),
+                    # ("output_length", False),
                     ("input_length", True),
                 ]
                 for line in reduce_unit_func.code_in_loop:
@@ -583,7 +585,7 @@ class HLSConfig:
                                 "node"
                             ):
                                 line = line.replace(
-                                    match.group(0), f"{cmp_a}.id == {cmp_b}.id"
+                                    match.group(0), f"{cmp_a}.id.ele == {cmp_b}.id.ele"
                                 )
                             else:
                                 assert False, "Not supported type comparing"
@@ -743,6 +745,7 @@ class HLSConfig:
                         if (
                             f"#read:{port_name}#" in line
                             or f"{port_name}.write" in line
+                            or line[:6] == "#write"
                         ):
                             return ""
                     # # output_length
@@ -756,9 +759,10 @@ class HLSConfig:
                     for port, type in port2type.items():
                         line = line.replace(f"#type:{port}#", type)
                         line = line.replace(f"#type_inner:{port}#", type[6:])
-                        if port in constants_from_ports:
+                        if comp.get_port(port) in constants_from_ports:
                             line = line.replace(
-                                f"#read:{port}#", f"{constants_from_ports[port]}"
+                                f"#read:{port}#",
+                                f"{constants_from_ports[comp.get_port(port)]}",
                             )
                         else:
                             line = line.replace(

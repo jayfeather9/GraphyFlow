@@ -378,7 +378,7 @@ class GatherComponent(Component):
             + ", ".join(f"real_gather_src_{i}" for i in range(len(self.in_ports)))
             + ", #end_flag_val#"
             + r"};",
-            r"o_0.write(gather_result)",
+            r"o_0.write(gather_result);",
         ]
         return self.get_hls_function(code_in_loop)
 
@@ -438,8 +438,10 @@ class BinOp(Enum):
     def gen_repr(self, part_a, part_b):
         if self.value in ["min", "max"]:
             translate_dict = {"min": "<", "max": ">"}
-            return f"(({part_a}) {translate_dict[self.value]} ({part_b}) ? {part_a} : {part_b})"
-        return f"{part_a} {self.value} {part_b}"
+            repr = f"(({part_a}) {translate_dict[self.value]} ({part_b}) ? {part_a} : {part_b})"
+        else:
+            repr = f"{part_a} {self.value} {part_b}"
+        return "{ " + repr + " }"
 
     def output_type(self, input_type: DfirType) -> DfirType:
         if self in [
@@ -590,18 +592,18 @@ class UnaryOpComponent(Component):
             )
         else:
             trans_dict = {
-                UnaryOp.NOT: "!unary_src#may_ele:i_0#",
-                UnaryOp.NEG: "-unary_src#may_ele:i_0#",
-                UnaryOp.CAST_BOOL: "(bool)(unary_src#may_ele:i_0#)",
-                UnaryOp.CAST_INT: "(int16_t)(unary_src#may_ele:i_0#)",
-                UnaryOp.CAST_FLOAT: "(ap_fixed<32, 16>)(unary_src#may_ele:i_0#)",
+                UnaryOp.NOT: "{!unary_src#may_ele:i_0#}",
+                UnaryOp.NEG: "{-unary_src#may_ele:i_0#}",
+                UnaryOp.CAST_BOOL: "{(bool)(unary_src#may_ele:i_0#)}",
+                UnaryOp.CAST_INT: "{(int16_t)(unary_src#may_ele:i_0#)}",
+                UnaryOp.CAST_FLOAT: "{(ap_fixed<32, 16>)(unary_src#may_ele:i_0#)}",
                 UnaryOp.SELECT: f"unary_src.ele_{self.select_index}",
                 UnaryOp.GET_ATTR: f"unary_src.{self.select_index}",
             }
             code_in_loop = [
                 f"#type:i_0# unary_src = #read:i_0#;",
                 f"bool #end_flag_val# = unary_src.end_flag;",
-                f"#type_inner:o_0# unary_out = {trans_dict[self.op]}",
+                f"#type_inner:o_0# unary_out = {trans_dict[self.op]};",
                 f"#write:o_0,unary_out#",
             ]
             return self.get_hls_function(code_in_loop)
@@ -630,7 +632,9 @@ class ConditionalComponent(Component):
             r"#type:i_data# cond_data = #read:i_data#;",
             r"#type:i_cond# cond = #read:i_cond#;",
             r"bool #end_flag_val# = cond_data.end_flag | cond.end_flag;",
-            r"#opt_type:o_0# cond_result = {cond_data, cond};",
+            r"#peel:i_data,cond_data,real_cond_data#",
+            r"#peel:i_cond,cond,real_cond#",
+            r"#opt_type:o_0# cond_result = {real_cond_data, real_cond};",
             r"#write:o_0,cond_result#",
         ]
         return self.get_hls_function(code_in_loop)
