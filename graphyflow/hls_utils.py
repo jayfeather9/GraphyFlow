@@ -17,6 +17,20 @@ class HLSDataType(Enum):
     def __repr__(self) -> str:
         return self.value
 
+    def gen_basic_print(hls_name, type_name):
+        if type_name == HLSDataType.INT or type_name == HLSDataType.BOOL:
+            return f"""#ifdef PRINT_DEFS
+#define print_{hls_name}(var) \\
+    printf("%d", var.ele); \\
+#endif"""
+        elif type_name == HLSDataType.FLOAT:
+            return f"""#ifdef PRINT_DEFS
+#define print_{hls_name}(var) \\
+    printf("%lf", (double)var.ele); \\
+#endif"""
+        else:
+            assert False, f"Not supported for ({hls_name}, {type_name})"
+
 
 STD_TYPE_TRANSLATE_MAP = (
     (dftype.IntType(), HLSDataType.INT),
@@ -40,9 +54,12 @@ class HLSDataTypeManager:
         self.translate_map = {}
         self.type_preds = {}
         self.to_outer_type = {}
+        self.basic_basic_types = {}
         self.basic_type_names = []
         for dfir_type, hls_type in STD_TYPE_TRANSLATE_MAP:
             type_name = f"basic_{hls_type.value[:5]}_t"
+            if not isinstance(dfir_type, dfir.SpecialType):
+                self.basic_basic_types[type_name] = hls_type
             self.define_map[dfir_type] = (
                 [f"    {hls_type.value} ele;"],
                 f"{type_name}",
@@ -96,7 +113,31 @@ class HLSDataTypeManager:
         all_defines = []
         waitings = list(self.translate_map.items())
         finished = self.basic_type_names[:]
+
         # print(finished)
+        def gen_print_func(def_map_ele):
+            if def_map_ele[1] in self.basic_basic_types.keys():
+                return HLSDataType.gen_basic_print(
+                    def_map_ele[1], self.basic_basic_types[def_map_ele[1]]
+                )
+            params = []
+            for one_def_ele in def_map_ele[0]:
+                print(f"{one_def_ele=}")
+                one_def_ele = one_def_ele[:-1].strip().split(" ")
+                assert len(one_def_ele) >= 2, f"{one_def_ele} len != 2"
+                params.append(("".join(one_def_ele[:-1]), one_def_ele[-1]))
+            LB, RB = "{", "}"
+            return (
+                "#ifdef PRINT_DEFS\n"
+                + f"#define print_{def_map_ele[1]}(var) \\\n"
+                + f'    printf("{def_map_ele[1]} {LB}\\n"); \\\n'
+                + ' printf(", "); \\\n'.join(
+                    f"    print_{sub_type}(var.{param});" for sub_type, param in params
+                )
+                + f' \\\n    printf("{RB}\\n"); \\\n'
+                + "#endif"
+            )
+
         while waitings:
             dfir_type, type_name = waitings.pop(0)
             assert (
@@ -109,6 +150,7 @@ class HLSDataTypeManager:
                 waitings.append((dfir_type, type_name))
                 continue
             all_defines.append(gen_define(self.define_map[dfir_type]))
+            all_defines.append(gen_print_func(self.define_map[dfir_type]))
             finished.append(type_name)
         for dfir_type, outer_name in self.to_outer_type.items():
             ori_type_name = self.translate_map[dfir_type]
@@ -122,10 +164,8 @@ class HLSDataTypeManager:
                 f"#define {ori_type_name}_to_{outer_name}(origin_name, new_name, end_flag_val) \\\n"
                 + f"    {outer_name} new_name;\\\n"
                 + "\\\n".join(
-                    [
-                        f"    new_name.{param} = origin_name.{param};"
-                        for param in ori_params
-                    ]
+                    f"    new_name.{param} = origin_name.{param};"
+                    for param in ori_params
                 )
                 + "\\\n    new_name.end_flag = end_flag_val;\n\n"
             )
@@ -133,15 +173,14 @@ class HLSDataTypeManager:
                 f"#define {outer_name}_to_{ori_type_name}(origin_name, new_name) \\\n"
                 + f"    {ori_type_name} new_name;\\\n"
                 + "\\\n".join(
-                    [
-                        f"    new_name.{param} = origin_name.{param};"
-                        for param in ori_params
-                    ]
+                    f"    new_name.{param} = origin_name.{param};"
+                    for param in ori_params
                 )
             )
             new_map_ele[0].append("    bool end_flag;")
             new_map_ele[1] = outer_name
             all_defines.append(gen_define(new_map_ele))
+            all_defines.append(gen_print_func(new_map_ele))
             all_defines.append(transition_func1 + transition_func2)
         return all_defines
 
