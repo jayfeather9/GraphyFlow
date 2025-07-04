@@ -776,10 +776,11 @@ class ReduceComponent(Component):
             r"WRITE_KEY_MEM_LOOP: for (int i_write_key_mem = 0; i_write_key_mem < MAX_NUM; i_write_key_mem++) {",
             r"#pragma HLS PIPELINE",
             r"    if (key_mem[i_write_key_mem].valid.ele) {",
-            r"        #write:o_0,key_mem[i_write_key_mem].data#may_ele:o_0##",
+            r"        #write_noend:o_0,key_mem[i_write_key_mem].data#may_ele:o_0##",
             # r"        #output_length#++;",
             r"    }",
             r"}",
+            r"#write:o_0,key_mem[0].data#may_ele:o_0##",
         ]
         stage_2_func = self.get_hls_function(
             code_in_loop, code_before_loop, code_after_loop, name_tail="unit_reduce"

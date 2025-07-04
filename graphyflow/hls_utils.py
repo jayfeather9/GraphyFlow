@@ -21,12 +21,12 @@ class HLSDataType(Enum):
         if type_name == HLSDataType.INT or type_name == HLSDataType.BOOL:
             return f"""#ifdef PRINT_DEFS
 #define print_{hls_name}(var) \\
-    printf("%d", var.ele); \\
+    printf("%d", var.ele);
 #endif"""
         elif type_name == HLSDataType.FLOAT:
             return f"""#ifdef PRINT_DEFS
 #define print_{hls_name}(var) \\
-    printf("%lf", (double)var.ele); \\
+    printf("%lf", (double)var.ele);
 #endif"""
         else:
             assert False, f"Not supported for ({hls_name}, {type_name})"
@@ -114,6 +114,14 @@ class HLSDataTypeManager:
         waitings = list(self.translate_map.items())
         finished = self.basic_type_names[:]
 
+        # special deal with print_bool()
+        all_defines.append(
+            """#ifdef PRINT_DEFS
+#define print_bool(var) \\
+    printf("%d", var);
+#endif"""
+        )
+
         # print(finished)
         def gen_print_func(def_map_ele):
             if def_map_ele[1] in self.basic_basic_types.keys():
@@ -127,6 +135,8 @@ class HLSDataTypeManager:
                 assert len(one_def_ele) >= 2, f"{one_def_ele} len != 2"
                 params.append(("".join(one_def_ele[:-1]), one_def_ele[-1]))
             LB, RB = "{", "}"
+            print(def_map_ele[1])
+            print(params)
             return (
                 "#ifdef PRINT_DEFS\n"
                 + f"#define print_{def_map_ele[1]}(var) \\\n"
@@ -134,7 +144,7 @@ class HLSDataTypeManager:
                 + ' printf(", "); \\\n'.join(
                     f"    print_{sub_type}(var.{param});" for sub_type, param in params
                 )
-                + f' \\\n    printf("{RB}\\n"); \\\n'
+                + f' \\\n    printf("{RB}\\n"); \n'
                 + "#endif"
             )
 
@@ -236,7 +246,7 @@ class HLSDataTypeManager:
                 self.translate_map[dfir_type] = type_name
                 self.type_preds[type_name] = [sub_type]
                 self.define_map[dfir_type] = (
-                    [f"    {sub_type} data;\n" + "    basic_bool_t valid;"],
+                    [f"    {sub_type} data;", "    basic_bool_t valid;"],
                     type_name,
                 )
                 if outer:
@@ -631,14 +641,14 @@ class HLSConfig:
                         line = manage_call(line)
                     # for write
                     if "#write" in line:
-                        pattern = re.compile(
-                            r"^#write:([a-zA-Z\_0-9]+),([a-zA-Z\.\_0-9]+),([a-zA-Z\_0-9]+)#$"
-                        )
                         i = 0
                         while i < len(line) and line[i] == " ":
                             i += 1
                         indent_space = " " * (i + 8)
                         potential_match_str = line[i:]
+                        pattern = re.compile(
+                            r"^#write:([a-zA-Z\_0-9]+),([a-zA-Z\.\_0-9]+),([a-zA-Z\_0-9]+)#$"
+                        )
                         match = pattern.match(potential_match_str)
                         assert (
                             match
@@ -706,18 +716,25 @@ class HLSConfig:
                             ),
                         )
                     if "#write" in line:
-                        pattern = re.compile(
-                            r"^#write:([a-zA-Z\_0-9]+),([a-zA-Z\.\[\]\_0-9]+)#$"
-                        )
                         i = 0
                         while i < len(line) and line[i] == " ":
                             i += 1
                         indent_space = " " * (i + 4)
                         potential_match_str = line[i:]
+                        pattern = re.compile(
+                            r"^#write:([a-zA-Z\_0-9]+),([a-zA-Z\.\[\]\_0-9]+)#$"
+                        )
+                        pattern_noend = re.compile(
+                            r"^#write_noend:([a-zA-Z\_0-9]+),([a-zA-Z\.\[\]\_0-9]+)#$"
+                        )
                         match = pattern.match(potential_match_str)
+                        ending = "true"
+                        if not match:
+                            match = pattern_noend.match(potential_match_str)
+                            ending = "false"
                         assert (
                             match
-                        ), f"Error: Line '{line.strip()}' include '#write' but with wrong format."
+                        ), f"Error2: Line '{line.strip()}' include '#write' but with wrong format."
 
                         tgt_port_name, ori_var = match.group(1), match.group(2)
                         tgt_outer_type = port2type[tgt_port_name]
@@ -726,7 +743,7 @@ class HLSConfig:
                         line = indent_space + r"{" + "\n"
                         line += (
                             indent_space
-                            + f"    {tgt_inner_type}_to_{tgt_outer_type}({ori_var}, tmp_{tgt_outer_type}_var, true);\n"
+                            + f"    {tgt_inner_type}_to_{tgt_outer_type}({ori_var}, tmp_{tgt_outer_type}_var, {ending});\n"
                         )
                         line += (
                             indent_space
