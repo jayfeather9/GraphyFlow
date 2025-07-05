@@ -51,7 +51,7 @@ potential_dst_updates = potential_dst_updates.filter(
 )
 # 按目标节点聚合，计算到达每个目标节点的所有路径中的最小潜在距离
 min_potential_distances = potential_dst_updates.reduce_by(
-    reduce_key=lambda src_dist, dst, edge_w: dst,  # 使用目标节点 (dst) 作为聚合的键
+    reduce_key=lambda src_dist, dst, edge_w: dst.id,  # 使用目标节点 (dst) 作为聚合的键
     # 对每个目标节点，转换数据为 (通过这条边计算出的潜在新距离, 目标节点对象)
     reduce_transform=lambda src_dist, dst, edge_w: (src_dist + edge_w, dst),
     # 聚合方法：对于同一个目标节点，比较所有潜在新距离，保留最小值
