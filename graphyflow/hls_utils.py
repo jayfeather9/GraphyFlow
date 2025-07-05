@@ -278,10 +278,10 @@ class HLSFunction:
         self.code_after_loop = code_after_loop
         self.comp = comp
         self.params = []
-        self.change_length = any(
-            "#output_length#" in line
-            for line in (code_before_loop + code_in_loop + code_after_loop)
-        )
+        # self.change_length = any(
+        #     "#output_length#" in line
+        #     for line in (code_before_loop + code_in_loop + code_after_loop)
+        # )
         global_hls_config.functions[name] = self
 
     def __repr__(self) -> str:
@@ -443,8 +443,8 @@ class HLSConfig:
                     [
                         f"    stream<{dt_manager.from_dfir_type(input_type)}> &i_0,\n"
                         f"    stream<{dt_manager.from_dfir_type(key_out_type)}> &intermediate_key,\n"
-                        f"    stream<{dt_manager.from_dfir_type(accumulate_type)}> &intermediate_transform,\n"
-                        "    uint16_t input_length\n"
+                        f"    stream<{dt_manager.from_dfir_type(accumulate_type)}> &intermediate_transform\n"
+                        # "    uint16_t input_length\n"
                         ") {\n",
                         f"    LOOP_{reduce_pre_func.name}:\n",
                         "    while (true) {\n",
@@ -464,15 +464,13 @@ class HLSConfig:
                         args = match.group(1).split(",")
                         func_name = args[0]
                         args = args[1:]
-                        return (
-                            " " * i + f"{func_name}({', '.join(args)}, input_length);"
-                        )
+                        return " " * i + f"{func_name}({', '.join(args)});"
                     match = re.search(call_once_regex, line)
                     if match:
                         args = match.group(1).split(",")
                         func_name = args[0]
                         args = args[1:]
-                        return " " * i + f"{func_name}({', '.join(args)}, 1);"
+                        return " " * i + f"{func_name}({', '.join(args)});"
                     return line
 
                 for line in reduce_pre_func.code_in_loop:
@@ -523,7 +521,7 @@ class HLSConfig:
                         intermediate_transform_port,
                         False,
                     ),
-                    ("input_length", True),
+                    # ("input_length", True),
                 ]
 
                 source_code_funcs_part += reduce_pre_func_str + "\n\n"
@@ -550,9 +548,9 @@ class HLSConfig:
                         f"static void {reduce_unit_func.name}(\n",
                         f"    stream<{dt_manager.from_dfir_type(key_out_type)}> &intermediate_key,\n",
                         f"    stream<{dt_manager.from_dfir_type(accumulate_type)}> &intermediate_transform,\n",
-                        f"    stream<{dt_manager.from_dfir_type(accumulate_type)}> &o_0,\n",
+                        f"    stream<{dt_manager.from_dfir_type(accumulate_type)}> &o_0\n",
                         # "    uint16_t &output_length,\n",
-                        "    uint16_t input_length\n",
+                        # "    uint16_t input_length\n",
                         ") {\n",
                     ]
                     + [f"    {line}\n" for line in codes_before_loop]
@@ -582,7 +580,7 @@ class HLSConfig:
                         False,
                     ),
                     # ("output_length", False),
-                    ("input_length", True),
+                    # ("input_length", True),
                 ]
                 for line in reduce_unit_func.code_in_loop:
                     for inter_name, inter_p in [
@@ -785,11 +783,15 @@ class HLSConfig:
                             port.port_type == dfir.PortType.IN,
                         )
                     )
-                if any("#output_length#" in line for line in func.code_in_loop):
-                    func_str += "    uint16_t &output_length,\n"
-                    func.params.append(("output_length", False))
-                func_str += "    uint16_t input_length\n"
-                func.params.append(("input_length", True))
+                # delete last ","
+                if func_str[-2:] == ",\n":
+                    func_str = func_str[:-2] + "\n"
+
+                # if any("#output_length#" in line for line in func.code_in_loop):
+                #     func_str += "    uint16_t &output_length,\n"
+                #     func.params.append(("output_length", False))
+                # func_str += "    uint16_t input_length\n"
+                # func.params.append(("input_length", True))
                 func_str += ")"
 
                 source_code += func_str + ";\n\n"
@@ -917,7 +919,9 @@ class HLSConfig:
         # manage top function end ports & input len
         for port in end_ports:
             top_func_def += f"    stream<{dt_manager.from_dfir_type(port.data_type)}> &{port.unique_name},\n"
-        top_func_def += "    uint16_t input_length\n"
+        # top_func_def += "    uint16_t input_length\n"
+        if top_func_def[-2:] == ",\n":
+            top_func_def = top_func_def[:-2] + "\n"
         top_func_def += ")"
 
         # manage reduce sub functions
@@ -926,9 +930,11 @@ class HLSConfig:
             sub_func_code = f"static void {sub_func.name}(\n"
             for port in sub_func.start_ports + sub_func.end_ports:
                 sub_func_code += f"    stream<{dt_manager.from_dfir_type(port.data_type)}> &{port.unique_name},\n"
-            if any(sub_sub_func.change_length for sub_sub_func in sub_func.sub_funcs):
-                sub_func_code += "    uint16_t &output_length,\n"
-            sub_func_code += "    uint16_t input_length\n"
+            # if any(sub_sub_func.change_length for sub_sub_func in sub_func.sub_funcs):
+            #     sub_func_code += "    uint16_t &output_length,\n"
+            # sub_func_code += "    uint16_t input_length\n"
+            if sub_func_code[-2:] == ",\n":
+                sub_func_code = sub_func_code[:-2] + "\n"
             sub_func_code += ") {\n"
             sub_func_code += self.generate_sub_func_code(
                 sub_func.start_ports, sub_func.end_ports, sub_func.sub_funcs
@@ -952,9 +958,9 @@ class HLSConfig:
         header_code += "\n\n" + top_func_def + ";"
         top_func_code = top_func_def + " {\n"
         top_func_code += "#pragma HLS dataflow\n"
-        if any(sub_sub_func.change_length for sub_sub_func in top_func_sub_funcs):
-            top_func_code += "    uint16_t output_length = input_length;\n"
-            print(end_ports)
+        # if any(sub_sub_func.change_length for sub_sub_func in top_func_sub_funcs):
+        #     # top_func_code += "    uint16_t output_length = input_length;\n"
+        #     print(end_ports)
         top_func_code += self.generate_sub_func_code(
             start_ports, end_ports, top_func_sub_funcs
         )
@@ -982,49 +988,49 @@ class HLSConfig:
         end_ports: List[dfir.Port],
         functions: List[HLSFunction],
     ) -> str:
-        output_len_name = (
-            "output_length"
-            if any(sub_sub_func.change_length for sub_sub_func in functions)
-            else "input_length"
-        )
+        # output_len_name = (
+        #     "output_length"
+        #     if any(sub_sub_func.change_length for sub_sub_func in functions)
+        #     else "input_length"
+        # )
         port2var_name = {}
         adding_codes = ""
         for sub_sub_func in functions:
-            need_output_length = False
-            adding_codes += (
-                f"    uint16_t {sub_sub_func.name}_input_len = {output_len_name};\n"
-            )
+            # need_output_length = False
+            # adding_codes += (
+            #     f"    uint16_t {sub_sub_func.name}_input_len = {output_len_name};\n"
+            # )
             call_code = f"    {sub_sub_func.name}(\n"
             call_params = []
-            need_output_length = any(
-                (len(param) == 2 and param[1] == False) for param in sub_sub_func.params
-            )
+            # need_output_length = any(
+            #     (len(param) == 2 and param[1] == False) for param in sub_sub_func.params
+            # )
             for param in sub_sub_func.params:
-                if len(param) == 2 and param[1] == True:
-                    call_params.append(f"{sub_sub_func.name}_input_len")
-                elif len(param) == 2 and param[1] == False:
-                    call_params.append("output_length")
-                else:
-                    port_name, port_type, cur_port, is_in = param
-                    if is_in:
-                        if any(cur_port == st_p for st_p in start_ports):
-                            sub_sub_func_var_name = f"{cur_port.unique_name}"
-                        else:
-                            sub_sub_func_var_name = port2var_name[cur_port.connection]
-                        call_params.append(sub_sub_func_var_name)
+                # if len(param) == 2 and param[1] == True:
+                #     call_params.append(f"{sub_sub_func.name}_input_len")
+                # elif len(param) == 2 and param[1] == False:
+                #     call_params.append("output_length")
+                # else:
+                port_name, port_type, cur_port, is_in = param
+                if is_in:
+                    if any(cur_port == st_p for st_p in start_ports):
+                        sub_sub_func_var_name = f"{cur_port.unique_name}"
                     else:
-                        if any(cur_port == ed_p for ed_p in end_ports):
-                            sub_sub_func_var_name = f"{cur_port.unique_name}"
-                        else:
-                            sub_sub_func_var_name = (
-                                f"{sub_sub_func.name}_{cur_port.unique_name}"
-                            )
-                            port2var_name[cur_port] = sub_sub_func_var_name
-                            adding_codes += (
-                                f"    stream<{port_type}> {sub_sub_func_var_name};\n"
-                                f"    #pragma HLS STREAM variable={sub_sub_func_var_name} depth={self.STREAM_DEPTH if not need_output_length else self.MAX_EDGE_NUM}\n"
-                            )
-                        call_params.append(sub_sub_func_var_name)
+                        sub_sub_func_var_name = port2var_name[cur_port.connection]
+                    call_params.append(sub_sub_func_var_name)
+                else:
+                    if any(cur_port == ed_p for ed_p in end_ports):
+                        sub_sub_func_var_name = f"{cur_port.unique_name}"
+                    else:
+                        sub_sub_func_var_name = (
+                            f"{sub_sub_func.name}_{cur_port.unique_name}"
+                        )
+                        port2var_name[cur_port] = sub_sub_func_var_name
+                        adding_codes += (
+                            f"    stream<{port_type}> {sub_sub_func_var_name};\n"
+                            f"    #pragma HLS STREAM variable={sub_sub_func_var_name} depth={self.STREAM_DEPTH}\n"
+                        )
+                    call_params.append(sub_sub_func_var_name)
 
             call_code += ",\n".join(f"        {param}" for param in call_params)
             call_code += "\n    );\n"
