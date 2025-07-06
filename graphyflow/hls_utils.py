@@ -300,6 +300,7 @@ class HLSConfig:
         self.PARTITION_FACTOR = 16
         self.STREAM_DEPTH = 4
         self.MAX_NUM = 256
+        self.BUFFER_LENGTH = 4
 
     def __repr__(self) -> str:
         return (
@@ -978,7 +979,8 @@ class HLSConfig:
             + f"\n#define {header_name_for_define}\n\n"
             + "#include <stdint.h>\n#include <ap_int.h>\n#include <hls_stream.h>\n\n"
             + "using namespace hls;\nusing namespace std;\n\n"
-            + f"#define MAX_NUM {self.MAX_NUM}\n\n"
+            + f"#define MAX_NUM {self.MAX_NUM}\n"
+            + f"#define L {self.BUFFER_LENGTH}\n\n"
             + header_code
             + "\n\n"
             + f"#endif // {header_name_for_define}\n"
