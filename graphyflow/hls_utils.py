@@ -299,8 +299,7 @@ class HLSConfig:
         self.functions = {}
         self.PARTITION_FACTOR = 16
         self.STREAM_DEPTH = 4
-        self.MAX_NODE_NUM = 32
-        self.MAX_EDGE_NUM = 256
+        self.MAX_NUM = 256
 
     def __repr__(self) -> str:
         return (
@@ -318,9 +317,9 @@ class HLSConfig:
             self.satisfieds = []
             self.sub_funcs: List[HLSFunction] = []
 
-        def check_comp(self, comp: dfir.Component, sub_func: HLSFunction) -> None:
+        def check_comp(self, comp: dfir.Component, sub_func: HLSFunction) -> bool:
             if not any(p in self.nxt_ports for p in comp.in_ports):
-                return
+                return False
             assert all(
                 p in self.nxt_ports
                 or isinstance(p.connection.parent, dfir.ConstantComponent)
@@ -336,6 +335,7 @@ class HLSConfig:
                     assert p.connected
                     self.nxt_ports.append(p.connection)
             self.nxt_ports = list(set(self.nxt_ports))
+            return True
 
         def check_satisfied(self) -> bool:
             return self.satisfieds == self.end_ports
@@ -763,9 +763,10 @@ class HLSConfig:
                         port.connection.parent, dfir.UnusedEndMarkerComponent
                     ):
                         unused_ports.append(port.name)
+                is_sub_func = False
                 # check & add for reduce sub functions
                 for sub_func in reduce_sub_funcs:
-                    sub_func.check_comp(comp, func)
+                    is_sub_func |= sub_func.check_comp(comp, func)
                 # generate function str
                 func_str = f"static void {func.name}(\n"
                 # type, read, output_length, opt_type
@@ -901,15 +902,18 @@ class HLSConfig:
 
                 for line in func.code_before_loop:
                     func_str += f"{manage_line(line, 1)}"
-                func_str += f"    LOOP_{func.name}:\n"
-                # func_str += "    for (uint16_t i = 0; i < input_length; i++) {\n"
-                func_str += "    while (true) {\n"
-                func_str += "#pragma HLS PIPELINE\n"
+                # sub func no loop
+                if not is_sub_func:
+                    func_str += f"    LOOP_{func.name}:\n"
+                    # func_str += "    for (uint16_t i = 0; i < input_length; i++) {\n"
+                    func_str += "    while (true) {\n"
+                    func_str += "#pragma HLS PIPELINE\n"
                 for line in func.code_in_loop:
                     func_str += f"{manage_line(line, 2)}"
                 assert has_end_flag
-                func_str += "        if (end_flag_val) break;\n"
-                func_str += "    }\n"
+                if not is_sub_func:
+                    func_str += "        if (end_flag_val) break;\n"
+                    func_str += "    }\n"
                 for line in func.code_after_loop:
                     func_str += f"{manage_line(line, 1)}"
                 func_str += "}\n"
@@ -974,7 +978,7 @@ class HLSConfig:
             + f"\n#define {header_name_for_define}\n\n"
             + "#include <stdint.h>\n#include <ap_int.h>\n#include <hls_stream.h>\n\n"
             + "using namespace hls;\nusing namespace std;\n\n"
-            + f"#define MAX_NUM {self.MAX_NODE_NUM}\n\n"
+            + f"#define MAX_NUM {self.MAX_NUM}\n\n"
             + header_code
             + "\n\n"
             + f"#endif // {header_name_for_define}\n"
