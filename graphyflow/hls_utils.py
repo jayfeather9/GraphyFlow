@@ -7,8 +7,8 @@ import re
 
 
 class HLSDataType(Enum):
-    UINT = "uint16_t"
-    INT = "int16_t"
+    UINT = "uint32_t"
+    INT = "int32_t"
     FLOAT = "ap_fixed<32, 16>"
     BOOL = "bool"
     EDGE = "edge_t"
@@ -39,7 +39,7 @@ STD_TYPE_TRANSLATE_MAP = (
     (dftype.SpecialType("node"), HLSDataType.NODE),
     (dftype.SpecialType("edge"), HLSDataType.EDGE),
 )
-STD_TYPES = ["uint16_t", "int16_t", "ap_fixed<32, 16>", "bool"]
+STD_TYPES = ["uint32_t", "int32_t", "ap_fixed<32, 16>", "bool"]
 
 
 class HLSDataTypeManager:
@@ -156,7 +156,7 @@ class HLSDataTypeManager:
             # print(dfir_type, type_name, self.type_preds[type_name])
             if not all(
                 t in finished for t in self.type_preds[type_name]
-            ) and type_name not in ["basic_int16_t", "basic_ap_fi_t", "basic_bool_t"]:
+            ) and type_name not in ["basic_int32_t", "basic_ap_fi_t", "basic_bool_t"]:
                 waitings.append((dfir_type, type_name))
                 continue
             all_defines.append(gen_define(self.define_map[dfir_type]))
@@ -445,7 +445,7 @@ class HLSConfig:
                         f"    stream<{dt_manager.from_dfir_type(input_type)}> &i_0,\n"
                         f"    stream<{dt_manager.from_dfir_type(key_out_type)}> &intermediate_key,\n"
                         f"    stream<{dt_manager.from_dfir_type(accumulate_type)}> &intermediate_transform\n"
-                        # "    uint16_t input_length\n"
+                        # "    uint32_t input_length\n"
                         ") {\n",
                         f"    LOOP_{reduce_pre_func.name}:\n",
                         "    while (true) {\n",
@@ -531,12 +531,11 @@ class HLSConfig:
                 reduce_key_struct = dt_manager.from_dfir_type(
                     dftype.TupleType(
                         [
-                            key_out_type,
                             accumulate_type,
                             dftype.BoolType(),
                         ]
                     ),
-                    sub_names=["key", "data", "valid"],
+                    sub_names=["data", "valid"],
                 )
                 codes_before_loop = [
                     line.replace("#reduce_key_struct#", reduce_key_struct).replace(
@@ -550,8 +549,8 @@ class HLSConfig:
                         f"    stream<{dt_manager.from_dfir_type(key_out_type)}> &intermediate_key,\n",
                         f"    stream<{dt_manager.from_dfir_type(accumulate_type)}> &intermediate_transform,\n",
                         f"    stream<{dt_manager.from_dfir_type(accumulate_type)}> &o_0\n",
-                        # "    uint16_t &output_length,\n",
-                        # "    uint16_t input_length\n",
+                        # "    uint32_t &output_length,\n",
+                        # "    uint32_t input_length\n",
                         ") {\n",
                     ]
                     + [f"    {line}\n" for line in codes_before_loop]
@@ -790,9 +789,9 @@ class HLSConfig:
                     func_str = func_str[:-2] + "\n"
 
                 # if any("#output_length#" in line for line in func.code_in_loop):
-                #     func_str += "    uint16_t &output_length,\n"
+                #     func_str += "    uint32_t &output_length,\n"
                 #     func.params.append(("output_length", False))
-                # func_str += "    uint16_t input_length\n"
+                # func_str += "    uint32_t input_length\n"
                 # func.params.append(("input_length", True))
                 func_str += ")"
 
@@ -906,7 +905,7 @@ class HLSConfig:
                 # sub func no loop
                 if not is_sub_func:
                     func_str += f"    LOOP_{func.name}:\n"
-                    # func_str += "    for (uint16_t i = 0; i < input_length; i++) {\n"
+                    # func_str += "    for (uint32_t i = 0; i < input_length; i++) {\n"
                     func_str += "    while (true) {\n"
                     func_str += "#pragma HLS PIPELINE\n"
                 for line in func.code_in_loop:
@@ -924,7 +923,7 @@ class HLSConfig:
         # manage top function end ports & input len
         for port in end_ports:
             top_func_def += f"    stream<{dt_manager.from_dfir_type(port.data_type)}> &{port.unique_name},\n"
-        # top_func_def += "    uint16_t input_length\n"
+        # top_func_def += "    uint32_t input_length\n"
         if top_func_def[-2:] == ",\n":
             top_func_def = top_func_def[:-2] + "\n"
         top_func_def += ")"
@@ -936,8 +935,8 @@ class HLSConfig:
             for port in sub_func.start_ports + sub_func.end_ports:
                 sub_func_code += f"    stream<{dt_manager.from_dfir_type(port.data_type)}> &{port.unique_name},\n"
             # if any(sub_sub_func.change_length for sub_sub_func in sub_func.sub_funcs):
-            #     sub_func_code += "    uint16_t &output_length,\n"
-            # sub_func_code += "    uint16_t input_length\n"
+            #     sub_func_code += "    uint32_t &output_length,\n"
+            # sub_func_code += "    uint32_t input_length\n"
             if sub_func_code[-2:] == ",\n":
                 sub_func_code = sub_func_code[:-2] + "\n"
             sub_func_code += ") {\n"
@@ -964,7 +963,7 @@ class HLSConfig:
         top_func_code = top_func_def + " {\n"
         top_func_code += "#pragma HLS dataflow\n"
         # if any(sub_sub_func.change_length for sub_sub_func in top_func_sub_funcs):
-        #     # top_func_code += "    uint16_t output_length = input_length;\n"
+        #     # top_func_code += "    uint32_t output_length = input_length;\n"
         #     print(end_ports)
         top_func_code += self.generate_sub_func_code(
             start_ports, end_ports, top_func_sub_funcs
@@ -1004,7 +1003,7 @@ class HLSConfig:
         for sub_sub_func in functions:
             # need_output_length = False
             # adding_codes += (
-            #     f"    uint16_t {sub_sub_func.name}_input_len = {output_len_name};\n"
+            #     f"    uint32_t {sub_sub_func.name}_input_len = {output_len_name};\n"
             # )
             call_code = f"    {sub_sub_func.name}(\n"
             call_params = []

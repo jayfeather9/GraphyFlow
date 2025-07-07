@@ -577,7 +577,7 @@ class UnaryOpComponent(Component):
     def to_hls(self) -> hls.HLSFunction:
         if self.op == UnaryOp.GET_LENGTH:
             code_before_loop = [
-                r"uint16_t length = 0;",
+                r"uint32_t length = 0;",
             ]
             code_in_loop = [
                 r"#read:i_0#;",
@@ -595,7 +595,7 @@ class UnaryOpComponent(Component):
                 UnaryOp.NOT: "{!unary_src#may_ele:i_0#}",
                 UnaryOp.NEG: "{-unary_src#may_ele:i_0#}",
                 UnaryOp.CAST_BOOL: "{(bool)(unary_src#may_ele:i_0#)}",
-                UnaryOp.CAST_INT: "{(int16_t)(unary_src#may_ele:i_0#)}",
+                UnaryOp.CAST_INT: "{(int32_t)(unary_src#may_ele:i_0#)}",
                 UnaryOp.CAST_FLOAT: "{(ap_fixed<32, 16>)(unary_src#may_ele:i_0#)}",
                 UnaryOp.SELECT: f"unary_src.ele_{self.select_index}",
                 UnaryOp.GET_ATTR: f"unary_src.{self.select_index}",
@@ -730,6 +730,9 @@ class ReduceComponent(Component):
         # Generate 2nd func for unit-reduce
         code_before_loop = [
             r"#reduce_key_struct# key_mem[MAX_NUM];",
+            # r"#pragma HLS ARRAY_PARTITION variable=key_mem dim=0 complete",
+            r"#pragma HLS BIND_STORAGE variable = key_mem type = RAM_2P impl = URAM",
+            r"#pragma HLS dependence variable=key_mem inter false",
             r"#reduce_key_struct# key_buffer[L + 1];",
             r"#pragma HLS ARRAY_PARTITION variable=key_buffer dim=0 complete",
             r"uint32_t i_buffer[L + 1];",
@@ -745,7 +748,7 @@ class ReduceComponent(Component):
             r"}",
         ]
         code_in_loop = [
-            # the reduce_key_struct is {key, data, valid}, the loop uses one loop ahead
+            # the reduce_key_struct is {key, valid}, the loop uses one loop ahead
             # to clear the valid bit to 0 with pipeline
             f"#type:i_reduce_key_out# reduce_key_out = #read:intermediate_key#;",
             f"#type:i_reduce_transform_out# reduce_transform_out = #read:intermediate_transform#;",
@@ -777,11 +780,11 @@ class ReduceComponent(Component):
             # r"        key_mem[i_in_reduce].data#may_ele:i_reduce_transform_out# = real_reduce_unit_out;",
             # r"        merged = true;",
             # r"    }",
-            r"#reduce_key_struct# cur_ele = key_mem[real_reduce_key_out#may_ele:i_reduce_key_out#];",
+            r"#reduce_key_struct# old_ele = key_mem[real_reduce_key_out#may_ele:i_reduce_key_out#];",
             r"for (int i_search_buffer = 0; i_search_buffer < L + 1; i_search_buffer++) {",
             r"#pragma HLS UNROLL",
             r"    {",
-            r"        if (real_reduce_key_out#may_ele:i_reduce_key_out# == i_buffer[i_search_buffer]) cur_ele = key_buffer[i_search_buffer];",
+            r"        if (real_reduce_key_out#may_ele:i_reduce_key_out# == i_buffer[i_search_buffer]) old_ele = key_buffer[i_search_buffer];",
             r"    }",
             r"}",
             r"for (int i_move_buffer = 0; i_move_buffer < L; i_move_buffer++) {",
@@ -791,10 +794,10 @@ class ReduceComponent(Component):
             r"        key_buffer[i_move_buffer] = key_buffer[i_move_buffer + 1];",
             r"    }",
             r"}",
-            r"if (!cur_ele.valid.ele) {",
-            r"    cur_ele.valid.ele = 1;",
-            r"    cur_ele.key = real_reduce_key_out;",
-            r"    cur_ele.data = real_reduce_transform_out;",
+            r"#reduce_key_struct# new_ele;",
+            r"if (!old_ele.valid.ele) {",
+            r"    new_ele.valid.ele = 1;",
+            r"    new_ele.data = real_reduce_transform_out;",
             r"} else {",
             '    hls::stream<#type:o_reduce_unit_start_0#> reduce_unit_stream_0("reduce_unit_stream_0");',
             r"#pragma HLS STREAM variable=reduce_unit_stream_0 depth=1",
@@ -802,15 +805,15 @@ class ReduceComponent(Component):
             r"#pragma HLS STREAM variable=reduce_unit_stream_1 depth=1",
             '    hls::stream<#type:i_reduce_unit_end#> reduce_unit_stream_out("reduce_unit_stream_out");',
             r"#pragma HLS STREAM variable=reduce_unit_stream_out depth=1",
-            r"    #write:reduce_unit_stream_0,cur_ele.data,#type:i_reduce_transform_out##",
+            r"    #write:reduce_unit_stream_0,old_ele.data,#type:i_reduce_transform_out##",
             r"    #write:reduce_unit_stream_1,real_reduce_transform_out,#type:i_reduce_transform_out##",
             f"    #call_once:{func_unit_name},reduce_unit_stream_0,reduce_unit_stream_1,reduce_unit_stream_out#;",
             r"    #type:i_reduce_unit_end# reduce_unit_out = #read:reduce_unit_stream_out#;",
             r"    #peel:i_reduce_unit_end,reduce_unit_out,real_reduce_unit_out#",
-            r"    cur_ele.data = real_reduce_unit_out;",
+            r"    new_ele.data = real_reduce_unit_out;",
             r"}",
-            r"key_mem[real_reduce_key_out#may_ele:i_reduce_key_out#] = cur_ele;",
-            r"key_buffer[L] = cur_ele;",
+            r"key_mem[real_reduce_key_out#may_ele:i_reduce_key_out#] = new_ele;",
+            r"key_buffer[L] = new_ele;",
             r"i_buffer[L] = real_reduce_key_out#may_ele:i_reduce_key_out#;",
         ]
         code_after_loop = [
