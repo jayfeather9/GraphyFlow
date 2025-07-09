@@ -383,9 +383,9 @@ class HLSConfig:
     def generate_hls_code(
         self, global_graph, comp_col: dfir.ComponentCollection
     ) -> str:
-        def gen_read_name(name: str, port: dfir.Port) -> str:
-            # if port.data_type.is_basic_type:
-            #     name = name + ".ele"
+        def gen_read_name(name: str, port: dfir.Port, is_sub_func: bool = False) -> str:
+            if is_sub_func:
+                return name
             return f"{name}.read()"
 
         dt_manager = HLSDataTypeManager(
@@ -648,9 +648,17 @@ class HLSConfig:
                             r"^#write:([a-zA-Z\_0-9]+),([a-zA-Z\.\_0-9]+),([a-zA-Z\_0-9]+)#$"
                         )
                         match = pattern.match(potential_match_str)
+                        pattern_nostream = re.compile(
+                            r"^#write_nostream:([a-zA-Z\_0-9]+),([a-zA-Z\.\_0-9]+),([a-zA-Z\_0-9]+)#$"
+                        )
+                        match_nostream = pattern_nostream.match(potential_match_str)
                         assert (
-                            match
+                            match or match_nostream
                         ), f"Error: Line '{line.strip()}' include '#write' but with wrong format."
+                        nostream = False
+                        if match_nostream:
+                            match = match_nostream
+                            nostream = True
 
                         tgt_port_name, ori_var, tgt_outer_type = (
                             match.group(1),
@@ -659,14 +667,26 @@ class HLSConfig:
                         )
                         assert tgt_outer_type[:6] == "outer_"
                         tgt_inner_type = tgt_outer_type[6:]
-                        line = indent_space + r"{" + "\n"
+                        line = (
+                            ""
+                            if not nostream
+                            else (indent_space + f"{tgt_outer_type} {tgt_port_name};\n")
+                        )
+                        line += indent_space + r"{" + "\n"
                         line += (
                             indent_space
                             + f"    {tgt_inner_type}_to_{tgt_outer_type}({ori_var}, tmp_{tgt_outer_type}_var, true);\n"
                         )
                         line += (
-                            indent_space
-                            + f"    {tgt_port_name}.write(tmp_{tgt_outer_type}_var);\n"
+                            (
+                                indent_space
+                                + f"    {tgt_port_name}.write(tmp_{tgt_outer_type}_var);\n"
+                            )
+                            if not nostream
+                            else (
+                                indent_space
+                                + f"    {tgt_port_name} = tmp_{tgt_outer_type}_var;\n"
+                            )
                         )
                         line += indent_space + r"}" + "\n"
                         reduce_unit_func_str += line
@@ -725,23 +745,34 @@ class HLSConfig:
                         pattern_noend = re.compile(
                             r"^#write_noend:([a-zA-Z\_0-9]+),([a-zA-Z\.\[\]\_0-9]+)#$"
                         )
+                        pattern_notrans = re.compile(
+                            r"^#write_notrans:([a-zA-Z\_0-9]+),([a-zA-Z\.\[\]\_0-9]+)#$"
+                        )
                         match = pattern.match(potential_match_str)
-                        ending = "true"
-                        if not match:
-                            match = pattern_noend.match(potential_match_str)
-                            ending = "false"
+                        match_noend = pattern_noend.match(potential_match_str)
+                        match_notrans = pattern_notrans.match(potential_match_str)
                         assert (
-                            match
+                            match or match_noend or match_notrans
                         ), f"Error2: Line '{line.strip()}' include '#write' but with wrong format."
+                        ending = "false" if match_noend else "true"
+                        do_trans = False if match_notrans else True
 
+                        if match_noend:
+                            match = match_noend
+                        elif match_notrans:
+                            match = match_notrans
                         tgt_port_name, ori_var = match.group(1), match.group(2)
                         tgt_outer_type = port2type[tgt_port_name]
                         assert tgt_outer_type[:6] == "outer_"
                         tgt_inner_type = tgt_outer_type[6:]
                         line = indent_space + r"{" + "\n"
                         line += (
-                            indent_space
-                            + f"    {tgt_inner_type}_to_{tgt_outer_type}({ori_var}, tmp_{tgt_outer_type}_var, {ending});\n"
+                            (
+                                indent_space
+                                + f"    {tgt_inner_type}_to_{tgt_outer_type}({ori_var}, tmp_{tgt_outer_type}_var, {ending});\n"
+                            )
+                            if do_trans
+                            else ""
                         )
                         line += (
                             indent_space
@@ -775,7 +806,12 @@ class HLSConfig:
                     port2type[port.name] = dt_manager.from_dfir_type(port.data_type)
                     if port in constants_from_ports or port.name in unused_ports:
                         continue
-                    func_str += f"    stream<{port2type[port.name]}> &{port.name},\n"
+                    if not is_sub_func:
+                        func_str += (
+                            f"    stream<{port2type[port.name]}> &{port.name},\n"
+                        )
+                    else:
+                        func_str += f"    {port2type[port.name]} &{port.name},\n"
                     func.params.append(
                         (
                             port.unique_name,
@@ -797,6 +833,8 @@ class HLSConfig:
 
                 source_code += func_str + ";\n\n"
                 func_str += " {\n"
+                if is_sub_func:
+                    func_str += "#pragma HLS INLINE\n"
                 has_end_flag = False
 
                 def manage_line(line: str, indent: int) -> str:
@@ -829,7 +867,7 @@ class HLSConfig:
                         else:
                             line = line.replace(
                                 f"#read:{port}#",
-                                f"{gen_read_name(port, comp.get_port(port))}",
+                                f"{gen_read_name(port, comp.get_port(port), is_sub_func)}",
                             )
                         line = line.replace(f"#opt_type:{port}#", port2type[port][6:])
 
@@ -843,18 +881,26 @@ class HLSConfig:
                     indent_space = " " * 4 * indent
                     # for write
                     if "#write" in line:
-                        pattern = re.compile(
-                            r"^#write:([a-zA-Z\_0-9]+),([a-zA-Z\.\_0-9]+)#$"
-                        )
                         i = 0
                         while i < len(line) and line[i] == " ":
                             i += 1
                         indent_space += " " * i
                         potential_match_str = line[i:]
+                        pattern = re.compile(
+                            r"^#write:([a-zA-Z\_0-9]+),([a-zA-Z\.\[\]\_0-9]+)#$"
+                        )
+                        pattern_notrans = re.compile(
+                            r"^#write_notrans:([a-zA-Z\_0-9]+),([a-zA-Z\.\[\]\_0-9]+)#$"
+                        )
                         match = pattern.match(potential_match_str)
+                        match_notrans = pattern_notrans.match(potential_match_str)
                         assert (
-                            match
-                        ), f"Error: Line '{line.strip()}' include '#write' but with wrong format."
+                            match or match_notrans
+                        ), f"Error2: Line '{line.strip()}' include '#write' but with wrong format."
+                        do_trans = False if match_notrans else True
+
+                        if match_notrans:
+                            match = match_notrans
 
                         tgt_port_name, ori_var = match.group(1), match.group(2)
                         tgt_outer_type = port2type[tgt_port_name]
@@ -862,13 +908,26 @@ class HLSConfig:
                         tgt_inner_type = tgt_outer_type[6:]
                         line = indent_space + r"{" + "\n"
                         line += (
-                            indent_space
-                            + f"    {tgt_inner_type}_to_{tgt_outer_type}({ori_var}, tmp_{tgt_outer_type}_var, end_flag_val);\n"
+                            (
+                                indent_space
+                                + f"    {tgt_inner_type}_to_{tgt_outer_type}({ori_var}, tmp_{tgt_outer_type}_var, end_flag_val);\n"
+                            )
+                            if do_trans
+                            else ""
                         )
-                        line += (
-                            indent_space
-                            + f"    {tgt_port_name}.write(tmp_{tgt_outer_type}_var);\n"
+                        target_final_var = (
+                            f"tmp_{tgt_outer_type}_var" if do_trans else ori_var
                         )
+                        if is_sub_func:
+                            line += (
+                                indent_space
+                                + f"    {tgt_port_name} = {target_final_var};\n"
+                            )
+                        else:
+                            line += (
+                                indent_space
+                                + f"    {tgt_port_name}.write({target_final_var});\n"
+                            )
                         line += indent_space + r"}" + "\n"
                         return line
                     elif "#peel" in line:
@@ -933,15 +992,16 @@ class HLSConfig:
         for sub_func in reduce_sub_funcs:
             sub_func_code = f"static void {sub_func.name}(\n"
             for port in sub_func.start_ports + sub_func.end_ports:
-                sub_func_code += f"    stream<{dt_manager.from_dfir_type(port.data_type)}> &{port.unique_name},\n"
+                # sub_func_code += f"    stream<{dt_manager.from_dfir_type(port.data_type)}> &{port.unique_name},\n"
+                sub_func_code += f"    {dt_manager.from_dfir_type(port.data_type)} &{port.unique_name},\n"
             # if any(sub_sub_func.change_length for sub_sub_func in sub_func.sub_funcs):
             #     sub_func_code += "    uint32_t &output_length,\n"
             # sub_func_code += "    uint32_t input_length\n"
             if sub_func_code[-2:] == ",\n":
                 sub_func_code = sub_func_code[:-2] + "\n"
-            sub_func_code += ") {\n"
+            sub_func_code += ") {\n#pragma HLS INLINE\n"
             sub_func_code += self.generate_sub_func_code(
-                sub_func.start_ports, sub_func.end_ports, sub_func.sub_funcs
+                sub_func.start_ports, sub_func.end_ports, sub_func.sub_funcs, True
             )
             top_func_sub_funcs = [
                 cur_sub_func
@@ -992,30 +1052,14 @@ class HLSConfig:
         start_ports: List[dfir.Port],
         end_ports: List[dfir.Port],
         functions: List[HLSFunction],
+        is_sub_sub_func: bool = False,
     ) -> str:
-        # output_len_name = (
-        #     "output_length"
-        #     if any(sub_sub_func.change_length for sub_sub_func in functions)
-        #     else "input_length"
-        # )
         port2var_name = {}
         adding_codes = ""
         for sub_sub_func in functions:
-            # need_output_length = False
-            # adding_codes += (
-            #     f"    uint32_t {sub_sub_func.name}_input_len = {output_len_name};\n"
-            # )
             call_code = f"    {sub_sub_func.name}(\n"
             call_params = []
-            # need_output_length = any(
-            #     (len(param) == 2 and param[1] == False) for param in sub_sub_func.params
-            # )
             for param in sub_sub_func.params:
-                # if len(param) == 2 and param[1] == True:
-                #     call_params.append(f"{sub_sub_func.name}_input_len")
-                # elif len(param) == 2 and param[1] == False:
-                #     call_params.append("output_length")
-                # else:
                 port_name, port_type, cur_port, is_in = param
                 if is_in:
                     if any(cur_port == st_p for st_p in start_ports):
@@ -1032,8 +1076,12 @@ class HLSConfig:
                         )
                         port2var_name[cur_port] = sub_sub_func_var_name
                         adding_codes += (
-                            f"    stream<{port_type}> {sub_sub_func_var_name};\n"
-                            f"    #pragma HLS STREAM variable={sub_sub_func_var_name} depth={self.STREAM_DEPTH}\n"
+                            (
+                                f"    stream<{port_type}> {sub_sub_func_var_name};\n"
+                                f"    #pragma HLS STREAM variable={sub_sub_func_var_name} depth={self.STREAM_DEPTH}\n"
+                            )
+                            if not is_sub_sub_func
+                            else (f"    {port_type} {sub_sub_func_var_name};\n")
                         )
                     call_params.append(sub_sub_func_var_name)
 

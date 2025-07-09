@@ -338,8 +338,10 @@ class CopyComponent(Component):
         code_in_loop = [
             r"#type:i_0# copy_src = #read:i_0#;",
             r"bool #end_flag_val# = copy_src.end_flag;",
-            r"o_0.write(copy_src);",
-            r"o_1.write(copy_src);",
+            # r"o_0.write(copy_src);",
+            # r"o_1.write(copy_src);",
+            r"#write_notrans:o_0,copy_src#",
+            r"#write_notrans:o_1,copy_src#",
         ]
         return self.get_hls_function(code_in_loop)
 
@@ -378,7 +380,7 @@ class GatherComponent(Component):
             + ", ".join(f"real_gather_src_{i}" for i in range(len(self.in_ports)))
             + ", #end_flag_val#"
             + r"};",
-            r"o_0.write(gather_result);",
+            r"#write_notrans:o_0,gather_result#",
         ]
         return self.get_hls_function(code_in_loop)
 
@@ -585,7 +587,7 @@ class UnaryOpComponent(Component):
             ]
             code_after_loop = [
                 # r"#output_length# = 1;",
-                r"o_0.write(length);",
+                r"#write:o_0,length#",
             ]
             return self.get_hls_function(
                 code_in_loop, code_before_loop, code_after_loop
@@ -706,22 +708,25 @@ class ReduceComponent(Component):
         code_in_loop = [
             r"#type:i_0# reduce_src = #read:i_0#;",
             r"bool #end_flag_val# = reduce_src.end_flag;",
-            f'hls::stream<#type:i_0#> reduce_key_in_stream("reduce_key_in_stream");',
-            r"#pragma HLS STREAM variable=reduce_key_in_stream depth=4",
-            f'hls::stream<#type:i_0#> reduce_transform_in_stream("reduce_transform_in_stream");',
-            r"#pragma HLS STREAM variable=reduce_transform_in_stream depth=4",
-            r"reduce_src.end_flag = true;" f"reduce_key_in_stream.write(reduce_src);",
-            f"reduce_transform_in_stream.write(reduce_src);",
-            f'hls::stream<#type:i_reduce_key_out#> reduce_key_out_stream("reduce_key_out_stream");',
-            r"#pragma HLS STREAM variable=reduce_key_out_stream depth=4",
-            f'hls::stream<#type:i_reduce_transform_out#> reduce_transform_out_stream("reduce_transform_out_stream");',
-            r"#pragma HLS STREAM variable=reduce_transform_out_stream depth=4",
-            f"#call_once:{func_key_name},reduce_key_in_stream,reduce_key_out_stream#;",
-            f"#call_once:{func_transform_name},reduce_transform_in_stream,reduce_transform_out_stream#;",
-            r"#type:i_reduce_key_out# reduce_key_out = reduce_key_out_stream.read();",
+            # f'hls::stream<#type:i_0#> reduce_key_in_stream("reduce_key_in_stream");',
+            # r"#pragma HLS STREAM variable=reduce_key_in_stream depth=4",
+            # f'hls::stream<#type:i_0#> reduce_transform_in_stream("reduce_transform_in_stream");',
+            # r"#pragma HLS STREAM variable=reduce_transform_in_stream depth=4",
+            # r"reduce_src.end_flag = true;",
+            # f"reduce_key_in_stream.write(reduce_src);",
+            # f"reduce_transform_in_stream.write(reduce_src);",
+            # f'hls::stream<#type:i_reduce_key_out#> reduce_key_out_stream("reduce_key_out_stream");',
+            # r"#pragma HLS STREAM variable=reduce_key_out_stream depth=4",
+            # f'hls::stream<#type:i_reduce_transform_out#> reduce_transform_out_stream("reduce_transform_out_stream");',
+            # r"#pragma HLS STREAM variable=reduce_transform_out_stream depth=4",
+            f"#type:i_reduce_key_out# reduce_key_out;",
+            f"#type:i_reduce_transform_out# reduce_transform_out;",
+            f"#call_once:{func_key_name},reduce_src,reduce_key_out#;",
+            f"#call_once:{func_transform_name},reduce_src,reduce_transform_out#;",
+            # r"#type:i_reduce_key_out# reduce_key_out = reduce_key_out_stream.read();",
             r"reduce_key_out.end_flag = #end_flag_val#;",
             r"intermediate_key.write(reduce_key_out);",
-            r"#type:i_reduce_transform_out# reduce_transform_out = reduce_transform_out_stream.read();",
+            # r"#type:i_reduce_transform_out# reduce_transform_out = reduce_transform_out_stream.read();",
             r"reduce_transform_out.end_flag = #end_flag_val#;",
             r"intermediate_transform.write(reduce_transform_out);",
         ]
@@ -799,16 +804,19 @@ class ReduceComponent(Component):
             r"    new_ele.valid.ele = 1;",
             r"    new_ele.data = real_reduce_transform_out;",
             r"} else {",
-            '    hls::stream<#type:o_reduce_unit_start_0#> reduce_unit_stream_0("reduce_unit_stream_0");',
-            r"#pragma HLS STREAM variable=reduce_unit_stream_0 depth=1",
-            '    hls::stream<#type:o_reduce_unit_start_1#> reduce_unit_stream_1("reduce_unit_stream_1");',
-            r"#pragma HLS STREAM variable=reduce_unit_stream_1 depth=1",
-            '    hls::stream<#type:i_reduce_unit_end#> reduce_unit_stream_out("reduce_unit_stream_out");',
-            r"#pragma HLS STREAM variable=reduce_unit_stream_out depth=1",
-            r"    #write:reduce_unit_stream_0,old_ele.data,#type:i_reduce_transform_out##",
-            r"    #write:reduce_unit_stream_1,real_reduce_transform_out,#type:i_reduce_transform_out##",
-            f"    #call_once:{func_unit_name},reduce_unit_stream_0,reduce_unit_stream_1,reduce_unit_stream_out#;",
-            r"    #type:i_reduce_unit_end# reduce_unit_out = #read:reduce_unit_stream_out#;",
+            # '    hls::stream<#type:o_reduce_unit_start_0#> reduce_unit_stream_0("reduce_unit_stream_0");',
+            # r"#pragma HLS STREAM variable=reduce_unit_stream_0 depth=1",
+            # '    hls::stream<#type:o_reduce_unit_start_1#> reduce_unit_stream_1("reduce_unit_stream_1");',
+            # r"#pragma HLS STREAM variable=reduce_unit_stream_1 depth=1",
+            # '    hls::stream<#type:i_reduce_unit_end#> reduce_unit_stream_out("reduce_unit_stream_out");',
+            # r"#pragma HLS STREAM variable=reduce_unit_stream_out depth=1",
+            # r"    #write:reduce_unit_stream_0,old_ele.data,#type:i_reduce_transform_out##",
+            # r"    #write:reduce_unit_stream_1,real_reduce_transform_out,#type:i_reduce_transform_out##",
+            r"    #write_nostream:old_ele_data,old_ele.data,#type:i_reduce_transform_out##",
+            r"    #write_nostream:new_ele_data,real_reduce_transform_out,#type:i_reduce_transform_out##",
+            r"    #type:i_reduce_unit_end# reduce_unit_out;",
+            f"    #call_once:{func_unit_name},old_ele_data,new_ele_data,reduce_unit_out#;",
+            # r"    #type:i_reduce_unit_end# reduce_unit_out = #read:reduce_unit_stream_out#;",
             r"    #peel:i_reduce_unit_end,reduce_unit_out,real_reduce_unit_out#",
             r"    new_ele.data = real_reduce_unit_out;",
             r"}",
