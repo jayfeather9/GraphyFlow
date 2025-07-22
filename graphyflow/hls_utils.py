@@ -81,6 +81,10 @@ class HLSDataTypeManager:
         cls._cnt += 1
         return cls._cnt
 
+    def to_stack(self, o_name):
+        assert o_name in self.to_outer_type.values()
+        return f"stack_{o_name}"
+
     def get_all_defines(self) -> List[str]:
         def gen_define(def_map_ele):
             return (
@@ -88,6 +92,15 @@ class HLSDataTypeManager:
                 + "\n".join(def_map_ele[0])
                 + "\n} "
                 + f"{def_map_ele[1]};"
+            )
+
+        def gen_outer_stack(outer_name):
+            s_name = f"stack_{outer_name}"
+            return (
+                "typedef struct {\n"
+                + f"{outer_name} eles[PE_NUM];\n"
+                + "} "
+                + f"{s_name};"
             )
 
         # first generate node_t & edge_t define, add to type_preds
@@ -191,8 +204,15 @@ class HLSDataTypeManager:
             new_map_ele[1] = outer_name
             all_defines.append(gen_define(new_map_ele))
             all_defines.append(gen_print_func(new_map_ele))
+            all_defines.append(gen_outer_stack(outer_name))
             all_defines.append(transition_func1 + transition_func2)
         return all_defines
+
+    def from_dfir_type_stack(
+        self,
+        dfir_type: dftype.DfirType,
+    ) -> str:
+        return self.to_stack(self.from_dfir_type(dfir_type))
 
     def from_dfir_type(
         self,
@@ -297,10 +317,10 @@ class HLSConfig:
         self.defines = []  # TODO: MAX_NUM
         self.structs = {}
         self.functions = {}
-        self.PARTITION_FACTOR = 16
         self.STREAM_DEPTH = 4
         self.MAX_NUM = 256
         self.BUFFER_LENGTH = 4
+        self.PARALLEL_NUM = 8
 
     def __repr__(self) -> str:
         return (
@@ -386,7 +406,7 @@ class HLSConfig:
         def gen_read_name(name: str, port: dfir.Port, is_sub_func: bool = False) -> str:
             if is_sub_func:
                 return name
-            return f"{name}.read()"
+            return f"{name}_data.eles[i_pe]"
 
         dt_manager = HLSDataTypeManager(
             global_graph.node_properties, global_graph.edge_properties
@@ -417,7 +437,7 @@ class HLSConfig:
                 for port in comp.ports:
                     assert port.port_type == dfir.PortType.OUT
                     start_ports.append(port.connection)
-                    top_func_def += f"    stream<{dt_manager.from_dfir_type(port.data_type)}> &{port.connection.unique_name},\n"
+                    top_func_def += f"    stream<{dt_manager.from_dfir_type_stack(port.data_type)}> &{port.connection.unique_name},\n"
             elif isinstance(comp, dfir.ReduceComponent):
                 sub_funcs, sub_func_names = HLSConfig.ReduceSubFunc.from_reduce(comp)
                 port2type = {
@@ -442,9 +462,9 @@ class HLSConfig:
                 accumulate_type = comp.get_port("i_reduce_unit_end").data_type
                 reduce_pre_func_str += "".join(
                     [
-                        f"    stream<{dt_manager.from_dfir_type(input_type)}> &i_0,\n"
-                        f"    stream<{dt_manager.from_dfir_type(key_out_type)}> &intermediate_key,\n"
-                        f"    stream<{dt_manager.from_dfir_type(accumulate_type)}> &intermediate_transform\n"
+                        f"    stream<{dt_manager.from_dfir_type_stack(input_type)}> &i_0,\n"
+                        f"    stream<{dt_manager.from_dfir_type_stack(key_out_type)}> &intermediate_key,\n"
+                        f"    stream<{dt_manager.from_dfir_type_stack(accumulate_type)}> &intermediate_transform\n"
                         # "    uint32_t input_length\n"
                         ") {\n",
                         f"    LOOP_{reduce_pre_func.name}:\n",
@@ -538,17 +558,15 @@ class HLSConfig:
                     sub_names=["data", "valid"],
                 )
                 codes_before_loop = [
-                    line.replace("#reduce_key_struct#", reduce_key_struct).replace(
-                        "#partition_factor#", str(self.PARTITION_FACTOR)
-                    )
+                    line.replace("#reduce_key_struct#", reduce_key_struct)
                     for line in reduce_unit_func.code_before_loop
                 ]
                 reduce_unit_func_str = "".join(
                     [
                         f"static void {reduce_unit_func.name}(\n",
-                        f"    stream<{dt_manager.from_dfir_type(key_out_type)}> &intermediate_key,\n",
-                        f"    stream<{dt_manager.from_dfir_type(accumulate_type)}> &intermediate_transform,\n",
-                        f"    stream<{dt_manager.from_dfir_type(accumulate_type)}> &o_0\n",
+                        f"    stream<{dt_manager.from_dfir_type_stack(key_out_type)}> &intermediate_key,\n",
+                        f"    stream<{dt_manager.from_dfir_type_stack(accumulate_type)}> &intermediate_transform,\n",
+                        f"    stream<{dt_manager.from_dfir_type_stack(accumulate_type)}> &o_0\n",
                         # "    uint32_t &output_length,\n",
                         # "    uint32_t input_length\n",
                         ") {\n",
@@ -807,9 +825,7 @@ class HLSConfig:
                     if port in constants_from_ports or port.name in unused_ports:
                         continue
                     if not is_sub_func:
-                        func_str += (
-                            f"    stream<{port2type[port.name]}> &{port.name},\n"
-                        )
+                        func_str += f"    stream<{dt_manager.to_stack(port2type[port.name])}> &{port.name},\n"
                     else:
                         func_str += f"    {port2type[port.name]} &{port.name},\n"
                     func.params.append(
@@ -963,15 +979,19 @@ class HLSConfig:
                     func_str += f"{manage_line(line, 1)}"
                 # sub func no loop
                 if not is_sub_func:
+                    func_str += "bool outer_ending = false;\n"
                     func_str += f"    LOOP_{func.name}:\n"
                     # func_str += "    for (uint32_t i = 0; i < input_length; i++) {\n"
-                    func_str += "    while (true) {\n"
+                    func_str += "    while (!outer_ending) {\n"
                     func_str += "#pragma HLS PIPELINE\n"
+                    func_str += "        for (int i_pe = 0; i_pe <= PE_NUM; i_pe++) {\n"
+                    func_str += "#pragma HLS UNROLL\n"
                 for line in func.code_in_loop:
-                    func_str += f"{manage_line(line, 2)}"
+                    func_str += f"{manage_line(line, 3)}"
                 assert has_end_flag
                 if not is_sub_func:
-                    func_str += "        if (end_flag_val) break;\n"
+                    func_str += "            if (end_flag_val) { outer_ending = true; break; }\n"
+                    func_str += "        }\n"
                     func_str += "    }\n"
                 for line in func.code_after_loop:
                     func_str += f"{manage_line(line, 1)}"
@@ -981,7 +1001,7 @@ class HLSConfig:
 
         # manage top function end ports & input len
         for port in end_ports:
-            top_func_def += f"    stream<{dt_manager.from_dfir_type(port.data_type)}> &{port.unique_name},\n"
+            top_func_def += f"    stream<{dt_manager.from_dfir_type_stack(port.data_type)}> &{port.unique_name},\n"
         # top_func_def += "    uint32_t input_length\n"
         if top_func_def[-2:] == ",\n":
             top_func_def = top_func_def[:-2] + "\n"
@@ -1039,7 +1059,8 @@ class HLSConfig:
             + "#include <stdint.h>\n#include <ap_int.h>\n#include <hls_stream.h>\n\n"
             + "using namespace hls;\nusing namespace std;\n\n"
             + f"#define MAX_NUM {self.MAX_NUM}\n"
-            + f"#define L {self.BUFFER_LENGTH}\n\n"
+            + f"#define L {self.BUFFER_LENGTH}\n"
+            + f"#define PE_NUM {self.PARALLEL_NUM}\n\n"
             + header_code
             + "\n\n"
             + f"#endif // {header_name_for_define}\n"
@@ -1077,7 +1098,7 @@ class HLSConfig:
                         port2var_name[cur_port] = sub_sub_func_var_name
                         adding_codes += (
                             (
-                                f"    stream<{port_type}> {sub_sub_func_var_name};\n"
+                                f"    stream<stack_{port_type}> {sub_sub_func_var_name};\n"
                                 f"    #pragma HLS STREAM variable={sub_sub_func_var_name} depth={self.STREAM_DEPTH}\n"
                             )
                             if not is_sub_sub_func
