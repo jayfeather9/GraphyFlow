@@ -501,6 +501,9 @@ class UnaryOp(Enum):
     GET_LENGTH = "length"
     GET_ATTR = "get_attr"
 
+    def store_val(self, val):
+        self.val = val
+
     def __repr__(self) -> str:
         return self.value
 
@@ -557,9 +560,12 @@ class UnaryOpComponent(Component):
             assert isinstance(real_input_type, TupleType)
             assert select_index is not None
             inside_output_type = real_input_type.types[select_index]
+            op.store_val(select_index)
         elif op == UnaryOp.GET_ATTR:
             assert attr_type is not None
+            assert select_index is not None
             inside_output_type = attr_type
+            op.store_val(select_index)
         else:
             assert not isinstance(
                 real_input_type, TupleType
