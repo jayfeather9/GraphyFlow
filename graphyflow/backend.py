@@ -154,10 +154,39 @@ class CodeIf(HLSCodeLine):
             + "if ("
             + self.expr.code
             + ") {\n"
-            + "\n".join(c.gen_code(indent_lvl + 1) for c in self.codes)
+            + "".join(c.gen_code(indent_lvl + 1) for c in self.codes)
             + oind
             + "}\n"
         )
+
+
+class CodeIfElse(HLSCodeLine):
+    def __init__(
+        self, expr: HLSExpr, if_codes: List[HLSCodeLine], else_codes: List[HLSCodeLine]
+    ) -> None:
+        super().__init__()
+        self.expr = expr
+        self.if_codes = if_codes
+        self.else_codes = else_codes
+
+    def gen_code(self, indent_lvl: int = 0) -> str:
+        oind = indent_lvl * INDENT_UNIT
+        if_part = (
+            oind
+            + "if ("
+            + self.expr.code
+            + ") {\n"
+            + "".join(c.gen_code(indent_lvl + 1) for c in self.if_codes)
+            + oind
+            + "}"
+        )
+        else_part = (
+            " else {\n"
+            + "".join(c.gen_code(indent_lvl + 1) for c in self.else_codes)
+            + oind
+            + "}\n"
+        )
+        return if_part + else_part
 
 
 class CodeWhile(HLSCodeLine):
@@ -216,7 +245,7 @@ class CodeBreak(HLSCodeLine):
         return indent_lvl * INDENT_UNIT + "break;\n"
 
 
-class HLSExprType(Enum):
+class HLSExprT(Enum):
     CONST = "const"
     VAR = "var"
     UOP = "uop"
@@ -227,25 +256,25 @@ class HLSExprType(Enum):
 class HLSExpr:
     def __init__(
         self,
-        expr_type: HLSExprType,
+        expr_type: HLSExprT,
         expr_val: Any,
         operands: Optional[List[HLSExpr]] = None,
     ) -> None:
-        if expr_type == HLSExprType.CONST:
+        if expr_type == HLSExprT.CONST:
             assert type(expr_val) in [int, float, bool]
             assert operands is None
-        elif expr_type == HLSExprType.VAR:
+        elif expr_type == HLSExprT.VAR:
             assert type(expr_val) == HLSVar
             assert operands is None
-        elif expr_type == HLSExprType.STREAM_READ:
+        elif expr_type == HLSExprT.STREAM_READ:
             assert expr_val is None
             assert type(operands) == list and len(operands) == 1
-            assert operands[0].type == HLSExprType.VAR
+            assert operands[0].type == HLSExprT.VAR
             # assert operands[0].val.type.type == HLSBasicType.STREAM # This check will be done at a higher level
-        elif expr_type == HLSExprType.UOP:
+        elif expr_type == HLSExprT.UOP:
             assert type(expr_val) == dfir.UnaryOp
             assert type(operands) == list and len(operands) == 1
-        elif expr_type == HLSExprType.BINOP:
+        elif expr_type == HLSExprT.BINOP:
             assert type(expr_val) == dfir.BinOp
             assert type(operands) == list and len(operands) == 2
         else:
@@ -256,28 +285,28 @@ class HLSExpr:
 
     @property
     def contain_s_read(self) -> bool:
-        if self.type in [HLSExprType.CONST, HLSExprType.VAR]:
+        if self.type in [HLSExprT.CONST, HLSExprT.VAR]:
             return False
-        elif self.type == HLSExprType.STREAM_READ:
+        elif self.type == HLSExprT.STREAM_READ:
             return True
-        elif self.type in [HLSExprType.UOP, HLSExprType.BINOP]:
+        elif self.type in [HLSExprT.UOP, HLSExprT.BINOP]:
             return any(opr.contain_s_read for opr in self.operands)
         else:
             assert False, f"Type {self.type} not supported"
 
     @property
     def code(self) -> str:
-        if self.type == HLSExprType.CONST:
+        if self.type == HLSExprT.CONST:
             if type(self.val) == float:
                 return f"(({HLSBasicType.FLOAT.value}){self.val})"
             elif type(self.val) == bool:
                 return "true" if self.val else "false"
             return str(self.val)
-        elif self.type == HLSExprType.VAR:
+        elif self.type == HLSExprT.VAR:
             return self.val.name
-        elif self.type == HLSExprType.STREAM_READ:
+        elif self.type == HLSExprT.STREAM_READ:
             return f"{self.operands[0].val.name}.read()"
-        elif self.type == HLSExprType.UOP:
+        elif self.type == HLSExprT.UOP:
             trans_dict = {
                 dfir.UnaryOp.NOT: "(!operand)",
                 dfir.UnaryOp.NEG: "(-operand)",
@@ -288,7 +317,7 @@ class HLSExpr:
                 dfir.UnaryOp.GET_ATTR: f"operand.{self.val.val}",
             }
             return trans_dict[self.val].replace("operand", self.operands[0].code)
-        elif self.type == HLSExprType.BINOP:
+        elif self.type == HLSExprT.BINOP:
             assert not self.contain_s_read
             return self.val.gen_repr_forbkd(
                 self.operands[0].code, self.operands[1].code
@@ -904,7 +933,7 @@ class BackendManager:
         for p in hls_func.params:
             if p.name in in_batch_vars:
                 read_expr = HLSExpr(
-                    HLSExprType.STREAM_READ, None, [HLSExpr(HLSExprType.VAR, p)]
+                    HLSExprT.STREAM_READ, None, [HLSExpr(HLSExprT.VAR, p)]
                 )
                 while_loop_body.append(CodeAssign(in_batch_vars[p.name], read_expr))
 
@@ -927,15 +956,15 @@ class BackendManager:
             # For simplicity, we use the first input's end_flag. A real implementation might OR them.
             first_in_batch = list(in_batch_vars.values())[0]
             end_check_expr = HLSExpr(
-                HLSExprType.VAR,
+                HLSExprT.VAR,
                 HLSVar(f"{first_in_batch.name}.end_flag", end_flag_var.type),
             )
             assign_end_flag = CodeAssign(end_flag_var, end_check_expr)
-            break_if = CodeIf(HLSExpr(HLSExprType.VAR, end_flag_var), [CodeBreak()])
+            break_if = CodeIf(HLSExpr(HLSExprT.VAR, end_flag_var), [CodeBreak()])
             while_loop_body.extend([assign_end_flag, break_if])
 
         body.append(
-            CodeWhile(codes=while_loop_body, iter_expr=HLSExpr(HLSExprType.CONST, True))
+            CodeWhile(codes=while_loop_body, iter_expr=HLSExpr(HLSExprT.CONST, True))
         )
         return body
 
@@ -963,15 +992,11 @@ class BackendManager:
         )
 
         # Operands from input batches, indexed by the iterator
-        op1 = HLSExpr(
-            HLSExprType.VAR, HLSVar(f"in_batch_i_0.data[{iterator}]", in0_type)
-        )
-        op2 = HLSExpr(
-            HLSExprType.VAR, HLSVar(f"in_batch_i_1.data[{iterator}]", in1_type)
-        )
+        op1 = HLSExpr(HLSExprT.VAR, HLSVar(f"in_batch_i_0.data[{iterator}]", in0_type))
+        op2 = HLSExpr(HLSExprT.VAR, HLSVar(f"in_batch_i_1.data[{iterator}]", in1_type))
 
         # The binary operation expression
-        bin_expr = HLSExpr(HLSExprType.BINOP, comp.op, [op1, op2])
+        bin_expr = HLSExpr(HLSExprT.BINOP, comp.op, [op1, op2])
 
         # The variable to store the result in the output batch
         target_var = HLSVar(f"out_batch_o_0.data[{iterator}]", out_type)
@@ -994,9 +1019,9 @@ class BackendManager:
         )
 
         operand = HLSExpr(
-            HLSExprType.VAR, HLSVar(f"in_batch_i_0.data[{iterator}]", in_type)
+            HLSExprT.VAR, HLSVar(f"in_batch_i_0.data[{iterator}]", in_type)
         )
-        unary_expr = HLSExpr(HLSExprType.UOP, comp.op, [operand])
+        unary_expr = HLSExpr(HLSExprT.UOP, comp.op, [operand])
         target_var = HLSVar(f"out_batch_o_0.data[{iterator}]", out_type)
 
         return [CodeAssign(target_var, unary_expr)]
@@ -1008,7 +1033,7 @@ class BackendManager:
         in_type = self.type_map[comp.get_port("i_0").data_type]
 
         in_var_expr = HLSExpr(
-            HLSExprType.VAR, HLSVar(f"in_batch_i_0.data[{iterator}]", in_type)
+            HLSExprT.VAR, HLSVar(f"in_batch_i_0.data[{iterator}]", in_type)
         )
 
         target_o0 = HLSVar(f"out_batch_o_0.data[{iterator}]", in_type)
@@ -1027,7 +1052,7 @@ class BackendManager:
         for i, in_port in enumerate(comp.in_ports):
             in_type = self.type_map[in_port.data_type]
             in_var_expr = HLSExpr(
-                HLSExprType.VAR,
+                HLSExprT.VAR,
                 HLSVar(f"in_batch_{in_port.name}.data[{iterator}]", in_type),
             )
 
@@ -1048,15 +1073,15 @@ class BackendManager:
         for i, out_port in enumerate(comp.out_ports):
             out_type = self.type_map[out_port.data_type]
 
-            get_attr_op = dfir.UnaryOp.GET_ATTR
-            get_attr_op.store_val(f"ele_{i}")
+            ga_op = dfir.UnaryOp.GET_ATTR
+            ga_op.store_val(f"ele_{i}")
             # Source is a member of the input struct
             in_member_expr = HLSExpr(
-                HLSExprType.UOP,
-                get_attr_op,
+                HLSExprT.UOP,
+                ga_op,
                 [
                     HLSExpr(
-                        HLSExprType.VAR,
+                        HLSExprT.VAR,
                         HLSVar(f"in_batch_i_0.data[{iterator}]", in_type),
                     )
                 ],
@@ -1081,10 +1106,10 @@ class BackendManager:
 
         # Source expressions
         data_expr = HLSExpr(
-            HLSExprType.VAR, HLSVar(f"in_batch_i_data.data[{iterator}]", data_type)
+            HLSExprT.VAR, HLSVar(f"in_batch_i_data.data[{iterator}]", data_type)
         )
         cond_expr = HLSExpr(
-            HLSExprType.VAR, HLSVar(f"in_batch_i_cond.data[{iterator}]", cond_type)
+            HLSExprT.VAR, HLSVar(f"in_batch_i_cond.data[{iterator}]", cond_type)
         )
 
         # Target members of the output Optional struct
@@ -1123,48 +1148,44 @@ class BackendManager:
         # 3. Read input batch and declare output index
         in_stream_param = hls_func.params[0]  # Assume i_0 is the first param
         read_expr = HLSExpr(
-            HLSExprType.STREAM_READ, None, [HLSExpr(HLSExprType.VAR, in_stream_param)]
+            HLSExprT.STREAM_READ, None, [HLSExpr(HLSExprT.VAR, in_stream_param)]
         )
         while_loop_body.append(CodeAssign(in_batch_var, read_expr))
 
         out_idx_type = HLSType(HLSBasicType.UINT8)
         out_idx_var = HLSVar("out_idx", out_idx_type)
-        while_loop_body.append(CodeAssign(out_idx_var, HLSExpr(HLSExprType.CONST, 0)))
+        while_loop_body.append(CodeAssign(out_idx_var, HLSExpr(HLSExprT.CONST, 0)))
 
         # 4. Inner for loop for filtering
         in_elem_type = self.type_map[in_port.data_type]  # This is an Optional type
         out_elem_type = self.type_map[out_port.data_type]
 
-        get_attr_op = dfir.UnaryOp.GET_ATTR
-        get_attr_op.store_val("valid")
+        ga_op = dfir.UnaryOp.GET_ATTR
+        ga_op.store_val("valid")
         # Condition: in_batch_i_0.data[i].valid
         cond_expr = HLSExpr(
-            HLSExprType.UOP,
-            get_attr_op,
-            [HLSExpr(HLSExprType.VAR, HLSVar(f"in_batch_i_0.data[i]", in_elem_type))],
+            HLSExprT.UOP,
+            ga_op,
+            [HLSExpr(HLSExprT.VAR, HLSVar(f"in_batch_i_0.data[i]", in_elem_type))],
         )
 
-        get_attr_op = dfir.UnaryOp.GET_ATTR
-        get_attr_op.store_val("data")
+        ga_op = dfir.UnaryOp.GET_ATTR
+        ga_op.store_val("data")
         # Assignment if valid: out_batch_o_0.data[out_idx++] = in_batch_i_0.data[i].data
         assign_data = CodeAssign(
             HLSVar(f"out_batch_o_0.data[{out_idx_var.name}]", out_elem_type),
             HLSExpr(
-                HLSExprType.UOP,
-                get_attr_op,
-                [
-                    HLSExpr(
-                        HLSExprType.VAR, HLSVar(f"in_batch_i_0.data[i]", in_elem_type)
-                    )
-                ],
+                HLSExprT.UOP,
+                ga_op,
+                [HLSExpr(HLSExprT.VAR, HLSVar(f"in_batch_i_0.data[i]", in_elem_type))],
             ),
         )
         increment_idx = CodeAssign(
             out_idx_var,
             HLSExpr(
-                HLSExprType.BINOP,
+                HLSExprT.BINOP,
                 dfir.BinOp.ADD,
-                [HLSExpr(HLSExprType.VAR, out_idx_var), HLSExpr(HLSExprType.CONST, 1)],
+                [HLSExpr(HLSExprT.VAR, out_idx_var), HLSExpr(HLSExprT.CONST, 1)],
             ),
         )
 
@@ -1178,13 +1199,13 @@ class BackendManager:
         while_loop_body.append(
             CodeAssign(
                 HLSVar(f"{out_batch_var.name}.end_pos", out_idx_type),
-                HLSExpr(HLSExprType.VAR, out_idx_var),
+                HLSExpr(HLSExprT.VAR, out_idx_var),
             )
         )
-        get_attr_op = dfir.UnaryOp.GET_ATTR
-        get_attr_op.store_val("end_flag")
+        ga_op = dfir.UnaryOp.GET_ATTR
+        ga_op.store_val("end_flag")
         end_flag_expr = HLSExpr(
-            HLSExprType.UOP, get_attr_op, [HLSExpr(HLSExprType.VAR, in_batch_var)]
+            HLSExprT.UOP, ga_op, [HLSExpr(HLSExprT.VAR, in_batch_var)]
         )
         while_loop_body.append(
             CodeAssign(
@@ -1200,7 +1221,7 @@ class BackendManager:
         while_loop_body.append(CodeIf(end_flag_expr, [CodeBreak()]))
 
         body.append(
-            CodeWhile(codes=while_loop_body, iter_expr=HLSExpr(HLSExprType.CONST, True))
+            CodeWhile(codes=while_loop_body, iter_expr=HLSExpr(HLSExprT.CONST, True))
         )
         return body
 
@@ -1214,11 +1235,13 @@ class BackendManager:
     ) -> List[HLSCodeLine]:
         """
         Traverses a sub-graph from start to end ports and generates the inlined logic.
+        (This is the fully expanded version with more component types)
         """
         code_lines: List[HLSCodeLine] = []
-        port_to_var_map = io_var_map.copy()
+        p2var_map = io_var_map.copy()
 
-        q = [p.connection.parent for p in start_ports]
+        # 1. Topologically sort the sub-graph
+        q = [p.connection.parent for p in start_ports if p.connected]
         visited_ids = set([c.readable_id for c in q])
 
         head = 0
@@ -1226,60 +1249,126 @@ class BackendManager:
             comp = q[head]
             head += 1
 
-            # Check if all inputs for the current component are ready
-            inputs_ready = True
-            for p in comp.in_ports:
-                if p.connection not in port_to_var_map:
-                    inputs_ready = False
-                    break
-
-            # If not ready, re-queue it and try again later
+            inputs_ready = all(p.connection in p2var_map for p in comp.in_ports)
             if not inputs_ready:
                 q.append(comp)
-                # Deadlock detection
-                if head > len(q) * 2:  # Heuristic to detect non-progress
+                if (
+                    head > len(q) * 2 + len(start_ports) * 2
+                ):  # More robust deadlock check
                     raise RuntimeError(
                         f"Deadlock in sub-graph topological sort, stuck at component {comp.name}"
                     )
                 continue
 
-            # --- Inputs are ready, process the component immediately ---
-
-            # 1. Create HLSVars for the output ports of this component
+            # --- Inputs are ready, process the component ---
+            # a. Create HLSVars for the output ports
             for out_port in comp.out_ports:
-                if out_port.connected and out_port.connection == end_port:
-                    # This is the final output port of the sub-graph
-                    port_to_var_map[out_port] = port_to_var_map[end_port]
-                elif out_port.connected:
-                    # This is an intermediate output, create a temporary variable for it
-                    temp_var_name = f"temp_{out_port.parent.name}_{out_port.name}"
-                    temp_var_type = self.type_map[out_port.data_type]
-                    temp_var = HLSVar(temp_var_name, temp_var_type)
+                if out_port.connected:
+                    if out_port.connection == end_port:
+                        p2var_map[out_port] = p2var_map[end_port]
+                    else:
+                        temp_var = HLSVar(
+                            f"temp_{out_port.parent.name}_{out_port.name}",
+                            self.type_map[out_port.data_type],
+                        )
+                        code_lines.append(CodeVarDecl(temp_var.name, temp_var.type))
+                        p2var_map[out_port] = temp_var
 
-                    # Add declaration to code and update the map for successors
-                    code_lines.append(CodeVarDecl(temp_var.name, temp_var.type))
-                    port_to_var_map[out_port] = temp_var
-
-            # 2. Translate the component's logic into CodeLine objects
+            # b. Translate the component's logic into CodeLine(s)
+            # This is a non-batched, direct translation of the component's logic
             if isinstance(comp, dfir.BinOpComponent):
-                op1 = HLSExpr(
-                    HLSExprType.VAR, port_to_var_map[comp.get_port("i_0").connection]
-                )
-                op2 = HLSExpr(
-                    HLSExprType.VAR, port_to_var_map[comp.get_port("i_1").connection]
-                )
-                expr = HLSExpr(HLSExprType.BINOP, comp.op, [op1, op2])
-                target_var = port_to_var_map[comp.get_port("o_0")]
-                code_lines.append(CodeAssign(target_var, expr))
-            # ... You would add translations for other component types here ...
-            else:
-                # Fallback for any other component types
-                code_lines.append(CodeComment(f"Inlined logic for {comp.name}"))
+                op1 = HLSExpr(HLSExprT.VAR, p2var_map[comp.get_port("i_0").connection])
+                op2 = HLSExpr(HLSExprT.VAR, p2var_map[comp.get_port("i_1").connection])
+                expr = HLSExpr(HLSExprT.BINOP, comp.op, [op1, op2])
+                code_lines.append(CodeAssign(p2var_map[comp.get_port("o_0")], expr))
 
-            # 3. Add successors to the queue
+            elif isinstance(comp, dfir.UnaryOpComponent):
+                op1 = HLSExpr(HLSExprT.VAR, p2var_map[comp.get_port("i_0").connection])
+                expr = HLSExpr(HLSExprT.UOP, comp.op, [op1])
+                code_lines.append(CodeAssign(p2var_map[comp.get_port("o_0")], expr))
+
+            elif isinstance(comp, dfir.CopyComponent):
+                in_var_expr = HLSExpr(
+                    HLSExprT.VAR, p2var_map[comp.get_port("i_0").connection]
+                )
+                target_o0 = p2var_map[comp.get_port("o_0")]
+                target_o1 = p2var_map[comp.get_port("o_1")]
+                code_lines.append(CodeAssign(target_o0, in_var_expr))
+                code_lines.append(CodeAssign(target_o1, in_var_expr))
+
+            elif isinstance(comp, dfir.GatherComponent):
+                target_struct_var = p2var_map[comp.get_port("o_0")]
+                for i, in_port in enumerate(comp.in_ports):
+                    in_var_expr = HLSExpr(HLSExprT.VAR, p2var_map[in_port.connection])
+                    # Assign to a member of the target struct
+                    member_var = HLSVar(
+                        f"{target_struct_var.name}.ele_{i}", in_var_expr.val.type
+                    )
+                    code_lines.append(CodeAssign(member_var, in_var_expr))
+
+            elif isinstance(comp, dfir.ScatterComponent):
+                in_var = p2var_map[comp.get_port("i_0").connection]
+                for i, out_port in enumerate(comp.out_ports):
+                    ga_op = dfir.UnaryOp.GET_ATTR
+                    ga_op.store_val(f"ele_{i}")
+                    expr = HLSExpr(HLSExprT.UOP, ga_op, [HLSExpr(HLSExprT.VAR, in_var)])
+                    code_lines.append(CodeAssign(p2var_map[out_port], expr))
+
+            elif isinstance(comp, dfir.ConditionalComponent):
+                data_expr = HLSExpr(
+                    HLSExprT.VAR, p2var_map[comp.get_port("i_data").connection]
+                )
+                cond_expr = HLSExpr(
+                    HLSExprT.VAR, p2var_map[comp.get_port("i_cond").connection]
+                )
+                target_struct_var = p2var_map[comp.get_port("o_0")]
+
+                # Assign to .data member
+                assign_data = CodeAssign(
+                    HLSVar(f"{target_struct_var.name}.data", data_expr.val.type),
+                    data_expr,
+                )
+                # Assign to .valid member
+                assign_valid = CodeAssign(
+                    HLSVar(f"{target_struct_var.name}.valid", cond_expr.val.type),
+                    cond_expr,
+                )
+                code_lines.extend([assign_data, assign_valid])
+
+            elif isinstance(comp, dfir.CollectComponent):
+                in_opt_var = p2var_map[comp.get_port("i_0").connection]
+                out_var = p2var_map[comp.get_port("o_0")]
+
+                # Condition: in_opt_var.valid
+                valid_op = dfir.UnaryOp.GET_ATTR
+                valid_op.store_val("valid")
+                cond_expr = HLSExpr(
+                    HLSExprT.UOP, valid_op, [HLSExpr(HLSExprT.VAR, in_opt_var)]
+                )
+
+                # Assignment: out_var = in_opt_var.data
+                data_op = dfir.UnaryOp.GET_ATTR
+                data_op.store_val("data")
+                assign_expr = HLSExpr(
+                    HLSExprT.UOP, data_op, [HLSExpr(HLSExprT.VAR, in_opt_var)]
+                )
+
+                if_block = CodeIf(cond_expr, [CodeAssign(out_var, assign_expr)])
+                code_lines.append(if_block)
+
+            elif isinstance(comp, dfir.UnusedEndMarkerComponent):
+                pass  # Do nothing for unused markers
+
+            else:
+                code_lines.append(
+                    CodeComment(f"Inlined logic for {comp.__class__} ({comp.name})")
+                )
+
+            # c. Add successors to the queue
             for p in comp.out_ports:
                 if p.connected and not isinstance(
-                    p.connection.parent, dfir.ReduceComponent
+                    p.connection.parent,
+                    (dfir.ReduceComponent, dfir.UnusedEndMarkerComponent),
                 ):
                     successor_comp = p.connection.parent
                     if successor_comp.readable_id not in visited_ids:
@@ -1318,17 +1407,15 @@ class BackendManager:
         while_loop_body.append(
             CodeAssign(
                 in_elem_var,
-                HLSExpr(
-                    HLSExprType.STREAM_READ, None, [HLSExpr(HLSExprType.VAR, in_stream)]
-                ),
+                HLSExpr(HLSExprT.STREAM_READ, None, [HLSExpr(HLSExprT.VAR, in_stream)]),
             )
         )
 
         # Extract and check end flag
-        get_attr_op = dfir.UnaryOp.GET_ATTR
-        get_attr_op.store_val("end_flag")
+        ga_op = dfir.UnaryOp.GET_ATTR
+        ga_op.store_val("end_flag")
         end_flag_expr = HLSExpr(
-            HLSExprType.UOP, get_attr_op, [HLSExpr(HLSExprType.VAR, in_elem_var)]
+            HLSExprT.UOP, ga_op, [HLSExpr(HLSExprT.VAR, in_elem_var)]
         )
         while_loop_body.append(CodeAssign(end_flag_var, end_flag_expr))
 
@@ -1358,7 +1445,7 @@ class BackendManager:
         while_loop_body.append(
             CodeAssign(
                 HLSVar(f"{key_out_var.name}.end_flag", HLSType(HLSBasicType.BOOL)),
-                HLSExpr(HLSExprType.VAR, end_flag_var),
+                HLSExpr(HLSExprT.VAR, end_flag_var),
             )
         )
         while_loop_body.append(
@@ -1366,7 +1453,7 @@ class BackendManager:
                 HLSVar(
                     f"{transform_out_var.name}.end_flag", HLSType(HLSBasicType.BOOL)
                 ),
-                HLSExpr(HLSExprType.VAR, end_flag_var),
+                HLSExpr(HLSExprT.VAR, end_flag_var),
             )
         )
         while_loop_body.append(CodeWriteStream(key_stream, key_out_var))
@@ -1374,11 +1461,11 @@ class BackendManager:
 
         # Break condition
         while_loop_body.append(
-            CodeIf(HLSExpr(HLSExprType.VAR, end_flag_var), [CodeBreak()])
+            CodeIf(HLSExpr(HLSExprT.VAR, end_flag_var), [CodeBreak()])
         )
 
         body.append(
-            CodeWhile(codes=while_loop_body, iter_expr=HLSExpr(HLSExprType.CONST, True))
+            CodeWhile(codes=while_loop_body, iter_expr=HLSExpr(HLSExprT.CONST, True))
         )
         return body
 
@@ -1387,52 +1474,392 @@ class BackendManager:
         body: List[HLSCodeLine] = []
         comp = hls_func.dfir_comp
 
-        # Types
-        key_type = self.type_map[comp.get_port("i_reduce_key_out").data_type]
-        accum_type = self.type_map[comp.get_port("i_reduce_transform_out").data_type]
-        # The BRAM stores a struct of {accumulator, valid_flag}
+        # 1. Get types and variables
+        key_stream, transform_stream, out_stream = hls_func.params
+
+        key_batch_type = key_stream.type.sub_types[0]
+        transform_batch_type = transform_stream.type.sub_types[0]
+        out_batch_type = out_stream.type.sub_types[0]
+
+        key_type = key_batch_type.sub_types[0].sub_types[0]
+        accum_type = transform_batch_type.sub_types[0].sub_types[0]
+
+        # The BRAM stores a struct of {data: accumulator_type, valid: bool}
         bram_elem_type = self._to_hls_type(
             dftype.TupleType(
                 [comp.get_port("i_reduce_transform_out").data_type, dftype.BoolType()]
             )
         )
+        bram_elem_type.name = f"mem_{accum_type.name}_t"  # Give it a clearer name
 
-        # State declarations
-        body.append(CodeVarDecl("key_mem[MAX_NUM]", bram_elem_type))
+        # 2. State Declarations and Initializations
+        body.append(CodeComment("Stateful memories for reduction"))
+
+        # Declare memories and buffers without static and using CodeVarDecl
+        body.append(CodeVarDecl(f"key_mem[MAX_NUM]", bram_elem_type))
         body.append(CodePragma("BIND_STORAGE variable=key_mem type=RAM_2P impl=URAM"))
-        # ... Add other state declarations and initializations from the C++ example ...
+        body.append(CodePragma("dependence variable=key_mem inter false"))
 
-        # Main while loop (processing single elements, not batches)
-        while_loop_body: List[HLSCodeLine] = [CodePragma("PIPELINE")]
-        # ...
-        # Logic to read from intermediate streams, peel off end_flag etc.
-        # Logic for buffer management (i_buffer, key_buffer)
-        # Logic to read old_ele from key_mem
-        # ...
+        body.append(CodeVarDecl(f"key_buffer[L + 1]", bram_elem_type))
+        body.append(CodePragma("ARRAY_PARTITION variable=key_buffer dim=0 complete"))
 
-        # Inline the unit sub-graph
-        unit_sub_graph_starts = [
+        i_buffer_type = HLSType(HLSBasicType.UINT)
+        body.append(CodeVarDecl(f"i_buffer[L + 1]", i_buffer_type))
+        body.append(CodePragma("ARRAY_PARTITION variable=i_buffer dim=0 complete"))
+
+        body.append(CodeComment("Memory initialization"))
+
+        # Create a for loop to initialize i_buffer
+        uint_type = HLSType(HLSBasicType.UINT)
+        max_num_var = HLSVar("MAX_NUM", uint_type)
+        assign_val_expr = HLSExpr(
+            HLSExprT.BINOP,
+            dfir.BinOp.ADD,
+            [HLSExpr(HLSExprT.VAR, max_num_var), HLSExpr(HLSExprT.CONST, 1)],
+        )
+        assign_ibuf = CodeAssign(
+            HLSVar("i_buffer[i_clear_buffer]", uint_type), assign_val_expr
+        )
+        clear_ibuf_loop = CodeFor(
+            [CodePragma("UNROLL"), assign_ibuf], "L + 1", iter_name="i_clear_buffer"
+        )
+        body.append(clear_ibuf_loop)
+
+        # Create a for loop to initialize key_mem's valid flags to false
+        get_attr_op = dfir.UnaryOp.GET_ATTR
+        get_attr_op.store_val("ele_1")
+        target_valid_flag = HLSVar(
+            "key_mem[i_reduce_clear].ele_1", HLSType(HLSBasicType.BOOL)
+        )
+        assign_valid_false = CodeAssign(
+            target_valid_flag, HLSExpr(HLSExprT.CONST, False)
+        )
+        clear_valid_loop = CodeFor(
+            [CodePragma("UNROLL"), assign_valid_false],
+            "MAX_NUM",
+            iter_name="i_reduce_clear",
+        )
+        body.append(clear_valid_loop)
+
+        # 3. Main Processing Loop (Batch-based)
+        body.append(CodeComment("Main processing loop for aggregation"))
+        in_key_batch = HLSVar("in_key_batch", key_batch_type)
+        in_transform_batch = HLSVar("in_transform_batch", transform_batch_type)
+        end_flag_var = HLSVar("end_flag", HLSType(HLSBasicType.BOOL))
+
+        while_loop_body = [
+            CodePragma("PIPELINE"),
+            CodeVarDecl(in_key_batch.name, in_key_batch.type),
+            CodeVarDecl(in_transform_batch.name, in_transform_batch.type),
+            CodeAssign(
+                in_key_batch,
+                HLSExpr(
+                    HLSExprT.STREAM_READ, None, [HLSExpr(HLSExprT.VAR, key_stream)]
+                ),
+            ),
+            CodeAssign(
+                in_transform_batch,
+                HLSExpr(
+                    HLSExprT.STREAM_READ,
+                    None,
+                    [HLSExpr(HLSExprT.VAR, transform_stream)],
+                ),
+            ),
+        ]
+
+        # Create the per-element processing logic
+        inner_loop_logic = self._translate_reduce_unit_inner_loop(comp, bram_elem_type)
+        while_loop_body.append(
+            CodeFor(
+                codes=[CodePragma("UNROLL")] + inner_loop_logic,
+                iter_limit="PE_NUM",
+                iter_name="i",
+            )
+        )
+
+        get_attr_op_ef = dfir.UnaryOp.GET_ATTR
+        get_attr_op_ef.store_val("end_flag")
+        end_flag_expr = HLSExpr(
+            HLSExprT.UOP, get_attr_op_ef, [HLSExpr(HLSExprT.VAR, in_key_batch)]
+        )
+        while_loop_body.append(CodeAssign(end_flag_var, end_flag_expr))
+        while_loop_body.append(
+            CodeIf(HLSExpr(HLSExprT.VAR, end_flag_var), [CodeBreak()])
+        )
+
+        body.append(
+            CodeWhile(codes=while_loop_body, iter_expr=HLSExpr(HLSExprT.CONST, True))
+        )
+
+        # 4. Final Output Loop
+        body.append(CodeComment("Final output loop to drain the memory"))
+        out_batch = HLSVar("out_batch", out_batch_type)
+        out_idx = HLSVar("out_idx", HLSType(HLSBasicType.UINT8))
+        body.append(CodeVarDecl(out_batch.name, out_batch.type))
+        body.append(CodeAssign(out_idx, HLSExpr(HLSExprT.CONST, 0)))
+
+        get_valid_op = dfir.UnaryOp.GET_ATTR
+        get_valid_op.store_val("ele_1")
+        is_valid_expr = HLSExpr(
+            HLSExprT.UOP,
+            get_valid_op,
+            [HLSExpr(HLSExprT.VAR, HLSVar(f"key_mem[k]", bram_elem_type))],
+        )
+
+        get_data_op = dfir.UnaryOp.GET_ATTR
+        get_data_op.store_val("ele_0")
+        data_expr = HLSExpr(
+            HLSExprT.UOP,
+            get_data_op,
+            [HLSExpr(HLSExprT.VAR, HLSVar(f"key_mem[k]", bram_elem_type))],
+        )
+
+        assign_to_batch = CodeAssign(
+            HLSVar(f"{out_batch.name}.data[{out_idx.name}]", accum_type), data_expr
+        )
+        inc_idx = CodeAssign(
+            out_idx,
+            HLSExpr(
+                HLSExprT.BINOP,
+                dfir.BinOp.ADD,
+                [HLSExpr(HLSExprT.VAR, out_idx), HLSExpr(HLSExprT.CONST, 1)],
+            ),
+        )
+
+        if_valid_block = CodeIf(
+            is_valid_expr,
+            [
+                assign_to_batch,
+                inc_idx,
+                CodeIf(
+                    HLSExpr(
+                        HLSExprT.BINOP,
+                        dfir.BinOp.EQ,
+                        [
+                            HLSExpr(HLSExprT.VAR, out_idx),
+                            HLSExpr(HLSExprT.CONST, self.PE_NUM),
+                        ],
+                    ),
+                    [
+                        CodeAssign(
+                            HLSVar(
+                                f"{out_batch.name}.end_flag", HLSType(HLSBasicType.BOOL)
+                            ),
+                            HLSExpr(HLSExprT.CONST, False),
+                        ),
+                        CodeAssign(
+                            HLSVar(
+                                f"{out_batch.name}.end_pos", HLSType(HLSBasicType.UINT8)
+                            ),
+                            HLSExpr(HLSExprT.VAR, out_idx),
+                        ),
+                        CodeWriteStream(out_stream, out_batch),
+                        CodeAssign(out_idx, HLSExpr(HLSExprT.CONST, 0)),
+                    ],
+                ),
+            ],
+        )
+        body.append(
+            CodeFor(
+                codes=[CodePragma("PIPELINE"), if_valid_block],
+                iter_limit="MAX_NUM",
+                iter_name="k",
+            )
+        )
+
+        # Send the last (potentially partially filled) batch with end_flag=true
+        body.append(
+            CodeAssign(
+                HLSVar(f"{out_batch.name}.end_flag", HLSType(HLSBasicType.BOOL)),
+                HLSExpr(HLSExprT.CONST, True),
+            )
+        )
+        body.append(
+            CodeAssign(
+                HLSVar(f"{out_batch.name}.end_pos", HLSType(HLSBasicType.UINT8)),
+                HLSExpr(HLSExprT.VAR, out_idx),
+            )
+        )
+        body.append(CodeWriteStream(out_stream, out_batch))
+
+        return body
+
+    def _translate_reduce_unit_inner_loop(
+        self, comp: dfir.ReduceComponent, bram_elem_type: HLSType
+    ) -> List[HLSCodeLine]:
+        """Helper to generate the complex logic inside unit_reduce's PE_NUM loop."""
+
+        key_type = self.type_map[comp.get_port("i_reduce_key_out").data_type]
+        accum_type = self.type_map[comp.get_port("i_reduce_transform_out").data_type]
+        bool_type = HLSType(HLSBasicType.BOOL)
+
+        # 1. Get current key and value
+        key_var = HLSVar("current_key", key_type)
+        val_var = HLSVar("current_val", accum_type)
+        logic = [
+            CodeAssign(
+                key_var,
+                HLSExpr(HLSExprT.VAR, HLSVar(f"in_key_batch.data[i]", key_type)),
+            ),
+            CodeAssign(
+                val_var,
+                HLSExpr(
+                    HLSExprT.VAR, HLSVar(f"in_transform_batch.data[i]", accum_type)
+                ),
+            ),
+        ]
+
+        # 2. Read old element from BRAM & buffer
+        old_ele_var = HLSVar("old_ele", bram_elem_type)
+        logic.append(
+            CodeAssign(
+                old_ele_var,
+                HLSExpr(
+                    HLSExprT.VAR, HLSVar(f"key_mem[{key_var.name}]", bram_elem_type)
+                ),
+            )
+        )
+
+        # 3. Buffer management (forwarding & shifting)
+        search_loop = CodeFor(
+            [
+                CodePragma("UNROLL"),
+                CodeIf(
+                    HLSExpr(
+                        HLSExprT.BINOP,
+                        dfir.BinOp.EQ,
+                        [
+                            HLSExpr(HLSExprT.VAR, key_var),
+                            HLSExpr(
+                                HLSExprT.VAR,
+                                HLSVar(
+                                    f"i_buffer[i_search]", HLSType(HLSBasicType.UINT)
+                                ),
+                            ),
+                        ],
+                    ),
+                    [
+                        CodeAssign(
+                            old_ele_var,
+                            HLSExpr(
+                                HLSExprT.VAR,
+                                HLSVar(f"key_buffer[i_search]", bram_elem_type),
+                            ),
+                        )
+                    ],
+                ),
+            ],
+            "L + 1",
+            iter_name="i_search",
+        )
+        logic.append(search_loop)
+
+        shift_loop = CodeFor(
+            [
+                CodePragma("UNROLL"),
+                CodeBlock(
+                    [
+                        CodeAssign(
+                            HLSVar(f"i_buffer[i_move]", HLSType(HLSBasicType.UINT)),
+                            HLSExpr(
+                                HLSExprT.VAR,
+                                HLSVar(
+                                    f"i_buffer[i_move + 1]", HLSType(HLSBasicType.UINT)
+                                ),
+                            ),
+                        ),
+                        CodeAssign(
+                            HLSVar(f"key_buffer[i_move]", bram_elem_type),
+                            HLSExpr(
+                                HLSExprT.VAR,
+                                HLSVar(f"key_buffer[i_move + 1]", bram_elem_type),
+                            ),
+                        ),
+                    ]
+                ),
+            ],
+            "L",
+            iter_name="i_move",
+        )
+        logic.append(shift_loop)
+
+        # 4. If/Else logic for aggregation
+        new_ele_var = HLSVar("new_ele", bram_elem_type)
+        logic.append(CodeVarDecl(new_ele_var.name, new_ele_var.type))
+
+        get_valid_op = dfir.UnaryOp.GET_ATTR
+        get_valid_op.store_val("ele_1")
+        is_valid_expr = HLSExpr(
+            HLSExprT.UOP, get_valid_op, [HLSExpr(HLSExprT.VAR, old_ele_var)]
+        )
+
+        # If block: first time seeing this key
+        if_codes = [
+            CodeAssign(
+                HLSVar(f"{new_ele_var.name}.ele_1", bool_type),
+                HLSExpr(HLSExprT.CONST, True),
+            ),
+            CodeAssign(
+                HLSVar(f"{new_ele_var.name}.ele_0", accum_type),
+                HLSExpr(HLSExprT.VAR, val_var),
+            ),
+        ]
+
+        # Else block: merge with existing value
+        old_data_var = HLSVar("old_data", accum_type)
+        get_data_op = dfir.UnaryOp.GET_ATTR
+        get_data_op.store_val("ele_0")
+        else_codes = [
+            CodeAssign(
+                old_data_var,
+                HLSExpr(
+                    HLSExprT.UOP, get_data_op, [HLSExpr(HLSExprT.VAR, old_ele_var)]
+                ),
+            )
+        ]
+        # Inline the unit sub-graph logic
+        unit_starts = [
             comp.get_port("o_reduce_unit_start_0"),
             comp.get_port("o_reduce_unit_start_1"),
         ]
-        unit_sub_graph_end = comp.get_port("i_reduce_unit_end")
+        unit_end = comp.get_port("i_reduce_unit_end")
+        unit_res_var = HLSVar(f"{new_ele_var.name}.ele_0", accum_type)
 
-        # This part is complex as it involves an if/else block
-        # Pseudocode:
-        # if (!old_ele.valid) { new_ele.data = real_transform_value; }
-        # else {
-        #   io_map = {start0: old_ele.data, start1: real_transform_value, end: new_ele.data}
-        #   inline_sub_graph_logic(..., io_map)
-        # }
-        # ...
-
-        # Final output loop after the while loop
-        # ...
-
-        # Placeholder until full implementation
-        body.append(
-            CodePragma(
-                "WARNING: Reduce Unit Reduce translation is complex and not yet fully implemented."
+        io_map = {
+            unit_starts[0]: old_data_var,
+            unit_starts[1]: val_var,
+            unit_end: unit_res_var,
+        }
+        else_codes.extend(self._inline_sub_graph_logic(unit_starts, unit_end, io_map))
+        else_codes.append(
+            CodeAssign(
+                HLSVar(f"{new_ele_var.name}.ele_1", bool_type),
+                HLSExpr(HLSExprT.CONST, True),
             )
         )
-        return body
+
+        logic.append(
+            CodeIfElse(is_valid_expr, if_codes=else_codes, else_codes=if_codes)
+        )
+
+        # 5. Write back to BRAM and buffer
+        logic.append(
+            CodeAssign(
+                HLSVar(f"key_mem[{key_var.name}]", bram_elem_type),
+                HLSExpr(HLSExprT.VAR, new_ele_var),
+            )
+        )
+        logic.append(
+            CodeAssign(
+                HLSVar(f"key_buffer[L]", bram_elem_type),
+                HLSExpr(HLSExprT.VAR, new_ele_var),
+            )
+        )
+        logic.append(
+            CodeAssign(
+                HLSVar(f"i_buffer[L]", HLSType(HLSBasicType.UINT)),
+                HLSExpr(HLSExprT.VAR, key_var),
+            )
+        )
+
+        return logic
