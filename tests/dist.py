@@ -81,17 +81,18 @@ dot.render("component_graph", view=False, format="png")
 # import graphyflow.hls_utils as hls
 
 # header, source = hls.global_hls_config.generate_hls_code(g, dfirs[0])
-# import os
-
-# if not os.path.exists("output"):
-#     os.makedirs("output")
-# with open("output/graphyflow.h", "w") as f:
-#     f.write(header)
-# with open("output/graphyflow.cpp", "w") as f:
-#     f.write(source)
 
 import graphyflow.backend as bkd
 
 bkd_mng = bkd.BackendManager()
-bkd_mng.generate_backend(dfirs[0], g, "graphyflow")
-bkd_mng.debug_msgs([3])
+header, source = bkd_mng.generate_backend(dfirs[0], g, "graphyflow")
+# bkd_mng.debug_msgs([3])
+
+import os
+
+if not os.path.exists("output"):
+    os.makedirs("output")
+with open("output/graphyflow.h", "w") as f:
+    f.write(header)
+with open("output/graphyflow.cpp", "w") as f:
+    f.write(source)

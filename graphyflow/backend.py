@@ -117,11 +117,17 @@ class HLSType:
     def __hash__(self) -> int:
         return hash(self.full_name)
 
+    def __repr__(self) -> str:
+        return self.name
+
 
 class HLSVar:
     def __init__(self, var_name: str, var_type: HLSType) -> None:
         self.name = var_name
         self.type = var_type
+
+    def __repr__(self) -> str:
+        return f"HLSVar({self.name}, {self.type})"
 
 
 class HLSCodeLine:
@@ -342,15 +348,21 @@ class CodeCall(HLSCodeLine):
         self.func = func
         assert type(params) == list
         self.params = params
-        assert len(func.vars) == len(params)
-        # for var, call_var in zip(func.vars, params):
-        # assert var.type == call_var.type # Type check will be more complex now
+        assert len(func.params) == len(params), f"{func.params} != {params}"
 
     def gen_code(self, indent_lvl: int = 0) -> str:
+        def get_name(param):
+            if isinstance(param, HLSVar):
+                return param.name
+            elif isinstance(param, HLSExpr):
+                return param.code
+            else:
+                assert False
+
         return (
             INDENT_UNIT * indent_lvl
             + f"{self.func.name}("
-            + ", ".join(var.name for var in self.params)
+            + ", ".join(get_name(var) for var in self.params)
             + ");\n"
         )
 
@@ -426,6 +438,8 @@ class BackendManager:
     def __init__(self):
         self.PE_NUM = 8
         self.STREAM_DEPTH = 4
+        self.MAX_NUM = 256  # For ReduceComponent key_mem size
+        self.L = 4  # For ReduceComponent buffer size
         # Mappings to store results of type analysis
         self.type_map: Dict[dftype.DfirType, HLSType] = {}
         self.batch_type_map: Dict[HLSType, HLSType] = {}
@@ -434,35 +448,74 @@ class BackendManager:
 
         # State for Phase 2 & 3
         self.hls_functions: Dict[int, HLSFunction] = {}
-        # Now stores a tuple of (declaration, pragma)
         self.top_level_stream_decls: List[Tuple[CodeVarDecl, CodePragma]] = []
 
+        self.reduce_internal_streams: Dict[int, Dict[str, HLSVar]] = {}
+
         self.global_graph_store = None
+        self.comp_col_store = None
 
     def generate_backend(
         self, comp_col: dfir.ComponentCollection, global_graph: Any, top_func_name: str
     ) -> Tuple[str, str]:
         """
         Main entry point to generate HLS header and source files.
-        :param comp_col: The component collection representing the dataflow graph.
-        :param global_graph: An object containing global graph properties like node/edge attributes.
-        :param top_func_name: The name for the top-level HLS function.
-        :return: A tuple containing the (header_code, source_code).
         """
         self.global_graph_store = global_graph
+        self.comp_col_store = comp_col
+        header_name = f"{top_func_name}.h"
 
+        # 1. Correctly discover top-level I/O ports
+        top_level_inputs = []
+        for comp in comp_col.components:
+            if (
+                isinstance(comp, dfir.IOComponent)
+                and comp.io_type == dfir.IOComponent.IOType.INPUT
+            ):
+                if comp.get_port("o_0").connected:
+                    top_level_inputs.append(comp.get_port("o_0").connection)
+
+        top_level_outputs = comp_col.outputs
+
+        # --- 后续阶段不变 ---
         # Phase 1: Type Analysis
         self._analyze_and_map_types(comp_col)
-
         # Phase 2: Function Definition and Stream Instantiation
         self._define_functions_and_streams(comp_col, top_func_name)
-
         # Phase 3: Code Body Generation
         self._translate_functions()
 
-        # --- Placeholder for future phases ---
-        header_code = f"// Header code for {top_func_name} to be generated in Phase 4\n"
-        source_code = f"// Source code for {top_func_name} to be generated in Phase 4\n"
+        # --- Phase 4: Final Code Assembly (using corrected I/O ports) ---
+
+        # 1. Build the top-level function signature string
+        top_params = []
+        for p in top_level_inputs:
+            # Input ports are connections, so we use the port 'p' directly
+            param_type = HLSType(
+                HLSBasicType.STREAM, [self.batch_type_map[self.type_map[p.data_type]]]
+            )
+            top_params.append(
+                f"hls::stream<{param_type.sub_types[0].name}>& {p.unique_name}"
+            )
+        for p in top_level_outputs:
+            param_type = HLSType(
+                HLSBasicType.STREAM, [self.batch_type_map[self.type_map[p.data_type]]]
+            )
+            top_params.append(
+                f"hls::stream<{param_type.sub_types[0].name}>& {p.unique_name}"
+            )
+
+        top_func_sig = (
+            f"void {top_func_name}(\n{INDENT_UNIT}"
+            + f",\n{INDENT_UNIT}".join(top_params)
+            + "\n)"
+        )
+
+        # 2. Generate file contents
+        header_code = self._generate_header_file(top_func_name, top_func_sig)
+        source_code = self._generate_source_file(
+            header_name, top_func_name, top_func_sig
+        )
 
         return header_code, source_code
 
@@ -573,11 +626,10 @@ class BackendManager:
         """
         self.hls_functions.clear()
         self.top_level_stream_decls.clear()
+        self.reduce_internal_streams.clear()
 
-        # --- NEW: Track processed reduce sub-graph components ---
         processed_sub_comp_ids = set()
 
-        # --- NEW: Special handling for ReduceComponent ---
         for comp in comp_col.components:
             if isinstance(comp, dfir.ReduceComponent):
                 # 1. Create the two main HLS functions for the Reduce component
@@ -651,6 +703,27 @@ class BackendManager:
                     unit_reduce_func  # Use a unique-ish ID
                 )
 
+                internal_streams: Dict[str, HLSVar] = {}
+                for param_name in ["intermediate_key", "intermediate_transform"]:
+                    # 从刚刚创建的函数签名中获取流的类型
+                    stream_type = next(
+                        p.type for p in pre_process_func.params if p.name == param_name
+                    )
+                    # 为这个流创建一个在顶层函数中唯一的变量名
+                    stream_var = HLSVar(
+                        f"reduce_{comp.readable_id}_{param_name}", stream_type
+                    )
+                    internal_streams[param_name] = stream_var
+
+                    # 将声明和 pragma 添加到顶层函数体
+                    decl = CodeVarDecl(stream_var.name, stream_var.type)
+                    pragma = CodePragma(
+                        f"STREAM variable={stream_var.name} depth={self.STREAM_DEPTH}"
+                    )
+                    self.top_level_stream_decls.append((decl, pragma))
+
+                self.reduce_internal_streams[comp.readable_id] = internal_streams
+
                 # 3. Mark all sub-graph components as processed
                 for port_name in [
                     "o_reduce_key_in",
@@ -689,6 +762,10 @@ class BackendManager:
             hls_func = HLSFunction(name=comp.name, comp=comp)
             # Normal components are always streamed
             for port in comp.ports:
+                if port.connection and isinstance(
+                    port.connection.parent, dfir.UnusedEndMarkerComponent
+                ):
+                    continue
                 dfir_type = port.data_type
                 if isinstance(dfir_type, dftype.ArrayType):
                     dfir_type = dfir_type.type_
@@ -762,6 +839,10 @@ class BackendManager:
                 else:  # Should not happen with the new logic
                     assert False
                     self._translate_unstreamed_component(func)
+
+    # ======================================================================== #
+    #                            PHASE 1                                       #
+    # ======================================================================== #
 
     def _get_batch_type(self, base_type: HLSType) -> HLSType:
         """
@@ -857,6 +938,10 @@ class BackendManager:
         if is_array_type:
             self.type_map[dfir.ArrayType(dfir_type)] = hls_type
         return hls_type
+
+    # ======================================================================== #
+    #                            PHASE 3                                       #
+    # ======================================================================== #
 
     def _translate_streamed_component(self, hls_func: HLSFunction):
         """Translates a DFIR component into a standard streamed HLS function body."""
@@ -1863,3 +1948,180 @@ class BackendManager:
         )
 
         return logic
+
+    # ======================================================================== #
+    #                            PHASE 4: Final Assembly                       #
+    # ======================================================================== #
+
+    def _topologically_sort_structs(self) -> List[Tuple[HLSType, List[str]]]:
+        """Sorts struct definitions based on their member dependencies."""
+        from collections import defaultdict
+
+        adj = defaultdict(list)
+        in_degree = defaultdict(int)
+
+        # Build dependency graph
+        for name, (hls_type, _) in self.struct_definitions.items():
+            for sub_type in hls_type.sub_types:
+                if sub_type.type == HLSBasicType.STRUCT:
+                    adj[sub_type.name].append(name)
+                    in_degree[name] += 1
+
+        # Kahn's algorithm for topological sort
+        queue = [name for name in self.struct_definitions if in_degree[name] == 0]
+        sorted_structs = []
+
+        while queue:
+            u = queue.pop(0)
+            sorted_structs.append(self.struct_definitions[u])
+            for v in adj[u]:
+                in_degree[v] -= 1
+                if in_degree[v] == 0:
+                    queue.append(v)
+
+        if len(sorted_structs) != len(self.struct_definitions):
+            raise RuntimeError("A cycle was detected in the struct definitions.")
+
+        return sorted_structs
+
+    def _generate_header_file(self, top_func_name: str, top_func_sig: str) -> str:
+        """Generates the full content of the .h header file."""
+        header_guard = f"__GRAPHYFLOW_{top_func_name.upper()}_H__"
+        code = f"#ifndef {header_guard}\n#define {header_guard}\n\n"
+        code += (
+            "#include <hls_stream.h>\n#include <ap_fixed.h>\n#include <stdint.h>\n\n"
+        )
+        code += f"#define PE_NUM {self.PE_NUM}\n"
+        code += f"#define MAX_NUM {self.MAX_NUM}\n"
+        code += f"#define L {self.L}\n\n"
+
+        code += "// --- Struct Type Definitions ---\n"
+        sorted_defs = self._topologically_sort_structs()
+        for hls_type, members in sorted_defs:
+            code += hls_type.gen_decl(members) + "\n"
+
+        code += "// --- Function Prototypes ---\n"
+        for func in self.hls_functions.values():
+            params_str = ", ".join([f"{p.type.name}& {p.name}" for p in func.params])
+            code += f"void {func.name}({params_str});\n"
+
+        code += f"\n// --- Top-Level Function Prototype ---\n"
+        code += f"{top_func_sig};\n\n"
+
+        code += f"#endif // {header_guard}\n"
+        return code
+
+    # 请用以下版本替换你的 _generate_top_level_function 函数
+
+    def _generate_top_level_function(
+        self, top_func_name: str, top_func_sig: str
+    ) -> str:
+        """Generates the implementation of the top-level dataflow function."""
+        body: List[HLSCodeLine] = [CodePragma("DATAFLOW")]
+
+        for decl, pragma in self.top_level_stream_decls:
+            body.append(decl)
+            if pragma:
+                body.append(pragma)
+
+        body.append(CodeComment("--- Function Calls ---"))
+
+        # --- 核心修正部分：使用正确的I/O端口构建映射 ---
+        stream_map = {
+            decl.var.name: decl.var for decl, _ in self.top_level_stream_decls
+        }
+
+        # 1. Correctly discover top-level I/O ports (same logic as above)
+        top_level_inputs = []
+        for comp in self.comp_col_store.components:
+            if (
+                isinstance(comp, dfir.IOComponent)
+                and comp.io_type == dfir.IOComponent.IOType.INPUT
+            ):
+                if comp.get_port("o_0").connected:
+                    top_level_inputs.append(comp.get_port("o_0").connection)
+        top_level_outputs = self.comp_col_store.outputs
+
+        # 2. Build the map from port readable_id to its top-level HLSVar
+        top_io_map: Dict[int, HLSVar] = {}
+        for p in top_level_inputs + top_level_outputs:
+            is_array = isinstance(p.data_type, dftype.ArrayType)
+            dtype = p.data_type.type_ if is_array else p.data_type
+            batch_type = self.batch_type_map[self.type_map[dtype]]
+            # The variable name in the call must match the top function's signature
+            top_io_map[p.readable_id] = HLSVar(
+                p.unique_name, HLSType(HLSBasicType.STREAM, [batch_type])
+            )
+
+        # 3. 生成对所有顶层函数的调用
+        for func in self.hls_functions.values():
+            if not func.streamed:
+                continue
+
+            call_params: List[HLSVar] = []
+            for func_param in func.params:
+
+                # 情况一：参数是 Reduce 的内部流
+                if isinstance(
+                    func.dfir_comp, dfir.ReduceComponent
+                ) and func_param.name in self.reduce_internal_streams.get(
+                    func.dfir_comp.readable_id, {}
+                ):
+                    internal_stream_var = self.reduce_internal_streams[
+                        func.dfir_comp.readable_id
+                    ][func_param.name]
+                    call_params.append(internal_stream_var)
+                    continue
+
+                # 情况二：参数是常规的 DFIR 端口
+                port = func.dfir_comp.get_port(func_param.name)
+                if not port.connected:
+                    assert port in top_level_outputs
+                    call_params.append(top_io_map[port.readable_id])
+                    continue
+
+                conn_parent = port.connection.parent
+
+                if isinstance(conn_parent, dfir.UnusedEndMarkerComponent):
+                    continue
+
+                # 情况 2a: 端口连接到顶层 IO
+                if isinstance(conn_parent, dfir.IOComponent):
+                    call_params.append(top_io_map[port.readable_id])
+                # 情况 2b: 端口连接到另一个组件的中间流
+                else:
+                    out_port = (
+                        port if port.port_type == dfir.PortType.OUT else port.connection
+                    )
+                    stream_name = f"stream_{out_port.unique_name}"
+                    if isinstance(out_port.parent, dfir.ConstantComponent):
+                        call_params.append(
+                            HLSExpr(HLSExprT.CONST, out_port.parent.value)
+                        )
+                    else:
+                        call_params.append(stream_map[stream_name])
+
+            body.append(CodeCall(func, call_params))
+
+        code = f"{top_func_sig} " + "{\n"
+        code += "".join([line.gen_code(1) for line in body])
+        code += "}\n"
+        return code
+
+    def _generate_source_file(
+        self, header_name: str, top_func_name: str, top_func_sig: str
+    ) -> str:
+        """Generates the full content of the .cpp source file."""
+        code = f'#include "{header_name}"\n\n'
+
+        # Generate implementations for all HLS functions
+        for func in self.hls_functions.values():
+            params_str = ", ".join([f"{p.type.name}& {p.name}" for p in func.params])
+            code += f"void {func.name}({params_str}) " + "{\n"
+            code += "".join([line.gen_code(1) for line in func.codes])
+            code += "}\n\n"
+
+        # Generate top-level function implementation
+        code += self._generate_top_level_function(top_func_name, top_func_sig)
+
+        return code
