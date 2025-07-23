@@ -94,4 +94,4 @@ import graphyflow.backend as bkd
 
 bkd_mng = bkd.BackendManager()
 bkd_mng.generate_backend(dfirs[0], g, "graphyflow")
-bkd_mng.debug_msgs()
+bkd_mng.debug_msgs([3])
