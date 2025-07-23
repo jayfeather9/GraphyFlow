@@ -93,4 +93,5 @@ dot.render("component_graph", view=False, format="png")
 import graphyflow.backend as bkd
 
 bkd_mng = bkd.BackendManager()
-bkd_mng.generate_backend(dfirs[0], g)
+bkd_mng.generate_backend(dfirs[0], g, "graphyflow")
+bkd_mng.debug_msgs()

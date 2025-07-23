@@ -305,6 +305,15 @@ class CodeWriteStream(HLSCodeLine):
         )
 
 
+class CodePragma(HLSCodeLine):
+    def __init__(self, content: str) -> None:
+        super().__init__()
+        self.content = content
+
+    def gen_code(self, indent_lvl: int = 0) -> str:
+        return f"#pragma HLS {self.content}\n"
+
+
 class HLSFunction:
     def __init__(
         self,
@@ -315,6 +324,8 @@ class HLSFunction:
         self.dfir_comp = comp
         self.params: List[HLSVar] = []
         self.codes: List[HLSCodeLine] = []
+        # By default, a function is a standard streaming dataflow block.
+        # This will be set to False for reduce sub-functions.
         self.streamed = True
 
 
@@ -329,33 +340,57 @@ class BackendManager:
         self.struct_definitions: Dict[str, Tuple[HLSType, List[str]]] = {}
         self.unstreamed_funcs: set[str] = set()
 
+        # New state for Phase 2
+        self.hls_functions: Dict[int, HLSFunction] = {}
+        self.top_level_stream_decls: List[CodeVarDecl] = []
+
     def generate_backend(
-        self, comp_col: dfir.ComponentCollection, global_graph: Any
+        self, comp_col: dfir.ComponentCollection, global_graph: Any, top_func_name: str
     ) -> Tuple[str, str]:
         """
         Main entry point to generate HLS header and source files.
         :param comp_col: The component collection representing the dataflow graph.
         :param global_graph: An object containing global graph properties like node/edge attributes.
+        :param top_func_name: The name for the top-level HLS function.
         :return: A tuple containing the (header_code, source_code).
         """
         # Phase 1: Type Analysis
         self._analyze_and_map_types(comp_col, global_graph)
 
+        # Phase 2: Function Definition and Stream Instantiation
+        self._define_functions_and_streams(comp_col, top_func_name)
+
         # --- Placeholder for future phases ---
-        header_code = "// Header code to be generated in Phase 4\n"
-        source_code = "// Source code to be generated in Phases 2, 3, 4\n"
-
-        # For demonstration, print discovered types
-        print("--- Discovered Struct Definitions ---")
-        for name, (hls_type, members) in self.struct_definitions.items():
-            print(f"Struct: {name}")
-            print(hls_type.gen_decl(members))
-
-        print("\n--- Discovered Batch Type Mappings ---")
-        for base, batch in self.batch_type_map.items():
-            print(f"Base Type: {base.name} -> Batch Type: {batch.name}")
+        header_code = f"// Header code for {top_func_name} to be generated in Phase 4\n"
+        source_code = (
+            f"// Source code for {top_func_name} to be generated in Phases 3 & 4\n"
+        )
 
         return header_code, source_code
+
+    def debug_msgs(self, phases=[1, 2]):
+        if 1 in phases:
+            # For demonstration, print discovered types
+            print("--- Discovered Struct Definitions ---")
+            for name, (hls_type, members) in self.struct_definitions.items():
+                print(f"Struct: {name}")
+                print(hls_type.gen_decl(members))
+
+            print("\n--- Discovered Batch Type Mappings ---")
+            for base, batch in self.batch_type_map.items():
+                print(f"Base Type: {base.name} -> Batch Type: {batch.name}")
+        if 2 in phases:
+            # For demonstration, print discovered functions and streams
+            print("\n--- Discovered HLS Functions and Signatures ---")
+            for func in self.hls_functions.values():
+                param_str = ", ".join([f"{p.type.name}& {p.name}" for p in func.params])
+                stream_status = "Streamed" if func.streamed else "Unstreamed (by-ref)"
+                print(f"Function: {func.name} ({stream_status})")
+                print(f"  Signature: void {func.name}({param_str});")
+
+            print("\n--- Intermediate Streams for Top-Level Function ---")
+            for decl in self.top_level_stream_decls:
+                print(decl.gen_code(indent_lvl=1).strip())
 
     def _find_unstreamed_funcs(self, comp_col: dfir.ComponentCollection):
         """
@@ -422,6 +457,94 @@ class BackendManager:
                     is_stream_port = comp.name not in self.unstreamed_funcs
                     if is_stream_port:
                         self._get_batch_type(base_hls_type)
+
+    def _define_functions_and_streams(
+        self, comp_col: dfir.ComponentCollection, top_func_name: str
+    ):
+        """
+        Phase 2: Creates HLSFunction objects, defines their signatures, and
+        identifies the intermediate streams needed for the top-level function.
+        """
+        self.hls_functions.clear()
+        self.top_level_stream_decls.clear()
+
+        # 1. Create HLSFunction objects and define their parameter signatures
+        for comp in comp_col.components:
+            # Components that are pure data sources/sinks do not become HLS functions
+            if isinstance(
+                comp,
+                (
+                    dfir.IOComponent,
+                    dfir.ConstantComponent,
+                    dfir.UnusedEndMarkerComponent,
+                ),
+            ):
+                continue
+
+            hls_func = HLSFunction(name=comp.name, comp=comp)
+            if hls_func.name in self.unstreamed_funcs:
+                hls_func.streamed = False
+
+            # Define parameters based on component ports
+            for port in comp.ports:
+                dfir_type = port.data_type
+                if isinstance(dfir_type, dftype.ArrayType):
+                    dfir_type = dfir_type.type_
+
+                base_hls_type = self.type_map[dfir_type]
+
+                if hls_func.streamed:
+                    # Streamed functions operate on streams of batched data
+                    batch_type = self.batch_type_map[base_hls_type]
+                    param_type = HLSType(HLSBasicType.STREAM, sub_types=[batch_type])
+                    param_name = port.name  # e.g., "i_0", "o_0"
+                else:
+                    # Unstreamed functions operate on base types by reference
+                    param_type = base_hls_type
+                    param_name = (
+                        port.unique_name
+                    )  # Use unique name to avoid collision in sub-graphs
+
+                hls_func.params.append(HLSVar(var_name=param_name, var_type=param_type))
+
+            self.hls_functions[comp.readable_id] = hls_func
+
+        # 2. Identify and declare intermediate streams for the top-level dataflow function
+        visited_ports = set()
+        for port in comp_col.all_connected_ports:
+            if port.readable_id in visited_ports:
+                continue
+
+            conn = port.connection
+            # An intermediate stream connects two HLS functions
+            is_intermediate = (
+                port.parent.readable_id in self.hls_functions
+                and conn.parent.readable_id in self.hls_functions
+            )
+
+            if is_intermediate:
+                # Both functions must be streamed to be connected by an HLS stream
+                func1_streamed = self.hls_functions[port.parent.readable_id].streamed
+                func2_streamed = self.hls_functions[conn.parent.readable_id].streamed
+                if func1_streamed and func2_streamed:
+                    dfir_type = port.data_type
+                    if isinstance(dfir_type, dftype.ArrayType):
+                        dfir_type = dfir_type.type_
+
+                    base_hls_type = self.type_map[dfir_type]
+                    batch_type = self.batch_type_map[base_hls_type]
+                    stream_type = HLSType(HLSBasicType.STREAM, sub_types=[batch_type])
+
+                    # Use the output port's unique name for the stream variable for stability
+                    out_port = port if port.port_type == dfir.PortType.OUT else conn
+                    stream_name = f"stream_{out_port.unique_name}"
+
+                    self.top_level_stream_decls.append(
+                        CodeVarDecl(stream_name, stream_type)
+                    )
+
+            visited_ports.add(port.readable_id)
+            visited_ports.add(conn.readable_id)
 
     def _get_batch_type(self, base_type: HLSType) -> HLSType:
         """
