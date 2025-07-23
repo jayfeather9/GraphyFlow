@@ -95,9 +95,7 @@ with g.subgraph(name="cluster_basic") as c:
 
 # 创建子图2：差分优化策略（横向排列）
 with g.subgraph(name="cluster_differential") as c:
-    c.attr(
-        label="差分优化策略", style="rounded,filled", color="lightpink", fontsize="16"
-    )
+    c.attr(label="差分优化策略", style="rounded,filled", color="lightpink", fontsize="16")
     c.attr(rankdir="LR")
 
     c.node("D1", label="增量计算识别", style="filled", color="lightblue")

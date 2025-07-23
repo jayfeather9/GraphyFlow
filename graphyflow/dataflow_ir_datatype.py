@@ -3,9 +3,7 @@ from typing import List
 
 
 class DfirType:
-    def __init__(
-        self, type_name, is_optional: bool = False, is_basic_type=True
-    ) -> None:
+    def __init__(self, type_name, is_optional: bool = False, is_basic_type=True) -> None:
         self.type_name = type_name
         self.is_optional = is_optional
         self.is_basic_type = is_basic_type
@@ -46,9 +44,7 @@ class BoolType(DfirType):
 class OptionalType(DfirType):
     def __init__(self, type_: DfirType) -> None:
         assert not isinstance(type_, OptionalType)
-        super().__init__(
-            f"Optional<{type_.type_name}>", is_optional=True, is_basic_type=False
-        )
+        super().__init__(f"Optional<{type_.type_name}>", is_optional=True, is_basic_type=False)
         self.type_ = type_
 
 
@@ -61,9 +57,7 @@ class TensorType(DfirType):
 
 class TupleType(DfirType):
     def __init__(self, types: List[DfirType]) -> None:
-        super().__init__(
-            f"Tuple<{', '.join([t.type_name for t in types])}>", is_basic_type=False
-        )
+        super().__init__(f"Tuple<{', '.join([t.type_name for t in types])}>", is_basic_type=False)
         self.types = types
 
 

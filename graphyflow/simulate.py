@@ -73,9 +73,7 @@ def _simulate_component(
                 len(val) == first_len for val in input_values
             ), "Parallel GatherComponent requires all input arrays to have the same length"
             # Zip the lists element-wise: [[a1, b1], [a2, b2], ...] -> [(a1, a2), (b1, b2)]
-            output_list = list(
-                zip(*input_values, strict=True)
-            )  # Result is Array<Tuple<...>>
+            output_list = list(zip(*input_values, strict=True))  # Result is Array<Tuple<...>>
             return {"o_0": output_list}
         else:
             # Scalar inputs: gather into a single tuple
@@ -101,9 +99,7 @@ def _simulate_component(
             # Unzip the list of tuples: [(a1, b1), (a2, b2), ...] -> ([a1, a2], [b1, b2])
             scattered_outputs = list(zip(*input_val))
 
-            return {
-                p.name: list(scattered_outputs[i]) for i, p in enumerate(comp.out_ports)
-            }
+            return {p.name: list(scattered_outputs[i]) for i, p in enumerate(comp.out_ports)}
         else:
             # Input is Tuple<T...>
             assert isinstance(
@@ -143,9 +139,7 @@ def _simulate_component(
             in2 = [in2.value] * len(in1)
 
         # Assume comp has a 'parallel' attribute based on dfir definition
-        if getattr(
-            comp, "parallel", False
-        ):  # Check if parallel attribute exists and is True
+        if getattr(comp, "parallel", False):  # Check if parallel attribute exists and is True
             assert isinstance(in1, list) and isinstance(
                 in2, list
             ), f"Parallel BinOp requires list inputs, got {in1=}, {in2=}"
@@ -187,9 +181,7 @@ def _simulate_component(
         }[comp.op]
 
         if isinstance(input_val, UncertainArray):
-            assert (
-                comp.parallel
-            ), "UncertainArray input is only supported for parallel UnaryOp"
+            assert comp.parallel, "UncertainArray input is only supported for parallel UnaryOp"
             result_val = op_func(input_val.value)
             return {"o_0": UncertainArray(result_val)}
 
@@ -226,17 +218,13 @@ def _simulate_component(
     if isinstance(comp, dfir.CollectComponent):
         # This operates on Array<Optional<T>> -> Array<T>. Handles arrays correctly. No changes needed.
         optional_data_in = inputs["i_0"]
-        assert isinstance(
-            optional_data_in, list
-        ), "CollectComponent expects 'i_0' to be a list"
+        assert isinstance(optional_data_in, list), "CollectComponent expects 'i_0' to be a list"
         output_list = [item for item in optional_data_in if item is not None]
         return {"o_0": output_list}
 
     if isinstance(comp, dfir.ReduceComponent):
         input_array = inputs["i_0"]
-        assert isinstance(
-            input_array, list
-        ), "ReduceComponent expects 'i_0' to be a list"
+        assert isinstance(input_array, list), "ReduceComponent expects 'i_0' to be a list"
 
         def find_subgraph_entry_port(start_port: dfir.Port) -> dfir.Port:
             assert start_port.port_type == dfir.PortType.OUT
@@ -250,20 +238,14 @@ def _simulate_component(
 
         key_entry = find_subgraph_entry_port(comp.get_port("o_reduce_key_in"))
         key_exit = find_subgraph_exit_port(comp.get_port("i_reduce_key_out"))
-        transform_entry = find_subgraph_entry_port(
-            comp.get_port("o_reduce_transform_in")
-        )
-        transform_exit = find_subgraph_exit_port(
-            comp.get_port("i_reduce_transform_out")
-        )
+        transform_entry = find_subgraph_entry_port(comp.get_port("o_reduce_transform_in"))
+        transform_exit = find_subgraph_exit_port(comp.get_port("i_reduce_transform_out"))
         accum_entry_0 = find_subgraph_entry_port(comp.get_port("o_reduce_unit_start_0"))
         accum_entry_1 = find_subgraph_entry_port(comp.get_port("o_reduce_unit_start_1"))
         reduce_exit = find_subgraph_exit_port(comp.get_port("i_reduce_unit_end"))
         groups = {}
         for element in input_array:
-            key_result_dict = run_flow(
-                {key_entry: element}, [key_exit], node_props, edge_props
-            )
+            key_result_dict = run_flow({key_entry: element}, [key_exit], node_props, edge_props)
             key = key_result_dict[key_exit]
             if key not in groups:
                 groups[key] = []
@@ -341,9 +323,7 @@ def run_flow(
     # Check if any target ports are already provided as inputs
     for port in from_ports_values:
         # Input ports shouldn't be target ports (which are outputs)
-        assert (
-            port not in target_ports_set
-        ), f"Target port {port} cannot be an input port."
+        assert port not in target_ports_set, f"Target port {port} cannot be an input port."
 
     ready_queue = collections.deque()
     processed_components = set()
@@ -360,15 +340,11 @@ def run_flow(
             processed_components.add(component.uuid)
 
     for component in list(set(run_no_input_components) - set(ready_queue)):
-        assert (
-            len(component.in_ports) == 0
-        ), f"Component {component.uuid} has input ports"
+        assert len(component.in_ports) == 0, f"Component {component.uuid} has input ports"
         ready_queue.append(component)
 
     # --- Simulation Loop ---
-    executed_component_ids = (
-        set()
-    )  # Track executed components to prevent cycles in simple cases
+    executed_component_ids = set()  # Track executed components to prevent cycles in simple cases
 
     while ready_queue and computed_target_ports != target_ports_set:
         component_to_run = ready_queue.popleft()
@@ -393,8 +369,7 @@ def run_flow(
                 in_port in computed_values for in_port in component_to_run.in_ports
             ), f"Component {component_to_run.uuid} has inputs not in {computed_values=}"
             current_inputs = {
-                in_port.name: computed_values[in_port]
-                for in_port in component_to_run.in_ports
+                in_port.name: computed_values[in_port] for in_port in component_to_run.in_ports
             }
 
         if isinstance(component_to_run, dfir.IOComponent):
@@ -404,13 +379,9 @@ def run_flow(
             assert (
                 component_to_run.io_type == dfir.IOComponent.IOType.INPUT
             ), f"IO component {component_to_run.uuid} is not an input component"
-            outputs = {
-                "o_0": data_for_io_comp[component_to_run.output_type.type_.type_name]
-            }
+            outputs = {"o_0": data_for_io_comp[component_to_run.output_type.type_.type_name]}
         else:
-            outputs = _simulate_component(
-                component_to_run, current_inputs, node_props, edge_props
-            )
+            outputs = _simulate_component(component_to_run, current_inputs, node_props, edge_props)
         # print(f"Finished running component {component_to_run}, outputs: {outputs}")
 
         # --- Process outputs and update state ---
@@ -430,9 +401,7 @@ def run_flow(
             downstream_comp = connected_in_port.parent
 
             # Check if downstream component is now ready
-            is_ready = all(
-                in_port in computed_values for in_port in downstream_comp.in_ports
-            )
+            is_ready = all(in_port in computed_values for in_port in downstream_comp.in_ports)
             if (
                 isinstance(downstream_comp, dfir.ReduceComponent)
                 and downstream_comp.get_port("i_0") in computed_values
@@ -448,9 +417,7 @@ def run_flow(
     # --- Final Check and Return ---
     if computed_target_ports != target_ports_set:
         missing = target_ports_set - computed_target_ports
-        raise RuntimeError(
-            f"run_flow failed to compute all target ports. Missing: {missing}"
-        )
+        raise RuntimeError(f"run_flow failed to compute all target ports. Missing: {missing}")
 
     return final_results
 
@@ -472,14 +439,10 @@ class DfirSimulator:
                 if prop_name == "id":
                     self.node_data[i][prop_name] = i
                     continue
-                assert (
-                    prop_name in props[i].keys()
-                ), f"Node {i} missing property '{prop_name}'"
+                assert prop_name in props[i].keys(), f"Node {i} missing property '{prop_name}'"
                 self.node_data[i][prop_name] = props[i][prop_name]
 
-    def add_edges(
-        self, edges: Dict[int, Tuple[int, int]], props: Dict[int, Dict[str, Any]]
-    ):
+    def add_edges(self, edges: Dict[int, Tuple[int, int]], props: Dict[int, Dict[str, Any]]):
         assert len(set(edges.keys())) == len(edges.keys())
         self.edge_data = {i: {"src": v[0], "dst": v[1]} for i, v in edges.items()}
         for i in self.edge_data.keys():
@@ -487,9 +450,7 @@ class DfirSimulator:
             for prop_name in self.edge_properties_schema:
                 if prop_name in ["src", "dst"]:
                     continue
-                assert (
-                    prop_name in props[i].keys()
-                ), f"Edge {i} missing property '{prop_name}'"
+                assert prop_name in props[i].keys(), f"Edge {i} missing property '{prop_name}'"
                 self.edge_data[i][prop_name] = props[i][prop_name]
 
     def run(self, initial_graph_inputs: Dict[str, Any]) -> Dict[str, Any]:
@@ -519,9 +480,7 @@ class DfirSimulator:
                 from_ports_values[port] = initial_graph_inputs[port.name]
                 used_input_names.add(port.name)
             else:
-                raise ValueError(
-                    f"Initial value for graph input port '{port.name}' not provided."
-                )
+                raise ValueError(f"Initial value for graph input port '{port.name}' not provided.")
 
         unused_input_names = provided_input_names - used_input_names
         if unused_input_names:
@@ -553,9 +512,7 @@ class DfirSimulator:
         )
 
         final_results_by_name: Dict[str, Any] = {
-            port.name: final_port_values[port]
-            for port in to_ports
-            if port in final_port_values
+            port.name: final_port_values[port] for port in to_ports if port in final_port_values
         }
 
         if len(final_results_by_name) != len(to_ports):

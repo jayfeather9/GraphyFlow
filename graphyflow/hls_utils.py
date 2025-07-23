@@ -83,12 +83,7 @@ class HLSDataTypeManager:
 
     def get_all_defines(self) -> List[str]:
         def gen_define(def_map_ele):
-            return (
-                "typedef struct {\n"
-                + "\n".join(def_map_ele[0])
-                + "\n} "
-                + f"{def_map_ele[1]};"
-            )
+            return "typedef struct {\n" + "\n".join(def_map_ele[0]) + "\n} " + f"{def_map_ele[1]};"
 
         # first generate node_t & edge_t define, add to type_preds
         self.define_map[dftype.SpecialType("node")] = (
@@ -154,9 +149,11 @@ class HLSDataTypeManager:
                 dfir_type in self.define_map
             ), f"dfir_type {dfir_type} with type_name {type_name} not in define map"
             # print(dfir_type, type_name, self.type_preds[type_name])
-            if not all(
-                t in finished for t in self.type_preds[type_name]
-            ) and type_name not in ["basic_int32_t", "basic_ap_fi_t", "basic_bool_t"]:
+            if not all(t in finished for t in self.type_preds[type_name]) and type_name not in [
+                "basic_int32_t",
+                "basic_ap_fi_t",
+                "basic_bool_t",
+            ]:
                 waitings.append((dfir_type, type_name))
                 continue
             all_defines.append(gen_define(self.define_map[dfir_type]))
@@ -174,8 +171,7 @@ class HLSDataTypeManager:
                 f"#define {ori_type_name}_to_{outer_name}(origin_name, new_name, end_flag_val) \\\n"
                 + f"    {outer_name} new_name;\\\n"
                 + "\\\n".join(
-                    f"    new_name.{param} = origin_name.{param};"
-                    for param in ori_params
+                    f"    new_name.{param} = origin_name.{param};" for param in ori_params
                 )
                 + "\\\n    new_name.end_flag = end_flag_val;\n\n"
             )
@@ -183,8 +179,7 @@ class HLSDataTypeManager:
                 f"#define {outer_name}_to_{ori_type_name}(origin_name, new_name) \\\n"
                 + f"    {ori_type_name} new_name;\\\n"
                 + "\\\n".join(
-                    f"    new_name.{param} = origin_name.{param};"
-                    for param in ori_params
+                    f"    new_name.{param} = origin_name.{param};" for param in ori_params
                 )
             )
             new_map_ele[0].append("    bool end_flag;")
@@ -205,9 +200,7 @@ class HLSDataTypeManager:
         if dfir_type in self.translate_map:
             if outer:
                 if not dfir_type in self.to_outer_type:
-                    self.to_outer_type[dfir_type] = (
-                        "outer_" + self.translate_map[dfir_type]
-                    )
+                    self.to_outer_type[dfir_type] = "outer_" + self.translate_map[dfir_type]
                 return self.to_outer_type[dfir_type]
             return self.translate_map[dfir_type]
         else:
@@ -216,15 +209,11 @@ class HLSDataTypeManager:
             ), f"Unsupported type: {dfir_type}"
             assert dfir_type not in self.define_map, f"Type {dfir_type} already defined"
             if isinstance(dfir_type, dftype.TupleType):
-                sub_types = [
-                    self.from_dfir_type(t, outer=False) for t in dfir_type.types
-                ]
+                sub_types = [self.from_dfir_type(t, outer=False) for t in dfir_type.types]
                 name_id = HLSDataTypeManager.get_next_id()
                 type_name = f'tuple_{"".join(st[:1] for st in sub_types)}_{name_id}_t'
                 self.translate_map[dfir_type] = type_name
-                self.type_preds[type_name] = [
-                    t for t in sub_types if t not in STD_TYPES
-                ]
+                self.type_preds[type_name] = [t for t in sub_types if t not in STD_TYPES]
                 self.define_map[dfir_type] = (
                     ([f"    {t} ele_{i};" for i, t in enumerate(sub_types)], type_name)
                     if sub_names is None
@@ -235,9 +224,7 @@ class HLSDataTypeManager:
                 )
                 if outer:
                     if not dfir_type in self.to_outer_type:
-                        self.to_outer_type[dfir_type] = (
-                            "outer_" + self.translate_map[dfir_type]
-                        )
+                        self.to_outer_type[dfir_type] = "outer_" + self.translate_map[dfir_type]
                     return self.to_outer_type[dfir_type]
                 return type_name
             elif isinstance(dfir_type, dftype.OptionalType):
@@ -251,9 +238,7 @@ class HLSDataTypeManager:
                 )
                 if outer:
                     if not dfir_type in self.to_outer_type:
-                        self.to_outer_type[dfir_type] = (
-                            "outer_" + self.translate_map[dfir_type]
-                        )
+                        self.to_outer_type[dfir_type] = "outer_" + self.translate_map[dfir_type]
                     return self.to_outer_type[dfir_type]
                 return type_name
             else:
@@ -269,9 +254,7 @@ class HLSFunction:
         code_before_loop: Optional[List[str]] = [],
         code_after_loop: Optional[List[str]] = [],
     ) -> None:
-        assert (
-            name not in global_hls_config.functions
-        ), f"Function {name} already exists"
+        assert name not in global_hls_config.functions, f"Function {name} already exists"
         self.name = name
         self.code_in_loop = code_in_loop
         self.code_before_loop = code_before_loop
@@ -303,9 +286,7 @@ class HLSConfig:
         self.BUFFER_LENGTH = 4
 
     def __repr__(self) -> str:
-        return (
-            f"HLSConfig(header_name={self.header_name}, source_name={self.source_name})"
-        )
+        return f"HLSConfig(header_name={self.header_name}, source_name={self.source_name})"
 
     class ReduceSubFunc:
         def __init__(
@@ -322,8 +303,7 @@ class HLSConfig:
             if not any(p in self.nxt_ports for p in comp.in_ports):
                 return False
             assert all(
-                p in self.nxt_ports
-                or isinstance(p.connection.parent, dfir.ConstantComponent)
+                p in self.nxt_ports or isinstance(p.connection.parent, dfir.ConstantComponent)
                 for p in comp.in_ports
             )
             assert not isinstance(comp, dfir.ReduceComponent)
@@ -380,17 +360,13 @@ class HLSConfig:
                 reduce_unit_func_name,
             )
 
-    def generate_hls_code(
-        self, global_graph, comp_col: dfir.ComponentCollection
-    ) -> str:
+    def generate_hls_code(self, global_graph, comp_col: dfir.ComponentCollection) -> str:
         def gen_read_name(name: str, port: dfir.Port, is_sub_func: bool = False) -> str:
             if is_sub_func:
                 return name
             return f"{name}.read()"
 
-        dt_manager = HLSDataTypeManager(
-            global_graph.node_properties, global_graph.edge_properties
-        )
+        dt_manager = HLSDataTypeManager(global_graph.node_properties, global_graph.edge_properties)
         header_code = ""
         source_code = ""
         top_func_def = f"void {self.top_name}(\n"
@@ -421,8 +397,7 @@ class HLSConfig:
             elif isinstance(comp, dfir.ReduceComponent):
                 sub_funcs, sub_func_names = HLSConfig.ReduceSubFunc.from_reduce(comp)
                 port2type = {
-                    port.name: dt_manager.from_dfir_type(port.data_type)
-                    for port in comp.ports
+                    port.name: dt_manager.from_dfir_type(port.data_type) for port in comp.ports
                 }
                 reduce_sub_funcs.extend(sub_funcs)
                 (
@@ -480,13 +455,9 @@ class HLSConfig:
                         line = line.replace(f"#type:{port}#", p_type)
                     line = line.replace("#end_flag_val#", "end_flag_val")
                     if in_port in constants_from_ports:
-                        line = line.replace(
-                            f"#read:i_0#", f"{constants_from_ports[in_port]}"
-                        )
+                        line = line.replace(f"#read:i_0#", f"{constants_from_ports[in_port]}")
                     else:
-                        line = line.replace(
-                            f"#read:i_0#", f"{gen_read_name('i_0', in_port)}"
-                        )
+                        line = line.replace(f"#read:i_0#", f"{gen_read_name('i_0', in_port)}")
                     line = manage_call(line)
                     reduce_pre_func_str += f"        {line}\n"
                 reduce_pre_func_str += "        if (end_flag_val) break;\n"
@@ -606,9 +577,7 @@ class HLSConfig:
                             f"#may_ele:{port}#",
                             (
                                 ".ele"
-                                if reduce_unit_func.comp.get_port(
-                                    port
-                                ).data_type.is_basic_type
+                                if reduce_unit_func.comp.get_port(port).data_type.is_basic_type
                                 else ""
                             ),
                         )
@@ -625,12 +594,8 @@ class HLSConfig:
                                 comp.get_port(port).data_type,
                                 (dftype.BoolType, dftype.IntType),
                             ):
-                                line = line.replace(
-                                    match.group(0), f"{cmp_a} == {cmp_b}"
-                                )
-                            elif comp.get_port(port).data_type == dftype.SpecialType(
-                                "node"
-                            ):
+                                line = line.replace(match.group(0), f"{cmp_a} == {cmp_b}")
+                            elif comp.get_port(port).data_type == dftype.SpecialType("node"):
                                 line = line.replace(
                                     match.group(0), f"{cmp_a}.id.ele == {cmp_b}.id.ele"
                                 )
@@ -684,8 +649,7 @@ class HLSConfig:
                             )
                             if not nostream
                             else (
-                                indent_space
-                                + f"    {tgt_port_name} = tmp_{tgt_outer_type}_var;\n"
+                                indent_space + f"    {tgt_port_name} = tmp_{tgt_outer_type}_var;\n"
                             )
                         )
                         line += indent_space + r"}" + "\n"
@@ -727,9 +691,7 @@ class HLSConfig:
                             f"#may_ele:{port}#",
                             (
                                 ".ele"
-                                if reduce_unit_func.comp.get_port(
-                                    port
-                                ).data_type.is_basic_type
+                                if reduce_unit_func.comp.get_port(port).data_type.is_basic_type
                                 else ""
                             ),
                         )
@@ -739,9 +701,7 @@ class HLSConfig:
                             i += 1
                         indent_space = " " * (i + 4)
                         potential_match_str = line[i:]
-                        pattern = re.compile(
-                            r"^#write:([a-zA-Z\_0-9]+),([a-zA-Z\.\[\]\_0-9]+)#$"
-                        )
+                        pattern = re.compile(r"^#write:([a-zA-Z\_0-9]+),([a-zA-Z\.\[\]\_0-9]+)#$")
                         pattern_noend = re.compile(
                             r"^#write_noend:([a-zA-Z\_0-9]+),([a-zA-Z\.\[\]\_0-9]+)#$"
                         )
@@ -807,9 +767,7 @@ class HLSConfig:
                     if port in constants_from_ports or port.name in unused_ports:
                         continue
                     if not is_sub_func:
-                        func_str += (
-                            f"    stream<{port2type[port.name]}> &{port.name},\n"
-                        )
+                        func_str += f"    stream<{port2type[port.name]}> &{port.name},\n"
                     else:
                         func_str += f"    {port2type[port.name]} &{port.name},\n"
                     func.params.append(
@@ -886,9 +844,7 @@ class HLSConfig:
                             i += 1
                         indent_space += " " * i
                         potential_match_str = line[i:]
-                        pattern = re.compile(
-                            r"^#write:([a-zA-Z\_0-9]+),([a-zA-Z\.\[\]\_0-9]+)#$"
-                        )
+                        pattern = re.compile(r"^#write:([a-zA-Z\_0-9]+),([a-zA-Z\.\[\]\_0-9]+)#$")
                         pattern_notrans = re.compile(
                             r"^#write_notrans:([a-zA-Z\_0-9]+),([a-zA-Z\.\[\]\_0-9]+)#$"
                         )
@@ -915,18 +871,12 @@ class HLSConfig:
                             if do_trans
                             else ""
                         )
-                        target_final_var = (
-                            f"tmp_{tgt_outer_type}_var" if do_trans else ori_var
-                        )
+                        target_final_var = f"tmp_{tgt_outer_type}_var" if do_trans else ori_var
                         if is_sub_func:
-                            line += (
-                                indent_space
-                                + f"    {tgt_port_name} = {target_final_var};\n"
-                            )
+                            line += indent_space + f"    {tgt_port_name} = {target_final_var};\n"
                         else:
                             line += (
-                                indent_space
-                                + f"    {tgt_port_name}.write({target_final_var});\n"
+                                indent_space + f"    {tgt_port_name}.write({target_final_var});\n"
                             )
                         line += indent_space + r"}" + "\n"
                         return line
@@ -981,7 +931,9 @@ class HLSConfig:
 
         # manage top function end ports & input len
         for port in end_ports:
-            top_func_def += f"    stream<{dt_manager.from_dfir_type(port.data_type)}> &{port.unique_name},\n"
+            top_func_def += (
+                f"    stream<{dt_manager.from_dfir_type(port.data_type)}> &{port.unique_name},\n"
+            )
         # top_func_def += "    uint32_t input_length\n"
         if top_func_def[-2:] == ",\n":
             top_func_def = top_func_def[:-2] + "\n"
@@ -993,7 +945,9 @@ class HLSConfig:
             sub_func_code = f"static void {sub_func.name}(\n"
             for port in sub_func.start_ports + sub_func.end_ports:
                 # sub_func_code += f"    stream<{dt_manager.from_dfir_type(port.data_type)}> &{port.unique_name},\n"
-                sub_func_code += f"    {dt_manager.from_dfir_type(port.data_type)} &{port.unique_name},\n"
+                sub_func_code += (
+                    f"    {dt_manager.from_dfir_type(port.data_type)} &{port.unique_name},\n"
+                )
             # if any(sub_sub_func.change_length for sub_sub_func in sub_func.sub_funcs):
             #     sub_func_code += "    uint32_t &output_length,\n"
             # sub_func_code += "    uint32_t input_length\n"
@@ -1025,9 +979,7 @@ class HLSConfig:
         # if any(sub_sub_func.change_length for sub_sub_func in top_func_sub_funcs):
         #     # top_func_code += "    uint32_t output_length = input_length;\n"
         #     print(end_ports)
-        top_func_code += self.generate_sub_func_code(
-            start_ports, end_ports, top_func_sub_funcs
-        )
+        top_func_code += self.generate_sub_func_code(start_ports, end_ports, top_func_sub_funcs)
         top_func_code += "}\n"
         source_code += top_func_code + "\n\n"
 
@@ -1071,9 +1023,7 @@ class HLSConfig:
                     if any(cur_port == ed_p for ed_p in end_ports):
                         sub_sub_func_var_name = f"{cur_port.unique_name}"
                     else:
-                        sub_sub_func_var_name = (
-                            f"{sub_sub_func.name}_{cur_port.unique_name}"
-                        )
+                        sub_sub_func_var_name = f"{sub_sub_func.name}_{cur_port.unique_name}"
                         port2var_name[cur_port] = sub_sub_func_var_name
                         adding_codes += (
                             (

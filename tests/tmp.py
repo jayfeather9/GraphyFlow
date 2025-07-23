@@ -1,7 +1,5 @@
 edges = g.add_graph_input("edge")
-potential_dst_updates = edges.map(
-    map_func=lambda edge: (edge.src.distance, edge.dst, edge.weight)
-)
+potential_dst_updates = edges.map(map_func=lambda edge: (edge.src.distance, edge.dst, edge.weight))
 min_potential_distances = potential_dst_updates.reduce(
     key_func=lambda src_dist, dst, edge_w: dst,
     transform_func=lambda src_dist, dst, edge_w: (src_dist + edge_w, dst),

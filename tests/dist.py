@@ -10,9 +10,7 @@ g = GlobalGraph(  # 创建一个全局图对象 g
         "node": {
             "distance": dfir.FloatType()
         },  # 节点 (node) 具有 "distance" 属性，存储源点到该节点的最短距离
-        "edge": {
-            "weight": dfir.FloatType()
-        },  # 边 (edge) 具有 "weight" 属性，存储边的权重
+        "edge": {"weight": dfir.FloatType()},  # 边 (edge) 具有 "weight" 属性，存储边的权重
     }
 )
 

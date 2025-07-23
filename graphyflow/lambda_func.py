@@ -17,14 +17,10 @@ def _lambda_binop(tracer1, tracer2, op, default_func: Callable):
         return Tracer(node_type="operation", operator=op, parents=[tracer1, tracer2])
     elif isinstance(tracer1, Tracer):
         constant_tracer = Tracer(node_type="constant", value=tracer2)
-        return Tracer(
-            node_type="operation", operator=op, parents=[tracer1, constant_tracer]
-        )
+        return Tracer(node_type="operation", operator=op, parents=[tracer1, constant_tracer])
     elif isinstance(tracer2, Tracer):
         constant_tracer = Tracer(node_type="constant", value=tracer1)
-        return Tracer(
-            node_type="operation", operator=op, parents=[constant_tracer, tracer2]
-        )
+        return Tracer(node_type="operation", operator=op, parents=[constant_tracer, tracer2])
     else:
         return default_func(tracer1, tracer2)
 
@@ -292,8 +288,7 @@ def lambda_to_dfir(
             dfir.SpecialType("edge"),
         ] or (
             isinstance(pre_o_types[0], dfir.ArrayType)
-            and pre_o_types[0].type_
-            in [dfir.SpecialType("node"), dfir.SpecialType("edge")]
+            and pre_o_types[0].type_ in [dfir.SpecialType("node"), dfir.SpecialType("edge")]
         )
         if pre_o_types[0] == dfir.SpecialType("node") or (
             isinstance(pre_o_types[0], dfir.ArrayType)
@@ -344,9 +339,7 @@ def lambda_to_dfir(
         arg_name = f"arg{name_id}"
         target = [nid for nid in start_queue if nodes[nid]["name"] == arg_name]
         assert len(target) == 1
-        queue.append(
-            [target[0], [input_types[name_id]], {}]
-        )  # node, prev_type, parent_ports
+        queue.append([target[0], [input_types[name_id]], {}])  # node, prev_type, parent_ports
     both_in_out_nids = [
         nid for nid in lambda_dict["input_ids"] if nid in lambda_dict["output_ids"]
     ]
@@ -396,9 +389,7 @@ def lambda_to_dfir(
             copy_comp = dfir.CopyComponent(p_port.data_type)
             dfir_nodes[max_nid + 1] = copy_comp
             max_nid += 1
-            target_port = (
-                port_trans_dict[p_port] if p_port in port_trans_dict else p_port
-            )
+            target_port = port_trans_dict[p_port] if p_port in port_trans_dict else p_port
             dfir_nodes[nid].connect({my_port_name: target_port})
             new_target_port = target_port.copy(copy_comp)
             port_trans_dict[p_port] = new_target_port
@@ -410,30 +401,22 @@ def lambda_to_dfir(
     assert all(not p.connected for p in (inputs + outputs))
     # handle unused input
     all_ports = sum((node.ports for node in dfir_nodes.values()), [])
-    all_hanged_ports = [
-        p for p in all_ports if (not p.connected and not p in inputs + outputs)
-    ]
+    all_hanged_ports = [p for p in all_ports if (not p.connected and not p in inputs + outputs)]
     all_hanged_nodes = [
-        nid
-        for nid in dfir_nodes
-        if any(p in all_hanged_ports for p in dfir_nodes[nid].ports)
+        nid for nid in dfir_nodes if any(p in all_hanged_ports for p in dfir_nodes[nid].ports)
     ]
     all_input_dfir_nodes = [nid for nid in lambda_dict["input_ids"]]
     # only input dfir nodes can be hanged
     assert all(n in all_input_dfir_nodes for n in all_hanged_nodes)
     # add a unused end marker to the hanged nodes
     for nid in all_hanged_nodes:
-        dfir_nodes[max_nid + 1] = dfir.UnusedEndMarkerComponent(
-            dfir_nodes[nid].output_type
-        )
+        dfir_nodes[max_nid + 1] = dfir.UnusedEndMarkerComponent(dfir_nodes[nid].output_type)
         assert len(dfir_nodes[nid].out_ports) == 1
         dfir_nodes[max_nid + 1].connect({"i_0": dfir_nodes[nid].out_ports[0]})
         max_nid += 1
     # handle scatter outputs
     if not scatter_outputs and len(outputs) > 1:
-        gather_comp = dfir.GatherComponent(
-            list(map(lambda port: port.data_type, outputs))
-        )
+        gather_comp = dfir.GatherComponent(list(map(lambda port: port.data_type, outputs)))
         for i, p in enumerate(outputs):
             gather_comp.ports[i].connect(p)
         dfir_nodes[max_nid + 1] = gather_comp

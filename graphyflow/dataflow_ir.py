@@ -40,9 +40,7 @@ class Port(DfirNode):
         self.name = name
         self.unique_name = f"{self.name}_{self.readable_id}"
         self.port_type = PortType.OUT if name.startswith("o_") else PortType.IN
-        self.data_type = (
-            parent.input_type if self.port_type == PortType.IN else parent.output_type
-        )
+        self.data_type = parent.input_type if self.port_type == PortType.IN else parent.output_type
         self.parent = parent
         self.connection = None
 
@@ -100,19 +98,14 @@ class ComponentCollection(DfirNode):
         self.inputs = inputs
         self.outputs = outputs
         in_and_out = inputs + outputs
-        assert all(
-            all(p.connected or p in in_and_out for p in c.ports)
-            for c in self.components
-        )
+        assert all(all(p.connected or p in in_and_out for p in c.ports) for c in self.components)
 
     def __repr__(self) -> str:
         return f"ComponentCollection(\n  components: {self.components},\n  inputs: {self.inputs},\n  outputs: {self.outputs}\n)"
 
     @property
     def all_connected_ports(self) -> List[Port]:
-        return [
-            p for p in sum([comp.ports for comp in self.components], []) if p.connected
-        ]
+        return [p for p in sum([comp.ports for comp in self.components], []) if p.connected]
 
     @property
     def output_types(self) -> List[DfirType]:
@@ -135,9 +128,7 @@ class ComponentCollection(DfirNode):
 
     def add_front(self, component: Component, ports: Dict[str, Port]) -> None:
         assert all(p in self.inputs for p in ports.values())
-        assert all(
-            not p.connected or p in self.all_connected_ports for p in component.in_ports
-        )
+        assert all(not p.connected or p in self.all_connected_ports for p in component.in_ports)
         component.connect(ports)
         if not self.added(component):
             self.components.insert(0, component)
@@ -148,10 +139,7 @@ class ComponentCollection(DfirNode):
 
     def add_back(self, component: Component, ports: Dict[str, Port]) -> None:
         assert all(p in self.outputs for p in ports.values())
-        assert all(
-            not p.connected or p in self.all_connected_ports
-            for p in component.out_ports
-        )
+        assert all(not p.connected or p in self.all_connected_ports for p in component.out_ports)
         component.connect(ports)
         if not self.added(component):
             self.components.append(component)
@@ -318,9 +306,7 @@ class IOComponent(Component):
 
 class ConstantComponent(Component):
     def __init__(self, data_type: DfirType, value: Any) -> None:
-        super().__init__(
-            None, data_type, ["o_0"], parallel=isinstance(data_type, ArrayType)
-        )
+        super().__init__(None, data_type, ["o_0"], parallel=isinstance(data_type, ArrayType))
         self.value = value
 
     def additional_info(self) -> str:
@@ -479,9 +465,7 @@ class BinOpComponent(Component):
         else:
             parallel = False
             output_type = op.output_type(input_type)
-        assert not isinstance(output_type, OptionalType) and not isinstance(
-            output_type, TupleType
-        )
+        assert not isinstance(output_type, OptionalType) and not isinstance(output_type, TupleType)
         super().__init__(input_type, output_type, ["i_0", "i_1", "o_0"], parallel)
         self.op = op
 
@@ -603,9 +587,7 @@ class UnaryOpComponent(Component):
                 # r"#output_length# = 1;",
                 r"#write:o_0,length#",
             ]
-            return self.get_hls_function(
-                code_in_loop, code_before_loop, code_after_loop
-            )
+            return self.get_hls_function(code_in_loop, code_before_loop, code_after_loop)
         else:
             trans_dict = {
                 UnaryOp.NOT: "{!unary_src#may_ele:i_0#}",
