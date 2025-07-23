@@ -445,6 +445,14 @@ class BinOp(Enum):
             repr = f"{part_a} {self.value} {part_b}"
         return "{ " + repr + " }"
 
+    def gen_repr_forbkd(self, part_a, part_b):
+        if self.value in ["min", "max"]:
+            translate_dict = {"min": "<", "max": ">"}
+            repr = f"(({part_a}) {translate_dict[self.value]} ({part_b}) ? {part_a} : {part_b})"
+        else:
+            repr = f"{part_a} {self.value} {part_b}"
+        return "(" + repr + ")"
+
     def output_type(self, input_type: DfirType) -> DfirType:
         if self in [
             BinOp.ADD,
