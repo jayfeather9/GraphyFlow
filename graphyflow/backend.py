@@ -273,7 +273,10 @@ class HLSExpr:
             assert operands[0].type == HLSExprT.VAR
             # assert operands[0].val.type.type == HLSBasicType.STREAM # This check will be done at a higher level
         elif expr_type == HLSExprT.UOP:
-            assert type(expr_val) == dfir.UnaryOp
+            if type(expr_val) == tuple:
+                assert type(expr_val[0]) == dfir.UnaryOp
+            else:
+                assert type(expr_val) == dfir.UnaryOp
             assert type(operands) == list and len(operands) == 1
         elif expr_type == HLSExprT.BINOP:
             assert type(expr_val) == dfir.BinOp
@@ -314,10 +317,14 @@ class HLSExpr:
                 dfir.UnaryOp.CAST_BOOL: f"(({HLSBasicType.BOOL.value})(operand))",
                 dfir.UnaryOp.CAST_INT: f"(({HLSBasicType.INT.value})(operand))",
                 dfir.UnaryOp.CAST_FLOAT: f"(({HLSBasicType.FLOAT.value})(operand))",
-                dfir.UnaryOp.SELECT: f"operand.ele_{self.val.val}",
-                dfir.UnaryOp.GET_ATTR: f"operand.{self.val.val}",
+                dfir.UnaryOp.SELECT: f"operand.ele_{self.val[1] if type(self.val) == tuple else '0'}",
+                dfir.UnaryOp.GET_ATTR: f"operand.{self.val[1] if type(self.val) == tuple else 'ele_0'}",
             }
-            return trans_dict[self.val].replace("operand", self.operands[0].code)
+            if type(self.val) == tuple:
+                expr_val_val = self.val[0]
+            else:
+                expr_val_val = self.val
+            return trans_dict[expr_val_val].replace("operand", self.operands[0].code)
         elif self.type == HLSExprT.BINOP:
             assert not self.contain_s_read
             return self.val.gen_repr_forbkd(self.operands[0].code, self.operands[1].code)
@@ -1075,11 +1082,10 @@ class BackendManager:
             out_type = self.type_map[out_port.data_type]
 
             ga_op = dfir.UnaryOp.GET_ATTR
-            ga_op.store_val(f"ele_{i}")
             # Source is a member of the input struct
             in_member_expr = HLSExpr(
                 HLSExprT.UOP,
-                ga_op,
+                (ga_op, f"ele_{i}"),
                 [
                     HLSExpr(
                         HLSExprT.VAR,
@@ -1156,22 +1162,20 @@ class BackendManager:
         out_elem_type = self.type_map[out_port.data_type]
 
         ga_op = dfir.UnaryOp.GET_ATTR
-        ga_op.store_val("valid")
         # Condition: in_batch_i_0.data[i].valid
         cond_expr = HLSExpr(
             HLSExprT.UOP,
-            ga_op,
+            (ga_op, "valid"),
             [HLSExpr(HLSExprT.VAR, HLSVar(f"in_batch_i_0.data[i]", in_elem_type))],
         )
 
         ga_op = dfir.UnaryOp.GET_ATTR
-        ga_op.store_val("data")
         # Assignment if valid: out_batch_o_0.data[out_idx++] = in_batch_i_0.data[i].data
         assign_data = CodeAssign(
             HLSVar(f"out_batch_o_0.data[{out_idx_var.name}]", out_elem_type),
             HLSExpr(
                 HLSExprT.UOP,
-                ga_op,
+                (ga_op, "data"),
                 [HLSExpr(HLSExprT.VAR, HLSVar(f"in_batch_i_0.data[i]", in_elem_type))],
             ),
         )
@@ -1198,8 +1202,9 @@ class BackendManager:
             )
         )
         ga_op = dfir.UnaryOp.GET_ATTR
-        ga_op.store_val("end_flag")
-        end_flag_expr = HLSExpr(HLSExprT.UOP, ga_op, [HLSExpr(HLSExprT.VAR, in_batch_var)])
+        end_flag_expr = HLSExpr(
+            HLSExprT.UOP, (ga_op, "end_flag"), [HLSExpr(HLSExprT.VAR, in_batch_var)]
+        )
         while_loop_body.append(
             CodeAssign(
                 HLSVar(f"{out_batch_var.name}.end_flag", HLSType(HLSBasicType.BOOL)),
@@ -1295,8 +1300,9 @@ class BackendManager:
                 in_var = p2var_map[comp.get_port("i_0").connection]
                 for i, out_port in enumerate(comp.out_ports):
                     ga_op = dfir.UnaryOp.GET_ATTR
-                    ga_op.store_val(f"ele_{i}")
-                    expr = HLSExpr(HLSExprT.UOP, ga_op, [HLSExpr(HLSExprT.VAR, in_var)])
+                    expr = HLSExpr(
+                        HLSExprT.UOP, (ga_op, f"ele_{i}"), [HLSExpr(HLSExprT.VAR, in_var)]
+                    )
                     code_lines.append(CodeAssign(p2var_map[out_port], expr))
 
             elif isinstance(comp, dfir.ConditionalComponent):
@@ -1322,13 +1328,15 @@ class BackendManager:
 
                 # Condition: in_opt_var.valid
                 valid_op = dfir.UnaryOp.GET_ATTR
-                valid_op.store_val("valid")
-                cond_expr = HLSExpr(HLSExprT.UOP, valid_op, [HLSExpr(HLSExprT.VAR, in_opt_var)])
+                cond_expr = HLSExpr(
+                    HLSExprT.UOP, (valid_op, "valid"), [HLSExpr(HLSExprT.VAR, in_opt_var)]
+                )
 
                 # Assignment: out_var = in_opt_var.data
                 data_op = dfir.UnaryOp.GET_ATTR
-                data_op.store_val("data")
-                assign_expr = HLSExpr(HLSExprT.UOP, data_op, [HLSExpr(HLSExprT.VAR, in_opt_var)])
+                assign_expr = HLSExpr(
+                    HLSExprT.UOP, (data_op, "data"), [HLSExpr(HLSExprT.VAR, in_opt_var)]
+                )
 
                 if_block = CodeIf(cond_expr, [CodeAssign(out_var, assign_expr)])
                 code_lines.append(if_block)
@@ -1383,8 +1391,9 @@ class BackendManager:
 
         # Extract and check end flag
         ga_op = dfir.UnaryOp.GET_ATTR
-        ga_op.store_val("end_flag")
-        end_flag_expr = HLSExpr(HLSExprT.UOP, ga_op, [HLSExpr(HLSExprT.VAR, in_elem_var)])
+        end_flag_expr = HLSExpr(
+            HLSExprT.UOP, (ga_op, "end_flag"), [HLSExpr(HLSExprT.VAR, in_elem_var)]
+        )
         while_loop_body.append(CodeAssign(end_flag_var, end_flag_expr))
 
         # Inline the sub-graph logic
@@ -1484,8 +1493,6 @@ class BackendManager:
         body.append(clear_ibuf_loop)
 
         # Create a for loop to initialize key_mem's valid flags to false
-        get_attr_op = dfir.UnaryOp.GET_ATTR
-        get_attr_op.store_val("ele_1")
         target_valid_flag = HLSVar("key_mem[i_reduce_clear].ele_1", HLSType(HLSBasicType.BOOL))
         assign_valid_false = CodeAssign(target_valid_flag, HLSExpr(HLSExprT.CONST, False))
         clear_valid_loop = CodeFor(
@@ -1530,9 +1537,8 @@ class BackendManager:
         )
 
         get_attr_op_ef = dfir.UnaryOp.GET_ATTR
-        get_attr_op_ef.store_val("end_flag")
         end_flag_expr = HLSExpr(
-            HLSExprT.UOP, get_attr_op_ef, [HLSExpr(HLSExprT.VAR, in_key_batch)]
+            HLSExprT.UOP, (get_attr_op_ef, "end_flag"), [HLSExpr(HLSExprT.VAR, in_key_batch)]
         )
         while_loop_body.append(CodeAssign(end_flag_var, end_flag_expr))
         while_loop_body.append(CodeIf(HLSExpr(HLSExprT.VAR, end_flag_var), [CodeBreak()]))
@@ -1547,18 +1553,16 @@ class BackendManager:
         body.append(CodeAssign(out_idx, HLSExpr(HLSExprT.CONST, 0)))
 
         get_valid_op = dfir.UnaryOp.GET_ATTR
-        get_valid_op.store_val("ele_1")
         is_valid_expr = HLSExpr(
             HLSExprT.UOP,
-            get_valid_op,
+            (get_valid_op, "ele_1"),
             [HLSExpr(HLSExprT.VAR, HLSVar(f"key_mem[k]", bram_elem_type))],
         )
 
         get_data_op = dfir.UnaryOp.GET_ATTR
-        get_data_op.store_val("ele_0")
         data_expr = HLSExpr(
             HLSExprT.UOP,
-            get_data_op,
+            (get_data_op, "ele_0"),
             [HLSExpr(HLSExprT.VAR, HLSVar(f"key_mem[k]", bram_elem_type))],
         )
 
@@ -1699,8 +1703,9 @@ class BackendManager:
         logic.append(CodeVarDecl(new_ele_var.name, new_ele_var.type))
 
         get_valid_op = dfir.UnaryOp.GET_ATTR
-        get_valid_op.store_val("ele_1")
-        is_valid_expr = HLSExpr(HLSExprT.UOP, get_valid_op, [HLSExpr(HLSExprT.VAR, old_ele_var)])
+        is_valid_expr = HLSExpr(
+            HLSExprT.UOP, (get_valid_op, "ele_1"), [HLSExpr(HLSExprT.VAR, old_ele_var)]
+        )
 
         # If block: first time seeing this key
         if_codes = [
@@ -1717,11 +1722,12 @@ class BackendManager:
         # Else block: merge with existing value
         old_data_var = HLSVar("old_data", accum_type)
         get_data_op = dfir.UnaryOp.GET_ATTR
-        get_data_op.store_val("ele_0")
         else_codes = [
             CodeAssign(
                 old_data_var,
-                HLSExpr(HLSExprT.UOP, get_data_op, [HLSExpr(HLSExprT.VAR, old_ele_var)]),
+                HLSExpr(
+                    HLSExprT.UOP, (get_data_op, "ele_0"), [HLSExpr(HLSExprT.VAR, old_ele_var)]
+                ),
             )
         ]
         # Inline the unit sub-graph logic
@@ -1783,16 +1789,24 @@ class BackendManager:
         # Build dependency graph
         for name, (hls_type, _) in self.struct_definitions.items():
             for sub_type in hls_type.sub_types:
-                if sub_type.type == HLSBasicType.STRUCT:
-                    adj[sub_type.name].append(name)
+                sub_basic_type = sub_type.type
+                sub_type_name = sub_type.name
+                if sub_basic_type == HLSBasicType.BATCH:
+                    sub_basic_type = sub_type.sub_types[0].type
+                    sub_type_name = sub_type_name[:-8]
+                if sub_basic_type == HLSBasicType.STRUCT:
+                    adj[sub_type_name].append(name)
                     in_degree[name] += 1
+                    print(f"{sub_type_name} => {name}")
 
+        print(in_degree)
         # Kahn's algorithm for topological sort
         queue = [name for name in self.struct_definitions if in_degree[name] == 0]
         sorted_structs = []
 
         while queue:
             u = queue.pop(0)
+            print(f"Appending {u}")
             sorted_structs.append(self.struct_definitions[u])
             for v in adj[u]:
                 in_degree[v] -= 1
@@ -1828,8 +1842,6 @@ class BackendManager:
 
         code += f"#endif // {header_guard}\n"
         return code
-
-    # 请用以下版本替换你的 _generate_top_level_function 函数
 
     def _generate_top_level_function(self, top_func_name: str, top_func_sig: str) -> str:
         """Generates the implementation of the top-level dataflow function."""
