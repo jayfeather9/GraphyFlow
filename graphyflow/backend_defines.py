@@ -165,7 +165,7 @@ class CodeVarDecl(HLSCodeLine):
         self.var = HLSVar(var_name, var_type)
 
     def gen_code(self, indent_lvl: int = 0):
-        return indent_lvl * INDENT_UNIT + f"{self.var.type.name} {self.var.name};\n"
+        return indent_lvl * INDENT_UNIT + self.var.type.get_upper_decl(self.var.name) + "\n"
 
 
 class CodeIf(HLSCodeLine):

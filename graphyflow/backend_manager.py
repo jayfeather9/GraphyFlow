@@ -6,7 +6,7 @@ import graphyflow.dataflow_ir as dfir
 import re
 
 
-from backend_defines import (
+from graphyflow.backend_defines import (
     INDENT_UNIT,
     HLSType,
     HLSBasicType,
@@ -27,7 +27,7 @@ from backend_defines import (
     CodeWhile,
     CodeWriteStream,
 )
-from backend_utils import generate_omega_network
+from graphyflow.backend_utils import generate_omega_network
 
 
 class BackendManager:
@@ -422,18 +422,15 @@ class BackendManager:
         if base_type in self.batch_type_map:
             return self.batch_type_map[base_type]
 
-        # Define the members of the new batch struct
-        data_array_type = HLSType(HLSBasicType.BATCH, sub_types=[base_type])
+        data_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[base_type], array_dims=["PE_NUM"])
         end_flag_type = HLSType(HLSBasicType.BOOL)
         end_pos_type = HLSType(HLSBasicType.UINT8)
 
         member_types = [data_array_type, end_flag_type, end_pos_type]
         member_names = ["data", "end_flag", "end_pos"]
 
-        # Create the new HLSType for the batch struct
         batch_type = HLSType(HLSBasicType.STRUCT, member_types, struct_prop_names=member_names)
 
-        # Store for reuse and for final declaration generation
         self.batch_type_map[base_type] = batch_type
         if batch_type.name not in self.struct_definitions:
             self.struct_definitions[batch_type.name] = (batch_type, member_names)
@@ -1189,16 +1186,27 @@ class BackendManager:
         # 2. State Declarations and Initializations
         body.append(CodeComment("Stateful memories for reduction"))
 
-        # Declare memories and buffers without static and using CodeVarDecl
-        body.append(CodeVarDecl(f"key_mem[MAX_NUM]", bram_elem_type))
+        # 1. key_mem[MAX_NUM]
+        key_mem_type = HLSType(
+            HLSBasicType.ARRAY, sub_types=[bram_elem_type], array_dims=["MAX_NUM"]
+        )
+        body.append(CodeVarDecl("key_mem", key_mem_type))
         body.append(CodePragma("BIND_STORAGE variable=key_mem type=RAM_2P impl=URAM"))
         body.append(CodePragma("dependence variable=key_mem inter false"))
 
-        body.append(CodeVarDecl(f"key_buffer[L + 1]", bram_elem_type))
+        # 2. key_buffer[L + 1]
+        key_buffer_type = HLSType(
+            HLSBasicType.ARRAY, sub_types=[bram_elem_type], array_dims=["L + 1"]
+        )
+        body.append(CodeVarDecl("key_buffer", key_buffer_type))
         body.append(CodePragma("ARRAY_PARTITION variable=key_buffer dim=0 complete"))
 
-        i_buffer_type = HLSType(HLSBasicType.UINT)
-        body.append(CodeVarDecl(f"i_buffer[L + 1]", i_buffer_type))
+        # 3. i_buffer[L + 1]
+        i_buffer_base_type = HLSType(HLSBasicType.UINT)
+        i_buffer_type = HLSType(
+            HLSBasicType.ARRAY, sub_types=[i_buffer_base_type], array_dims=["L + 1"]
+        )
+        body.append(CodeVarDecl("i_buffer", i_buffer_type))
         body.append(CodePragma("ARRAY_PARTITION variable=i_buffer dim=0 complete"))
 
         body.append(CodeComment("Memory initialization"))
@@ -1522,7 +1530,7 @@ class BackendManager:
             for sub_type in hls_type.sub_types:
                 sub_basic_type = sub_type.type
                 sub_type_name = sub_type.name
-                if sub_basic_type == HLSBasicType.BATCH:
+                if sub_basic_type == HLSBasicType.ARRAY:
                     sub_basic_type = sub_type.sub_types[0].type
                     sub_type_name = sub_type_name[:-8]
                 if sub_basic_type == HLSBasicType.STRUCT:
