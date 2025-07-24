@@ -36,6 +36,7 @@ class HLSType:
     _all_full_names = set()
     _all_names = set()
     _full_to_type = {}
+    _name_to_full = {}
     _id_cnt = 0
 
     def __init__(
@@ -79,11 +80,19 @@ class HLSType:
             existing_type = HLSType._full_to_type[self.full_name]
             self.__dict__.update(existing_type.__dict__)
         else:
+            # print(self.full_name)
+            # print(self.name)
             HLSType._all_full_names.add(self.full_name)
             assert self.name not in HLSType._all_names
             HLSType._all_names.add(self.name)
             HLSType._full_to_type[self.full_name] = self
+            HLSType._name_to_full[self.name] = self.full_name
             HLSType._id_cnt += 1
+
+    @classmethod
+    def get_type(cls, type_name):
+        assert type_name in cls._all_names
+        return cls._full_to_type[cls._name_to_full[type_name]]
 
     def _generate_canonical_name(self, sub_types: List[HLSType]) -> str:
         name_parts = [t.full_name.replace(" ", "_") for t in sub_types]
@@ -109,11 +118,26 @@ class HLSType:
             if match:
                 base_type_str = self.name[: match.start()]
                 dims_str = self.name[match.start() :]
-                return f"{base_type_str} {var_name}{dims_str};"
+                return f"{base_type_str} {var_name}{dims_str}"
             else:
                 assert False
                 # return f"{self.name} {var_name};"
-        return f"{self.name} {var_name};"
+        return f"{self.name} {var_name}"
+
+    def get_upper_param(self, var_name: str, ref: bool):
+        if self.type == HLSBasicType.ARRAY:
+            match = re.search(r"\[", self.name)
+            if match:
+                base_type_str = self.name[: match.start()]
+                dims_str = self.name[match.start() :]
+                if ref:
+                    return f"{base_type_str} (&{var_name}){dims_str}"
+                return f"{base_type_str} {var_name}{dims_str}"
+            else:
+                assert False
+        if ref:
+            return f"{self.name} &{var_name}"
+        return f"{self.name} {var_name}"
 
     def gen_decl(self, member_names: Optional[List[str]] = None) -> str:
         # Generate C++ typedef struct declaration
@@ -123,7 +147,9 @@ class HLSType:
         assert len(member_names) == len(self.sub_types)
         if self.struct_prop_names:
             assert self.struct_prop_names == member_names
-        decls = [st.get_upper_decl(m_name) for st, m_name in zip(self.sub_types, member_names)]
+        decls = [
+            st.get_upper_decl(m_name) + ";" for st, m_name in zip(self.sub_types, member_names)
+        ]
         return (
             f"typedef struct {{\n"
             + f"\n".join([INDENT_UNIT + d for d in decls])
@@ -160,12 +186,19 @@ class HLSCodeLine:
 
 
 class CodeVarDecl(HLSCodeLine):
-    def __init__(self, var_name, var_type) -> None:
+    def __init__(self, var_name, var_type, init_val=None) -> None:
         super().__init__()
         self.var = HLSVar(var_name, var_type)
+        self.init_val = init_val
 
     def gen_code(self, indent_lvl: int = 0):
-        return indent_lvl * INDENT_UNIT + self.var.type.get_upper_decl(self.var.name) + "\n"
+        init_code = f" = {self.init_val}" if self.init_val else ""
+        return (
+            indent_lvl * INDENT_UNIT
+            + self.var.type.get_upper_decl(self.var.name)
+            + init_code
+            + ";\n"
+        )
 
 
 class CodeIf(HLSCodeLine):
@@ -442,7 +475,7 @@ class CodeComment(HLSCodeLine):
         self.text = text
 
     def gen_code(self, indent_lvl: int = 0) -> str:
-        return indent_lvl * INDENT_UNIT + "//" + self.text + "\n"
+        return indent_lvl * INDENT_UNIT + "// " + self.text.strip() + "\n"
 
 
 class HLSFunction:

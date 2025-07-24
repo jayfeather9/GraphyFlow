@@ -1,10 +1,11 @@
-# hls_network_generators.py
+# backend_utils.py
 from __future__ import annotations
 import math
 from typing import List
 
 # 从您现有的后端和IR文件中导入必要的类
-import graphyflow.backend_manager as hls
+# 注意：我们现在从 backend_defines 导入基础类
+import graphyflow.backend_defines as hls
 import graphyflow.dataflow_ir as dfir
 
 # 全局计数器，确保每次生成的函数名都唯一
@@ -24,161 +25,107 @@ def create_non_blocking_read(
 ) -> hls.CodeIf:
     """
     一个辅助函数，用于快速生成非阻塞读数据流的代码块。
-    它利用了您在 backend.py 中对 HLSExpr 和 CodeIf 的更新。
-
-    Args:
-        stream_var: 要检查的流变量 (HLSVar)。
-        body_if_not_empty: 如果流不为空，要执行的代码行列表。
-
-    Returns:
-        一个配置好的 CodeIf 实例。
     """
-    # 构造条件表达式: !stream.empty()
     empty_expr = hls.HLSExpr(
         hls.HLSExprT.STREAM_EMPTY, None, [hls.HLSExpr(hls.HLSExprT.VAR, stream_var)]
     )
     not_empty_expr = hls.HLSExpr(hls.HLSExprT.UOP, dfir.UnaryOp.NOT, [empty_expr])
-
-    # 返回一个只有 'if' 分支的 CodeIf 块
+    # 修复了构造函数调用，确保默认参数安全
     return hls.CodeIf(expr=not_empty_expr, if_codes=body_if_not_empty)
 
 
-def generate_omega_network(n: int, data_type_name: str) -> List[hls.HLSFunction]:
+# ======================================================================== #
+#                      第二步：新增函数生成器                                #
+# ======================================================================== #
+
+
+def generate_merge_stream_2x1(data_type: hls.HLSType) -> hls.HLSFunction:
     """
-    生成一个 N x N Omega 网络的完整HLS C++代码。
-
-    Args:
-        n (int): Omega网络的端口数，必须是2的幂。
-        data_type_name (str): 网络中流动的数据类型名称，
-                              需保证该类型有 .dst 和 .end_flag 成员。
-
-    Returns:
-        str: 一个包含所有必要函数和定义的完整C++代码字符串。
+    生成一个2合1数据流合并单元 (mergeStream2x1) 的 HLSFunction 对象。
+    这个函数是构成归约树的基础。
     """
-    # --- 1. 参数校验和初始化 ---
-    if not (n > 0 and (n & (n - 1) == 0)):
-        raise ValueError("网络大小 'n' 必须是2的正整数次幂。")
-
-    log_n = int(math.log2(n))
-    switches_per_stage = n // 2
     gen_id = _get_unique_id()
+    func_name = f"mergeStream2x1_{gen_id}"
 
-    # --- 2. HLS类型定义 ---
-    # 定义一个代表流动数据的HLSType，即使是占位符，它对于构造流类型也是必需的
-    # 我们假设它是一个结构体，但内部细节未知，这对生成代码来说足够了。
-    data_tuple_type = hls.HLSType(
-        hls.HLSBasicType.STRUCT,
-        sub_types=[hls.HLSType(hls.HLSBasicType.UINT), hls.HLSType(hls.HLSBasicType.BOOL)],
-        struct_name=data_type_name,
-        struct_prop_names=["dst", "end_flag"],
-    )
-
-    # 定义流类型 hls::stream<your_data_type>
-    stream_type = hls.HLSType(hls.HLSBasicType.STREAM, sub_types=[data_tuple_type])
+    stream_type = hls.HLSType(hls.HLSBasicType.STREAM, sub_types=[data_type])
     bool_type = hls.HLSType(hls.HLSBasicType.BOOL)
     int_type = hls.HLSType(hls.HLSBasicType.INT)
 
-    # --- 3. 生成 'sender' 函数 ---
-    sender_func_name = f"sender_{gen_id}"
-
-    # 定义sender的参数
-    sender_params = [
+    # 定义函数参数
+    params = [
         hls.HLSVar("i", int_type),
-        hls.HLSVar("update_set_stm_in1", stream_type),
-        hls.HLSVar("update_set_stm_in2", stream_type),
-        hls.HLSVar("update_set_stm_out1", stream_type),
-        hls.HLSVar("update_set_stm_out2", stream_type),
-        hls.HLSVar("update_set_stm_out3", stream_type),
-        hls.HLSVar("update_set_stm_out4", stream_type),
+        hls.HLSVar("in1", stream_type),
+        hls.HLSVar("in2", stream_type),
+        hls.HLSVar("out", stream_type),
     ]
 
-    # 构建sender的函数体
+    # 定义函数体内的变量
     in1_end_flag_var = hls.HLSVar("in1_end_flag", bool_type)
     in2_end_flag_var = hls.HLSVar("in2_end_flag", bool_type)
-    data1_var = hls.HLSVar("data1", data_tuple_type)
-    data2_var = hls.HLSVar("data2", data_tuple_type)
-    i_var_expr = hls.HLSExpr(hls.HLSExprT.VAR, hls.HLSVar("i", int_type))
+    data1_var = hls.HLSVar("data1", data_type)
+    data2_var = hls.HLSVar("data2", data_type)
 
-    # 路由逻辑表达式: (data.dst >> i) & 0x1
-    def create_routing_expr(data_var: hls.HLSVar) -> hls.HLSExpr:
-        dst_expr = hls.HLSExpr(
+    # 为了模拟 read_from_stream_nb，我们需要一个辅助函数来生成读取和检查的逻辑
+    def create_nb_read_logic(in_stream_var, data_var, process_flag_var, end_flag_var):
+        end_check_expr = hls.HLSExpr(
             hls.HLSExprT.UOP,
-            (dfir.UnaryOp.GET_ATTR, "dst"),
+            (dfir.UnaryOp.GET_ATTR, "end_flag"),
             [hls.HLSExpr(hls.HLSExprT.VAR, data_var)],
         )
-        shifted_expr = hls.HLSExpr(hls.HLSExprT.BINOP, dfir.BinOp.SR, [dst_expr, i_var_expr])
-        return hls.HLSExpr(
-            hls.HLSExprT.BINOP, dfir.BinOp.AND, [shifted_expr, hls.HLSExpr(hls.HLSExprT.CONST, 1)]
+
+        # if (data.end_flag) inX_end_flag = 1;
+        set_end_flag = hls.CodeIf(
+            end_check_expr, [hls.CodeAssign(end_flag_var, hls.HLSExpr(hls.HLSExprT.CONST, True))]
         )
 
-    # in1的处理逻辑
-    in1_routing_expr = create_routing_expr(data1_var)
-    in1_end_flag_check_expr = hls.HLSExpr(
-        hls.HLSExprT.UOP,
-        (dfir.UnaryOp.GET_ATTR, "end_flag"),
-        [hls.HLSExpr(hls.HLSExprT.VAR, data1_var)],
-    )
-    in1_if_not_end_block = hls.CodeIf(
-        in1_routing_expr,
-        if_codes=[hls.CodeWriteStream(sender_params[4], data1_var)],  # out2
-        else_codes=[hls.CodeWriteStream(sender_params[3], data1_var)],  # out1
-    )
-    in1_read_block = hls.CodeIf(
-        hls.HLSExpr(hls.HLSExprT.UOP, dfir.UnaryOp.NOT, [in1_end_flag_check_expr]),
-        if_codes=[in1_if_not_end_block],
-        else_codes=[hls.CodeAssign(in1_end_flag_var, in1_end_flag_check_expr)],
-    )
-    in1_non_blocking_read = create_non_blocking_read(
-        sender_params[1],
-        [
-            hls.CodeVarDecl(data1_var.name, data1_var.type),
+        read_body = [
+            hls.CodeAssign(process_flag_var, hls.HLSExpr(hls.HLSExprT.CONST, True)),
+            hls.CodeVarDecl(data_var.name, data_var.type),
             hls.CodeAssign(
-                data1_var,
+                data_var,
                 hls.HLSExpr(
-                    hls.HLSExprT.STREAM_READ,
-                    None,
-                    [hls.HLSExpr(hls.HLSExprT.VAR, sender_params[1])],
+                    hls.HLSExprT.STREAM_READ, None, [hls.HLSExpr(hls.HLSExprT.VAR, in_stream_var)]
                 ),
             ),
-            in1_read_block,
-        ],
-    )
+            set_end_flag,
+        ]
 
-    # in2的处理逻辑
-    in2_routing_expr = create_routing_expr(data2_var)
-    in2_end_flag_check_expr = hls.HLSExpr(
-        hls.HLSExprT.UOP,
-        (dfir.UnaryOp.GET_ATTR, "end_flag"),
-        [hls.HLSExpr(hls.HLSExprT.VAR, data2_var)],
-    )
-    in2_if_not_end_block = hls.CodeIf(
-        in2_routing_expr,
-        if_codes=[hls.CodeWriteStream(sender_params[6], data2_var)],  # out4
-        else_codes=[hls.CodeWriteStream(sender_params[5], data2_var)],  # out3
-    )
-    in2_read_block = hls.CodeIf(
-        hls.HLSExpr(hls.HLSExprT.UOP, dfir.UnaryOp.NOT, [in2_end_flag_check_expr]),
-        if_codes=[in2_if_not_end_block],
-        else_codes=[hls.CodeAssign(in2_end_flag_var, in2_end_flag_check_expr)],
-    )
-    in2_non_blocking_read = create_non_blocking_read(
-        sender_params[2],
+        return create_non_blocking_read(in_stream_var, read_body)
+
+    # 构建主循环体
+    p1_flag = hls.HLSVar("in1_process_flag", bool_type)
+    p2_flag = hls.HLSVar("in2_process_flag", bool_type)
+
+    # if(in1_process_flag && (!in1_end_flag)) write_to_stream(out, data1);
+    write_cond1 = hls.HLSExpr(
+        hls.HLSExprT.BINOP,
+        dfir.BinOp.AND,
         [
-            hls.CodeVarDecl(data2_var.name, data2_var.type),
-            hls.CodeAssign(
-                data2_var,
-                hls.HLSExpr(
-                    hls.HLSExprT.STREAM_READ,
-                    None,
-                    [hls.HLSExpr(hls.HLSExprT.VAR, sender_params[2])],
-                ),
+            hls.HLSExpr(hls.HLSExprT.VAR, p1_flag),
+            hls.HLSExpr(
+                hls.HLSExprT.UOP,
+                dfir.UnaryOp.NOT,
+                [hls.HLSExpr(hls.HLSExprT.VAR, in1_end_flag_var)],
             ),
-            in2_read_block,
         ],
     )
+    write_block1 = hls.CodeIf(write_cond1, [hls.CodeWriteStream(params[3], data1_var)])
 
-    # 最终退出逻辑
-    end_data_var = hls.HLSVar("data", data_tuple_type)
+    write_cond2 = hls.HLSExpr(
+        hls.HLSExprT.BINOP,
+        dfir.BinOp.AND,
+        [
+            hls.HLSExpr(hls.HLSExprT.VAR, p2_flag),
+            hls.HLSExpr(
+                hls.HLSExprT.UOP,
+                dfir.UnaryOp.NOT,
+                [hls.HLSExpr(hls.HLSExprT.VAR, in2_end_flag_var)],
+            ),
+        ],
+    )
+    write_block2 = hls.CodeIf(write_cond2, [hls.CodeWriteStream(params[3], data2_var)])
+
+    # 退出逻辑
     exit_cond = hls.HLSExpr(
         hls.HLSExprT.BINOP,
         dfir.BinOp.AND,
@@ -187,6 +134,7 @@ def generate_omega_network(n: int, data_type_name: str) -> List[hls.HLSFunction]
             hls.HLSExpr(hls.HLSExprT.VAR, in2_end_flag_var),
         ],
     )
+    end_data_var = hls.HLSVar("data", data_type)
     exit_block = hls.CodeIf(
         exit_cond,
         [
@@ -195,368 +143,673 @@ def generate_omega_network(n: int, data_type_name: str) -> List[hls.HLSFunction]
                 hls.HLSVar(f"{end_data_var.name}.end_flag", bool_type),
                 hls.HLSExpr(hls.HLSExprT.CONST, True),
             ),
-            hls.CodeWriteStream(sender_params[3], end_data_var),
-            hls.CodeWriteStream(sender_params[4], end_data_var),
-            hls.CodeWriteStream(sender_params[5], end_data_var),
-            hls.CodeWriteStream(sender_params[6], end_data_var),
+            hls.CodeWriteStream(params[3], end_data_var),
             hls.CodeAssign(in1_end_flag_var, hls.HLSExpr(hls.HLSExprT.CONST, False)),
             hls.CodeAssign(in2_end_flag_var, hls.HLSExpr(hls.HLSExprT.CONST, False)),
             hls.CodeBreak(),
         ],
     )
 
-    sender_body = [
-        hls.CodePragma(f"function_instantiate variable=i"),
+    while_body = [
+        hls.CodePragma("PIPELINE II=2"),
+        # 初始化 process flags
+        hls.CodeAssign(p1_flag, hls.HLSExpr(hls.HLSExprT.CONST, False)),
+        hls.CodeAssign(p2_flag, hls.HLSExpr(hls.HLSExprT.CONST, False)),
+        # 读取
+        create_nb_read_logic(params[1], data1_var, p1_flag, in1_end_flag_var),
+        create_nb_read_logic(params[2], data2_var, p2_flag, in2_end_flag_var),
+        # 写入
+        write_block1,
+        write_block2,
+        # 退出
+        exit_block,
+    ]
+
+    func_body = [
+        hls.CodePragma("function_instantiate variable=i"),
         hls.CodeVarDecl(in1_end_flag_var.name, in1_end_flag_var.type),
         hls.CodeVarDecl(in2_end_flag_var.name, in2_end_flag_var.type),
-        hls.CodeWhile(
-            iter_expr=hls.HLSExpr(hls.HLSExprT.CONST, True),
-            codes=[
-                hls.CodePragma("PIPELINE II=1"),
-                in1_non_blocking_read,
-                in2_non_blocking_read,
-                exit_block,
-            ],
+        hls.CodeWhile(codes=while_body, iter_expr=hls.HLSExpr(hls.HLSExprT.CONST, True)),
+    ]
+
+    merge_func = hls.HLSFunction(name=func_name, comp=None)
+    merge_func.params = params
+    merge_func.codes = func_body
+    return merge_func
+
+
+def generate_reduction_tree(
+    n: int, data_type: hls.HLSType, merge_func: hls.HLSFunction
+) -> hls.HLSFunction:
+    """
+    生成一个 N->1 的归约树。
+    """
+    if not (n > 0 and (n & (n - 1) == 0)):
+        raise ValueError("归约树的输入数量 'n' 必须是2的幂。")
+
+    gen_id = _get_unique_id()
+    func_name = f"reductionTree_{gen_id}"
+    log_n = int(math.log2(n))
+
+    # 定义函数参数
+    stream_type = hls.HLSType(hls.HLSBasicType.STREAM, sub_types=[data_type])
+    stream_array_type = hls.HLSType(
+        hls.HLSBasicType.ARRAY, sub_types=[stream_type], array_dims=[n]
+    )
+
+    params = [
+        hls.HLSVar("i", hls.HLSType(hls.HLSBasicType.INT)),
+        # *** 接口统一：使用流数组 ***
+        hls.HLSVar("update_set_stm", stream_array_type),
+        hls.HLSVar("reduced_update_tuple_stm", stream_type),
+    ]
+
+    # 定义函数体
+    body = [hls.CodePragma("DATAFLOW")]
+
+    # 声明所有中间流
+    streams_by_level = {}
+    num_streams = n
+    for level in range(log_n - 1):  # Only need log_n - 1 levels of intermediate streams
+        num_streams //= 2
+        if num_streams == 0:
+            break
+        level_stream_type = hls.HLSType(
+            hls.HLSBasicType.ARRAY, sub_types=[stream_type], array_dims=[num_streams]
+        )
+        level_stream_var = hls.HLSVar(f"l{level+1}_update_tuples", level_stream_type)
+        streams_by_level[level + 1] = level_stream_var
+        body.append(hls.CodeVarDecl(level_stream_var.name, level_stream_var.type))
+        body.append(hls.CodePragma(f"STREAM variable={level_stream_var.name} depth=2"))
+
+    # 生成 mergeStream2x1 调用
+    num_mergers_at_level = n // 2
+    input_streams = params[1]  # The initial array of streams
+    for level in range(log_n):
+        output_streams = streams_by_level.get(
+            level + 1, params[2]
+        )  # Final output is the function param
+        for i in range(num_mergers_at_level):
+            in1_var = hls.HLSVar(f"{input_streams.name}[{i*2}]", stream_type)
+            in2_var = hls.HLSVar(f"{input_streams.name}[{i*2 + 1}]", stream_type)
+
+            # 如果是最后一级，输出是单个流，否则是数组中的一个元素
+            if level == log_n - 1:
+                out_var = output_streams
+            else:
+                out_var = hls.HLSVar(f"{output_streams.name}[{i}]", stream_type)
+
+            call = hls.CodeCall(
+                merge_func,
+                [
+                    hls.HLSExpr(hls.HLSExprT.CONST, i),  # 'i' for instantiation
+                    in1_var,
+                    in2_var,
+                    out_var,
+                ],
+            )
+            body.append(call)
+
+        input_streams = output_streams
+        num_mergers_at_level //= 2
+
+    tree_func = hls.HLSFunction(name=func_name, comp=None)
+    tree_func.params = params
+    tree_func.codes = body
+    return tree_func
+
+
+def generate_demux(n: int, batch_type: hls.HLSType, wrapper_type: hls.HLSType) -> hls.HLSFunction:
+    """
+    生成一个 1->N 的数据流拆分器 (Demux/Unbatcher)。
+    它接收批处理流，输出N个独立流。
+    """
+    gen_id = _get_unique_id()
+    func_name = f"demux_{gen_id}"
+
+    base_data_type = batch_type.sub_types[0].sub_types[0]
+
+    in_stream_type = hls.HLSType(hls.HLSBasicType.STREAM, sub_types=[batch_type])
+    out_stream_type = hls.HLSType(hls.HLSBasicType.STREAM, sub_types=[wrapper_type])
+    out_stream_array_type = hls.HLSType(
+        hls.HLSBasicType.ARRAY, sub_types=[out_stream_type], array_dims=[n]
+    )
+
+    params = [
+        hls.HLSVar("in_batch_stream", in_stream_type),
+        hls.HLSVar("out_streams", out_stream_array_type),
+    ]
+
+    in_batch_var = hls.HLSVar("in_batch", batch_type)
+    wrapper_var = hls.HLSVar("wrapper_data", wrapper_type)
+
+    inner_loop_body = [
+        hls.CodePragma("UNROLL"),
+        hls.CodeAssign(
+            hls.HLSVar(f"{wrapper_var.name}.data", base_data_type),
+            hls.HLSExpr(
+                hls.HLSExprT.VAR, hls.HLSVar(f"{in_batch_var.name}.data[i]", base_data_type)
+            ),
         ),
+        hls.CodeAssign(
+            hls.HLSVar(f"{wrapper_var.name}.end_flag", hls.HLSType(hls.HLSBasicType.BOOL)),
+            hls.HLSExpr(hls.HLSExprT.CONST, False),
+        ),
+        hls.CodeWriteStream(hls.HLSVar(f"out_streams[i]", out_stream_type), wrapper_var),
+    ]
+    for_loop = hls.CodeFor(inner_loop_body, iter_limit="PE_NUM", iter_name="i")
+
+    end_flag_expr = hls.HLSExpr(
+        hls.HLSExprT.UOP,
+        (dfir.UnaryOp.GET_ATTR, "end_flag"),
+        [hls.HLSExpr(hls.HLSExprT.VAR, in_batch_var)],
+    )
+    break_if = hls.CodeIf(end_flag_expr, [hls.CodeBreak()])
+
+    while_body = [
+        hls.CodePragma("PIPELINE"),
+        hls.CodeAssign(
+            in_batch_var,
+            hls.HLSExpr(
+                hls.HLSExprT.STREAM_READ, None, [hls.HLSExpr(hls.HLSExprT.VAR, params[0])]
+            ),
+        ),
+        hls.CodeVarDecl(wrapper_var.name, wrapper_var.type),
+        for_loop,
+        break_if,
     ]
 
-    sender_function = hls.HLSFunction(name=sender_func_name, comp=None)
-    sender_function.params = sender_params
-    sender_function.codes = sender_body
+    end_wrapper_var = hls.HLSVar("end_wrapper", wrapper_type)
+    send_end_flag_loop = hls.CodeFor(
+        [
+            hls.CodePragma("UNROLL"),
+            hls.CodeWriteStream(hls.HLSVar(f"out_streams[i]", out_stream_type), end_wrapper_var),
+        ],
+        iter_limit=n,
+        iter_name="i",
+    )
 
-    # --- 4. 生成 'receiver' 函数 ---
-    receiver_func_name = f"receiver_{gen_id}"
+    body = [
+        hls.CodeVarDecl(in_batch_var.name, in_batch_var.type),
+        hls.CodeWhile(codes=while_body, iter_expr=hls.HLSExpr(hls.HLSExprT.CONST, True)),
+        hls.CodeComment("Propagate end_flag to all output streams"),
+        hls.CodeVarDecl("end_wrapper", wrapper_type),
+        hls.CodeAssign(
+            hls.HLSVar("end_wrapper.end_flag", hls.HLSType(hls.HLSBasicType.BOOL)),
+            hls.HLSExpr(hls.HLSExprT.CONST, True),
+        ),
+        send_end_flag_loop,
+    ]
 
-    # 定义receiver的参数
-    receiver_params = [
+    demux_func = hls.HLSFunction(name=func_name, comp=None)
+    demux_func.params = params
+    demux_func.codes = body
+    return demux_func
+
+
+# ======================================================================== #
+#                      OMEGA NETWORK GENERATOR (FULL)                      #
+# ======================================================================== #
+
+
+def generate_omega_network(n: int, wrapper_type: hls.HLSType) -> List[hls.HLSFunction]:
+    """
+    生成一个 N x N Omega 网络的完整HLS C++代码，包括所有子模块。
+    """
+    if not (n > 0 and (n & (n - 1) == 0)):
+        raise ValueError("网络大小 'n' 必须是2的正整数次幂。")
+
+    log_n = int(math.log2(n))
+    switches_per_stage = n // 2
+    gen_id = _get_unique_id()
+
+    # --- HLS类型定义 ---
+    stream_type = hls.HLSType(hls.HLSBasicType.STREAM, sub_types=[wrapper_type])
+    bool_type = hls.HLSType(hls.HLSBasicType.BOOL)
+    int_type = hls.HLSType(hls.HLSBasicType.INT)
+    stream_array_type = hls.HLSType(
+        hls.HLSBasicType.ARRAY, sub_types=[stream_type], array_dims=[n]
+    )
+
+    sender_function = generate_omega_sender(gen_id, wrapper_type, stream_type, int_type, bool_type)
+    receiver_function = generate_omega_receiver(
+        gen_id, wrapper_type, stream_type, int_type, bool_type
+    )
+    switch2x2_function = generate_omega_switch2x2(
+        gen_id, stream_type, int_type, sender_function, receiver_function
+    )
+    omega_switch_function = generate_omega_top(
+        gen_id, n, log_n, n // 2, stream_array_type, stream_type, switch2x2_function
+    )
+
+    return [sender_function, receiver_function, switch2x2_function, omega_switch_function]
+
+
+# Helper functions to keep generate_omega_network clean
+def generate_omega_sender(gen_id, data_tuple_type, stream_type, int_type, bool_type):
+    func_name = f"sender_{gen_id}"
+    params = [
         hls.HLSVar("i", int_type),
-        hls.HLSVar("update_set_stm_out1", stream_type),
-        hls.HLSVar("update_set_stm_out2", stream_type),
-        hls.HLSVar("update_set_stm_in1", stream_type),
-        hls.HLSVar("update_set_stm_in2", stream_type),
-        hls.HLSVar("update_set_stm_in3", stream_type),
-        hls.HLSVar("update_set_stm_in4", stream_type),
+        hls.HLSVar("in1", stream_type),
+        hls.HLSVar("in2", stream_type),
+        hls.HLSVar("out1", stream_type),
+        hls.HLSVar("out2", stream_type),
+        hls.HLSVar("out3", stream_type),
+        hls.HLSVar("out4", stream_type),
     ]
+    in1_end_flag_var = hls.HLSVar("in1_end_flag", bool_type)
+    in2_end_flag_var = hls.HLSVar("in2_end_flag", bool_type)
+    data1_var, data2_var = hls.HLSVar("data1", data_tuple_type), hls.HLSVar(
+        "data2", data_tuple_type
+    )
+    i_var_expr = hls.HLSExpr(hls.HLSExprT.VAR, hls.HLSVar("i", int_type))
 
-    # 构建receiver的函数体
-    r_end_flags = [hls.HLSVar(f"in{i+1}_end_flag", bool_type) for i in range(4)]
-
-    def create_receiver_read_block(in_stream_var, out_stream_var, flag_var):
-        data_var = hls.HLSVar("data", data_tuple_type)
-        end_check_expr = hls.HLSExpr(
+    def create_routing_expr(data_var):
+        inner_data_expr = hls.HLSExpr(
             hls.HLSExprT.UOP,
-            (dfir.UnaryOp.GET_ATTR, "end_flag"),
+            (dfir.UnaryOp.GET_ATTR, "data"),
             [hls.HLSExpr(hls.HLSExprT.VAR, data_var)],
         )
-        if_not_end_block = hls.CodeIf(
-            hls.HLSExpr(hls.HLSExprT.UOP, dfir.UnaryOp.NOT, [end_check_expr]),
-            if_codes=[hls.CodeWriteStream(out_stream_var, data_var)],
-            else_codes=[hls.CodeAssign(flag_var, end_check_expr)],
+        dst_expr = hls.HLSExpr(hls.HLSExprT.UOP, (dfir.UnaryOp.GET_ATTR, "dst"), [inner_data_expr])
+        i_var_expr = hls.HLSExpr(hls.HLSExprT.VAR, hls.HLSVar("i", int_type))
+        shifted_expr = hls.HLSExpr(hls.HLSExprT.BINOP, dfir.BinOp.SR, [dst_expr, i_var_expr])
+        return hls.HLSExpr(
+            hls.HLSExprT.BINOP, dfir.BinOp.AND, [shifted_expr, hls.HLSExpr(hls.HLSExprT.CONST, 1)]
         )
-        return create_non_blocking_read(
-            in_stream_var,
-            [
-                hls.CodeVarDecl(data_var.name, data_var.type),
-                hls.CodeAssign(
-                    data_var,
-                    hls.HLSExpr(
-                        hls.HLSExprT.STREAM_READ,
-                        None,
-                        [hls.HLSExpr(hls.HLSExprT.VAR, in_stream_var)],
-                    ),
+
+    # Logic for in1
+    end_check1 = hls.HLSExpr(
+        hls.HLSExprT.UOP,
+        (dfir.UnaryOp.GET_ATTR, "end_flag"),
+        [hls.HLSExpr(hls.HLSExprT.VAR, data1_var)],
+    )
+    route_if1 = hls.CodeIf(
+        create_routing_expr(data1_var),
+        if_codes=[hls.CodeWriteStream(params[4], data1_var)],
+        else_codes=[hls.CodeWriteStream(params[3], data1_var)],
+    )
+    process_if1 = hls.CodeIf(
+        hls.HLSExpr(hls.HLSExprT.UOP, dfir.UnaryOp.NOT, [end_check1]),
+        if_codes=[route_if1],
+        else_codes=[hls.CodeAssign(in1_end_flag_var, hls.HLSExpr(hls.HLSExprT.CONST, True))],
+    )
+    nb_read1 = create_non_blocking_read(
+        params[1],
+        [
+            hls.CodeVarDecl(data1_var.name, data1_var.type),
+            hls.CodeAssign(
+                data1_var,
+                hls.HLSExpr(
+                    hls.HLSExprT.STREAM_READ, None, [hls.HLSExpr(hls.HLSExprT.VAR, params[1])]
                 ),
-                if_not_end_block,
-            ],
-        )
-
-    # 构建合并逻辑
-    merge_logic_1 = create_receiver_read_block(
-        receiver_params[3], receiver_params[1], r_end_flags[0]
-    )
-    merge_logic_1.elifs.append(
-        (
-            hls.HLSExpr(
-                hls.HLSExprT.STREAM_EMPTY,
-                None,
-                [hls.HLSExpr(hls.HLSExprT.VAR, receiver_params[5])],
-            ),  # if in3 is not empty
-            create_receiver_read_block(
-                receiver_params[5], receiver_params[1], r_end_flags[2]
-            ).if_codes,
-        )
-    )
-    # a bit of hack since the `create_receiver_read_block` creates a whole if block, we only need the body.
-    # The empty check is incorrect in the above elif, it should be `!empty`.
-    # Let's rebuild it manually.
-
-    in1_cond = hls.HLSExpr(
-        hls.HLSExprT.UOP,
-        dfir.UnaryOp.NOT,
-        [
-            hls.HLSExpr(
-                hls.HLSExprT.STREAM_EMPTY,
-                None,
-                [hls.HLSExpr(hls.HLSExprT.VAR, receiver_params[3])],
-            )
-        ],
-    )
-    in3_cond = hls.HLSExpr(
-        hls.HLSExprT.UOP,
-        dfir.UnaryOp.NOT,
-        [
-            hls.HLSExpr(
-                hls.HLSExprT.STREAM_EMPTY,
-                None,
-                [hls.HLSExpr(hls.HLSExprT.VAR, receiver_params[5])],
-            )
-        ],
-    )
-    in2_cond = hls.HLSExpr(
-        hls.HLSExprT.UOP,
-        dfir.UnaryOp.NOT,
-        [
-            hls.HLSExpr(
-                hls.HLSExprT.STREAM_EMPTY,
-                None,
-                [hls.HLSExpr(hls.HLSExprT.VAR, receiver_params[4])],
-            )
-        ],
-    )
-    in4_cond = hls.HLSExpr(
-        hls.HLSExprT.UOP,
-        dfir.UnaryOp.NOT,
-        [
-            hls.HLSExpr(
-                hls.HLSExprT.STREAM_EMPTY,
-                None,
-                [hls.HLSExpr(hls.HLSExprT.VAR, receiver_params[6])],
-            )
+            ),
+            process_if1,
         ],
     )
 
-    merge_block_1_body = create_receiver_read_block(
-        receiver_params[3], receiver_params[1], r_end_flags[0]
-    ).if_codes
-    merge_block_3_body = create_receiver_read_block(
-        receiver_params[5], receiver_params[1], r_end_flags[2]
-    ).if_codes
-    merge13 = hls.CodeIf(in1_cond, merge_block_1_body, elifs=[(in3_cond, merge_block_3_body)])
+    # Logic for in2
+    end_check2 = hls.HLSExpr(
+        hls.HLSExprT.UOP,
+        (dfir.UnaryOp.GET_ATTR, "end_flag"),
+        [hls.HLSExpr(hls.HLSExprT.VAR, data2_var)],
+    )
+    route_if2 = hls.CodeIf(
+        create_routing_expr(data2_var),
+        if_codes=[hls.CodeWriteStream(params[6], data2_var)],
+        else_codes=[hls.CodeWriteStream(params[5], data2_var)],
+    )
+    process_if2 = hls.CodeIf(
+        hls.HLSExpr(hls.HLSExprT.UOP, dfir.UnaryOp.NOT, [end_check2]),
+        if_codes=[route_if2],
+        else_codes=[hls.CodeAssign(in2_end_flag_var, hls.HLSExpr(hls.HLSExprT.CONST, True))],
+    )
+    nb_read2 = create_non_blocking_read(
+        params[2],
+        [
+            hls.CodeVarDecl(data2_var.name, data2_var.type),
+            hls.CodeAssign(
+                data2_var,
+                hls.HLSExpr(
+                    hls.HLSExprT.STREAM_READ, None, [hls.HLSExpr(hls.HLSExprT.VAR, params[2])]
+                ),
+            ),
+            process_if2,
+        ],
+    )
 
-    merge_block_2_body = create_receiver_read_block(
-        receiver_params[4], receiver_params[2], r_end_flags[1]
-    ).if_codes
-    merge_block_4_body = create_receiver_read_block(
-        receiver_params[6], receiver_params[2], r_end_flags[3]
-    ).if_codes
-    merge24 = hls.CodeIf(in2_cond, merge_block_2_body, elifs=[(in4_cond, merge_block_4_body)])
-
-    # 退出逻辑
-    r_exit_cond = hls.HLSExpr(hls.HLSExprT.VAR, r_end_flags[0])
-    for i in range(1, 4):
-        r_exit_cond = hls.HLSExpr(
-            hls.HLSExprT.BINOP,
-            dfir.BinOp.AND,
-            [r_exit_cond, hls.HLSExpr(hls.HLSExprT.VAR, r_end_flags[i])],
-        )
-
-    r_exit_block = hls.CodeIf(
-        r_exit_cond,
+    # Exit logic
+    exit_cond = hls.HLSExpr(
+        hls.HLSExprT.BINOP,
+        dfir.BinOp.AND,
+        [
+            hls.HLSExpr(hls.HLSExprT.VAR, in1_end_flag_var),
+            hls.HLSExpr(hls.HLSExprT.VAR, in2_end_flag_var),
+        ],
+    )
+    end_data_var = hls.HLSVar("data", data_tuple_type)
+    exit_block = hls.CodeIf(
+        exit_cond,
         [
             hls.CodeVarDecl(end_data_var.name, end_data_var.type),
             hls.CodeAssign(
                 hls.HLSVar(f"{end_data_var.name}.end_flag", bool_type),
                 hls.HLSExpr(hls.HLSExprT.CONST, True),
             ),
-            hls.CodeWriteStream(receiver_params[1], end_data_var),
-            hls.CodeWriteStream(receiver_params[2], end_data_var),
+            hls.CodeWriteStream(params[3], end_data_var),
+            hls.CodeWriteStream(params[4], end_data_var),
+            hls.CodeWriteStream(params[5], end_data_var),
+            hls.CodeWriteStream(params[6], end_data_var),
+            hls.CodeAssign(in1_end_flag_var, hls.HLSExpr(hls.HLSExprT.CONST, False)),
+            hls.CodeAssign(in2_end_flag_var, hls.HLSExpr(hls.HLSExprT.CONST, False)),
             hls.CodeBreak(),
         ],
     )
 
-    receiver_body = [
-        hls.CodePragma(f"function_instantiate variable=i"),
+    body = [
+        hls.CodePragma("function_instantiate variable=i"),
+        hls.CodeVarDecl(in1_end_flag_var.name, in1_end_flag_var.type, init_val="false"),
+        hls.CodeVarDecl(in2_end_flag_var.name, in2_end_flag_var.type, init_val="false"),
+        hls.CodeWhile(
+            [hls.CodePragma("PIPELINE II=1"), nb_read1, nb_read2, exit_block],
+            hls.HLSExpr(hls.HLSExprT.CONST, True),
+        ),
     ]
-    receiver_body.extend([hls.CodeVarDecl(v.name, v.type) for v in r_end_flags])
-    receiver_body.append(
+    func = hls.HLSFunction(name=func_name, comp=None)
+    func.params, func.codes = params, body
+    return func
+
+
+def generate_omega_receiver(gen_id, data_tuple_type, stream_type, int_type, bool_type):
+    func_name = f"receiver_{gen_id}"
+    params = [
+        hls.HLSVar("i", int_type),
+        hls.HLSVar("out1", stream_type),
+        hls.HLSVar("out2", stream_type),
+        hls.HLSVar("in1", stream_type),
+        hls.HLSVar("in2", stream_type),
+        hls.HLSVar("in3", stream_type),
+        hls.HLSVar("in4", stream_type),
+    ]
+    end_flags = [hls.HLSVar(f"in{i+1}_end_flag", bool_type) for i in range(4)]
+
+    def get_read_body(in_stream, out_stream, flag_var):
+        data_var = hls.HLSVar("data", data_tuple_type)
+        end_check = hls.HLSExpr(
+            hls.HLSExprT.UOP,
+            (dfir.UnaryOp.GET_ATTR, "end_flag"),
+            [hls.HLSExpr(hls.HLSExprT.VAR, data_var)],
+        )
+        process_if = hls.CodeIf(
+            hls.HLSExpr(hls.HLSExprT.UOP, dfir.UnaryOp.NOT, [end_check]),
+            if_codes=[hls.CodeWriteStream(out_stream, data_var)],
+            else_codes=[hls.CodeAssign(flag_var, hls.HLSExpr(hls.HLSExprT.CONST, True))],
+        )
+        return [
+            hls.CodeVarDecl(data_var.name, data_var.type),
+            hls.CodeAssign(
+                data_var,
+                hls.HLSExpr(
+                    hls.HLSExprT.STREAM_READ, None, [hls.HLSExpr(hls.HLSExprT.VAR, in_stream)]
+                ),
+            ),
+            process_if,
+        ]
+
+    # Merge logic
+    cond1 = hls.HLSExpr(
+        hls.HLSExprT.UOP,
+        dfir.UnaryOp.NOT,
+        [hls.HLSExpr(hls.HLSExprT.STREAM_EMPTY, None, [hls.HLSExpr(hls.HLSExprT.VAR, params[3])])],
+    )
+    cond3 = hls.HLSExpr(
+        hls.HLSExprT.UOP,
+        dfir.UnaryOp.NOT,
+        [hls.HLSExpr(hls.HLSExprT.STREAM_EMPTY, None, [hls.HLSExpr(hls.HLSExprT.VAR, params[5])])],
+    )
+    merge13 = hls.CodeIf(
+        cond1,
+        get_read_body(params[3], params[1], end_flags[0]),
+        elifs=[(cond3, get_read_body(params[5], params[1], end_flags[2]))],
+    )
+
+    cond2 = hls.HLSExpr(
+        hls.HLSExprT.UOP,
+        dfir.UnaryOp.NOT,
+        [hls.HLSExpr(hls.HLSExprT.STREAM_EMPTY, None, [hls.HLSExpr(hls.HLSExprT.VAR, params[4])])],
+    )
+    cond4 = hls.HLSExpr(
+        hls.HLSExprT.UOP,
+        dfir.UnaryOp.NOT,
+        [hls.HLSExpr(hls.HLSExprT.STREAM_EMPTY, None, [hls.HLSExpr(hls.HLSExprT.VAR, params[6])])],
+    )
+    merge24 = hls.CodeIf(
+        cond2,
+        get_read_body(params[4], params[2], end_flags[1]),
+        elifs=[(cond4, get_read_body(params[6], params[2], end_flags[3]))],
+    )
+
+    # Exit logic
+    exit_cond = hls.HLSExpr(hls.HLSExprT.VAR, end_flags[0])
+    for i in range(1, 4):
+        exit_cond = hls.HLSExpr(
+            hls.HLSExprT.BINOP,
+            dfir.BinOp.AND,
+            [exit_cond, hls.HLSExpr(hls.HLSExprT.VAR, end_flags[i])],
+        )
+    end_data_var = hls.HLSVar("data", data_tuple_type)
+    exit_block = hls.CodeIf(
+        exit_cond,
+        [
+            hls.CodeVarDecl(end_data_var.name, end_data_var.type),
+            hls.CodeAssign(
+                hls.HLSVar(f"{end_data_var.name}.end_flag", bool_type),
+                hls.HLSExpr(hls.HLSExprT.CONST, True),
+            ),
+            hls.CodeWriteStream(params[1], end_data_var),
+            hls.CodeWriteStream(params[2], end_data_var),
+            hls.CodeBreak(),
+        ],
+    )
+
+    body = [hls.CodePragma("function_instantiate variable=i")]
+    body.extend([hls.CodeVarDecl(v.name, v.type, init_val="false") for v in end_flags])
+    body.append(
         hls.CodeWhile(
             iter_expr=hls.HLSExpr(hls.HLSExprT.CONST, True),
-            codes=[hls.CodePragma("PIPELINE II=1"), merge13, merge24, r_exit_block],
+            codes=[hls.CodePragma("PIPELINE II=1"), merge13, merge24, exit_block],
         )
     )
 
-    receiver_function = hls.HLSFunction(name=receiver_func_name, comp=None)
-    receiver_function.params = receiver_params
-    receiver_function.codes = receiver_body
+    func = hls.HLSFunction(name=func_name, comp=None)
+    func.params, func.codes = params, body
+    return func
 
-    # --- 5. 生成 'switch2x2' 函数 ---
-    switch_func_name = f"switch2x2_{gen_id}"
 
-    switch_params = [
+def generate_omega_switch2x2(gen_id, stream_type, int_type, sender_func, receiver_func):
+    func_name = f"switch2x2_{gen_id}"
+    params = [
         hls.HLSVar("i", int_type),
-        hls.HLSVar("update_set_stm_in1", stream_type),
-        hls.HLSVar("update_set_stm_in2", stream_type),
-        hls.HLSVar("update_set_stm_out1", stream_type),
-        hls.HLSVar("update_set_stm_out2", stream_type),
+        hls.HLSVar("in1", stream_type),
+        hls.HLSVar("in2", stream_type),
+        hls.HLSVar("out1", stream_type),
+        hls.HLSVar("out2", stream_type),
     ]
-
     local_streams = [hls.HLSVar(f"l1_{i+1}", stream_type) for i in range(4)]
-
-    switch_body = [hls.CodePragma("DATAFLOW")]
+    body = [hls.CodePragma("DATAFLOW")]
     for stream_var in local_streams:
-        switch_body.append(hls.CodeVarDecl(stream_var.name, stream_var.type))
-        switch_body.append(hls.CodePragma(f"STREAM variable={stream_var.name} depth=2"))
+        body.append(hls.CodeVarDecl(stream_var.name, stream_var.type))
+        body.append(hls.CodePragma(f"STREAM variable={stream_var.name} depth=2"))
 
-    # 调用 sender 和 receiver
     sender_call = hls.CodeCall(
-        sender_function,
+        sender_func,
         [
-            switch_params[0],  # i
-            switch_params[1],  # in1
-            switch_params[2],  # in2
-            local_streams[0],  # l1_1 for sender's out1
-            local_streams[1],  # l1_2 for sender's out2
-            local_streams[2],  # l1_3 for sender's out3
-            local_streams[3],  # l1_4 for sender's out4
+            params[0],
+            params[1],
+            params[2],
+            local_streams[0],
+            local_streams[1],
+            local_streams[2],
+            local_streams[3],
         ],
     )
     receiver_call = hls.CodeCall(
-        receiver_function,
+        receiver_func,
         [
-            switch_params[0],  # i
-            switch_params[3],  # out1
-            switch_params[4],  # out2
-            local_streams[0],  # l1_1 for receiver's in1
-            local_streams[1],  # l1_2 for receiver's in2
-            local_streams[2],  # l1_3 for receiver's in3
-            local_streams[3],  # l1_4 for receiver's in4
+            params[0],
+            params[3],
+            params[4],
+            local_streams[0],
+            local_streams[1],
+            local_streams[2],
+            local_streams[3],
         ],
     )
-    switch_body.extend([sender_call, receiver_call])
+    body.extend([sender_call, receiver_call])
 
-    switch2x2_function = hls.HLSFunction(name=switch_func_name, comp=None)
-    switch2x2_function.params = switch_params
-    switch2x2_function.codes = switch_body
+    func = hls.HLSFunction(name=func_name, comp=None)
+    func.params, func.codes = params, body
+    return func
 
-    # --- 6. 生成 'omega_switch' 顶层函数 ---
-    top_func_name = f"omega_switch_{gen_id}"
 
-    top_ins = [hls.HLSVar(f"in_{i}", stream_type) for i in range(n)]
-    top_outs = [hls.HLSVar(f"out_{i}", stream_type) for i in range(n)]
+def generate_omega_top(
+    gen_id, n, log_n, switches_per_stage, stream_array_type, stream_type, switch2x2_func
+):
+    func_name = f"omega_switch_{gen_id}"
+    params = [
+        hls.HLSVar("in_streams", stream_array_type),
+        hls.HLSVar("out_streams", stream_array_type),
+    ]
+    body = [hls.CodePragma("DATAFLOW")]
 
-    top_body = [hls.CodePragma("DATAFLOW")]
-
-    # 定义所有中间流
-    # streams[stage][line]
     intermediate_streams = []
     for s in range(log_n - 1):
-        stage_streams = [hls.HLSVar(f"stream_{s}_{k}", stream_type) for k in range(n)]
-        intermediate_streams.append(stage_streams)
-        for var in stage_streams:
-            top_body.append(hls.CodeVarDecl(var.name, var.type))
-            top_body.append(hls.CodePragma(f"STREAM variable={var.name} depth=2"))
+        stage_array_type = hls.HLSType(
+            hls.HLSBasicType.ARRAY, sub_types=[stream_type], array_dims=[n]
+        )
+        stage_var = hls.HLSVar(f"stream_stage_{s}", stage_array_type)
+        intermediate_streams.append(stage_var)
+        body.append(hls.CodeVarDecl(stage_var.name, stage_var.type))
+        body.append(hls.CodePragma(f"STREAM variable={stage_var.name} depth=2"))
 
-    # 辅助函数：完美反混洗 (Right-shift)
-    def unshuffle(p: int, num_bits: int) -> int:
-        mask = (1 << num_bits) - 1
+    def unshuffle(p, num_bits):
         return ((p & 1) << (num_bits - 1)) | (p >> 1)
 
-    # 循环生成所有 switch2x2 调用
     for s in range(log_n):
         for j in range(switches_per_stage):
-            in1_idx = 2 * j
-            in2_idx = 2 * j + 1
-
-            # 确定输入流
+            idx1, idx2 = 2 * j, 2 * j + 1
             if s == 0:
-                in1_var = top_ins[in1_idx]
-                in2_var = top_ins[in2_idx]
+                in1_var, in2_var = hls.HLSVar(f"in_streams[{idx1}]", stream_type), hls.HLSVar(
+                    f"in_streams[{idx2}]", stream_type
+                )
             else:
-                unshuffled_idx1 = unshuffle(in1_idx, log_n)
-                unshuffled_idx2 = unshuffle(in2_idx, log_n)
-                in1_var = intermediate_streams[s - 1][unshuffled_idx1]
-                in2_var = intermediate_streams[s - 1][unshuffled_idx2]
+                uidx1, uidx2 = unshuffle(idx1, log_n), unshuffle(idx2, log_n)
+                in_array = intermediate_streams[s - 1]
+                in1_var, in2_var = hls.HLSVar(
+                    f"{in_array.name}[{uidx1}]", stream_type
+                ), hls.HLSVar(f"{in_array.name}[{uidx2}]", stream_type)
 
-            # 确定输出流
             if s == log_n - 1:
-                out1_var = top_outs[in1_idx]
-                out2_var = top_outs[in2_idx]
+                out1_var, out2_var = hls.HLSVar(f"out_streams[{idx1}]", stream_type), hls.HLSVar(
+                    f"out_streams[{idx2}]", stream_type
+                )
             else:
-                out1_var = intermediate_streams[s][in1_idx]
-                out2_var = intermediate_streams[s][in2_idx]
+                out_array = intermediate_streams[s]
+                out1_var, out2_var = hls.HLSVar(
+                    f"{out_array.name}[{idx1}]", stream_type
+                ), hls.HLSVar(f"{out_array.name}[{idx2}]", stream_type)
 
-            # 生成调用
             call = hls.CodeCall(
-                switch2x2_function,
-                [
-                    hls.HLSExpr(hls.HLSExprT.CONST, s),  # stage number 'i'
-                    in1_var,
-                    in2_var,
-                    out1_var,
-                    out2_var,
-                ],
+                switch2x2_func,
+                [hls.HLSExpr(hls.HLSExprT.CONST, s), in1_var, in2_var, out1_var, out2_var],
             )
-            top_body.append(call)
+            body.append(call)
 
-    omega_switch_function = hls.HLSFunction(name=top_func_name, comp=None)
-    omega_switch_function.params = top_ins + top_outs
-    omega_switch_function.codes = top_body
-
-    # --- 7. 组装最终的C++代码 ---
-    all_functions = [sender_function, receiver_function, switch2x2_function, omega_switch_function]
-    return all_functions
-
-    # 生成文件头
-    # final_code = (
-    #     f"// Omega Network (N={n}) - Generated by hls_network_generators.py\n"
-    #     f"// Generation ID: {gen_id}\n\n"
-    #     "#include <hls_stream.h>\n"
-    #     "#include <stdint.h>\n\n"
-    #     f"// User must ensure this data type is defined, for example:\n"
-    #     f"// typedef struct {{\n"
-    #     f"//     uint32_t dst;\n"
-    #     f"//     bool end_flag;\n"
-    #     f"//     // ... other members\n"
-    #     f"// }} {data_type_name};\n\n"
-    # )
-    # final_code = ""
-
-    # # 生成所有函数定义
-    # for func in all_functions:
-    #     params_str = ", ".join([f"{p.type.name}& {p.name}" for p in func.params])
-    #     # 对于顶层函数，参数可能不都是引用
-    #     if func == omega_switch_function:
-    #         params_str = ", ".join([f"{p.type.name} {p.name}" for p in func.params])
-
-    #     func_def = f"void {func.name}({params_str}) {{\n"
-    #     func_body_code = "".join([line.gen_code(indent_lvl=1) for line in func.codes])
-    #     func_def += func_body_code
-    #     func_def += "}\n\n"
-    #     final_code += func_def
-
-    # return final_code
+    func = hls.HLSFunction(name=func_name, comp=None)
+    func.params, func.codes = params, body
+    return func
 
 
-# if __name__ == "__main__":
-#     # --- 使用示例 ---
-#     # 定义网络大小和数据类型名称
-#     N = 16
-#     DATA_TYPE = "update_tuple_dt"
+# ======================================================================== #
+#                      测试代码入口                                        #
+# ======================================================================== #
+if __name__ == "__main__":
 
-#     print(f"--- Generating HLS code for an {N}x{N} Omega Network ---")
+    def print_hls_function(func: hls.HLSFunction):
+        """辅助函数，用于打印单个HLSFunction对象的C++代码。"""
+        # 修正函数签名的生成，以正确处理流数组
+        params_list = []
+        for p in func.params:
+            if (
+                p.type.type == hls.HLSBasicType.ARRAY
+                and p.type.sub_types[0].type == hls.HLSBasicType.STREAM
+            ):
+                # C++ 数组参数语法: type name[]
+                base_type_str = p.type.sub_types[0].name
+                params_list.append(f"{base_type_str} {p.name}[]")
+            else:
+                # 普通参数语法: type& name
+                params_list.append(f"{p.type.name}& {p.name}")
 
-#     try:
-#         generated_cpp_code = generate_omega_network(n=N, data_type_name=DATA_TYPE)
+        params_str = ", ".join(params_list)
 
-#         # 将生成的代码写入文件
-#         # output_filename = f"omega_network_{N}x{N}.cpp"
-#         # with open(output_filename, "w") as f:
-#         #     f.write(generated_cpp_code)
+        print(f"// --- Function: {func.name} ---")
+        print(f"void {func.name}({params_str}) {{")
+        code_body = "".join([line.gen_code(indent_lvl=1) for line in func.codes])
+        print(code_body, end="")
+        print("}\n")
 
-#         # print(f"\nSuccessfully generated HLS code in '{output_filename}'")
+    print("=" * 50)
+    print("      Running backend_utils.py Test Suite")
+    print("=" * 50)
 
-#         # 也可以直接打印到控制台
-#         print("\n--- Generated Code ---")
-#         print(generated_cpp_code)
+    # --- 1. 定义测试用的数据类型 ---
+    N = 8
+    DATA_TYPE_NAME = "update_tuple_dt"
 
-#     except ValueError as e:
-#         print(f"Error: {e}")
+    print(f"\n[INFO] Using N={N} and data_type='{DATA_TYPE_NAME}' for tests.\n")
+
+    # a. 基础数据类型
+    data_type = hls.HLSType(
+        hls.HLSBasicType.STRUCT,
+        sub_types=[hls.HLSType(hls.HLSBasicType.UINT), hls.HLSType(hls.HLSBasicType.BOOL)],
+        struct_name=DATA_TYPE_NAME,
+        struct_prop_names=["dst", "end_flag"],
+    )
+    # b. 批处理类型 (用于 Demux 测试)
+    batch_data_array_type = hls.HLSType(
+        hls.HLSBasicType.ARRAY, sub_types=[data_type], array_dims=[N]
+    )
+    batch_type = hls.HLSType(
+        hls.HLSBasicType.STRUCT,
+        sub_types=[
+            batch_data_array_type,
+            hls.HLSType(hls.HLSBasicType.BOOL),
+            hls.HLSType(hls.HLSBasicType.UINT8),
+        ],
+        struct_prop_names=["data", "end_flag", "end_pos"],
+    )
+
+    # --- 2. 测试 generate_merge_stream_2x1 ---
+    print("=" * 20, "Test: generate_merge_stream_2x1", "=" * 20)
+    merge_func = generate_merge_stream_2x1(data_type)
+    print_hls_function(merge_func)
+
+    # --- 3. 测试 generate_reduction_tree ---
+    print("=" * 20, "Test: generate_reduction_tree", "=" * 22)
+    tree_func = generate_reduction_tree(n=N, data_type=data_type, merge_func=merge_func)
+    print_hls_function(tree_func)
+
+    # --- 4. 测试 generate_demux ---
+    print("=" * 20, "Test: generate_demux", "=" * 28)
+    demux_func = generate_demux(n=N, batch_type=batch_type)
+    print_hls_function(demux_func)
+
+    # --- 5. 测试 generate_omega_network ---
+    print("=" * 20, "Test: generate_omega_network", "=" * 22)
+    omega_functions = generate_omega_network(n=N, data_type_name=DATA_TYPE_NAME)
+    for func in omega_functions:
+        print_hls_function(func)
+
+    print("=" * 50)
+    print("            Test Suite Finished")
+    print("=" * 50)
