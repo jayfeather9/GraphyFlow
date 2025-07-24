@@ -58,6 +58,16 @@ class Port(DfirNode):
     def connected(self) -> bool:
         return self.connection is not None
 
+    @property
+    def from_const(self) -> bool:
+        assert self.port_type == PortType.IN and self.connected
+        return isinstance(self.connection.parent, ConstantComponent)
+
+    @property
+    def from_const_val(self):
+        assert self.from_const
+        return self.connection.parent.value
+
     def copy(self, copy_comp: CopyComponent) -> Port:
         assert self.port_type == PortType.OUT
         assert self.connected

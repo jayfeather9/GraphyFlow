@@ -421,7 +421,7 @@ def lambda_to_dfir(
             gather_comp.ports[i].connect(p)
         dfir_nodes[max_nid + 1] = gather_comp
         max_nid += 1
-        outputs = gather_comp.out_ports
+        outputs = gather_comp.out_ports.copy()
     return dfir.ComponentCollection(list(dfir_nodes.values()), inputs, outputs)
 
 
