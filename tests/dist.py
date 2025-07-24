@@ -80,7 +80,7 @@ dot.render("component_graph", view=False, format="png")
 
 # header, source = hls.global_hls_config.generate_hls_code(g, dfirs[0])
 
-import graphyflow.backend as bkd
+import graphyflow.backend_manager as bkd
 
 bkd_mng = bkd.BackendManager()
 header, source = bkd_mng.generate_backend(dfirs[0], g, "graphyflow")

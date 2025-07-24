@@ -427,6 +427,8 @@ class BinOp(Enum):
     GT = ">"
     LE = "<="
     GE = ">="
+    SL = "<<"
+    SR = ">>"
     MIN = "min"
     MAX = "max"
 
@@ -459,6 +461,8 @@ class BinOp(Enum):
             BinOp.OR,
             BinOp.MIN,
             BinOp.MAX,
+            BinOp.SL,
+            BinOp.SR,
         ]:
             return input_type
         elif self in [BinOp.EQ, BinOp.NE, BinOp.LT, BinOp.GT, BinOp.LE, BinOp.GE]:
