@@ -1304,13 +1304,14 @@ class BackendManager:
         )
         body.append(CodeVarDecl("key_mem", key_mem_type))
         body.append(CodePragma("BIND_STORAGE variable=key_mem type=RAM_2P impl=URAM"))
-        body.append(CodePragma("ARRAY_PARTITION variable=key_mem complete dim=1"))
+        body.append(CodePragma("ARRAY_PARTITION variable=key_mem complete dim=0"))
 
         key_buffer_type = HLSType(
             HLSBasicType.ARRAY, sub_types=[bram_elem_type], array_dims=["PE_NUM", "L + 1"]
         )
         body.append(CodeVarDecl("key_buffer", key_buffer_type))
         body.append(CodePragma("ARRAY_PARTITION variable=key_buffer complete dim=0"))
+        body.append(CodePragma("ARRAY_PARTITION variable=key_buffer complete dim=1"))
 
         i_buffer_base_type = HLSType(HLSBasicType.UINT)
         i_buffer_type = HLSType(
@@ -1318,6 +1319,7 @@ class BackendManager:
         )
         body.append(CodeVarDecl("i_buffer", i_buffer_type))
         body.append(CodePragma("ARRAY_PARTITION variable=i_buffer complete dim=0"))
+        body.append(CodePragma("ARRAY_PARTITION variable=i_buffer complete dim=1"))
 
         # 3. Initialize 2D memories using nested loops
         body.append(CodeComment("Memory initialization for all PEs"))
@@ -1352,6 +1354,7 @@ class BackendManager:
             HLSType(HLSBasicType.ARRAY, [end_flag_var.type], array_dims=["PE_NUM"]),
         )
         body.append(CodeVarDecl(all_end_flag_var.name, all_end_flag_var.type))
+        body.append(CodePragma("ARRAY_PARTITION variable=all_end_flags complete dim=0"))
         assign_end_flag = CodeAssign(
             HLSVar(f"{all_end_flag_var.name}[i]", end_flag_var.type),
             HLSExpr(HLSExprT.CONST, False),
