@@ -210,6 +210,8 @@ class CodeIf(HLSCodeLine):
         elifs: List[Tuple[HLSExpr, List[HLSCodeLine]]] = None,
     ) -> None:
         super().__init__()
+        if type(expr) == HLSVar:
+            expr = HLSExpr(HLSExprT.VAR, expr)
         self.expr = expr
         self.if_codes = if_codes
         self.elifs = elifs if elifs else []
@@ -403,6 +405,9 @@ class HLSExpr:
 class CodeAssign(HLSCodeLine):
     def __init__(self, var: HLSVar, expr: HLSExpr) -> None:
         super().__init__()
+        assert type(var) == HLSVar
+        if type(expr) == HLSVar:
+            expr = HLSExpr(HLSExprT.VAR, expr)
         self.var = var
         self.expr = expr
 
@@ -436,13 +441,15 @@ class CodeCall(HLSCodeLine):
 
 
 class CodeWriteStream(HLSCodeLine):
-    def __init__(self, stream_var: HLSVar, in_var: HLSVar) -> None:
+    def __init__(self, stream_var: HLSVar, in_expr: Union[HLSVar, HLSExpr]) -> None:
         super().__init__()
         self.stream_var = stream_var
-        self.in_var = in_var
+        if type(in_expr) == HLSVar:
+            in_expr = HLSExpr(HLSExprT.VAR, in_expr)
+        self.in_expr = in_expr
 
     def gen_code(self, indent_lvl: int = 0) -> str:
-        return INDENT_UNIT * indent_lvl + f"{self.stream_var.name}.write({self.in_var.name});\n"
+        return INDENT_UNIT * indent_lvl + f"{self.stream_var.name}.write({self.in_expr.code});\n"
 
 
 class CodePragma(HLSCodeLine):

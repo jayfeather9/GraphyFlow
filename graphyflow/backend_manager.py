@@ -27,12 +27,7 @@ from graphyflow.backend_defines import (
     CodeWhile,
     CodeWriteStream,
 )
-from graphyflow.backend_utils import (
-    generate_demux,
-    generate_omega_network,
-    generate_merge_stream_2x1,
-    generate_reduction_tree,
-)
+from graphyflow.backend_utils import generate_demux, generate_omega_network, generate_stream_zipper
 
 
 class BackendManager:
@@ -260,140 +255,130 @@ class BackendManager:
                     HLSVar("intermediate_transform", i_t_type),
                 ]
 
-                # a. Define the un-batched, single stream types for parallel PEs
-                single_key_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[key_type])
-                single_transform_stream_type = HLSType(
-                    HLSBasicType.STREAM, sub_types=[transform_type]
+                # 创建 kt_pair_t 类型
+                kt_pair_type = HLSType(
+                    HLSBasicType.STRUCT,
+                    sub_types=[key_type, transform_type],
+                    struct_name=f"kt_pair_{comp.readable_id}_t",
+                    struct_prop_names=["key", "transform"],
+                )
+                self.struct_definitions[kt_pair_type.name] = (kt_pair_type, ["key", "transform"])
+
+                member = [kt_pair_type, HLSType(HLSBasicType.BOOL), HLSType(HLSBasicType.UINT8)]
+                member_names = ["data", "end_flag", "end_pos"]
+
+                kt_wrap_type = HLSType(
+                    HLSBasicType.STRUCT,
+                    member,
+                    struct_name=f"net_wrapper_{kt_pair_type.name}_t",
+                    struct_prop_names=member_names,
+                )
+                self.struct_definitions[kt_wrap_type.name] = (kt_wrap_type, member_names)
+
+                kt_wrap_stream = HLSType(HLSBasicType.STREAM, sub_types=[kt_wrap_type])
+                kt_wrap_array = HLSType(
+                    HLSBasicType.ARRAY, sub_types=[kt_wrap_stream], array_dims=["PE_NUM"]
                 )
 
+                # a. Define the un-batched, single stream types for parallel PEs
+                # single_key_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[key_type])
+                # single_transform_stream_type = HLSType(
+                #     HLSBasicType.STREAM, sub_types=[transform_type]
+                # )
+
                 out_dfir_type = comp.get_port("o_0").data_type
-                base_data_type = self.type_map[out_dfir_type.type_]
+                base_data_type = self._get_batch_type(self.type_map[out_dfir_type.type_])
                 single_data_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[base_data_type])
 
                 # b. Create ARRAY types for the stream arrays
-                key_stream_array_type = HLSType(
-                    HLSBasicType.ARRAY, sub_types=[single_key_stream_type], array_dims=["PE_NUM"]
-                )
-                transform_stream_array_type = HLSType(
-                    HLSBasicType.ARRAY,
-                    sub_types=[single_transform_stream_type],
-                    array_dims=["PE_NUM"],
-                )
-                output_stream_array_type = HLSType(
-                    HLSBasicType.ARRAY, sub_types=[single_data_stream_type], array_dims=["PE_NUM"]
-                )
+                # key_stream_array_type = HLSType(
+                #     HLSBasicType.ARRAY, sub_types=[single_key_stream_type], array_dims=["PE_NUM"]
+                # )
+                # transform_stream_array_type = HLSType(
+                #     HLSBasicType.ARRAY,
+                #     sub_types=[single_transform_stream_type],
+                #     array_dims=["PE_NUM"],
+                # )
+                # output_stream_array_type = HLSType(
+                #     HLSBasicType.ARRAY, sub_types=[single_data_stream_type], array_dims=["PE_NUM"]
+                # )
 
                 # c. Set the new parameters for unit_reduce_func
                 unit_reduce_func.params = [
-                    HLSVar("intermediate_key", key_stream_array_type),
-                    HLSVar("intermediate_transform", transform_stream_array_type),
-                    HLSVar("o_0", output_stream_array_type),
+                    HLSVar("kt_wrap_item", kt_wrap_array),
+                    # HLSVar("intermediate_key", key_stream_array_type),
+                    # HLSVar("intermediate_transform", transform_stream_array_type),
+                    HLSVar("o_0", single_data_stream_type),
                 ]
 
                 self.hls_functions[comp.readable_id] = pre_process_func
                 self.hls_functions[comp.readable_id + 1] = unit_reduce_func  # Use a unique-ish ID
 
-                # Generate all network assistance modules
-                # Demuxers
+                # 2. 获取批处理类型
                 key_batch_type = self.batch_type_map[key_type]
                 transform_batch_type = self.batch_type_map[transform_type]
-                key_base_type_from_batch = key_batch_type.sub_types[0].sub_types[0]
-                key_wrapper_name = f"net_wrapper_{key_base_type_from_batch.name}_t"
-                key_wrapper_type = HLSType(
-                    HLSBasicType.STRUCT,
-                    sub_types=[key_base_type_from_batch, HLSType(HLSBasicType.BOOL)],
-                    struct_name=key_wrapper_name,
-                    struct_prop_names=["data", "end_flag"],
-                )
-                self.struct_definitions[key_wrapper_name] = (
-                    key_wrapper_type,
-                    ["data", "end_flag"],
-                )
-                tran_base_type_from_batch = transform_batch_type.sub_types[0].sub_types[0]
-                tran_wrapper_name = f"net_wrapper_{tran_base_type_from_batch.name}_t"
-                tran_wrapper_type = HLSType(
-                    HLSBasicType.STRUCT,
-                    sub_types=[tran_base_type_from_batch, HLSType(HLSBasicType.BOOL)],
-                    struct_name=tran_wrapper_name,
-                    struct_prop_names=["data", "end_flag"],
-                )
-                self.struct_definitions[tran_wrapper_name] = (
-                    tran_wrapper_name,
-                    ["data", "end_flag"],
-                )
-                demux_key_func = generate_demux(self.PE_NUM, key_batch_type, key_wrapper_type)
-                demux_transform_func = generate_demux(
-                    self.PE_NUM, transform_batch_type, tran_wrapper_type
-                )
-                self.utility_functions.extend([demux_key_func, demux_transform_func])
+                kt_pair_batch_type = self._get_batch_type(kt_pair_type)
 
-                # Omega Networks
-                key_wrapper_name = f"net_wrapper_{key_type.name}_t"
-                key_wrapper_type = HLSType(
-                    HLSBasicType.STRUCT,
-                    sub_types=[key_type, HLSType(HLSBasicType.BOOL)],
-                    struct_name=key_wrapper_name,
-                    struct_prop_names=["data", "end_flag"],
+                # 3. 生成 Zipper
+                zipper_func = generate_stream_zipper(
+                    key_batch_type, transform_batch_type, kt_pair_batch_type
                 )
-                self.struct_definitions[key_wrapper_name] = (
-                    key_wrapper_type,
-                    ["data", "end_flag"],
-                )
-                tran_wrapper_name = f"net_wrapper_{transform_type.name}_t"
-                tran_wrapper_type = HLSType(
-                    HLSBasicType.STRUCT,
-                    sub_types=[transform_type, HLSType(HLSBasicType.BOOL)],
-                    struct_name=tran_wrapper_name,
-                    struct_prop_names=["data", "end_flag"],
-                )
-                self.struct_definitions[tran_wrapper_name] = (
-                    tran_wrapper_type,
-                    ["data", "end_flag"],
-                )
-                omega_key_funcs = generate_omega_network(self.PE_NUM, key_wrapper_type)
-                omega_transform_funcs = generate_omega_network(self.PE_NUM, tran_wrapper_type)
-                self.utility_functions.extend(omega_key_funcs)
-                self.utility_functions.extend(omega_transform_funcs)
 
-                # Reduction Tree
-                merge_func = generate_merge_stream_2x1(base_data_type)
-                tree_func = generate_reduction_tree(self.PE_NUM, base_data_type, merge_func)
-                self.utility_functions.extend([merge_func, tree_func])
+                # 4. 生成 Demux (现在它处理 kt_pair_batch)
+                demux_func = generate_demux(self.PE_NUM, kt_pair_batch_type, kt_wrap_type)
 
-                # Intermediate stream arrays
+                # 5. 生成 Omega Network (现在它处理 kt_pair 并根据 'key' 路由)
+                omega_funcs = generate_omega_network(
+                    self.PE_NUM, kt_wrap_type, routing_key_member="key"
+                )
+                omega_func = next(f for f in omega_funcs if "omega_switch" in f.name)
+
+                # 6. 生成 Unzipper
+                # key_stream_array_type = unit_reduce_func.params[0].type
+                # transform_stream_array_type = unit_reduce_func.params[1].type
+                # unzipper_func = generate_stream_unzipper(self.PE_NUM, kt_wrap_type, key_stream_array_type, transform_stream_array_type)
+
+                # 7. 生成 Reduction Tree (逻辑不变)
+                # out_dfir_type = comp.get_port("o_0").data_type
+                # base_data_type = self.type_map[out_dfir_type.type_]
+                # merge_func = generate_merge_stream_2x1(base_data_type)
+                # tree_func = generate_reduction_tree(self.PE_NUM, base_data_type, merge_func)
+
+                # 8. 存储所有生成的辅助函数
+                self.utility_functions.extend([zipper_func, demux_func] + omega_funcs)
+
+                # 9. 声明所有中间流并存储辅助模块信息
                 helpers = {
-                    "demux_key": demux_key_func,
-                    "demux_transform": demux_transform_func,
-                    "omega_key": next(f for f in omega_key_funcs if "omega_switch" in f.name),
-                    "omega_transform": next(
-                        f for f in omega_transform_funcs if "omega_switch" in f.name
-                    ),
-                    "tree": tree_func,
+                    "zipper": zipper_func,
+                    "demux": demux_func,
+                    "omega": omega_func,
+                    # "unzipper": unzipper_func,
+                    # "tree": tree_func,
                     "unit_reduce": unit_reduce_func,
                 }
 
                 streams_to_declare = {
-                    "demux_to_omega_key": HLSVar(
-                        f"reduce_{comp.readable_id}_d2o_key", key_stream_array_type
+                    "zipper_to_demux": HLSVar(
+                        f"reduce_{comp.readable_id}_z2d_pair",
+                        HLSType(HLSBasicType.STREAM, sub_types=[kt_pair_batch_type]),
                     ),
-                    "demux_to_omega_transform": HLSVar(
-                        f"reduce_{comp.readable_id}_d2o_transform", transform_stream_array_type
+                    "demux_to_omega": HLSVar(
+                        f"reduce_{comp.readable_id}_d2o_pair", demux_func.params[1].type
                     ),
-                    "omega_to_unit_key": HLSVar(
-                        f"reduce_{comp.readable_id}_o2u_key", key_stream_array_type
+                    "omega_to_unit": HLSVar(
+                        f"reduce_{comp.readable_id}_o2u_pair", omega_func.params[-1].type
                     ),
-                    "omega_to_unit_transform": HLSVar(
-                        f"reduce_{comp.readable_id}_o2u_transform", transform_stream_array_type
+                    # "omega_to_unzipper": HLSVar(f"reduce_{comp.readable_id}_o2u_pair", unzipper_func.params[0].type),
+                    # "unzipper_to_unit_key": HLSVar(f"reduce_{comp.readable_id}_u2u_key", key_stream_array_type),
+                    # "unzipper_to_unit_transform": HLSVar(f"reduce_{comp.readable_id}_u2u_transform", transform_stream_array_type),
+                    "unit_to_final": HLSVar(
+                        f"reduce_{comp.readable_id}_uout_streams", unit_reduce_func.params[1].type
                     ),
-                    "unit_to_tree": HLSVar(
-                        f"reduce_{comp.readable_id}_u2t_streams", output_stream_array_type
-                    ),
-                    "tree_to_final": HLSVar(
-                        f"reduce_{comp.readable_id}_t2f_stream", single_data_stream_type
-                    ),
+                    # "unit_to_tree": HLSVar(f"reduce_{comp.readable_id}_u2t_streams", unit_reduce_func.params[2].type),
+                    # "tree_to_final": HLSVar(f"reduce_{comp.readable_id}_t2f_stream", tree_func.params[2].type)
                 }
 
-                for key, stream_var in streams_to_declare.items():
+                for stream_var in streams_to_declare.values():
                     decl = CodeVarDecl(stream_var.name, stream_var.type)
                     pragma = CodePragma(
                         f"STREAM variable={stream_var.name} depth={self.STREAM_DEPTH}"
@@ -1298,9 +1283,10 @@ class BackendManager:
         comp = hls_func.dfir_comp
 
         # 1. Get types and variables from the new function signature
-        key_streams, transform_streams, out_streams = hls_func.params
-        key_type = key_streams.type.sub_types[0].sub_types[0]
-        transform_type = transform_streams.type.sub_types[0].sub_types[0]
+        kt_streams, out_streams = hls_func.params
+        kt_type = kt_streams.type.sub_types[0].sub_types[0]
+        key_type = kt_streams.type.sub_types[0].sub_types[0].sub_types[0].sub_types[0]
+        transform_type = kt_streams.type.sub_types[0].sub_types[0].sub_types[0].sub_types[1]
         single_out_stream_type = out_streams.type.sub_types[0]
         out_data_type = single_out_stream_type.sub_types[0]
 
@@ -1360,56 +1346,57 @@ class BackendManager:
         # 4. Main Processing Loop - now handles parallel un-batched streams
         body.append(CodeComment("Main processing loop for aggregation across PEs"))
         end_flag_var = HLSVar("end_flag", HLSType(HLSBasicType.BOOL))
+        body.append(CodeVarDecl(end_flag_var.name, end_flag_var.type))
 
         # This loop now assumes lock-step processing of the PE_NUM streams
         while_loop_body = [CodePragma("PIPELINE")]
 
         # Read one element from each PE's stream
+        kt_elem_var = HLSVar("kt_elem", kt_type)
         key_elem_var = HLSVar("key_elem", key_type)
         transform_elem_var = HLSVar("transform_elem", transform_type)
         while_loop_body.extend(
             [
+                CodeVarDecl(kt_elem_var.name, kt_elem_var.type),
                 CodeVarDecl(key_elem_var.name, key_elem_var.type),
                 CodeVarDecl(transform_elem_var.name, transform_elem_var.type),
             ]
         )
 
         # This logic is now inside a PE loop
-        inner_loop_logic = self._translate_reduce_unit_inner_loop(comp, bram_elem_type, "i")
+        inner_loop_logic = self._translate_reduce_unit_inner_loop(
+            comp, bram_elem_type, "i", key_elem_var, transform_elem_var
+        )
 
         # Read from stream array and then process
-        read_key = CodeAssign(
-            key_elem_var,
+        read_kt = CodeAssign(
+            kt_elem_var,
             HLSExpr(
                 HLSExprT.STREAM_READ,
                 None,
-                [
-                    HLSExpr(
-                        HLSExprT.VAR,
-                        HLSVar(f"{key_streams.name}[i]", key_streams.type.sub_types[0]),
-                    )
-                ],
+                [HLSExpr(HLSExprT.VAR, HLSVar(f"{kt_streams.name}[i]", key_type))],
+            ),
+        )
+        read_key = CodeAssign(
+            key_elem_var,
+            HLSExpr(
+                HLSExprT.UOP,
+                (dfir.UnaryOp.GET_ATTR, "data.key"),
+                [HLSExpr(HLSExprT.VAR, kt_elem_var)],
             ),
         )
         read_transform = CodeAssign(
             transform_elem_var,
             HLSExpr(
-                HLSExprT.STREAM_READ,
-                None,
-                [
-                    HLSExpr(
-                        HLSExprT.VAR,
-                        HLSVar(
-                            f"{transform_streams.name}[i]", transform_streams.type.sub_types[0]
-                        ),
-                    )
-                ],
+                HLSExprT.UOP,
+                (dfir.UnaryOp.GET_ATTR, "data.transform"),
+                [HLSExpr(HLSExprT.VAR, kt_elem_var)],
             ),
         )
 
         # We process one element per PE in an unrolled loop
         pe_processing_loop = CodeFor(
-            codes=[CodePragma("UNROLL"), read_key, read_transform] + inner_loop_logic,
+            codes=[CodePragma("UNROLL"), read_kt, read_key, read_transform] + inner_loop_logic,
             iter_limit="PE_NUM",
             iter_name="i",
         )
@@ -1419,7 +1406,7 @@ class BackendManager:
         end_flag_expr = HLSExpr(
             HLSExprT.UOP,
             (dfir.UnaryOp.GET_ATTR, "end_flag"),
-            [HLSExpr(HLSExprT.VAR, key_elem_var)],
+            [HLSExpr(HLSExprT.VAR, kt_elem_var)],
         )
         while_loop_body.append(CodeAssign(end_flag_var, end_flag_expr))
         while_loop_body.append(CodeIf(HLSExpr(HLSExprT.VAR, end_flag_var), [CodeBreak()]))
@@ -1441,16 +1428,12 @@ class BackendManager:
         )
 
         write_to_stream = CodeWriteStream(
-            HLSVar(f"{out_streams.name}[pe]", single_out_stream_type),
+            HLSVar(f"{out_streams.name}", single_out_stream_type),
             HLSVar("data_to_write", out_data_type),
         )
         if_valid_block = CodeIf(
             is_valid_expr,
-            [
-                CodeVarDecl("data_to_write", out_data_type),
-                CodeAssign(HLSVar("data_to_write", out_data_type), data_expr),
-                write_to_stream,
-            ],
+            [CodeAssign(HLSVar("data_to_write.data[pe]", out_data_type), data_expr)],
         )
         drain_inner_pe_loop = CodeFor(
             codes=[CodePragma("UNROLL"), if_valid_block], iter_limit="PE_NUM", iter_name="pe"
@@ -1458,22 +1441,20 @@ class BackendManager:
 
         # 外层循环：遍历内存地址，进行流水线处理
         drain_outer_k_loop = CodeFor(
-            codes=[CodePragma("PIPELINE"), drain_inner_pe_loop],
+            codes=[
+                CodePragma("PIPELINE"),
+                CodeVarDecl("data_to_write", single_out_stream_type),
+                drain_inner_pe_loop,
+                write_to_stream,
+            ],
             iter_limit="MAX_NUM",
             iter_name="k",
         )
         body.append(drain_outer_k_loop)
 
-        # 在所有数据都回写完毕后，为每个PE的输出流发送结束标志
+        # 在所有数据都回写完毕后，发送结束标志
         body.append(CodeComment("Send end_flag to all PE output streams"))
-        end_data_var = HLSVar("end_data", out_data_type)
-        send_end_flag_body = [
-            CodePragma("UNROLL"),
-            CodeWriteStream(
-                HLSVar(f"{out_streams.name}[i]", single_out_stream_type), end_data_var
-            ),
-        ]
-        send_end_flag_loop = CodeFor(send_end_flag_body, "PE_NUM", iter_name="i")
+        end_data_var = HLSVar("end_data", single_out_stream_type)
         body.extend(
             [
                 CodeVarDecl(end_data_var.name, end_data_var.type),
@@ -1481,14 +1462,21 @@ class BackendManager:
                     HLSVar(f"{end_data_var.name}.end_flag", HLSType(HLSBasicType.BOOL)),
                     HLSExpr(HLSExprT.CONST, True),
                 ),
-                send_end_flag_loop,
+                CodeWriteStream(
+                    HLSVar(f"{out_streams.name}", single_out_stream_type), end_data_var
+                ),
             ]
         )
 
         return body
 
     def _translate_reduce_unit_inner_loop(
-        self, comp: dfir.ReduceComponent, bram_elem_type: HLSType, pe_idx: str
+        self,
+        comp: dfir.ReduceComponent,
+        bram_elem_type: HLSType,
+        pe_idx: str,
+        key_var,
+        val_var,
     ) -> List[HLSCodeLine]:
         """
         Helper to generate the complex logic inside unit_reduce's PE_NUM loop.
@@ -1498,20 +1486,21 @@ class BackendManager:
         accum_type = self.type_map[comp.get_port("i_reduce_transform_out").data_type]
         bool_type = HLSType(HLSBasicType.BOOL)
 
-        # 1. Get current key and value from the batch using the PE index
-        key_var = HLSVar("current_key", key_type)
-        val_var = HLSVar("current_val", accum_type)
-        logic = [
-            CodeVarDecl(key_var.name, key_var.type),
-            CodeVarDecl(val_var.name, val_var.type),
-            CodeAssign(
-                key_var, HLSExpr(HLSExprT.VAR, HLSVar(f"in_key_batch.data[{pe_idx}]", key_type))
-            ),
-            CodeAssign(
-                val_var,
-                HLSExpr(HLSExprT.VAR, HLSVar(f"in_transform_batch.data[{pe_idx}]", accum_type)),
-            ),
-        ]
+        # # 1. Get current key and value from the batch using the PE index
+        # key_var = HLSVar("current_key", key_type)
+        # val_var = HLSVar("current_val", accum_type)
+        # logic = [
+        #     CodeVarDecl(key_var.name, key_var.type),
+        #     CodeVarDecl(val_var.name, val_var.type),
+        #     CodeAssign(
+        #         key_var, HLSExpr(HLSExprT.VAR, HLSVar(f"in_key_batch.data[{pe_idx}]", key_type))
+        #     ),
+        #     CodeAssign(
+        #         val_var,
+        #         HLSExpr(HLSExprT.VAR, HLSVar(f"in_transform_batch.data[{pe_idx}]", accum_type)),
+        #     ),
+        # ]
+        logic = []
 
         # *** 关键修改: 所有对内存的访问都使用 pe_idx 作为第一维度 ***
         # 2. Read old element from this PE's BRAM & buffer
@@ -1828,62 +1817,38 @@ class BackendManager:
 
                 body.append(
                     CodeCall(
-                        helpers["demux_key"],
+                        helpers["zipper"],
                         [
                             self.reduce_internal_streams[comp_id]["intermediate_key"],
-                            streams["demux_to_omega_key"],
-                        ],
-                    )
-                )
-                body.append(
-                    CodeCall(
-                        helpers["demux_transform"],
-                        [
                             self.reduce_internal_streams[comp_id]["intermediate_transform"],
-                            streams["demux_to_omega_transform"],
+                            streams["zipper_to_demux"],
                         ],
                     )
                 )
-
                 body.append(
                     CodeCall(
-                        helpers["omega_key"],
-                        [streams["demux_to_omega_key"], streams["omega_to_unit_key"]],
+                        helpers["demux"], [streams["zipper_to_demux"], streams["demux_to_omega"]]
                     )
                 )
                 body.append(
                     CodeCall(
-                        helpers["omega_transform"],
-                        [streams["demux_to_omega_transform"], streams["omega_to_unit_transform"]],
+                        helpers["omega"], [streams["demux_to_omega"], streams["omega_to_unit"]]
                     )
                 )
+                # body.append(CodeCall(helpers["unzipper"], [streams["omega_to_unzipper"], streams["unzipper_to_unit_key"], streams["unzipper_to_unit_transform"]]))
 
                 unit_reduce_func = helpers["unit_reduce"]
                 body.append(
                     CodeCall(
-                        unit_reduce_func,
-                        [
-                            streams["omega_to_unit_key"],
-                            streams["omega_to_unit_transform"],
-                            streams["unit_to_tree"],
-                        ],
+                        unit_reduce_func, [streams["omega_to_unit"], streams["unit_to_final"]]
                     )
                 )
 
-                body.append(
-                    CodeCall(
-                        helpers["tree"],
-                        [
-                            HLSExpr(HLSExprT.CONST, 0),
-                            streams["unit_to_tree"],
-                            streams["tree_to_final"],
-                        ],
-                    )
-                )
+                # body.append(CodeCall(helpers["tree"], [HLSExpr(HLSExprT.CONST, 0), streams["unit_to_tree"], streams["tree_to_final"]]))
+
                 body.append(
                     CodeComment(f"--- End of Reduce Super-Block for {func.dfir_comp.name} ---")
                 )
-
                 handled_unit_reduce_ids.add(comp_id)
 
             else:
@@ -1902,7 +1867,7 @@ class BackendManager:
                     if isinstance(conn_parent, dfir.ReduceComponent) and port.name == "i_0":
                         reduce_comp_id = conn_parent.readable_id
                         final_stream_var = self.reduce_helpers[reduce_comp_id]["streams"][
-                            "tree_to_final"
+                            "unit_to_final"
                         ]
                         call_params.append(final_stream_var)
 
@@ -1932,7 +1897,10 @@ class BackendManager:
             code += "// --- Utility Network Functions ---\n"
             for func in self.utility_functions:
                 params_str = ", ".join(
-                    [p.type.get_upper_param(p.name, False) for p in func.params]
+                    [
+                        p.type.get_upper_param(p.name, p.type.type != HLSBasicType.INT)
+                        for p in func.params
+                    ]
                 )
                 code += f"void {func.name}({params_str}) " + "{\n"
                 code += "".join([line.gen_code(1) for line in func.codes])

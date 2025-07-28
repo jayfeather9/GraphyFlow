@@ -169,6 +169,8 @@ def generate_merge_stream_2x1(data_type: hls.HLSType) -> hls.HLSFunction:
         hls.CodePragma("function_instantiate variable=i"),
         hls.CodeVarDecl(in1_end_flag_var.name, in1_end_flag_var.type),
         hls.CodeVarDecl(in2_end_flag_var.name, in2_end_flag_var.type),
+        hls.CodeVarDecl(p1_flag.name, p1_flag.type),
+        hls.CodeVarDecl(p2_flag.name, p2_flag.type),
         hls.CodeWhile(codes=while_body, iter_expr=hls.HLSExpr(hls.HLSExprT.CONST, True)),
     ]
 
@@ -352,7 +354,7 @@ def generate_demux(n: int, batch_type: hls.HLSType, wrapper_type: hls.HLSType) -
 # ======================================================================== #
 
 
-def generate_omega_network(n: int, wrapper_type: hls.HLSType) -> List[hls.HLSFunction]:
+def generate_omega_network(n: int, wrapper_type, routing_key_member: str) -> List[hls.HLSFunction]:
     """
     生成一个 N x N Omega 网络的完整HLS C++代码，包括所有子模块。
     """
@@ -364,6 +366,8 @@ def generate_omega_network(n: int, wrapper_type: hls.HLSType) -> List[hls.HLSFun
     gen_id = _get_unique_id()
 
     # --- HLS类型定义 ---
+
+    # b. 其他类型现在基于 wrapper_type
     stream_type = hls.HLSType(hls.HLSBasicType.STREAM, sub_types=[wrapper_type])
     bool_type = hls.HLSType(hls.HLSBasicType.BOOL)
     int_type = hls.HLSType(hls.HLSBasicType.INT)
@@ -371,7 +375,10 @@ def generate_omega_network(n: int, wrapper_type: hls.HLSType) -> List[hls.HLSFun
         hls.HLSBasicType.ARRAY, sub_types=[stream_type], array_dims=[n]
     )
 
-    sender_function = generate_omega_sender(gen_id, wrapper_type, stream_type, int_type, bool_type)
+    # --- 调用子模块生成器 ---
+    sender_function = generate_omega_sender(
+        gen_id, wrapper_type, stream_type, int_type, bool_type, routing_key_member
+    )
     receiver_function = generate_omega_receiver(
         gen_id, wrapper_type, stream_type, int_type, bool_type
     )
@@ -386,7 +393,9 @@ def generate_omega_network(n: int, wrapper_type: hls.HLSType) -> List[hls.HLSFun
 
 
 # Helper functions to keep generate_omega_network clean
-def generate_omega_sender(gen_id, data_tuple_type, stream_type, int_type, bool_type):
+def generate_omega_sender(
+    gen_id, data_tuple_type, stream_type, int_type, bool_type, routing_key_member: str
+):
     func_name = f"sender_{gen_id}"
     params = [
         hls.HLSVar("i", int_type),
@@ -402,7 +411,6 @@ def generate_omega_sender(gen_id, data_tuple_type, stream_type, int_type, bool_t
     data1_var, data2_var = hls.HLSVar("data1", data_tuple_type), hls.HLSVar(
         "data2", data_tuple_type
     )
-    i_var_expr = hls.HLSExpr(hls.HLSExprT.VAR, hls.HLSVar("i", int_type))
 
     def create_routing_expr(data_var):
         inner_data_expr = hls.HLSExpr(
@@ -410,9 +418,12 @@ def generate_omega_sender(gen_id, data_tuple_type, stream_type, int_type, bool_t
             (dfir.UnaryOp.GET_ATTR, "data"),
             [hls.HLSExpr(hls.HLSExprT.VAR, data_var)],
         )
-        dst_expr = hls.HLSExpr(hls.HLSExprT.UOP, (dfir.UnaryOp.GET_ATTR, "dst"), [inner_data_expr])
+        key_expr = hls.HLSExpr(
+            hls.HLSExprT.UOP, (dfir.UnaryOp.GET_ATTR, routing_key_member), [inner_data_expr]
+        )
+
         i_var_expr = hls.HLSExpr(hls.HLSExprT.VAR, hls.HLSVar("i", int_type))
-        shifted_expr = hls.HLSExpr(hls.HLSExprT.BINOP, dfir.BinOp.SR, [dst_expr, i_var_expr])
+        shifted_expr = hls.HLSExpr(hls.HLSExprT.BINOP, dfir.BinOp.SR, [key_expr, i_var_expr])
         return hls.HLSExpr(
             hls.HLSExprT.BINOP, dfir.BinOp.AND, [shifted_expr, hls.HLSExpr(hls.HLSExprT.CONST, 1)]
         )
@@ -727,6 +738,219 @@ def generate_omega_top(
     func = hls.HLSFunction(name=func_name, comp=None)
     func.params, func.codes = params, body
     return func
+
+
+def generate_stream_zipper(
+    key_batch_type: hls.HLSType,
+    transform_batch_type: hls.HLSType,
+    out_kt_pair_batch_type: hls.HLSType,
+) -> hls.HLSFunction:
+    """
+    生成一个流合并器 (Stream Zipper)。
+    输入: 两个批处理流 (key, transform)
+    输出: 一个合并了key和transform的批处理流 (kt_pair)
+    """
+    gen_id = _get_unique_id()
+    func_name = f"stream_zipper_{gen_id}"
+
+    params = [
+        hls.HLSVar(
+            "in_key_batch_stream", hls.HLSType(hls.HLSBasicType.STREAM, sub_types=[key_batch_type])
+        ),
+        hls.HLSVar(
+            "in_transform_batch_stream",
+            hls.HLSType(hls.HLSBasicType.STREAM, sub_types=[transform_batch_type]),
+        ),
+        hls.HLSVar(
+            "out_pair_batch_stream",
+            hls.HLSType(hls.HLSBasicType.STREAM, sub_types=[out_kt_pair_batch_type]),
+        ),
+    ]
+
+    key_batch_var = hls.HLSVar("key_batch", key_batch_type)
+    transform_batch_var = hls.HLSVar("transform_batch", transform_batch_type)
+    out_batch_var = hls.HLSVar("out_batch", out_kt_pair_batch_type)
+
+    # 内部循环: out.data[i].key = key.data[i]; out.data[i].transform = transform.data[i];
+    kt_pair_type = out_kt_pair_batch_type.sub_types[0].sub_types[0]
+    assign_key = hls.CodeAssign(
+        hls.HLSVar(f"{out_batch_var.name}.data[i].key", kt_pair_type.sub_types[0]),
+        hls.HLSVar(f"{key_batch_var.name}.data[i]", key_batch_type.sub_types[0].sub_types[0]),
+    )
+    assign_transform = hls.CodeAssign(
+        hls.HLSVar(f"{out_batch_var.name}.data[i].transform", kt_pair_type.sub_types[1]),
+        hls.HLSVar(
+            f"{transform_batch_var.name}.data[i]", transform_batch_type.sub_types[0].sub_types[0]
+        ),
+    )
+    for_loop = hls.CodeFor(
+        [hls.CodePragma("UNROLL"), assign_key, assign_transform],
+        iter_limit="PE_NUM",
+        iter_name="i",
+    )
+
+    # while循环体
+    end_flag_expr = hls.HLSExpr(
+        hls.HLSExprT.UOP,
+        (dfir.UnaryOp.GET_ATTR, "end_flag"),
+        [hls.HLSExpr(hls.HLSExprT.VAR, key_batch_var)],
+    )
+    end_pos_expr = hls.HLSExpr(
+        hls.HLSExprT.UOP,
+        (dfir.UnaryOp.GET_ATTR, "end_pos"),
+        [hls.HLSExpr(hls.HLSExprT.VAR, key_batch_var)],
+    )
+
+    while_body = [
+        hls.CodePragma("PIPELINE"),
+        hls.CodeAssign(
+            key_batch_var,
+            hls.HLSExpr(
+                hls.HLSExprT.STREAM_READ, None, [hls.HLSExpr(hls.HLSExprT.VAR, params[0])]
+            ),
+        ),
+        hls.CodeAssign(
+            transform_batch_var,
+            hls.HLSExpr(
+                hls.HLSExprT.STREAM_READ, None, [hls.HLSExpr(hls.HLSExprT.VAR, params[1])]
+            ),
+        ),
+        for_loop,
+        hls.CodeAssign(
+            hls.HLSVar(f"{out_batch_var.name}.end_flag", hls.HLSType(hls.HLSBasicType.BOOL)),
+            end_flag_expr,
+        ),
+        hls.CodeAssign(
+            hls.HLSVar(f"{out_batch_var.name}.end_pos", hls.HLSType(hls.HLSBasicType.UINT8)),
+            end_pos_expr,
+        ),
+        hls.CodeWriteStream(params[2], out_batch_var),
+        hls.CodeIf(end_flag_expr, [hls.CodeBreak()]),
+    ]
+
+    body = [
+        hls.CodeVarDecl(key_batch_var.name, key_batch_var.type),
+        hls.CodeVarDecl(transform_batch_var.name, transform_batch_var.type),
+        hls.CodeVarDecl(out_batch_var.name, out_batch_var.type),
+        hls.CodeWhile(iter_expr=hls.HLSExpr(hls.HLSExprT.CONST, True), codes=while_body),
+    ]
+
+    zipper_func = hls.HLSFunction(name=func_name, comp=None)
+    zipper_func.params = params
+    zipper_func.codes = body
+    return zipper_func
+
+
+def generate_stream_unzipper(
+    n: int,
+    wrapped_kt_pair_type: hls.HLSType,
+    out_key_stream_array_type: hls.HLSType,
+    out_transform_stream_array_type: hls.HLSType,
+) -> hls.HLSFunction:
+    """
+    生成一个流拆分器 (Stream Unzipper)。
+    输入: 一个流数组 (承载 wrapper<kt_pair>)
+    输出: 两个流数组 (key, transform)
+    """
+    gen_id = _get_unique_id()
+    func_name = f"stream_unzipper_{gen_id}"
+
+    in_stream_type = hls.HLSType(hls.HLSBasicType.STREAM, sub_types=[wrapped_kt_pair_type])
+    in_stream_array_type = hls.HLSType(
+        hls.HLSBasicType.ARRAY, sub_types=[in_stream_type], array_dims=[n]
+    )
+
+    params = [
+        hls.HLSVar("in_streams", in_stream_array_type),
+        hls.HLSVar("out_key_streams", out_key_stream_array_type),
+        hls.HLSVar("out_transform_streams", out_transform_stream_array_type),
+    ]
+
+    wrapper_var = hls.HLSVar("wrapper", wrapped_kt_pair_type)
+    end_flag_var = hls.HLSVar(
+        "end_flag_local",
+        hls.HLSType(hls.HLSBasicType.BOOL),
+    )
+
+    # 内部循环体
+    end_check_expr = hls.HLSExpr(
+        hls.HLSExprT.UOP,
+        (dfir.UnaryOp.GET_ATTR, "end_flag"),
+        [hls.HLSExpr(hls.HLSExprT.VAR, wrapper_var)],
+    )
+
+    # 表达式: wrapper.data.key
+    key_expr = hls.HLSExpr(
+        hls.HLSExprT.UOP,
+        (dfir.UnaryOp.GET_ATTR, "key"),
+        [
+            hls.HLSExpr(
+                hls.HLSExprT.UOP,
+                (dfir.UnaryOp.GET_ATTR, "data"),
+                [hls.HLSExpr(hls.HLSExprT.VAR, wrapper_var)],
+            )
+        ],
+    )
+    # 表达式: wrapper.data.transform
+    transform_expr = hls.HLSExpr(
+        hls.HLSExprT.UOP,
+        (dfir.UnaryOp.GET_ATTR, "transform"),
+        [
+            hls.HLSExpr(
+                hls.HLSExprT.UOP,
+                (dfir.UnaryOp.GET_ATTR, "data"),
+                [hls.HLSExpr(hls.HLSExprT.VAR, wrapper_var)],
+            )
+        ],
+    )
+
+    write_key = hls.CodeWriteStream(
+        hls.HLSVar(f"out_key_streams[i]", out_key_stream_array_type.sub_types[0]), key_expr
+    )
+    write_transform = hls.CodeWriteStream(
+        hls.HLSVar(f"out_transform_streams[i]", out_transform_stream_array_type.sub_types[0]),
+        transform_expr,
+    )
+
+    unzip_if_block = hls.CodeIf(
+        hls.HLSExpr(hls.HLSExprT.UOP, dfir.UnaryOp.NOT, [end_check_expr]),
+        if_codes=[write_key, write_transform],
+        else_codes=[hls.CodeAssign(end_flag_var, hls.HLSExpr(hls.HLSExprT.CONST, True))],
+    )
+
+    # For循环
+    for_loop_body = [
+        hls.CodePragma("UNROLL"),
+        hls.CodeAssign(
+            wrapper_var,
+            hls.HLSExpr(
+                hls.HLSExprT.STREAM_READ,
+                None,
+                [hls.HLSExpr(hls.HLSExprT.VAR, hls.HLSVar(f"in_streams[i]", in_stream_type))],
+            ),
+        ),
+        unzip_if_block,
+    ]
+    for_loop = hls.CodeFor(for_loop_body, iter_limit=n, iter_name="i")
+
+    # While循环
+    while_body = [
+        hls.CodePragma("PIPELINE"),
+        hls.CodeAssign(end_flag_var, hls.HLSExpr(hls.HLSExprT.CONST, False)),
+        hls.CodeVarDecl(wrapper_var.name, wrapper_var.type),
+        for_loop,
+        hls.CodeIf(end_flag_var, [hls.CodeBreak()]),
+    ]
+
+    body = [
+        hls.CodeVarDecl(end_flag_var.name, end_flag_var.type, init_val="false"),
+        hls.CodeWhile(iter_expr=hls.HLSExpr(hls.HLSExprT.CONST, True), codes=while_body),
+    ]
+
+    unzipper_func = hls.HLSFunction(name=func_name, comp=None)
+    unzipper_func.params = params
+    unzipper_func.codes = body
+    return unzipper_func
 
 
 # ======================================================================== #
