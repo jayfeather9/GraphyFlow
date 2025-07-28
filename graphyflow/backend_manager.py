@@ -1304,14 +1304,13 @@ class BackendManager:
         )
         body.append(CodeVarDecl("key_mem", key_mem_type))
         body.append(CodePragma("BIND_STORAGE variable=key_mem type=RAM_2P impl=URAM"))
-        body.append(CodePragma("ARRAY_PARTITION variable=key_mem complete dim=0"))
+        body.append(CodePragma("ARRAY_PARTITION variable=key_mem complete dim=1"))
 
         key_buffer_type = HLSType(
             HLSBasicType.ARRAY, sub_types=[bram_elem_type], array_dims=["PE_NUM", "L + 1"]
         )
         body.append(CodeVarDecl("key_buffer", key_buffer_type))
         body.append(CodePragma("ARRAY_PARTITION variable=key_buffer complete dim=0"))
-        body.append(CodePragma("ARRAY_PARTITION variable=key_buffer complete dim=1"))
 
         i_buffer_base_type = HLSType(HLSBasicType.UINT)
         i_buffer_type = HLSType(
@@ -1319,7 +1318,6 @@ class BackendManager:
         )
         body.append(CodeVarDecl("i_buffer", i_buffer_type))
         body.append(CodePragma("ARRAY_PARTITION variable=i_buffer complete dim=0"))
-        body.append(CodePragma("ARRAY_PARTITION variable=i_buffer complete dim=1"))
 
         # 3. Initialize 2D memories using nested loops
         body.append(CodeComment("Memory initialization for all PEs"))
@@ -1334,7 +1332,9 @@ class BackendManager:
         clear_ibuf_inner_loop = CodeFor(
             [CodePragma("UNROLL"), assign_ibuf], "L + 1", iter_name="i"
         )
-        clear_ibuf_outer_loop = CodeFor([clear_ibuf_inner_loop], "PE_NUM", iter_name="pe")
+        clear_ibuf_outer_loop = CodeFor(
+            [CodePragma("UNROLL"), clear_ibuf_inner_loop], "PE_NUM", iter_name="pe"
+        )
         body.append(clear_ibuf_outer_loop)
 
         target_valid_flag = HLSVar("key_mem[pe][i].ele_1", HLSType(HLSBasicType.BOOL))
@@ -1342,7 +1342,9 @@ class BackendManager:
         clear_valid_inner_loop = CodeFor(
             [CodePragma("UNROLL"), assign_valid_false], "MAX_NUM", iter_name="i"
         )
-        clear_valid_outer_loop = CodeFor([clear_valid_inner_loop], "PE_NUM", iter_name="pe")
+        clear_valid_outer_loop = CodeFor(
+            [CodePragma("UNROLL"), clear_valid_inner_loop], "PE_NUM", iter_name="pe"
+        )
         body.append(clear_valid_outer_loop)
 
         # 4. Main Processing Loop - now handles parallel un-batched streams
@@ -1478,7 +1480,7 @@ class BackendManager:
 
         starting_flag = HLSVar("starting", HLSType(HLSBasicType.BOOL))
         body.append(CodeVarDecl(starting_flag.name, starting_flag.type))
-        body.append(CodeAssign(starting_flag, HLSExpr(HLSExprT.CONST, True)))
+        body.append(CodeAssign(starting_flag, HLSExpr(HLSExprT.CONST, False)))
 
         prev_data_var = HLSVar("prev_data", single_out_stream_type)
         body.append(CodeVarDecl(prev_data_var.name, prev_data_var.type))
@@ -1513,10 +1515,15 @@ class BackendManager:
             prev_data_var,
             HLSExpr(HLSExprT.VAR, HLSVar("data_to_write", out_data_type)),
         )
-        set_prev_data_flag = CodeAssign(starting_flag, HLSExpr(HLSExprT.CONST, False))
+        set_prev_data_flag1 = CodeAssign(starting_flag, HLSExpr(HLSExprT.CONST, True))
+        if_set_cond = HLSExpr(
+            HLSExprT.BINOP,
+            dfir.BinOp.EQ,
+            [HLSExpr(HLSExprT.VAR, starting_flag), HLSExpr(HLSExprT.CONST, False)],
+        )
         if_set_data = CodeIf(
-            HLSExpr(HLSExprT.VAR, starting_flag),
-            if_codes=[set_prev_data_flag],
+            if_set_cond,
+            if_codes=[set_prev_data_flag1],
             else_codes=[write_to_stream],
         )
         if_data_full = CodeIf(
@@ -1550,13 +1557,19 @@ class BackendManager:
 
         # 在所有数据都回写完毕后，发送结束标志
         body.append(CodeComment("Send end_flag to all PE output streams"))
+        if_set_cond = HLSExpr(HLSExprT.VAR, starting_flag)
+        if_set_data = CodeIf(
+            if_set_cond,
+            if_codes=[write_to_stream],
+        )
+        body.append(if_set_data)
 
         set_prev_data_flag_true = CodeAssign(
             HLSVar(f"{prev_data_var.name}.end_flag", HLSType(HLSBasicType.BOOL)),
             HLSExpr(HLSExprT.CONST, True),
         )
         set_data_pos = CodeAssign(
-            HLSVar("data_to_write.end_pos", out_data_type),
+            HLSVar("prev_data.end_pos", out_data_type),
             HLSExpr(HLSExprT.VAR, cnt_var),
         )
         body.extend([assign_prev_data, set_prev_data_flag_true, set_data_pos, write_to_stream])
