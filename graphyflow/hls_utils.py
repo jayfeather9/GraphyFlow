@@ -68,12 +68,10 @@ class HLSDataTypeManager:
             self.translate_map[dfir_type] = type_name
             self.basic_type_names.append(type_name)
         self.node_properties = {
-            p_name: self.from_dfir_type(p_type, outer=False)
-            for p_name, p_type in node_props.items()
+            p_name: self.from_dfir_type(p_type, outer=False) for p_name, p_type in node_props.items()
         }
         self.edge_properties = {
-            p_name: self.from_dfir_type(p_type, outer=False)
-            for p_name, p_type in edge_props.items()
+            p_name: self.from_dfir_type(p_type, outer=False) for p_name, p_type in edge_props.items()
         }
 
     @classmethod
@@ -91,18 +89,14 @@ class HLSDataTypeManager:
             "basic_node__t",
         )
         self.type_preds["basic_node__t"] = list(self.node_properties.values())
-        self.type_preds["basic_node__t"] = [
-            t for t in self.type_preds["basic_node__t"] if t not in STD_TYPES
-        ]
+        self.type_preds["basic_node__t"] = [t for t in self.type_preds["basic_node__t"] if t not in STD_TYPES]
         self.translate_map[dftype.SpecialType("node")] = "basic_node__t"
         self.define_map[dftype.SpecialType("edge")] = (
             [f"    {t} {p_name};" for p_name, t in self.edge_properties.items()],
             "basic_edge__t",
         )
         self.type_preds["basic_edge__t"] = list(self.edge_properties.values())
-        self.type_preds["basic_edge__t"] = [
-            t for t in self.type_preds["basic_edge__t"] if t not in STD_TYPES
-        ]
+        self.type_preds["basic_edge__t"] = [t for t in self.type_preds["basic_edge__t"] if t not in STD_TYPES]
         self.translate_map[dftype.SpecialType("edge")] = "basic_edge__t"
         # then iterate all translate_map
         all_defines = []
@@ -120,9 +114,7 @@ class HLSDataTypeManager:
         # print(finished)
         def gen_print_func(def_map_ele):
             if def_map_ele[1] in self.basic_basic_types.keys():
-                return HLSDataType.gen_basic_print(
-                    def_map_ele[1], self.basic_basic_types[def_map_ele[1]]
-                )
+                return HLSDataType.gen_basic_print(def_map_ele[1], self.basic_basic_types[def_map_ele[1]])
             params = []
             for one_def_ele in def_map_ele[0]:
                 print(f"{one_def_ele=}")
@@ -170,17 +162,13 @@ class HLSDataTypeManager:
             transition_func1 = (
                 f"#define {ori_type_name}_to_{outer_name}(origin_name, new_name, end_flag_val) \\\n"
                 + f"    {outer_name} new_name;\\\n"
-                + "\\\n".join(
-                    f"    new_name.{param} = origin_name.{param};" for param in ori_params
-                )
+                + "\\\n".join(f"    new_name.{param} = origin_name.{param};" for param in ori_params)
                 + "\\\n    new_name.end_flag = end_flag_val;\n\n"
             )
             transition_func2 = (
                 f"#define {outer_name}_to_{ori_type_name}(origin_name, new_name) \\\n"
                 + f"    {ori_type_name} new_name;\\\n"
-                + "\\\n".join(
-                    f"    new_name.{param} = origin_name.{param};" for param in ori_params
-                )
+                + "\\\n".join(f"    new_name.{param} = origin_name.{param};" for param in ori_params)
             )
             new_map_ele[0].append("    bool end_flag;")
             new_map_ele[1] = outer_name
@@ -289,9 +277,7 @@ class HLSConfig:
         return f"HLSConfig(header_name={self.header_name}, source_name={self.source_name})"
 
     class ReduceSubFunc:
-        def __init__(
-            self, name: str, start_ports: List[dfir.Port], end_ports: List[dfir.Port]
-        ) -> None:
+        def __init__(self, name: str, start_ports: List[dfir.Port], end_ports: List[dfir.Port]) -> None:
             self.name = name
             self.start_ports = start_ports
             self.nxt_ports = start_ports
@@ -385,9 +371,7 @@ class HLSConfig:
                 pass
             elif isinstance(comp, dfir.ConstantComponent):
                 assert comp.out_ports[0].connection not in constants_from_ports
-                constants_from_ports[comp.out_ports[0].connection] = (
-                    "{ " + f"{comp.value}" + ", false }"
-                )
+                constants_from_ports[comp.out_ports[0].connection] = "{ " + f"{comp.value}" + ", false }"
             elif isinstance(comp, dfir.IOComponent):
                 assert comp.io_type == dfir.IOComponent.IOType.INPUT
                 for port in comp.ports:
@@ -396,9 +380,7 @@ class HLSConfig:
                     top_func_def += f"    stream<{dt_manager.from_dfir_type(port.data_type)}> &{port.connection.unique_name},\n"
             elif isinstance(comp, dfir.ReduceComponent):
                 sub_funcs, sub_func_names = HLSConfig.ReduceSubFunc.from_reduce(comp)
-                port2type = {
-                    port.name: dt_manager.from_dfir_type(port.data_type) for port in comp.ports
-                }
+                port2type = {port.name: dt_manager.from_dfir_type(port.data_type) for port in comp.ports}
                 reduce_sub_funcs.extend(sub_funcs)
                 (
                     reduce_key_func_name,
@@ -575,11 +557,7 @@ class HLSConfig:
                         #     print(line)
                         line = line.replace(
                             f"#may_ele:{port}#",
-                            (
-                                ".ele"
-                                if reduce_unit_func.comp.get_port(port).data_type.is_basic_type
-                                else ""
-                            ),
+                            (".ele" if reduce_unit_func.comp.get_port(port).data_type.is_basic_type else ""),
                         )
                         # look for #cmpeq:type_port,a,b# and if type is edge, assert False, if node, use a.id == b.id, otherwise use a == b
                         line = line.replace(
@@ -596,9 +574,7 @@ class HLSConfig:
                             ):
                                 line = line.replace(match.group(0), f"{cmp_a} == {cmp_b}")
                             elif comp.get_port(port).data_type == dftype.SpecialType("node"):
-                                line = line.replace(
-                                    match.group(0), f"{cmp_a}.id.ele == {cmp_b}.id.ele"
-                                )
+                                line = line.replace(match.group(0), f"{cmp_a}.id.ele == {cmp_b}.id.ele")
                             else:
                                 assert False, "Not supported type comparing"
                         line = manage_call(line)
@@ -632,41 +608,28 @@ class HLSConfig:
                         )
                         assert tgt_outer_type[:6] == "outer_"
                         tgt_inner_type = tgt_outer_type[6:]
-                        line = (
-                            ""
-                            if not nostream
-                            else (indent_space + f"{tgt_outer_type} {tgt_port_name};\n")
-                        )
+                        line = "" if not nostream else (indent_space + f"{tgt_outer_type} {tgt_port_name};\n")
                         line += indent_space + r"{" + "\n"
                         line += (
                             indent_space
                             + f"    {tgt_inner_type}_to_{tgt_outer_type}({ori_var}, tmp_{tgt_outer_type}_var, true);\n"
                         )
                         line += (
-                            (
-                                indent_space
-                                + f"    {tgt_port_name}.write(tmp_{tgt_outer_type}_var);\n"
-                            )
+                            (indent_space + f"    {tgt_port_name}.write(tmp_{tgt_outer_type}_var);\n")
                             if not nostream
-                            else (
-                                indent_space + f"    {tgt_port_name} = tmp_{tgt_outer_type}_var;\n"
-                            )
+                            else (indent_space + f"    {tgt_port_name} = tmp_{tgt_outer_type}_var;\n")
                         )
                         line += indent_space + r"}" + "\n"
                         reduce_unit_func_str += line
                     elif "#peel" in line:
-                        pattern = re.compile(
-                            r"^#peel:([a-zA-Z\_0-9]+),([a-zA-Z\.\_0-9]+),([a-zA-Z\_0-9]+)#$"
-                        )
+                        pattern = re.compile(r"^#peel:([a-zA-Z\_0-9]+),([a-zA-Z\.\_0-9]+),([a-zA-Z\_0-9]+)#$")
                         i = 0
                         while i < len(line) and line[i] == " ":
                             i += 1
                         indent_space = " " * (i + 8)
                         potential_match_str = line[i:]
                         match = pattern.match(potential_match_str)
-                        assert (
-                            match
-                        ), f"Error: Line '{line.strip()}' include '#peel' but with wrong format."
+                        assert match, f"Error: Line '{line.strip()}' include '#peel' but with wrong format."
 
                         tgt_port_name, ori_var, new_var = (
                             match.group(1),
@@ -677,8 +640,7 @@ class HLSConfig:
                         assert tgt_outer_type[:6] == "outer_"
                         tgt_inner_type = tgt_outer_type[6:]
                         reduce_unit_func_str += (
-                            indent_space
-                            + f"{tgt_outer_type}_to_{tgt_inner_type}({ori_var}, {new_var});\n"
+                            indent_space + f"{tgt_outer_type}_to_{tgt_inner_type}({ori_var}, {new_var});\n"
                         )
                     else:
                         reduce_unit_func_str += f"        {line}\n"
@@ -689,11 +651,7 @@ class HLSConfig:
                     for port, p_type in port2type.items():
                         line = line.replace(
                             f"#may_ele:{port}#",
-                            (
-                                ".ele"
-                                if reduce_unit_func.comp.get_port(port).data_type.is_basic_type
-                                else ""
-                            ),
+                            (".ele" if reduce_unit_func.comp.get_port(port).data_type.is_basic_type else ""),
                         )
                     if "#write" in line:
                         i = 0
@@ -702,9 +660,7 @@ class HLSConfig:
                         indent_space = " " * (i + 4)
                         potential_match_str = line[i:]
                         pattern = re.compile(r"^#write:([a-zA-Z\_0-9]+),([a-zA-Z\.\[\]\_0-9]+)#$")
-                        pattern_noend = re.compile(
-                            r"^#write_noend:([a-zA-Z\_0-9]+),([a-zA-Z\.\[\]\_0-9]+)#$"
-                        )
+                        pattern_noend = re.compile(r"^#write_noend:([a-zA-Z\_0-9]+),([a-zA-Z\.\[\]\_0-9]+)#$")
                         pattern_notrans = re.compile(
                             r"^#write_notrans:([a-zA-Z\_0-9]+),([a-zA-Z\.\[\]\_0-9]+)#$"
                         )
@@ -734,10 +690,7 @@ class HLSConfig:
                             if do_trans
                             else ""
                         )
-                        line += (
-                            indent_space
-                            + f"    {tgt_port_name}.write(tmp_{tgt_outer_type}_var);\n"
-                        )
+                        line += indent_space + f"    {tgt_port_name}.write(tmp_{tgt_outer_type}_var);\n"
                         line += indent_space + r"}" + "\n"
                         reduce_unit_func_str += line
                     else:
@@ -750,9 +703,7 @@ class HLSConfig:
                 # check if any port connected to EndMarker
                 unused_ports = []
                 for port in comp.ports:
-                    if port.connected and isinstance(
-                        port.connection.parent, dfir.UnusedEndMarkerComponent
-                    ):
+                    if port.connected and isinstance(port.connection.parent, dfir.UnusedEndMarkerComponent):
                         unused_ports.append(port.name)
                 is_sub_func = False
                 # check & add for reduce sub functions
@@ -875,24 +826,18 @@ class HLSConfig:
                         if is_sub_func:
                             line += indent_space + f"    {tgt_port_name} = {target_final_var};\n"
                         else:
-                            line += (
-                                indent_space + f"    {tgt_port_name}.write({target_final_var});\n"
-                            )
+                            line += indent_space + f"    {tgt_port_name}.write({target_final_var});\n"
                         line += indent_space + r"}" + "\n"
                         return line
                     elif "#peel" in line:
-                        pattern = re.compile(
-                            r"^#peel:([a-zA-Z\_0-9]+),([a-zA-Z\.\_0-9]+),([a-zA-Z\_0-9]+)#$"
-                        )
+                        pattern = re.compile(r"^#peel:([a-zA-Z\_0-9]+),([a-zA-Z\.\_0-9]+),([a-zA-Z\_0-9]+)#$")
                         i = 0
                         while i < len(line) and line[i] == " ":
                             i += 1
                         indent_space += " " * i
                         potential_match_str = line[i:]
                         match = pattern.match(potential_match_str)
-                        assert (
-                            match
-                        ), f"Error: Line '{line.strip()}' include '#peel' but with wrong format."
+                        assert match, f"Error: Line '{line.strip()}' include '#peel' but with wrong format."
 
                         tgt_port_name, ori_var, new_var = (
                             match.group(1),
@@ -902,10 +847,7 @@ class HLSConfig:
                         tgt_outer_type = port2type[tgt_port_name]
                         assert tgt_outer_type[:6] == "outer_"
                         tgt_inner_type = tgt_outer_type[6:]
-                        return (
-                            indent_space
-                            + f"{tgt_outer_type}_to_{tgt_inner_type}({ori_var}, {new_var});\n"
-                        )
+                        return indent_space + f"{tgt_outer_type}_to_{tgt_inner_type}({ori_var}, {new_var});\n"
                     else:
                         return indent_space + line + "\n"
 
@@ -931,9 +873,7 @@ class HLSConfig:
 
         # manage top function end ports & input len
         for port in end_ports:
-            top_func_def += (
-                f"    stream<{dt_manager.from_dfir_type(port.data_type)}> &{port.unique_name},\n"
-            )
+            top_func_def += f"    stream<{dt_manager.from_dfir_type(port.data_type)}> &{port.unique_name},\n"
         # top_func_def += "    uint32_t input_length\n"
         if top_func_def[-2:] == ",\n":
             top_func_def = top_func_def[:-2] + "\n"
@@ -945,9 +885,7 @@ class HLSConfig:
             sub_func_code = f"static void {sub_func.name}(\n"
             for port in sub_func.start_ports + sub_func.end_ports:
                 # sub_func_code += f"    stream<{dt_manager.from_dfir_type(port.data_type)}> &{port.unique_name},\n"
-                sub_func_code += (
-                    f"    {dt_manager.from_dfir_type(port.data_type)} &{port.unique_name},\n"
-                )
+                sub_func_code += f"    {dt_manager.from_dfir_type(port.data_type)} &{port.unique_name},\n"
             # if any(sub_sub_func.change_length for sub_sub_func in sub_func.sub_funcs):
             #     sub_func_code += "    uint32_t &output_length,\n"
             # sub_func_code += "    uint32_t input_length\n"
@@ -958,9 +896,7 @@ class HLSConfig:
                 sub_func.start_ports, sub_func.end_ports, sub_func.sub_funcs, True
             )
             top_func_sub_funcs = [
-                cur_sub_func
-                for cur_sub_func in top_func_sub_funcs
-                if cur_sub_func not in sub_func.sub_funcs
+                cur_sub_func for cur_sub_func in top_func_sub_funcs if cur_sub_func not in sub_func.sub_funcs
             ]
             sub_func_code += "}\n"
             source_code += sub_func_code + "\n\n"

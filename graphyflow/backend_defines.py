@@ -147,14 +147,8 @@ class HLSType:
         assert len(member_names) == len(self.sub_types)
         if self.struct_prop_names:
             assert self.struct_prop_names == member_names
-        decls = [
-            st.get_upper_decl(m_name) + ";" for st, m_name in zip(self.sub_types, member_names)
-        ]
-        return (
-            f"typedef struct {{\n"
-            + f"\n".join([INDENT_UNIT + d for d in decls])
-            + f"\n}} {self.name};\n"
-        )
+        decls = [st.get_upper_decl(m_name) + ";" for st, m_name in zip(self.sub_types, member_names)]
+        return f"typedef struct {{\n" + f"\n".join([INDENT_UNIT + d for d in decls]) + f"\n}} {self.name};\n"
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, HLSType):
@@ -193,12 +187,7 @@ class CodeVarDecl(HLSCodeLine):
 
     def gen_code(self, indent_lvl: int = 0):
         init_code = f" = {self.init_val}" if self.init_val else ""
-        return (
-            indent_lvl * INDENT_UNIT
-            + self.var.type.get_upper_decl(self.var.name)
-            + init_code
-            + ";\n"
-        )
+        return indent_lvl * INDENT_UNIT + self.var.type.get_upper_decl(self.var.name) + init_code + ";\n"
 
 
 class CodeIf(HLSCodeLine):
@@ -240,10 +229,7 @@ class CodeIf(HLSCodeLine):
         else_part = ""
         if self.else_codes:
             else_part = (
-                " else {\n"
-                + "".join(c.gen_code(indent_lvl + 1) for c in self.else_codes)
-                + oind
-                + "}"
+                " else {\n" + "".join(c.gen_code(indent_lvl + 1) for c in self.else_codes) + oind + "}"
             )
         return if_part + elif_part + else_part + "\n"
 
@@ -471,9 +457,7 @@ class CodeBlock(HLSCodeLine):
 
     def gen_code(self, indent_lvl: int = 0) -> str:
         oind = indent_lvl * INDENT_UNIT
-        return (
-            oind + "{\n" + "".join(c.gen_code(indent_lvl + 1) for c in self.codes) + oind + "}\n"
-        )
+        return oind + "{\n" + "".join(c.gen_code(indent_lvl + 1) for c in self.codes) + oind + "}\n"
 
 
 class CodeComment(HLSCodeLine):

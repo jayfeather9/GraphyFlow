@@ -73,9 +73,7 @@ class DataElement:
 
     def __init__(self, element_types: Tuple[Union[Any, Any]] = ()):
         self.element_types = element_types
-        assert all(
-            [isinstance(e, (BasicData, BasicNode, BasicEdge, BasicArray)) for e in element_types]
-        )
+        assert all([isinstance(e, (BasicData, BasicNode, BasicEdge, BasicArray)) for e in element_types])
 
     def __repr__(self):
         return f"DataElement({self.element_types})"

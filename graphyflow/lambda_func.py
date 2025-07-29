@@ -291,8 +291,7 @@ def lambda_to_dfir(
             and pre_o_types[0].type_ in [dfir.SpecialType("node"), dfir.SpecialType("edge")]
         )
         if pre_o_types[0] == dfir.SpecialType("node") or (
-            isinstance(pre_o_types[0], dfir.ArrayType)
-            and pre_o_types[0].type_ == dfir.SpecialType("node")
+            isinstance(pre_o_types[0], dfir.ArrayType) and pre_o_types[0].type_ == dfir.SpecialType("node")
         ):
             assert node["attr"] in node_prop, f"{node['attr']} not in {node_prop}"
             return dfir.UnaryOpComponent(
@@ -340,9 +339,7 @@ def lambda_to_dfir(
         target = [nid for nid in start_queue if nodes[nid]["name"] == arg_name]
         assert len(target) == 1
         queue.append([target[0], [input_types[name_id]], {}])  # node, prev_type, parent_ports
-    both_in_out_nids = [
-        nid for nid in lambda_dict["input_ids"] if nid in lambda_dict["output_ids"]
-    ]
+    both_in_out_nids = [nid for nid in lambda_dict["input_ids"] if nid in lambda_dict["output_ids"]]
     both_in_out_ports = []
     both_in_out_ports_waitlist = {}
     while queue:
@@ -363,11 +360,7 @@ def lambda_to_dfir(
                 max_nid += 1
                 new_port = p_port.copy(copy_comp)
                 p_ports[my_port_name] = new_port
-        p_ports = {
-            mp_name: p_port
-            for mp_name, p_port in p_ports.items()
-            if not p_port in both_in_out_ports
-        }
+        p_ports = {mp_name: p_port for mp_name, p_port in p_ports.items() if not p_port in both_in_out_ports}
         dfir_nodes[nid].connect(p_ports)
         out_type = dfir_nodes[nid].output_type
         succ_node_ids = [dst for src, dst in edges if src == nid]

@@ -34,9 +34,7 @@ class Node:
         return self._lambda_funcs
 
     def __repr__(self) -> str:
-        formatted_lambdas = "\n".join(
-            format_lambda(lambda_func) for lambda_func in self._lambda_funcs
-        )
+        formatted_lambdas = "\n".join(format_lambda(lambda_func) for lambda_func in self._lambda_funcs)
         return f"Node(name={self.class_name}, preds={[node.class_name for node in self._pred_nodes]}, lambdas = {formatted_lambdas})"
 
 
@@ -199,9 +197,7 @@ class ReduceBy(Node):
         else:
             scatter_comp = dfir.ScatterComponent(element_type)
             scatter_out_types = [p.data_type for p in scatter_comp.ports[1:]]
-            reduce_key_dfirs = lambda_to_dfir(
-                self.reduce_key, scatter_out_types, props[0], props[1]
-            )
+            reduce_key_dfirs = lambda_to_dfir(self.reduce_key, scatter_out_types, props[0], props[1])
             reduce_key_dfirs.add_front(
                 scatter_comp,
                 {f"o_{i}": reduce_key_dfirs.inputs[i] for i in range(len(scatter_out_types))},
@@ -232,10 +228,7 @@ class ReduceBy(Node):
             )
             reduce_transform_dfirs.add_front(
                 scatter_comp,
-                {
-                    f"o_{i}": reduce_transform_dfirs.inputs[i]
-                    for i in range(len(scatter_out_types))
-                },
+                {f"o_{i}": reduce_transform_dfirs.inputs[i] for i in range(len(scatter_out_types))},
             )
         assert len(reduce_transform_dfirs.inputs) == 1
         assert len(reduce_transform_dfirs.outputs) == 1
@@ -337,9 +330,7 @@ class GlobalGraph:
         property_infos = self.node_properties if type_ == "node" else self.edge_properties
         data_types = [BasicData(prop_type) for _, prop_type in property_infos.items()]
         return self.pseudo_element(
-            cur_node=Inputer(
-                input_type=(BasicNode(data_types) if type_ == "node" else BasicEdge(data_types))
-            )
+            cur_node=Inputer(input_type=(BasicNode(data_types) if type_ == "node" else BasicEdge(data_types)))
         )
 
     def add_input(self, name: str, type_: str):

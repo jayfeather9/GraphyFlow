@@ -20,15 +20,11 @@ def _get_unique_id() -> int:
     return id
 
 
-def create_non_blocking_read(
-    stream_var: hls.HLSVar, body_if_not_empty: List[hls.HLSCodeLine]
-) -> hls.CodeIf:
+def create_non_blocking_read(stream_var: hls.HLSVar, body_if_not_empty: List[hls.HLSCodeLine]) -> hls.CodeIf:
     """
     一个辅助函数，用于快速生成非阻塞读数据流的代码块。
     """
-    empty_expr = hls.HLSExpr(
-        hls.HLSExprT.STREAM_EMPTY, None, [hls.HLSExpr(hls.HLSExprT.VAR, stream_var)]
-    )
+    empty_expr = hls.HLSExpr(hls.HLSExprT.STREAM_EMPTY, None, [hls.HLSExpr(hls.HLSExprT.VAR, stream_var)])
     not_empty_expr = hls.HLSExpr(hls.HLSExprT.UOP, dfir.UnaryOp.NOT, [empty_expr])
     # 修复了构造函数调用，确保默认参数安全
     return hls.CodeIf(expr=not_empty_expr, if_codes=body_if_not_empty)
@@ -83,9 +79,7 @@ def generate_merge_stream_2x1(data_type: hls.HLSType) -> hls.HLSFunction:
             hls.CodeVarDecl(data_var.name, data_var.type),
             hls.CodeAssign(
                 data_var,
-                hls.HLSExpr(
-                    hls.HLSExprT.STREAM_READ, None, [hls.HLSExpr(hls.HLSExprT.VAR, in_stream_var)]
-                ),
+                hls.HLSExpr(hls.HLSExprT.STREAM_READ, None, [hls.HLSExpr(hls.HLSExprT.VAR, in_stream_var)]),
             ),
             set_end_flag,
         ]
@@ -180,9 +174,7 @@ def generate_merge_stream_2x1(data_type: hls.HLSType) -> hls.HLSFunction:
     return merge_func
 
 
-def generate_reduction_tree(
-    n: int, data_type: hls.HLSType, merge_func: hls.HLSFunction
-) -> hls.HLSFunction:
+def generate_reduction_tree(n: int, data_type: hls.HLSType, merge_func: hls.HLSFunction) -> hls.HLSFunction:
     """
     生成一个 N->1 的归约树。
     """
@@ -195,9 +187,7 @@ def generate_reduction_tree(
 
     # 定义函数参数
     stream_type = hls.HLSType(hls.HLSBasicType.STREAM, sub_types=[data_type])
-    stream_array_type = hls.HLSType(
-        hls.HLSBasicType.ARRAY, sub_types=[stream_type], array_dims=[n]
-    )
+    stream_array_type = hls.HLSType(hls.HLSBasicType.ARRAY, sub_types=[stream_type], array_dims=[n])
 
     params = [
         hls.HLSVar("i", hls.HLSType(hls.HLSBasicType.INT)),
@@ -228,9 +218,7 @@ def generate_reduction_tree(
     num_mergers_at_level = n // 2
     input_streams = params[1]  # The initial array of streams
     for level in range(log_n):
-        output_streams = streams_by_level.get(
-            level + 1, params[2]
-        )  # Final output is the function param
+        output_streams = streams_by_level.get(level + 1, params[2])  # Final output is the function param
         for i in range(num_mergers_at_level):
             in1_var = hls.HLSVar(f"{input_streams.name}[{i*2}]", stream_type)
             in2_var = hls.HLSVar(f"{input_streams.name}[{i*2 + 1}]", stream_type)
@@ -273,9 +261,7 @@ def generate_demux(n: int, batch_type: hls.HLSType, wrapper_type: hls.HLSType) -
 
     in_stream_type = hls.HLSType(hls.HLSBasicType.STREAM, sub_types=[batch_type])
     out_stream_type = hls.HLSType(hls.HLSBasicType.STREAM, sub_types=[wrapper_type])
-    out_stream_array_type = hls.HLSType(
-        hls.HLSBasicType.ARRAY, sub_types=[out_stream_type], array_dims=[n]
-    )
+    out_stream_array_type = hls.HLSType(hls.HLSBasicType.ARRAY, sub_types=[out_stream_type], array_dims=[n])
 
     params = [
         hls.HLSVar("in_batch_stream", in_stream_type),
@@ -289,9 +275,7 @@ def generate_demux(n: int, batch_type: hls.HLSType, wrapper_type: hls.HLSType) -
         hls.CodePragma("UNROLL"),
         hls.CodeAssign(
             hls.HLSVar(f"{wrapper_var.name}.data", base_data_type),
-            hls.HLSExpr(
-                hls.HLSExprT.VAR, hls.HLSVar(f"{in_batch_var.name}.data[i]", base_data_type)
-            ),
+            hls.HLSExpr(hls.HLSExprT.VAR, hls.HLSVar(f"{in_batch_var.name}.data[i]", base_data_type)),
         ),
         hls.CodeAssign(
             hls.HLSVar(f"{wrapper_var.name}.end_flag", hls.HLSType(hls.HLSBasicType.BOOL)),
@@ -312,9 +296,7 @@ def generate_demux(n: int, batch_type: hls.HLSType, wrapper_type: hls.HLSType) -
         hls.CodePragma("PIPELINE"),
         hls.CodeAssign(
             in_batch_var,
-            hls.HLSExpr(
-                hls.HLSExprT.STREAM_READ, None, [hls.HLSExpr(hls.HLSExprT.VAR, params[0])]
-            ),
+            hls.HLSExpr(hls.HLSExprT.STREAM_READ, None, [hls.HLSExpr(hls.HLSExprT.VAR, params[0])]),
         ),
         hls.CodeVarDecl(wrapper_var.name, wrapper_var.type),
         for_loop,
@@ -371,17 +353,13 @@ def generate_omega_network(n: int, wrapper_type, routing_key_member: str) -> Lis
     stream_type = hls.HLSType(hls.HLSBasicType.STREAM, sub_types=[wrapper_type])
     bool_type = hls.HLSType(hls.HLSBasicType.BOOL)
     int_type = hls.HLSType(hls.HLSBasicType.INT)
-    stream_array_type = hls.HLSType(
-        hls.HLSBasicType.ARRAY, sub_types=[stream_type], array_dims=[n]
-    )
+    stream_array_type = hls.HLSType(hls.HLSBasicType.ARRAY, sub_types=[stream_type], array_dims=[n])
 
     # --- 调用子模块生成器 ---
     sender_function = generate_omega_sender(
         gen_id, wrapper_type, stream_type, int_type, bool_type, routing_key_member
     )
-    receiver_function = generate_omega_receiver(
-        gen_id, wrapper_type, stream_type, int_type, bool_type
-    )
+    receiver_function = generate_omega_receiver(gen_id, wrapper_type, stream_type, int_type, bool_type)
     switch2x2_function = generate_omega_switch2x2(
         gen_id, stream_type, int_type, sender_function, receiver_function
     )
@@ -393,9 +371,7 @@ def generate_omega_network(n: int, wrapper_type, routing_key_member: str) -> Lis
 
 
 # Helper functions to keep generate_omega_network clean
-def generate_omega_sender(
-    gen_id, data_tuple_type, stream_type, int_type, bool_type, routing_key_member: str
-):
+def generate_omega_sender(gen_id, data_tuple_type, stream_type, int_type, bool_type, routing_key_member: str):
     func_name = f"sender_{gen_id}"
     params = [
         hls.HLSVar("i", int_type),
@@ -408,9 +384,7 @@ def generate_omega_sender(
     ]
     in1_end_flag_var = hls.HLSVar("in1_end_flag", bool_type)
     in2_end_flag_var = hls.HLSVar("in2_end_flag", bool_type)
-    data1_var, data2_var = hls.HLSVar("data1", data_tuple_type), hls.HLSVar(
-        "data2", data_tuple_type
-    )
+    data1_var, data2_var = hls.HLSVar("data1", data_tuple_type), hls.HLSVar("data2", data_tuple_type)
 
     def create_routing_expr(data_var):
         inner_data_expr = hls.HLSExpr(
@@ -450,9 +424,7 @@ def generate_omega_sender(
             hls.CodeVarDecl(data1_var.name, data1_var.type),
             hls.CodeAssign(
                 data1_var,
-                hls.HLSExpr(
-                    hls.HLSExprT.STREAM_READ, None, [hls.HLSExpr(hls.HLSExprT.VAR, params[1])]
-                ),
+                hls.HLSExpr(hls.HLSExprT.STREAM_READ, None, [hls.HLSExpr(hls.HLSExprT.VAR, params[1])]),
             ),
             process_if1,
         ],
@@ -480,9 +452,7 @@ def generate_omega_sender(
             hls.CodeVarDecl(data2_var.name, data2_var.type),
             hls.CodeAssign(
                 data2_var,
-                hls.HLSExpr(
-                    hls.HLSExprT.STREAM_READ, None, [hls.HLSExpr(hls.HLSExprT.VAR, params[2])]
-                ),
+                hls.HLSExpr(hls.HLSExprT.STREAM_READ, None, [hls.HLSExpr(hls.HLSExprT.VAR, params[2])]),
             ),
             process_if2,
         ],
@@ -559,9 +529,7 @@ def generate_omega_receiver(gen_id, data_tuple_type, stream_type, int_type, bool
             hls.CodeVarDecl(data_var.name, data_var.type),
             hls.CodeAssign(
                 data_var,
-                hls.HLSExpr(
-                    hls.HLSExprT.STREAM_READ, None, [hls.HLSExpr(hls.HLSExprT.VAR, in_stream)]
-                ),
+                hls.HLSExpr(hls.HLSExprT.STREAM_READ, None, [hls.HLSExpr(hls.HLSExprT.VAR, in_stream)]),
             ),
             process_if,
         ]
@@ -682,9 +650,7 @@ def generate_omega_switch2x2(gen_id, stream_type, int_type, sender_func, receive
     return func
 
 
-def generate_omega_top(
-    gen_id, n, log_n, switches_per_stage, stream_array_type, stream_type, switch2x2_func
-):
+def generate_omega_top(gen_id, n, log_n, switches_per_stage, stream_array_type, stream_type, switch2x2_func):
     func_name = f"omega_switch_{gen_id}"
     params = [
         hls.HLSVar("in_streams", stream_array_type),
@@ -694,9 +660,7 @@ def generate_omega_top(
 
     intermediate_streams = []
     for s in range(log_n - 1):
-        stage_array_type = hls.HLSType(
-            hls.HLSBasicType.ARRAY, sub_types=[stream_type], array_dims=[n]
-        )
+        stage_array_type = hls.HLSType(hls.HLSBasicType.ARRAY, sub_types=[stream_type], array_dims=[n])
         stage_var = hls.HLSVar(f"stream_stage_{s}", stage_array_type)
         intermediate_streams.append(stage_var)
         body.append(hls.CodeVarDecl(stage_var.name, stage_var.type))
@@ -715,9 +679,9 @@ def generate_omega_top(
             else:
                 uidx1, uidx2 = unshuffle(idx1, log_n), unshuffle(idx2, log_n)
                 in_array = intermediate_streams[s - 1]
-                in1_var, in2_var = hls.HLSVar(
-                    f"{in_array.name}[{uidx1}]", stream_type
-                ), hls.HLSVar(f"{in_array.name}[{uidx2}]", stream_type)
+                in1_var, in2_var = hls.HLSVar(f"{in_array.name}[{uidx1}]", stream_type), hls.HLSVar(
+                    f"{in_array.name}[{uidx2}]", stream_type
+                )
 
             if s == log_n - 1:
                 out1_var, out2_var = hls.HLSVar(f"out_streams[{idx1}]", stream_type), hls.HLSVar(
@@ -725,9 +689,9 @@ def generate_omega_top(
                 )
             else:
                 out_array = intermediate_streams[s]
-                out1_var, out2_var = hls.HLSVar(
-                    f"{out_array.name}[{idx1}]", stream_type
-                ), hls.HLSVar(f"{out_array.name}[{idx2}]", stream_type)
+                out1_var, out2_var = hls.HLSVar(f"{out_array.name}[{idx1}]", stream_type), hls.HLSVar(
+                    f"{out_array.name}[{idx2}]", stream_type
+                )
 
             call = hls.CodeCall(
                 switch2x2_func,
@@ -760,9 +724,7 @@ def generate_stream_zipper(
     func_name = f"stream_zipper_{gen_id}"
 
     params = [
-        hls.HLSVar(
-            "in_key_batch_stream", hls.HLSType(hls.HLSBasicType.STREAM, sub_types=[key_batch_type])
-        ),
+        hls.HLSVar("in_key_batch_stream", hls.HLSType(hls.HLSBasicType.STREAM, sub_types=[key_batch_type])),
         hls.HLSVar(
             "in_transform_batch_stream",
             hls.HLSType(hls.HLSBasicType.STREAM, sub_types=[transform_batch_type]),
@@ -785,9 +747,7 @@ def generate_stream_zipper(
     )
     assign_transform = hls.CodeAssign(
         hls.HLSVar(f"{out_batch_var.name}.data[i].transform", kt_pair_type.sub_types[1]),
-        hls.HLSVar(
-            f"{transform_batch_var.name}.data[i]", transform_batch_type.sub_types[0].sub_types[0]
-        ),
+        hls.HLSVar(f"{transform_batch_var.name}.data[i]", transform_batch_type.sub_types[0].sub_types[0]),
     )
     for_loop = hls.CodeFor(
         [hls.CodePragma("UNROLL"), assign_key, assign_transform],
@@ -811,15 +771,11 @@ def generate_stream_zipper(
         hls.CodePragma("PIPELINE"),
         hls.CodeAssign(
             key_batch_var,
-            hls.HLSExpr(
-                hls.HLSExprT.STREAM_READ, None, [hls.HLSExpr(hls.HLSExprT.VAR, params[0])]
-            ),
+            hls.HLSExpr(hls.HLSExprT.STREAM_READ, None, [hls.HLSExpr(hls.HLSExprT.VAR, params[0])]),
         ),
         hls.CodeAssign(
             transform_batch_var,
-            hls.HLSExpr(
-                hls.HLSExprT.STREAM_READ, None, [hls.HLSExpr(hls.HLSExprT.VAR, params[1])]
-            ),
+            hls.HLSExpr(hls.HLSExprT.STREAM_READ, None, [hls.HLSExpr(hls.HLSExprT.VAR, params[1])]),
         ),
         for_loop,
         hls.CodeAssign(
@@ -862,9 +818,7 @@ def generate_stream_unzipper(
     func_name = f"stream_unzipper_{gen_id}"
 
     in_stream_type = hls.HLSType(hls.HLSBasicType.STREAM, sub_types=[wrapped_kt_pair_type])
-    in_stream_array_type = hls.HLSType(
-        hls.HLSBasicType.ARRAY, sub_types=[in_stream_type], array_dims=[n]
-    )
+    in_stream_array_type = hls.HLSType(hls.HLSBasicType.ARRAY, sub_types=[in_stream_type], array_dims=[n])
 
     params = [
         hls.HLSVar("in_streams", in_stream_array_type),
@@ -969,10 +923,7 @@ if __name__ == "__main__":
         # 修正函数签名的生成，以正确处理流数组
         params_list = []
         for p in func.params:
-            if (
-                p.type.type == hls.HLSBasicType.ARRAY
-                and p.type.sub_types[0].type == hls.HLSBasicType.STREAM
-            ):
+            if p.type.type == hls.HLSBasicType.ARRAY and p.type.sub_types[0].type == hls.HLSBasicType.STREAM:
                 # C++ 数组参数语法: type name[]
                 base_type_str = p.type.sub_types[0].name
                 params_list.append(f"{base_type_str} {p.name}[]")
@@ -1006,9 +957,7 @@ if __name__ == "__main__":
         struct_prop_names=["dst", "end_flag"],
     )
     # b. 批处理类型 (用于 Demux 测试)
-    batch_data_array_type = hls.HLSType(
-        hls.HLSBasicType.ARRAY, sub_types=[data_type], array_dims=[N]
-    )
+    batch_data_array_type = hls.HLSType(hls.HLSBasicType.ARRAY, sub_types=[data_type], array_dims=[N])
     batch_type = hls.HLSType(
         hls.HLSBasicType.STRUCT,
         sub_types=[

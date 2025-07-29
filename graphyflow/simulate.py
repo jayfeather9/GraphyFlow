@@ -92,8 +92,7 @@ def _simulate_component(
             # Check if tuples have the correct size
             if input_val:  # Check if list is not empty
                 assert all(
-                    isinstance(item, (list, tuple)) and len(item) == num_outputs
-                    for item in input_val
+                    isinstance(item, (list, tuple)) and len(item) == num_outputs for item in input_val
                 ), f"Parallel ScatterComponent input elements must be tuples/lists of length {num_outputs}"
 
             # Unzip the list of tuples: [(a1, b1), (a2, b2), ...] -> ([a1, a2], [b1, b2])
@@ -172,9 +171,7 @@ def _simulate_component(
                     if isinstance(input_port_type.type_, dfir.SpecialType)
                     and input_port_type.type_.type_name == "edge"
                     else (_ for _ in ()).throw(
-                        AssertionError(
-                            f"GET_ATTR expects input type 'node' or 'edge', got {input_port_type}"
-                        )
+                        AssertionError(f"GET_ATTR expects input type 'node' or 'edge', got {input_port_type}")
                     )
                 )
             ),
@@ -198,18 +195,13 @@ def _simulate_component(
         data_in = inputs["i_data"]
         cond_in = inputs["i_cond"]
         if comp.parallel:
-            assert isinstance(
-                data_in, list
-            ), "Parallel ConditionalComponent expects 'i_data' to be a list"
-            assert isinstance(
-                cond_in, list
-            ), "Parallel ConditionalComponent expects 'i_cond' to be a list"
+            assert isinstance(data_in, list), "Parallel ConditionalComponent expects 'i_data' to be a list"
+            assert isinstance(cond_in, list), "Parallel ConditionalComponent expects 'i_cond' to be a list"
             assert len(data_in) == len(
                 cond_in
             ), "Parallel ConditionalComponent requires 'i_data' and 'i_cond' lists to have the same length"
             output_list = [
-                data_item if bool(cond_item) else None
-                for data_item, cond_item in zip(data_in, cond_in)
+                data_item if bool(cond_item) else None for data_item, cond_item in zip(data_in, cond_in)
             ]
             return {"o_0": output_list}
         else:
@@ -368,9 +360,7 @@ def run_flow(
             assert all(
                 in_port in computed_values for in_port in component_to_run.in_ports
             ), f"Component {component_to_run.uuid} has inputs not in {computed_values=}"
-            current_inputs = {
-                in_port.name: computed_values[in_port] for in_port in component_to_run.in_ports
-            }
+            current_inputs = {in_port.name: computed_values[in_port] for in_port in component_to_run.in_ports}
 
         if isinstance(component_to_run, dfir.IOComponent):
             assert (
@@ -392,9 +382,7 @@ def run_flow(
                 final_results[out_port] = value
                 continue
             connected_in_port = out_port.connection
-            assert (
-                connected_in_port is not None
-            ), f"Output port {out_port} is not connected to any input port"
+            assert connected_in_port is not None, f"Output port {out_port} is not connected to any input port"
             computed_values[connected_in_port] = value
 
             # Find downstream components and check readiness
@@ -473,9 +461,7 @@ class DfirSimulator:
         used_input_names = set()
 
         for port in graph_input_ports:
-            assert (
-                port.port_type == dfir.PortType.IN
-            ), f"Graph input port {port} is not an IN port."
+            assert port.port_type == dfir.PortType.IN, f"Graph input port {port} is not an IN port."
             if port.name in initial_graph_inputs:
                 from_ports_values[port] = initial_graph_inputs[port.name]
                 used_input_names.add(port.name)
@@ -550,9 +536,7 @@ if __name__ == "__main__":
     simulator = DfirSimulator(my_dfir, g)
 
     node_num = 20
-    simulator.add_nodes(
-        nodes=list(range(node_num)), props={i: {"weight": i} for i in range(node_num)}
-    )
+    simulator.add_nodes(nodes=list(range(node_num)), props={i: {"weight": i} for i in range(node_num)})
     edges = []
     edges.extend([(i, i + 1) for i in range(node_num - 1)])
     edges.extend([(i, i + 2) for i in range(node_num - 2)])

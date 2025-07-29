@@ -100,9 +100,7 @@ class Port(DfirNode):
 
 
 class ComponentCollection(DfirNode):
-    def __init__(
-        self, components: List[Component], inputs: List[Port], outputs: List[Port]
-    ) -> None:
+    def __init__(self, components: List[Component], inputs: List[Port], outputs: List[Port]) -> None:
         super().__init__()
         self.components = components
         self.inputs = inputs
@@ -265,9 +263,7 @@ class Component(DfirNode):
         return f"{self.__class__.__name__[:5]}_{self.readable_id}"
 
     def to_hls(self) -> hls.HLSFunction:
-        assert (
-            False
-        ), f"Abstract method to_hls() should be implemented for {self.__class__.__name__}"
+        assert False, f"Abstract method to_hls() should be implemented for {self.__class__.__name__}"
 
     def get_hls_function(
         self,
@@ -539,9 +535,7 @@ class UnaryOp(Enum):
             # get node id from node or get src/dst node id from edge
             return IntType() if input_type.type_name == "node" else SpecialType("node")
         elif self == UnaryOp.SELECT:
-            raise RuntimeError(
-                "Output type for select operation should be decided outside of UnaryOp"
-            )
+            raise RuntimeError("Output type for select operation should be decided outside of UnaryOp")
         else:
             raise ValueError(f"Unsupported unary operation: {self}")
 

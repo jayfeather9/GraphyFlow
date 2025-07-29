@@ -41,9 +41,7 @@ g = GlobalGraph(  # 创建一个全局图对象 g
 # ================迭代计算最短路径================
 edges = g.add_graph_input("edge")  # 获取图的所有边作为数据流输入
 # 准备松弛操作：对每条边，生成一个包含 (源节点当前距离, 目标节点对象, 边权重) 的元组
-potential_dst_updates = edges.map_(
-    map_func=lambda edge: (edge.src.distance, edge.dst, edge.weight)
-)
+potential_dst_updates = edges.map_(map_func=lambda edge: (edge.src.distance, edge.dst, edge.weight))
 potential_dst_updates = potential_dst_updates.filter(
     filter_func=lambda x, y, z: z >= 0.0,
 )
