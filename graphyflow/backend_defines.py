@@ -321,7 +321,7 @@ class HLSExpr:
         operands: Optional[List[HLSExpr]] = None,
     ) -> None:
         if expr_type == HLSExprT.CONST:
-            assert type(expr_val) in [int, float, bool]
+            assert type(expr_val) in [int, float, bool, str]
             assert operands is None
         elif expr_type == HLSExprT.VAR:
             assert type(expr_val) == HLSVar

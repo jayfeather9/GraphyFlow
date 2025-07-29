@@ -419,6 +419,7 @@ class BinOp(Enum):
     SUB = "-"
     MUL = "*"
     DIV = "/"
+    MOD = "%"
     AND = "&"
     OR = "|"
     EQ = "=="

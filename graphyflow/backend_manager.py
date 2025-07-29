@@ -1271,13 +1271,10 @@ class BackendManager:
         body.append(CodeWhile(codes=while_loop_body, iter_expr=HLSExpr(HLSExprT.CONST, True)))
         return body
 
-    # backend_manager.py
-
-    # 在 backend_manager.py 中
-
     def _translate_reduce_unit_reduce(self, hls_func: HLSFunction) -> List[HLSCodeLine]:
         """
         Generates the body for the second stage of Reduce (stateful accumulation).
+        This version is updated to use a more performant circular buffer for draining.
         """
         body: List[HLSCodeLine] = []
         comp = hls_func.dfir_comp
@@ -1287,8 +1284,10 @@ class BackendManager:
         kt_type = kt_streams.type.sub_types[0].sub_types[0]
         key_type = kt_streams.type.sub_types[0].sub_types[0].sub_types[0].sub_types[0]
         transform_type = kt_streams.type.sub_types[0].sub_types[0].sub_types[0].sub_types[1]
-        single_out_stream_type = out_streams.type.sub_types[0]
-        out_data_type = single_out_stream_type.sub_types[0]
+        single_out_stream_type = out_streams.type
+        # The output from this unit is a batched stream
+        out_batch_type = single_out_stream_type.sub_types[0]
+        out_data_type = out_batch_type.sub_types[0].sub_types[0]
 
         bram_elem_type = self._to_hls_type(
             dftype.TupleType(
@@ -1296,9 +1295,7 @@ class BackendManager:
             )
         )
 
-        body.append(CodeComment("Stateful memories for PE_NUM parallel reduction units"))
-
-        # 2. Declare 2D arrays for PE-local memories
+        body.append(CodeComment("1. Stateful memories for PE_NUM parallel reduction units"))
         key_mem_type = HLSType(
             HLSBasicType.ARRAY, sub_types=[bram_elem_type], array_dims=["PE_NUM", "MAX_NUM"]
         )
@@ -1319,8 +1316,7 @@ class BackendManager:
         body.append(CodeVarDecl("i_buffer", i_buffer_type))
         body.append(CodePragma("ARRAY_PARTITION variable=i_buffer complete dim=0"))
 
-        # 3. Initialize 2D memories using nested loops
-        body.append(CodeComment("Memory initialization for all PEs"))
+        body.append(CodeComment("2. Memory initialization for all PEs"))
         uint_type = HLSType(HLSBasicType.UINT)
         max_num_var = HLSVar("MAX_NUM", uint_type)
         assign_val_expr = HLSExpr(
@@ -1347,8 +1343,7 @@ class BackendManager:
         )
         body.append(clear_valid_outer_loop)
 
-        # 4. Main Processing Loop - now handles parallel un-batched streams
-        body.append(CodeComment("Main processing loop for aggregation across PEs"))
+        body.append(CodeComment("3. Main processing loop for aggregation across PEs"))
         end_flag_var = HLSVar("end_flag", HLSType(HLSBasicType.BOOL))
         body.append(CodeVarDecl(end_flag_var.name, end_flag_var.type))
         all_end_flag_var = HLSVar(
@@ -1368,10 +1363,7 @@ class BackendManager:
         )
         body.append(reset_end_loop)
 
-        # This loop now assumes lock-step processing of the PE_NUM streams
         while_loop_body = [CodePragma("PIPELINE")]
-
-        # Read one element from each PE's stream
         kt_elem_var = HLSVar("kt_elem", kt_type)
         key_elem_var = HLSVar("key_elem", key_type)
         transform_elem_var = HLSVar("transform_elem", transform_type)
@@ -1382,201 +1374,305 @@ class BackendManager:
                 CodeVarDecl(transform_elem_var.name, transform_elem_var.type),
             ]
         )
-
-        # This logic is now inside a PE loop
         inner_loop_logic = self._translate_reduce_unit_inner_loop(
             comp, bram_elem_type, "i", key_elem_var, transform_elem_var
         )
 
-        # Read from stream array and then process
-        kt_stream_var_expr = HLSExpr(HLSExprT.VAR, HLSVar(f"{kt_streams.name}[i]", key_type))
+        kt_stream_var_expr = HLSExpr(HLSExprT.VAR, HLSVar(f"{kt_streams.name}[i]", kt_type))
         read_kt = CodeAssign(
-            kt_elem_var,
-            HLSExpr(
-                HLSExprT.STREAM_READ,
-                None,
-                [kt_stream_var_expr],
-            ),
+            kt_elem_var, HLSExpr(HLSExprT.STREAM_READ, None, [kt_stream_var_expr])
         )
-        read_key = CodeAssign(
-            key_elem_var,
-            HLSExpr(
-                HLSExprT.UOP,
-                (dfir.UnaryOp.GET_ATTR, "data.key"),
-                [HLSExpr(HLSExprT.VAR, kt_elem_var)],
-            ),
+        key_from_wrapper = HLSExpr(
+            HLSExprT.UOP,
+            (dfir.UnaryOp.GET_ATTR, "data.key"),
+            [HLSExpr(HLSExprT.VAR, kt_elem_var)],
         )
-        read_transform = CodeAssign(
-            transform_elem_var,
-            HLSExpr(
-                HLSExprT.UOP,
-                (dfir.UnaryOp.GET_ATTR, "data.transform"),
-                [HLSExpr(HLSExprT.VAR, kt_elem_var)],
-            ),
+        transform_from_wrapper = HLSExpr(
+            HLSExprT.UOP,
+            (dfir.UnaryOp.GET_ATTR, "data.transform"),
+            [HLSExpr(HLSExprT.VAR, kt_elem_var)],
         )
-
-        end_flag_expr = HLSExpr(
+        read_key = CodeAssign(key_elem_var, key_from_wrapper)
+        read_transform = CodeAssign(transform_elem_var, transform_from_wrapper)
+        end_flag_from_wrapper = HLSExpr(
             HLSExprT.UOP,
             (dfir.UnaryOp.GET_ATTR, "end_flag"),
             [HLSExpr(HLSExprT.VAR, kt_elem_var)],
         )
-        sub_end_flag = HLSExpr(
-            HLSExprT.VAR, HLSVar(f"{all_end_flag_var.name}[i]", end_flag_var.type)
-        )
-        not_sub_end_expr = HLSExpr(HLSExprT.UOP, dfir.UnaryOp.NOT, [sub_end_flag])
-        strm_empty = HLSExpr(HLSExprT.STREAM_EMPTY, None, [kt_stream_var_expr])
-        strm_not_empty = HLSExpr(HLSExprT.UOP, dfir.UnaryOp.NOT, [strm_empty])
-        both_conds = HLSExpr(HLSExprT.BINOP, dfir.BinOp.AND, [not_sub_end_expr, strm_not_empty])
-        assign_flag2flag = CodeAssign(
-            HLSVar(f"{all_end_flag_var.name}[i]", end_flag_var.type),
-            end_flag_expr,
-        )
+        end_flag_in_array = HLSVar(f"{all_end_flag_var.name}[i]", end_flag_var.type)
 
-        if_assign_block = CodeIf(
-            expr=end_flag_expr,
-            if_codes=[assign_flag2flag],
+        process_logic = CodeIf(
+            expr=end_flag_from_wrapper,
+            if_codes=[CodeAssign(end_flag_in_array, end_flag_from_wrapper)],
             else_codes=[read_key, read_transform] + inner_loop_logic,
         )
-
-        # only if no end we process compute.
-        if_not_end_block = CodeIf(
-            expr=both_conds,
-            if_codes=[read_kt, if_assign_block],
+        read_and_process_block = CodeIf(
+            expr=HLSExpr(
+                HLSExprT.BINOP,
+                dfir.BinOp.AND,
+                [
+                    HLSExpr(
+                        HLSExprT.UOP, dfir.UnaryOp.NOT, [HLSExpr(HLSExprT.VAR, end_flag_in_array)]
+                    ),
+                    HLSExpr(
+                        HLSExprT.UOP,
+                        dfir.UnaryOp.NOT,
+                        [HLSExpr(HLSExprT.STREAM_EMPTY, None, [kt_stream_var_expr])],
+                    ),
+                ],
+            ),
+            if_codes=[read_kt, process_logic],
         )
-
-        # We process one element per PE in an unrolled loop
         pe_processing_loop = CodeFor(
-            codes=[CodePragma("UNROLL"), if_not_end_block],
+            codes=[CodePragma("UNROLL"), read_and_process_block],
             iter_limit="PE_NUM",
             iter_name="i",
         )
         while_loop_body.append(pe_processing_loop)
 
-        # Check for end condition (can just check the first PE's stream)
-        while_loop_body.append(CodeAssign(end_flag_var, HLSExpr(HLSExprT.CONST, True)))
-        and_logic_for_flag = HLSExpr(
-            HLSExprT.BINOP,
-            dfir.BinOp.AND,
-            [
-                HLSExpr(HLSExprT.VAR, end_flag_var),
-                HLSExpr(HLSExprT.VAR, HLSVar(f"{all_end_flag_var.name}[i]", end_flag_var.type)),
+        # Check for end condition (all PEs must have seen an end flag)
+        check_end_flag_logic = [CodeAssign(end_flag_var, HLSExpr(HLSExprT.CONST, True))]
+        end_flag_agg_loop = CodeFor(
+            codes=[
+                CodePragma("UNROLL"),
+                CodeAssign(
+                    end_flag_var,
+                    HLSExpr(
+                        HLSExprT.BINOP,
+                        dfir.BinOp.AND,
+                        [
+                            HLSExpr(HLSExprT.VAR, end_flag_var),
+                            HLSExpr(HLSExprT.VAR, end_flag_in_array),
+                        ],
+                    ),
+                ),
             ],
-        )
-        assign_end_flag_end = CodeAssign(
-            end_flag_var,
-            and_logic_for_flag,
-        )
-        set_end_loop = CodeFor(
-            codes=[CodePragma("UNROLL"), assign_end_flag_end],
             iter_limit="PE_NUM",
             iter_name="i",
         )
-        while_loop_body.append(set_end_loop)
-        while_loop_body.append(CodeIf(HLSExpr(HLSExprT.VAR, end_flag_var), [CodeBreak()]))
+        check_end_flag_logic.append(end_flag_agg_loop)
+        check_end_flag_logic.append(CodeIf(HLSExpr(HLSExprT.VAR, end_flag_var), [CodeBreak()]))
+        while_loop_body.extend(check_end_flag_logic)
 
         body.append(CodeWhile(codes=while_loop_body, iter_expr=HLSExpr(HLSExprT.CONST, True)))
 
-        body.append(CodeComment("Final output loop to drain all PE memories with swapped loops"))
-        cnt_var = HLSVar("data_cnt", HLSType(HLSBasicType.INT))
-        body.append(CodeVarDecl(cnt_var.name, cnt_var.type))
-        reset_data_cnt = CodeAssign(cnt_var, HLSExpr(HLSExprT.CONST, 0))
-        body.append(reset_data_cnt)
-
-        starting_flag = HLSVar("starting", HLSType(HLSBasicType.BOOL))
-        body.append(CodeVarDecl(starting_flag.name, starting_flag.type))
-        body.append(CodeAssign(starting_flag, HLSExpr(HLSExprT.CONST, False)))
-
-        prev_data_var = HLSVar("prev_data", single_out_stream_type)
-        body.append(CodeVarDecl(prev_data_var.name, prev_data_var.type))
-
-        body.append(CodeVarDecl("data_to_write", single_out_stream_type))
-
-        # 内层循环：遍历 PE，完全展开
-        is_valid_expr = HLSExpr(HLSExprT.VAR, HLSVar(f"key_mem[pe][k].ele_1", bram_elem_type))
-        data_expr = HLSExpr(HLSExprT.VAR, HLSVar(f"key_mem[pe][k].ele_0", bram_elem_type))
-
-        assign_data = CodeAssign(
-            HLSVar("data_to_write.data[data_cnt++]", out_data_type), data_expr
+        body.append(
+            CodeComment("4. Final output loop to drain all PE memories with swapped loops")
         )
-        data_full_expr = HLSExpr(
+
+        # New variable declarations for circular buffer draining
+        cnt_var = HLSVar("data_cnt", HLSType(HLSBasicType.UINT))
+        body.append(CodeVarDecl(cnt_var.name, cnt_var.type, init_val=0))
+        body.append(CodeAssign(cnt_var, HLSExpr(HLSExprT.CONST, 0)))
+
+        start_pos_var = HLSVar("start_pos", HLSType(HLSBasicType.UINT))
+        body.append(CodeVarDecl(start_pos_var.name, start_pos_var.type, init_val=0))
+        body.append(CodeAssign(start_pos_var, HLSExpr(HLSExprT.CONST, 0)))
+
+        data_pack_var = HLSVar("data_pack", out_batch_type)
+        body.append(CodeVarDecl(data_pack_var.name, data_pack_var.type))
+        body.append(
+            CodeAssign(
+                HLSVar(f"{data_pack_var.name}.end_flag", HLSType(HLSBasicType.BOOL)),
+                HLSExpr(HLSExprT.CONST, False),
+            )
+        )
+
+        drain_buffer_type = HLSType(
+            HLSBasicType.ARRAY, sub_types=[out_data_type], array_dims=[f"PE_NUM << 1"]
+        )
+        drain_buffer_var = HLSVar("data_to_write", drain_buffer_type)
+        body.append(CodeVarDecl(drain_buffer_var.name, drain_buffer_var.type))
+        body.append(CodePragma(f"ARRAY_PARTITION variable={drain_buffer_var.name} complete dim=0"))
+
+        # Since CodeFor doesn't support custom increments, we simulate it with a while loop
+        k_var = HLSVar("k", HLSType(HLSBasicType.UINT))
+        body.append(CodeVarDecl(k_var.name, k_var.type, init_val=0))
+        body.append(CodeAssign(k_var, HLSExpr(HLSExprT.CONST, 0)))
+
+        # Inner logic of the tiled draining loop
+        pe_var = HLSVar("pe", HLSType(HLSBasicType.UINT))
+        k_plus_pe_expr = HLSExpr(
             HLSExprT.BINOP,
-            dfir.BinOp.EQ,
-            [HLSExpr(HLSExprT.VAR, cnt_var), HLSExpr(HLSExprT.CONST, self.PE_NUM)],
+            dfir.BinOp.ADD,
+            [HLSExpr(HLSExprT.VAR, k_var), HLSExpr(HLSExprT.VAR, pe_var)],
         )
-        set_data_false_flag = CodeAssign(
-            HLSVar("data_to_write.end_flag", out_data_type),
-            HLSExpr(HLSExprT.CONST, False),
+
+        is_valid_expr = HLSExpr(
+            HLSExprT.VAR,
+            HLSVar(f"key_mem[pe][{k_plus_pe_expr.code}].ele_1", HLSType(HLSBasicType.BOOL)),
         )
-        set_data_pos = CodeAssign(
-            HLSVar("data_to_write.end_pos", out_data_type),
-            HLSExpr(HLSExprT.CONST, self.PE_NUM),
+        data_from_mem = HLSExpr(
+            HLSExprT.VAR, HLSVar(f"key_mem[pe][{k_plus_pe_expr.code}].ele_0", out_data_type)
         )
-        write_to_stream = CodeWriteStream(
-            HLSVar(f"{out_streams.name}", single_out_stream_type),
-            prev_data_var,
-        )
-        assign_prev_data = CodeAssign(
-            prev_data_var,
-            HLSExpr(HLSExprT.VAR, HLSVar("data_to_write", out_data_type)),
-        )
-        set_prev_data_flag1 = CodeAssign(starting_flag, HLSExpr(HLSExprT.CONST, True))
-        if_set_cond = HLSExpr(
+
+        write_to_buffer_expr = HLSExpr(
             HLSExprT.BINOP,
-            dfir.BinOp.EQ,
-            [HLSExpr(HLSExprT.VAR, starting_flag), HLSExpr(HLSExprT.CONST, False)],
+            dfir.BinOp.MOD,
+            [HLSExpr(HLSExprT.VAR, start_pos_var), HLSExpr(HLSExprT.CONST, "PE_NUM << 1")],
         )
-        if_set_data = CodeIf(
-            if_set_cond,
-            if_codes=[set_prev_data_flag1],
-            else_codes=[write_to_stream],
+        assign_to_buffer = CodeAssign(
+            HLSVar(f"{drain_buffer_var.name}[{write_to_buffer_expr.code}]", out_data_type),
+            data_from_mem,
         )
-        if_data_full = CodeIf(
-            data_full_expr,
-            if_codes=[
-                reset_data_cnt,
-                set_data_false_flag,
-                set_data_pos,
-                if_set_data,
-                assign_prev_data,
-            ],
+
+        increment_cnt = CodeAssign(
+            cnt_var,
+            HLSExpr(
+                HLSExprT.BINOP,
+                dfir.BinOp.ADD,
+                [HLSExpr(HLSExprT.VAR, cnt_var), HLSExpr(HLSExprT.CONST, 1)],
+            ),
         )
-        if_valid_block = CodeIf(
-            is_valid_expr,
-            [assign_data, if_data_full],
+        increment_pos = CodeAssign(
+            start_pos_var,
+            HLSExpr(
+                HLSExprT.BINOP,
+                dfir.BinOp.ADD,
+                [HLSExpr(HLSExprT.VAR, start_pos_var), HLSExpr(HLSExprT.CONST, 1)],
+            ),
         )
+
+        if_valid_block = CodeIf(is_valid_expr, [assign_to_buffer, increment_cnt, increment_pos])
+
         drain_inner_pe_loop = CodeFor(
             codes=[CodePragma("UNROLL"), if_valid_block], iter_limit="PE_NUM", iter_name="pe"
         )
 
-        # 外层循环：遍历内存地址，进行流水线处理
-        drain_outer_k_loop = CodeFor(
-            codes=[
-                CodePragma("PIPELINE"),
-                drain_inner_pe_loop,
+        # Logic to pack and write a full batch
+        pack_and_write_logic = []
+        pack_and_write_logic.append(
+            CodeAssign(
+                HLSVar(f"{data_pack_var.name}.end_pos", HLSType(HLSBasicType.UINT8)),
+                HLSExpr(HLSExprT.CONST, "PE_NUM"),
+            )
+        )
+
+        i_var = HLSVar("i", HLSType(HLSBasicType.UINT))
+
+        read_from_buffer_offset = HLSExpr(
+            HLSExprT.BINOP,
+            dfir.BinOp.ADD,
+            [
+                HLSExpr(
+                    HLSExprT.BINOP,
+                    dfir.BinOp.SUB,
+                    [HLSExpr(HLSExprT.VAR, start_pos_var), HLSExpr(HLSExprT.VAR, cnt_var)],
+                ),
+                HLSExpr(HLSExprT.VAR, i_var),
             ],
-            iter_limit="MAX_NUM",
-            iter_name="k",
         )
-        body.append(drain_outer_k_loop)
+        read_from_buffer_expr = HLSExpr(
+            HLSExprT.BINOP,
+            dfir.BinOp.MOD,
+            [read_from_buffer_offset, HLSExpr(HLSExprT.CONST, "PE_NUM << 1")],
+        )
 
-        # 在所有数据都回写完毕后，发送结束标志
-        body.append(CodeComment("Send end_flag to all PE output streams"))
-        if_set_cond = HLSExpr(HLSExprT.VAR, starting_flag)
-        if_set_data = CodeIf(
-            if_set_cond,
-            if_codes=[write_to_stream],
+        packing_loop_body = [
+            CodePragma("UNROLL"),
+            CodeAssign(
+                HLSVar(f"{data_pack_var.name}.data[i]", out_data_type),
+                HLSExpr(
+                    HLSExprT.VAR,
+                    HLSVar(
+                        f"{drain_buffer_var.name}[{read_from_buffer_expr.code}]", out_data_type
+                    ),
+                ),
+            ),
+        ]
+        packing_loop = CodeFor(packing_loop_body, iter_limit="PE_NUM", iter_name="i")
+        pack_and_write_logic.append(packing_loop)
+        pack_and_write_logic.append(CodeWriteStream(out_streams, data_pack_var))
+        pack_and_write_logic.append(
+            CodeAssign(
+                cnt_var,
+                HLSExpr(
+                    HLSExprT.BINOP,
+                    dfir.BinOp.SUB,
+                    [HLSExpr(HLSExprT.VAR, cnt_var), HLSExpr(HLSExprT.CONST, "PE_NUM")],
+                ),
+            )
         )
-        body.append(if_set_data)
 
-        set_prev_data_flag_true = CodeAssign(
-            HLSVar(f"{prev_data_var.name}.end_flag", HLSType(HLSBasicType.BOOL)),
-            HLSExpr(HLSExprT.CONST, True),
+        if_data_full = CodeIf(
+            HLSExpr(
+                HLSExprT.BINOP,
+                dfir.BinOp.GE,
+                [HLSExpr(HLSExprT.VAR, cnt_var), HLSExpr(HLSExprT.CONST, "PE_NUM")],
+            ),
+            pack_and_write_logic,
         )
-        set_data_pos = CodeAssign(
-            HLSVar("prev_data.end_pos", out_data_type),
-            HLSExpr(HLSExprT.VAR, cnt_var),
+
+        # Main draining while loop
+        drain_while_body = [
+            CodePragma("PIPELINE"),
+            drain_inner_pe_loop,
+            if_data_full,
+            CodeAssign(
+                k_var,
+                HLSExpr(
+                    HLSExprT.BINOP,
+                    dfir.BinOp.ADD,
+                    [HLSExpr(HLSExprT.VAR, k_var), HLSExpr(HLSExprT.CONST, "PE_NUM")],
+                ),
+            ),
+        ]
+        body.append(
+            CodeWhile(
+                codes=drain_while_body,
+                iter_expr=HLSExpr(
+                    HLSExprT.BINOP,
+                    dfir.BinOp.LT,
+                    [HLSExpr(HLSExprT.VAR, k_var), HLSExpr(HLSExprT.CONST, "MAX_NUM")],
+                ),
+            )
         )
-        body.extend([assign_prev_data, set_prev_data_flag_true, set_data_pos, write_to_stream])
+
+        body.append(CodeComment("5. Drain any remaining data and send final batch with end_flag"))
+
+        # Final packing logic
+        final_pack_logic = []
+        final_pack_logic.append(
+            CodeAssign(
+                HLSVar(f"{data_pack_var.name}.end_flag", HLSType(HLSBasicType.BOOL)),
+                HLSExpr(HLSExprT.CONST, True),
+            )
+        )
+        final_pack_logic.append(
+            CodeAssign(
+                HLSVar(f"{data_pack_var.name}.end_pos", HLSType(HLSBasicType.UINT8)),
+                HLSExpr(HLSExprT.VAR, cnt_var),
+            )
+        )
+
+        final_packing_loop_body = [
+            CodePragma("UNROLL"),
+            CodeIf(
+                HLSExpr(
+                    HLSExprT.BINOP,
+                    dfir.BinOp.LT,
+                    [HLSExpr(HLSExprT.VAR, i_var), HLSExpr(HLSExprT.VAR, cnt_var)],
+                ),
+                [
+                    CodeAssign(
+                        HLSVar(f"{data_pack_var.name}.data[i]", out_data_type),
+                        HLSExpr(
+                            HLSExprT.VAR,
+                            HLSVar(
+                                f"{drain_buffer_var.name}[{read_from_buffer_expr.code}]",
+                                out_data_type,
+                            ),
+                        ),
+                    )
+                ],
+            ),
+        ]
+        final_packing_loop = CodeFor(final_packing_loop_body, iter_limit="PE_NUM", iter_name="i")
+
+        final_pack_logic.append(final_packing_loop)
+        final_pack_logic.append(CodeWriteStream(out_streams, data_pack_var))
+
+        body.extend(final_pack_logic)
 
         return body
 
