@@ -396,7 +396,8 @@ class HLSExpr:
                 expr_val_val = self.val
             return trans_dict[expr_val_val].replace("operand", self.operands[0].code)
         elif self.type == HLSExprT.BINOP:
-            assert not self.contain_s_read
+            if self.val in [dfir.BinOp.MAX, dfir.BinOp.MIN]:
+                assert not self.contain_s_read
             return self.val.gen_repr_forbkd(self.operands[0].code, self.operands[1].code)
         else:
             assert False, f"Type {self.type} not supported"

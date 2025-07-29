@@ -731,7 +731,13 @@ def generate_omega_top(
 
             call = hls.CodeCall(
                 switch2x2_func,
-                [hls.HLSExpr(hls.HLSExprT.CONST, s), in1_var, in2_var, out1_var, out2_var],
+                [
+                    hls.HLSExpr(hls.HLSExprT.CONST, log_n - s - 1),
+                    in1_var,
+                    in2_var,
+                    out1_var,
+                    out2_var,
+                ],
             )
             body.append(call)
 

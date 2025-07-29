@@ -1389,12 +1389,13 @@ class BackendManager:
         )
 
         # Read from stream array and then process
+        kt_stream_var_expr = HLSExpr(HLSExprT.VAR, HLSVar(f"{kt_streams.name}[i]", key_type))
         read_kt = CodeAssign(
             kt_elem_var,
             HLSExpr(
                 HLSExprT.STREAM_READ,
                 None,
-                [HLSExpr(HLSExprT.VAR, HLSVar(f"{kt_streams.name}[i]", key_type))],
+                [kt_stream_var_expr],
             ),
         )
         read_key = CodeAssign(
@@ -1423,6 +1424,9 @@ class BackendManager:
             HLSExprT.VAR, HLSVar(f"{all_end_flag_var.name}[i]", end_flag_var.type)
         )
         not_sub_end_expr = HLSExpr(HLSExprT.UOP, dfir.UnaryOp.NOT, [sub_end_flag])
+        strm_empty = HLSExpr(HLSExprT.STREAM_EMPTY, None, [kt_stream_var_expr])
+        strm_not_empty = HLSExpr(HLSExprT.UOP, dfir.UnaryOp.NOT, [strm_empty])
+        both_conds = HLSExpr(HLSExprT.BINOP, dfir.BinOp.AND, [not_sub_end_expr, strm_not_empty])
         assign_flag2flag = CodeAssign(
             HLSVar(f"{all_end_flag_var.name}[i]", end_flag_var.type),
             end_flag_expr,
@@ -1436,7 +1440,7 @@ class BackendManager:
 
         # only if no end we process compute.
         if_not_end_block = CodeIf(
-            expr=not_sub_end_expr,
+            expr=both_conds,
             if_codes=[read_kt, if_assign_block],
         )
 
