@@ -72,69 +72,72 @@ build_files = bkd_mng.generate_build_system_files(KERNEL_NAME, EXECUTABLE_NAME)
 print("Generated parameterized build system files (Makefiles, run.sh, etc.).")
 
 
-# ==================== 4. 将生成的文件部署到编译目录 =======================
-print(f"\n--- Step 4: Deploying Generated Files to '{TMP_WORK_DIR}' ---")
+# # ==================== 4. 将生成的文件部署到编译目录 =======================
+# print(f"\n--- Step 4: Deploying Generated Files to '{TMP_WORK_DIR}' ---")
 
-# 确保目标目录存在
-KERNEL_SCRIPT_DIR.mkdir(parents=True, exist_ok=True)
-HOST_SCRIPT_DIR.mkdir(parents=True, exist_ok=True)
+# # 确保目标目录存在
+# KERNEL_SCRIPT_DIR.mkdir(parents=True, exist_ok=True)
+# HOST_SCRIPT_DIR.mkdir(parents=True, exist_ok=True)
 
-# 写入内核文件
-with open(KERNEL_SCRIPT_DIR / f"{KERNEL_NAME}.h", "w") as f:
+with open(OUTPUT_DIR / f"{KERNEL_NAME}.h", "w") as f:
     f.write(kernel_h)
-with open(KERNEL_SCRIPT_DIR / f"{KERNEL_NAME}.cpp", "w") as f:
-    f.write(kernel_cpp)
-print(f"Copied kernel files to {KERNEL_SCRIPT_DIR}")
 
-# 写入Host文件
-with open(HOST_SCRIPT_DIR / "generated_host.h", "w") as f:
-    f.write(host_h)
-with open(HOST_SCRIPT_DIR / "generated_host.cpp", "w") as f:
-    f.write(host_cpp)
-print(f"Copied host files to {HOST_SCRIPT_DIR}")
+# # 写入内核文件
+# with open(KERNEL_SCRIPT_DIR / f"{KERNEL_NAME}.h", "w") as f:
+#     f.write(kernel_h)
+# with open(KERNEL_SCRIPT_DIR / f"{KERNEL_NAME}.cpp", "w") as f:
+#     f.write(kernel_cpp)
+# print(f"Copied kernel files to {KERNEL_SCRIPT_DIR}")
 
-# 写入构建系统文件
-for filename, content in build_files.items():
-    if "kernel.mk" in filename:
-        target_path = KERNEL_SCRIPT_DIR / filename
-    elif "fpga_executor.cpp" in filename:  # fpga_executor.cpp 也在 host 目录
-        target_path = HOST_SCRIPT_DIR / filename
-    else:
-        target_path = TMP_WORK_DIR / filename
+# # 写入Host文件
+# with open(HOST_SCRIPT_DIR / "generated_host.h", "w") as f:
+#     f.write(host_h)
+# with open(HOST_SCRIPT_DIR / "generated_host.cpp", "w") as f:
+#     f.write(host_cpp)
+# print(f"Copied host files to {HOST_SCRIPT_DIR}")
 
-    with open(target_path, "w") as f:
-        f.write(content)
-print(f"Updated build system files in '{TMP_WORK_DIR}'.")
+# # 写入构建系统文件
+# for filename, content in build_files.items():
+#     if "kernel.mk" in filename:
+#         target_path = KERNEL_SCRIPT_DIR / filename
+#     elif "fpga_executor.cpp" in filename:  # fpga_executor.cpp 也在 host 目录
+#         target_path = HOST_SCRIPT_DIR / filename
+#     else:
+#         target_path = TMP_WORK_DIR / filename
+
+#     with open(target_path, "w") as f:
+#         f.write(content)
+# print(f"Updated build system files in '{TMP_WORK_DIR}'.")
 
 
-# ==================== 5. 执行编译和仿真 =======================
-print(f"\n--- Step 5: Running Compilation and Simulation in '{TMP_WORK_DIR}' ---")
+# # ==================== 5. 执行编译和仿真 =======================
+# print(f"\n--- Step 5: Running Compilation and Simulation in '{TMP_WORK_DIR}' ---")
 
-try:
-    # 执行 make clean all
-    print("\n[CMD] make cleanall all")
-    # check=True 会在命令失败时抛出异常
-    subprocess.run(["make", "cleanall", "all"], cwd=TMP_WORK_DIR, check=True, capture_output=True, text=True)
-    print("Build successful.")
+# try:
+#     # 执行 make clean all
+#     print("\n[CMD] make cleanall all")
+#     # check=True 会在命令失败时抛出异常
+#     subprocess.run(["make", "cleanall", "all"], cwd=TMP_WORK_DIR, check=True, capture_output=True, text=True)
+#     print("Build successful.")
 
-    # 执行 run.sh
-    print("\n[CMD] ./run.sh")
-    result = subprocess.run(["./run.sh"], cwd=TMP_WORK_DIR, check=True, capture_output=True, text=True)
+#     # 执行 run.sh
+#     print("\n[CMD] ./run.sh")
+#     result = subprocess.run(["./run.sh"], cwd=TMP_WORK_DIR, check=True, capture_output=True, text=True)
 
-    # 打印仿真输出
-    print("\n--- Simulation Output ---")
-    print(result.stdout)
-    if result.stderr:
-        print("\n--- Simulation Stderr ---")
-        print(result.stderr)
+#     # 打印仿真输出
+#     print("\n--- Simulation Output ---")
+#     print(result.stdout)
+#     if result.stderr:
+#         print("\n--- Simulation Stderr ---")
+#         print(result.stderr)
 
-except subprocess.CalledProcessError as e:
-    print("\n--- AN ERROR OCCURRED ---")
-    print(f"Command '{' '.join(e.cmd)}' failed with exit code {e.returncode}.")
-    print("\n--- Stdout ---")
-    print(e.stdout)
-    print("\n--- Stderr ---")
-    print(e.stderr)
-except FileNotFoundError:
-    print("\n--- ERROR ---")
-    print("Could not execute command. Is 'make' or 'bash' installed and in your PATH?")
+# except subprocess.CalledProcessError as e:
+#     print("\n--- AN ERROR OCCURRED ---")
+#     print(f"Command '{' '.join(e.cmd)}' failed with exit code {e.returncode}.")
+#     print("\n--- Stdout ---")
+#     print(e.stdout)
+#     print("\n--- Stderr ---")
+#     print(e.stderr)
+# except FileNotFoundError:
+#     print("\n--- ERROR ---")
+#     print("Could not execute command. Is 'make' or 'bash' installed and in your PATH?")
