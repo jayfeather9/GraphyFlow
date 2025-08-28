@@ -232,3 +232,6 @@ graph.txt
 *.run_summary
 *.protoinst
 membership.out
+
+graphyflow.h
+graphyflow.cpp

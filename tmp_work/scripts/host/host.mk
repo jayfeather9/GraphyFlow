@@ -1,14 +1,10 @@
 # Makefile for the Host Application
-
-# Define the C++ compiler
 CXX := g++
 
-# Executable name
-EXECUTABLE := bellman_ford_host
+# Executable name (由顶层 Makefile 传入)
+# EXECUTABLE := graphyflow_host
 
-# Source files - 更新源文件列表
-# 移除了 fpga_bellman_ford.cpp 和 fpga_handler.cpp
-# 添加了 generated_host.cpp 和 fpga_executor.cpp
+# Source files
 HOST_SRCS := scripts/host/host.cpp \
              scripts/host/graph_loader.cpp \
              scripts/host/fpga_executor.cpp \
@@ -18,9 +14,8 @@ HOST_SRCS := scripts/host/host.cpp \
              scripts/host/xcl2.cpp
 
 # Include directories
-CXXFLAGS := -Iscripts/host
-# 新增: 将生成的 kernel 目录也加入 include 路径
-CXXFLAGS += -Iscripts/kernel
+# 新增: 将生成的 kernel 目录也加入 include 路径, 内核头文件名与内核名相同
+CXXFLAGS := -Iscripts/host -Iscripts/kernel
 CXXFLAGS += -I$(XILINX_XRT)/include
 CXXFLAGS += -I$(XILINX_VITIS)/include
 

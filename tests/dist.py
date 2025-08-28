@@ -1,94 +1,140 @@
+import os
+import shutil
+import subprocess
+from pathlib import Path
+
 from graphyflow.global_graph import *
 import graphyflow.dataflow_ir as dfir
 from graphyflow.visualize_ir import visualize_components
 from graphyflow.lambda_func import lambda_min, lambda_max
 from graphyflow.passes import delete_placeholder_components_pass
+import graphyflow.backend_manager as bkd
 
-# ================图初始化================
-g = GlobalGraph(  # 创建一个全局图对象 g
-    properties={  # 定义图的属性
-        "node": {
-            "distance": dfir.FloatType()
-        },  # 节点 (node) 具有 "distance" 属性，存储源点到该节点的最短距离
-        "edge": {"weight": dfir.FloatType()},  # 边 (edge) 具有 "weight" 属性，存储边的权重
+# ==================== 配置 =======================
+# 定义内核和可执行文件的基础名称
+KERNEL_NAME = "graphyflow"
+EXECUTABLE_NAME = "graphyflow_host"
+
+# 定义项目路径
+PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+OUTPUT_DIR = PROJECT_ROOT / "output"
+TMP_WORK_DIR = PROJECT_ROOT / "tmp_work"
+HOST_SCRIPT_DIR = TMP_WORK_DIR / "scripts" / "host"
+KERNEL_SCRIPT_DIR = TMP_WORK_DIR / "scripts" / "kernel"
+
+
+# ==================== 1. 定义图算法 =======================
+print("--- Step 1: Defining Graph Algorithm using GraphyFlow ---")
+g = GlobalGraph(
+    properties={
+        "node": {"distance": dfir.FloatType()},
+        "edge": {"weight": dfir.FloatType()},
     }
 )
-
-# ================节点距离初始化================
-# src = g.add_input(
-#     "src", dfir.SpecialType("node")
-# )  # 添加一个名为 "src" 的特殊输入，代表源节点
-# # 将源节点的距离初始化为 0，生成 (节点对象, 0) 的元组
-# src_dist = src.map_(map_func=lambda node: (node, 0))
-# others = g.add_graph_input("node")  # 添加图的常规节点输入，名为 "node"
-# # 将其他所有节点的距离初始化为无穷大，生成 (节点对象, 无穷大) 的元组
-# others_dist = others.map_(map_func=lambda node: (node, float("inf")))
-# # 从 "others" 集合中过滤掉源节点 (基于节点 ID)
-# others_without_src = others.filter(filter_func=lambda node, dist: node.id != src.id)
-# # 将源节点(距离为0)和其他节点(距离为无穷)的数据流合并
-# all_nodes_dist = others_without_src.append(src_dist)
-# # 完成节点 "distance" 属性的初始化设置，使用 all_nodes_dist 作为初始值
-# g.finish_init(all_nodes_dist, {"node": ["distance"]})
-
-# ================边权重初始化================
-# 添加一个名为 "weight" 的输入，它是一个数组，包含所有边的权重信息
-# weight = g.add_input(
-#     "weight", dfir.ArrayType(dfir.FloatType(), dfir.SpecialType("edge"))
-# )
-# # 完成边 "weight" 属性的初始化设置，使用 weight 输入作为初始值
-# g.finish_init(weight, {"edge": ["weight"]})
-
-# ================迭代计算最短路径================
-edges = g.add_graph_input("edge")  # 获取图的所有边作为数据流输入
-# 准备松弛操作：对每条边，生成一个包含 (源节点当前距离, 目标节点对象, 边权重) 的元组
+edges = g.add_graph_input("edge")
 potential_dst_updates = edges.map_(map_func=lambda edge: (edge.src.distance, edge.dst, edge.weight))
-potential_dst_updates = potential_dst_updates.filter(
-    filter_func=lambda x, y, z: z >= 0.0,
-)
-# 按目标节点聚合，计算到达每个目标节点的所有路径中的最小潜在距离
+potential_dst_updates = potential_dst_updates.filter(filter_func=lambda x, y, z: z >= 0.0)
 min_potential_distances = potential_dst_updates.reduce_by(
-    reduce_key=lambda src_dist, dst, edge_w: dst.id,  # 使用目标节点 (dst) 作为聚合的键
-    # 对每个目标节点，转换数据为 (通过这条边计算出的潜在新距离, 目标节点对象)
+    reduce_key=lambda src_dist, dst, edge_w: dst.id,
     reduce_transform=lambda src_dist, dst, edge_w: (src_dist + edge_w, dst),
-    # 聚合方法：对于同一个目标节点，比较所有潜在新距离，保留最小值
-    reduce_method=lambda x, y: (
-        lambda_min(x[0], y[0]),
-        x[1],
-    ),  # x 和 y 是 (距离, 节点) 元组
+    reduce_method=lambda x, y: (lambda_min(x[0], y[0]), x[1]),
 )
-# 筛选出那些计算出的最小潜在距离小于节点当前记录距离的更新 (即发生了松弛的节点)
-# update_len = min_potential_distances.filter(
-#     filter_func=lambda dist, node: dist < node.distance
-# ).length()
-# 创建迭代终止标记：如果没有节点的距离被更新 (update_len 为 0)，则 end_marker 为 True
-# end_marker = update_len.map_(map_func=lambda length: length == 0)
-# 更新节点距离：对每个节点，取其当前距离和计算出的最小潜在距离中的较小值
 updated_node_distances = min_potential_distances.map_(
     map_func=lambda dist, node: (lambda_min(dist, node.distance), node)
 )
-# 完成一次迭代的定义：指定使用 updated_node_distances 更新节点的 "distance" 属性，并提供 end_marker 作为终止条件
-# g.finish_iter(updated_node_distances, {"node": ["distance"]}, end_marker)
+# g.finish_iter(updated_node_distances, {"node": ["distance"]}, None) # 假设单次执行，无终止条件
 
+
+# ==================== 2. 前端处理和IR优化 =======================
+print("\n--- Step 2: Frontend Processing & IR Optimization ---")
 dfirs = g.to_dfir()
 dfirs[0] = delete_placeholder_components_pass(dfirs[0])
 dot = visualize_components(str(dfirs[0]))
-dot.render("component_graph", view=False, format="png")
+OUTPUT_DIR.mkdir(exist_ok=True)
+dot.render(str(OUTPUT_DIR / "component_graph"), view=False, format="png")
+print(f"Component graph visualization saved to {OUTPUT_DIR / 'component_graph.png'}")
 
-# import graphyflow.hls_utils as hls
 
-# header, source = hls.global_hls_config.generate_hls_code(g, dfirs[0])
-
-import graphyflow.backend_manager as bkd
-
+# ==================== 3. 后端代码生成 =======================
+print("\n--- Step 3: Backend C++/Build System Code Generation ---")
 bkd_mng = bkd.BackendManager()
-header, source = bkd_mng.generate_backend(dfirs[0], g, "graphyflow")
-# bkd_mng.debug_msgs([3])
 
-import os
+# 生成内核代码
+kernel_h, kernel_cpp = bkd_mng.generate_backend(dfirs[0], g, KERNEL_NAME)
+print(f"Generated kernel code for '{KERNEL_NAME}'.")
 
-if not os.path.exists("output"):
-    os.makedirs("output")
-with open("output/graphyflow.h", "w") as f:
-    f.write(header)
-with open("output/graphyflow.cpp", "w") as f:
-    f.write(source)
+# 生成Host代码
+host_h, host_cpp = bkd_mng.generate_host_codes(KERNEL_NAME)
+print("Generated host-side interface code (generated_host.h/.cpp).")
+
+# 生成构建系统文件
+build_files = bkd_mng.generate_build_system_files(KERNEL_NAME, EXECUTABLE_NAME)
+print("Generated parameterized build system files (Makefiles, run.sh, etc.).")
+
+
+# ==================== 4. 将生成的文件部署到编译目录 =======================
+print(f"\n--- Step 4: Deploying Generated Files to '{TMP_WORK_DIR}' ---")
+
+# 确保目标目录存在
+KERNEL_SCRIPT_DIR.mkdir(parents=True, exist_ok=True)
+HOST_SCRIPT_DIR.mkdir(parents=True, exist_ok=True)
+
+# 写入内核文件
+with open(KERNEL_SCRIPT_DIR / f"{KERNEL_NAME}.h", "w") as f:
+    f.write(kernel_h)
+with open(KERNEL_SCRIPT_DIR / f"{KERNEL_NAME}.cpp", "w") as f:
+    f.write(kernel_cpp)
+print(f"Copied kernel files to {KERNEL_SCRIPT_DIR}")
+
+# 写入Host文件
+with open(HOST_SCRIPT_DIR / "generated_host.h", "w") as f:
+    f.write(host_h)
+with open(HOST_SCRIPT_DIR / "generated_host.cpp", "w") as f:
+    f.write(host_cpp)
+print(f"Copied host files to {HOST_SCRIPT_DIR}")
+
+# 写入构建系统文件
+for filename, content in build_files.items():
+    if "kernel.mk" in filename:
+        target_path = KERNEL_SCRIPT_DIR / filename
+    elif "fpga_executor.cpp" in filename:  # fpga_executor.cpp 也在 host 目录
+        target_path = HOST_SCRIPT_DIR / filename
+    else:
+        target_path = TMP_WORK_DIR / filename
+
+    with open(target_path, "w") as f:
+        f.write(content)
+print(f"Updated build system files in '{TMP_WORK_DIR}'.")
+
+
+# ==================== 5. 执行编译和仿真 =======================
+print(f"\n--- Step 5: Running Compilation and Simulation in '{TMP_WORK_DIR}' ---")
+
+try:
+    # 执行 make clean all
+    print("\n[CMD] make cleanall all")
+    # check=True 会在命令失败时抛出异常
+    subprocess.run(["make", "cleanall", "all"], cwd=TMP_WORK_DIR, check=True, capture_output=True, text=True)
+    print("Build successful.")
+
+    # 执行 run.sh
+    print("\n[CMD] ./run.sh")
+    result = subprocess.run(["./run.sh"], cwd=TMP_WORK_DIR, check=True, capture_output=True, text=True)
+
+    # 打印仿真输出
+    print("\n--- Simulation Output ---")
+    print(result.stdout)
+    if result.stderr:
+        print("\n--- Simulation Stderr ---")
+        print(result.stderr)
+
+except subprocess.CalledProcessError as e:
+    print("\n--- AN ERROR OCCURRED ---")
+    print(f"Command '{' '.join(e.cmd)}' failed with exit code {e.returncode}.")
+    print("\n--- Stdout ---")
+    print(e.stdout)
+    print("\n--- Stderr ---")
+    print(e.stderr)
+except FileNotFoundError:
+    print("\n--- ERROR ---")
+    print("Could not execute command. Is 'make' or 'bash' installed and in your PATH?")
