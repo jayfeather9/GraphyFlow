@@ -48,6 +48,7 @@ class BackendManager:
         # State for Phase 2 & 3
         self.hls_functions: Dict[int, HLSFunction] = {}
         self.top_level_stream_decls: List[Tuple[CodeVarDecl, CodePragma]] = []
+        self.top_level_io_ports: List[dfir.Port] = []  # 新增：存储顶层IO信息
 
         self.reduce_internal_streams: Dict[int, Dict[str, HLSVar]] = {}
 
@@ -74,9 +75,13 @@ class BackendManager:
         for comp in comp_col.components:
             if isinstance(comp, dfir.IOComponent) and comp.io_type == dfir.IOComponent.IOType.INPUT:
                 if comp.get_port("o_0").connected:
+                    # 连接到IO组件输出端的端口，才是真正的graphyflow内核输入端
                     top_level_inputs.append(comp.get_port("o_0").connection)
 
         top_level_outputs = comp_col.outputs
+
+        # 新增：存储顶层IO端口信息，供host代码生成器使用
+        self.top_level_io_ports = top_level_inputs + top_level_outputs
 
         # --- 后续阶段不变 ---
         # Phase 1: Type Analysis
@@ -90,13 +95,14 @@ class BackendManager:
 
         # 1. Build the top-level function signature string
         top_params = []
+        # 添加一个 input_length 参数
+        top_params.append("uint16_t input_length")
         for p in top_level_inputs:
-            # Input ports are connections, so we use the port 'p' directly
-            param_type = HLSType(HLSBasicType.STREAM, [self.batch_type_map[self.type_map[p.data_type]]])
-            top_params.append(f"hls::stream<{param_type.sub_types[0].name}>& {p.unique_name}")
+            param_type = self.batch_type_map[self.type_map[p.data_type]]
+            top_params.append(f"hls::stream<{param_type.name}>& {p.unique_name}")
         for p in top_level_outputs:
-            param_type = HLSType(HLSBasicType.STREAM, [self.batch_type_map[self.type_map[p.data_type]]])
-            top_params.append(f"hls::stream<{param_type.sub_types[0].name}>& {p.unique_name}")
+            param_type = self.batch_type_map[self.type_map[p.data_type]]
+            top_params.append(f"hls::stream<{param_type.name}>& {p.unique_name}")
 
         top_func_sig = f"void {top_func_name}(\n{INDENT_UNIT}" + f",\n{INDENT_UNIT}".join(top_params) + "\n)"
 
@@ -105,6 +111,280 @@ class BackendManager:
         source_code = self._generate_source_file(header_name, top_func_name, top_func_sig)
 
         return header_code, source_code
+
+    def generate_host_codes(self, top_func_name: str) -> Tuple[str, str]:
+        """生成 generated_host.h 和 generated_host.cpp 的内容"""
+
+        # ----- 生成 generated_host.h -----
+        header_code = f"""
+#ifndef __GENERATED_HOST_H__
+#define __GENERATED_HOST_H__
+
+#include "common.h"
+#include "{top_func_name}.h" // 包含内核数据类型定义
+#include <vector>
+
+class AlgorithmHost {{
+public:
+    AlgorithmHost(cl::Context& context, cl::Kernel& kernel, cl::CommandQueue& q);
+    void setup_buffers(const GraphCSR& graph, int start_node);
+    void transfer_data_to_fpga();
+    void execute_kernel_iteration(cl::Event& event);
+    void transfer_data_from_fpga();
+    const std::vector<int>& get_results() const; // 保持接口兼容，即使内容可能为空
+    std::vector<int>& get_host_memory_for_verification();
+    int get_stop_flag() const;
+
+private:
+    cl::Context& m_context;
+    cl::Kernel& m_kernel;
+    cl::CommandQueue& m_q;
+    int m_num_vertices;
+    
+    // Host-side memory
+"""
+        # 为每个内核IO参数声明 host vector 和 device buffer
+        for port in self.top_level_io_ports:
+            hls_type = self.batch_type_map[self.type_map[port.data_type]]
+            header_code += f"    std::vector<{hls_type.name}, aligned_allocator<{hls_type.name}>> h_{port.unique_name};\n"
+
+        header_code += "\n    // Device-side OpenCL buffers\n"
+        for port in self.top_level_io_ports:
+            header_code += f"    cl::Buffer d_{port.unique_name};\n"
+
+        header_code += """
+}};
+
+#endif // __GENERATED_HOST_H__
+"""
+
+        # ----- 生成 generated_host.cpp -----
+        cpp_code = f"""
+#include "generated_host.h"
+#include <iostream>
+
+// 构造函数
+AlgorithmHost::AlgorithmHost(cl::Context& context, cl::Kernel& kernel, cl::CommandQueue& q)
+    : m_context(context), m_kernel(kernel), m_q(q), m_num_vertices(0) {{
+}}
+
+void AlgorithmHost::setup_buffers(const GraphCSR& graph, int start_node) {{
+    m_num_vertices = graph.num_vertices;
+    cl_int err;
+
+    // --- 模拟数据填充 ---
+    // 这是需要根据具体应用修改的部分。
+    // 这里我们仅为buffer分配空间并填充一些默认值。
+    size_t num_elements = 1024; // 示例: 假设我们的流中有1024个元素
+"""
+        for port in self.top_level_io_ports:
+            hls_type = self.batch_type_map[self.type_map[port.data_type]]
+            is_input = port.port_type == dfir.PortType.IN
+
+            cpp_code += f"""
+    // Buffer for {port.unique_name}
+    h_{port.unique_name}.resize(num_elements);
+    // TODO: 使用有意义的数据填充 h_{port.unique_name}
+    for(size_t i = 0; i < num_elements; ++i) {{
+        // 示例填充
+        h_{port.unique_name}[i] = {{}}; // 使用默认构造函数
+    }}
+    h_{port.unique_name}[num_elements - 1].end_flag = true; // 设置最后一个元素的结束标志
+
+    cl_mem_flags flag = CL_MEM_{'READ_ONLY' if is_input else 'WRITE_ONLY'};
+    OCL_CHECK(err, d_{port.unique_name} = cl::Buffer(m_context, flag, h_{port.unique_name}.size() * sizeof({hls_type.name}), NULL, &err));
+"""
+
+        cpp_code += "}\n\n"
+
+        # transfer_data_to_fpga
+        cpp_code += "void AlgorithmHost::transfer_data_to_fpga() {\n    cl_int err;\n"
+        for port in self.top_level_io_ports:
+            if port.port_type == dfir.PortType.IN:
+                hls_type = self.batch_type_map[self.type_map[port.data_type]]
+                cpp_code += f"    OCL_CHECK(err, err = m_q.enqueueWriteBuffer(d_{port.unique_name}, CL_TRUE, 0, h_{port.unique_name}.size() * sizeof({hls_type.name}), h_{port.unique_name}.data(), nullptr, nullptr));\n"
+        cpp_code += "}\n\n"
+
+        # execute_kernel_iteration
+        cpp_code += "void AlgorithmHost::execute_kernel_iteration(cl::Event& event) {\n    cl_int err;\n    int arg_idx = 0;\n"
+        cpp_code += "    uint16_t input_length = 1024; // 示例长度\n"
+        cpp_code += "    OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, input_length));\n"
+        for port in self.top_level_io_ports:
+            cpp_code += f"    OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, d_{port.unique_name}));\n"
+        cpp_code += "\n    OCL_CHECK(err, err = m_q.enqueueTask(m_kernel, nullptr, &event));\n}\n\n"
+
+        # transfer_data_from_fpga
+        cpp_code += "void AlgorithmHost::transfer_data_from_fpga() {\n    cl_int err;\n"
+        for port in self.top_level_io_ports:
+            if port.port_type == dfir.PortType.OUT:
+                hls_type = self.batch_type_map[self.type_map[port.data_type]]
+                cpp_code += f"    OCL_CHECK(err, err = m_q.enqueueReadBuffer(d_{port.unique_name}, CL_TRUE, 0, h_{port.unique_name}.size() * sizeof({hls_type.name}), h_{port.unique_name}.data(), nullptr, nullptr));\n"
+        cpp_code += "}\n\n"
+
+        # get_results (保持兼容性)
+        cpp_code += """
+const std::vector<int>& AlgorithmHost::get_results() const {
+    // 这个函数是为了与旧的验证流程兼容。
+    // 对于流式内核，可能没有一个单一的“距离”向量。
+    // 我们返回一个空的静态向量来满足接口要求。
+    static const std::vector<int> empty_results;
+    std::cout << "Warning: get_results() called on a streaming kernel. Returning empty vector." << std::endl;
+    // TODO: 实现有意义的结果提取逻辑
+    return empty_results;
+}
+
+std::vector<int>& AlgorithmHost::get_host_memory_for_verification() {
+    static std::vector<int> empty_vector;
+    return empty_vector;
+}
+
+int AlgorithmHost::get_stop_flag() const {
+    // 流式内核通常执行一次就结束，不像迭代算法。
+    // 返回1表示“停止”，这样主循环在fpga_executor中执行一次后就会退出。
+    return 1;
+}
+"""
+        return header_code, cpp_code
+
+    def generate_build_system_files(self, kernel_name: str, executable_name: str) -> Dict[str, str]:
+        """生成所有需要的构建和执行文件的内容"""
+
+        files = {}
+
+        # Makefile
+        files[
+            "Makefile"
+        ] = f"""
+# This file is auto-generated by the GraphyFlow backend.
+KERNEL_NAME := {kernel_name}
+EXECUTABLE := {executable_name}
+
+TARGET := sw_emu
+DEVICE := /opt/xilinx/platforms/xilinx_u55c_gen3x16_xdma_3_202210_1/xilinx_u55c_gen3x16_xdma_3_202210_1.xpfm
+
+.PHONY: all clean cleanall exe check
+
+include scripts/main.mk
+
+check: all
+	./run.sh
+"""
+        # fpga_executor.cpp (修改内核名称宏)
+        files[
+            "fpga_executor.cpp"
+        ] = f"""
+#include "fpga_executor.h"
+#include "generated_host.h" 
+#include <iostream>
+
+#define KERNEL_NAME "{kernel_name}"
+
+// ... (fpga_executor.cpp 的其余内容保持不变) ...
+std::vector<int> run_fpga_kernel(
+    const std::string& xclbin_path,
+    const GraphCSR& graph,
+    int start_node,
+    double& total_kernel_time_sec)
+{{
+    cl_int err;
+    auto devices = xcl::get_xil_devices();
+    auto device = devices[0];
+    OCL_CHECK(err, cl::Context context(device, NULL, NULL, NULL, &err));
+    OCL_CHECK(err, cl::CommandQueue q(context, device, CL_QUEUE_PROFILING_ENABLE, &err));
+    auto fileBuf = xcl::read_binary_file(xclbin_path);
+    cl::Program::Binaries bins{{{{fileBuf.data(), fileBuf.size()}}}};
+    OCL_CHECK(err, cl::Program program(context, {{device}}, bins, NULL, &err));
+    OCL_CHECK(err, cl::Kernel kernel(program, KERNEL_NAME, &err));
+
+    AlgorithmHost algo_host(context, kernel, q);
+    algo_host.setup_buffers(graph, start_node);
+    total_kernel_time_sec = 0;
+    int max_iterations = graph.num_vertices;
+    int iter = 0;
+    std::cout << "\\nStarting FPGA execution..." << std::endl;
+
+    // 对于流式内核, 这个循环只会执行一次 (因为 get_stop_flag 返回 1)
+    while (iter < max_iterations) {{
+        algo_host.transfer_data_to_fpga();
+        cl::Event event;
+        algo_host.execute_kernel_iteration(event);
+        event.wait();
+        algo_host.transfer_data_from_fpga();
+
+        unsigned long start = 0, end = 0;
+        event.getProfilingInfo(CL_PROFILING_COMMAND_START, &start);
+        event.getProfilingInfo(CL_PROFILING_COMMAND_END, &end);
+        double iteration_time_ns = end - start;
+        total_kernel_time_sec += iteration_time_ns * 1.0e-9;
+        double mteps = (double)graph.num_edges / (iteration_time_ns * 1.0e-9) / 1.0e6;
+
+        std::cout << "FPGA Iteration " << iter << ": "
+                  << "Time = " << (iteration_time_ns * 1.0e-6) << " ms, "
+                  << "Throughput = " << mteps << " MTEPS" << std::endl;
+        
+        iter++;
+        
+        if (algo_host.get_stop_flag() == 1) {{
+            std::cout << "FPGA computation finished after " << iter << " execution(s)." << std::endl;
+            break;
+        }}
+    }}
+
+    const std::vector<int>& final_results_ref = algo_host.get_results();
+    std::vector<int> final_results = final_results_ref;
+    
+    return final_results;
+}}
+"""
+        # run.sh
+        files[
+            "run.sh"
+        ] = f"""
+#!/bin/bash
+# This file is auto-generated by the GraphyFlow backend.
+source /home/feiyang/set_env.sh
+export XCL_EMULATION_MODE=sw_emu
+DATASET="./graph.txt"
+./{executable_name} ./xclbin/{kernel_name}.sw_emu.xclbin $DATASET
+"""
+        # system.cfg
+        files[
+            "system.cfg"
+        ] = f"""
+# This file is auto-generated by the GraphyFlow backend.
+[connectivity]
+nk={kernel_name}:1:{kernel_name}_1
+"""
+        # scripts/kernel/kernel.mk
+        files[
+            "kernel.mk"
+        ] = """
+# Makefile for the Vitis Kernel
+VPP := v++
+# KERNEL_NAME is passed from the top Makefile
+KERNEL_SRC := scripts/kernel/$(KERNEL_NAME).cpp
+XCLBIN_DIR := ./xclbin
+XCLBIN_FILE := $(XCLBIN_DIR)/$(KERNEL_NAME).$(TARGET).xclbin
+KERNEL_XO := $(XCLBIN_DIR)/$(KERNEL_NAME).$(TARGET).xo
+EMCONFIG_FILE := ./emconfig.json
+CLFLAGS += --kernel $(KERNEL_NAME)
+CLFLAGS += -Iscripts/kernel
+LDFLAGS_VPP += --config ./system.cfg
+LDFLAGS_VPP += -Iscripts/kernel
+
+$(KERNEL_XO): $(KERNEL_SRC)
+	@mkdir -p $(XCLBIN_DIR)
+	$(VPP) -c -t $(TARGET) --platform $(DEVICE) $(CLFLAGS) -o $@ $<
+
+$(XCLBIN_FILE): $(KERNEL_XO)
+	$(VPP) -l -t $(TARGET) --platform $(DEVICE) $(LDFLAGS_VPP) -o $@ $<
+
+emconfig:
+	emconfigutil --platform $(DEVICE) --od .
+
+.PHONY: emconfig
+"""
+        return files
 
     def debug_msgs(self, phases=[1, 2, 3]):
         if 1 in phases:
