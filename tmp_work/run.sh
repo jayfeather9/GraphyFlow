@@ -6,9 +6,10 @@ source /home/feiyang/set_env.sh
 
 # Set emulation mode
 export XCL_EMULATION_MODE=sw_emu
+# export XCL_EMULATION_MODE=hw_emu
 
-# DATASET="./graph.txt"
-DATASET="/home/feiyang/ReGraph/dataset/rmat-19-32.txt"
+DATASET="./graph.txt"
+# DATASET="/home/feiyang/ReGraph/dataset/rmat-19-32.txt"
 
 # Run the host application
 # Usage: ./<executable> <xclbin_file> <graph_data_file>

@@ -1,4 +1,4 @@
-# Makefile for the Bellman-Ford Host Application
+# Makefile for the Host Application
 
 # Define the C++ compiler
 CXX := g++
@@ -6,12 +6,21 @@ CXX := g++
 # Executable name
 EXECUTABLE := bellman_ford_host
 
-# Source files - Correct the path
-HOST_SRCS := $(wildcard scripts/host/*.cpp)
+# Source files - 更新源文件列表
+# 移除了 fpga_bellman_ford.cpp 和 fpga_handler.cpp
+# 添加了 generated_host.cpp 和 fpga_executor.cpp
+HOST_SRCS := scripts/host/host.cpp \
+             scripts/host/graph_loader.cpp \
+             scripts/host/fpga_executor.cpp \
+             scripts/host/generated_host.cpp \
+             scripts/host/host_verifier.cpp \
+             scripts/host/host_bellman_ford.cpp \
+             scripts/host/xcl2.cpp
 
 # Include directories
-# Correct the include path for common.h
 CXXFLAGS := -Iscripts/host
+# 新增: 将生成的 kernel 目录也加入 include 路径
+CXXFLAGS += -Iscripts/kernel
 CXXFLAGS += -I$(XILINX_XRT)/include
 CXXFLAGS += -I$(XILINX_VITIS)/include
 
