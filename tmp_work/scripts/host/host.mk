@@ -18,13 +18,14 @@ HOST_SRCS := scripts/host/host.cpp \
 CXXFLAGS := -Iscripts/host -Iscripts/kernel
 CXXFLAGS += -I$(XILINX_XRT)/include
 CXXFLAGS += -I$(XILINX_VITIS)/include
+CXXFLAGS += -I$(XILINX_HLS)/include
 
 # Compiler flags
-CXXFLAGS += -std=c++14 -Wall
+CXXFLAGS += -std=c++17 -Wall
 
 # Linker flags
 LDFLAGS := -L$(XILINX_XRT)/lib
-LDFLAGS += -lxilinxopencl -lxrt_coreutil -lstdc++ -lrt -pthread
+LDFLAGS += -lOpenCL -lxrt_coreutil -lstdc++ -lrt -pthread -Wl,--export-dynamic
 
 # Build rule for the executable
 $(EXECUTABLE): $(HOST_SRCS)

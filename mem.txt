@@ -1,0 +1,30 @@
+void demux_1(hls::stream<struct_kbu_33_t> &in_batch_stream, hls::stream<net_wrapper_kt_pair_141_t_t> (&out_streams)[8]) {
+    struct_kbu_33_t in_batch;
+    while (true) {
+#pragma HLS PIPELINE
+        in_batch = in_batch_stream.read();
+        net_wrapper_kt_pair_141_t_t wrapper_data;
+        for (uint32_t i = 0; i < PE_NUM; i++) {
+#pragma HLS UNROLL
+            if (in_batch.end_pos >= i && in_batch.end_flag) {
+                wrapper_data.end_flag = true;
+            } else {
+                wrapper_data.end_flag = false;
+                wrapper_data.data = in_batch.data[i];
+                out_streams[i].write(wrapper_data);
+            }
+        }
+        if (in_batch.end_flag) {
+            break;
+        }
+    }
+    // Propagate end_flag to all output streams
+    net_wrapper_kt_pair_141_t_t end_wrapper;
+    end_wrapper.end_flag = true;
+    for (uint32_t i = 0; i < 8; i++) {
+#pragma HLS UNROLL
+        out_streams[i].write(end_wrapper);
+    }
+}
+
+记得把这个改掉

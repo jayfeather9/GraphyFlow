@@ -233,5 +233,5 @@ graph.txt
 *.protoinst
 membership.out
 
-graphyflow.h
-graphyflow.cpp
+# graphyflow.h
+# graphyflow.cpp

@@ -1,0 +1,8 @@
+{
+    "files.associations": {
+        "cstdint": "cpp",
+        "regex": "cpp",
+        "__locale": "cpp",
+        "istream": "cpp"
+    }
+}
