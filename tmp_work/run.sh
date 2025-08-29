@@ -12,7 +12,8 @@ export LD_PRELOAD=/lib/x86_64-linux-gnu/libOpenCL.so.1
 
 # 设置仿真模式
 export XCL_EMULATION_MODE=sw_emu
-DATASET="./graph.txt"
+# DATASET="./graph.txt"
+DATASET="/home/feiyang/ReGraph/dataset/rmat-19-32.txt"
 
 # echo "--- Running with LD_PRELOAD fix ---"
 # echo "LD_PRELOAD is set to: $LD_PRELOAD"

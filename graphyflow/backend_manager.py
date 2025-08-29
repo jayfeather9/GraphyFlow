@@ -1682,7 +1682,7 @@ emconfig:
         )
 
         drain_buffer_type = HLSType(
-            HLSBasicType.ARRAY, sub_types=[out_data_type], array_dims=[f"PE_NUM << 1"]
+            HLSBasicType.ARRAY, sub_types=[out_data_type], array_dims=[f"((PE_NUM << 1))"]
         )
         drain_buffer_var = HLSVar("data_to_write", drain_buffer_type)
         body.append(CodeVarDecl(drain_buffer_var.name, drain_buffer_var.type))
@@ -1712,7 +1712,7 @@ emconfig:
         write_to_buffer_expr = HLSExpr(
             HLSExprT.BINOP,
             BinOp.MOD,
-            [HLSExpr(HLSExprT.VAR, start_pos_var), HLSExpr(HLSExprT.CONST, "PE_NUM << 1")],
+            [HLSExpr(HLSExprT.VAR, start_pos_var), HLSExpr(HLSExprT.CONST, "((PE_NUM << 1))")],
         )
         assign_to_buffer = CodeAssign(
             HLSVar(f"{drain_buffer_var.name}[{write_to_buffer_expr.code}]", out_data_type),
@@ -1768,7 +1768,7 @@ emconfig:
         read_from_buffer_expr = HLSExpr(
             HLSExprT.BINOP,
             BinOp.MOD,
-            [read_from_buffer_offset, HLSExpr(HLSExprT.CONST, "PE_NUM << 1")],
+            [read_from_buffer_offset, HLSExpr(HLSExprT.CONST, "(PE_NUM << 1)")],
         )
 
         packing_loop_body = [

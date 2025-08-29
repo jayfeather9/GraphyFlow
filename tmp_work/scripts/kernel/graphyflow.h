@@ -143,7 +143,7 @@ void Gathe_173(hls::stream<struct_abu_11_t> &i_0,
 // The interface is changed to pointers for memory-mapped access
 extern "C" void
 graphyflow(const struct_ebu_7_t *i_0_20,    // Input from global memory
-           struct_sbu_22_t *o_0_176,        // Output to global memory
+           KernelOutputBatch *o_0_176,      // Output to global memory
            int *stop_flag,                  // Flag to signal convergence
            uint16_t input_length_in_batches // Number of batches to process
 );

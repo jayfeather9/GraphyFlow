@@ -27,7 +27,8 @@ class AlgorithmHost {
 
     // Host-side memory
     std::vector<struct_ebu_7_t, aligned_allocator<struct_ebu_7_t>> h_i_0_20;
-    std::vector<struct_sbu_22_t, aligned_allocator<struct_sbu_22_t>> h_o_0_176;
+    std::vector<KernelOutputBatch, aligned_allocator<KernelOutputBatch>>
+        h_o_0_176;
 
     // Host memory for stop flag
     std::vector<int, aligned_allocator<int>> h_stop_flag;
