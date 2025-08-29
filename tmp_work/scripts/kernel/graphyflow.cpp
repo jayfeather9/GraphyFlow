@@ -30,16 +30,21 @@ void demux_1(hls::stream<struct_kbu_33_t> &in_batch_stream,
     struct_kbu_33_t in_batch;
     while (true) {
 #pragma HLS PIPELINE
+        // printf("DEBUG: --- reading one in_batch ---\n");
+        // fflush(stdout);
         in_batch = in_batch_stream.read();
         net_wrapper_kt_pair_141_t_t wrapper_data;
         for (uint32_t i = 0; i < PE_NUM; i++) {
 #pragma HLS UNROLL
-            if (in_batch.end_pos >= i && in_batch.end_flag) {
-                wrapper_data.end_flag = true;
-            } else {
+            if (i < in_batch.end_pos) {
+                // printf("DEBUG: --- pos i = %d < end_pos %d ---\n", i,
+                // in_batch.end_pos); fflush(stdout);
                 wrapper_data.end_flag = false;
                 wrapper_data.data = in_batch.data[i];
                 out_streams[i].write(wrapper_data);
+            } else {
+                // printf("DEBUG: --- pos i = %d > end_pos %d, end ---\n", i,
+                // in_batch.end_pos); fflush(stdout);
             }
         }
         if (in_batch.end_flag) {
@@ -258,7 +263,14 @@ void Reduc_141_pre_process(
             // -- Inline sub graph end --
             out_batch_intermediate_key.data[i] = key_out_elem;
             out_batch_intermediate_transform.data[i] = transform_out_elem;
+            // printf("DEBUG: --- preprocess: batch data[%d] src_dist = %.2f,
+            // dst.id = %d, edge_w = %.2f ---\n", i,
+            // (float)in_batch_i_0.data[i].ele_0, in_batch_i_0.data[i].ele_1.id,
+            // (float)in_batch_i_0.data[i].ele_2);
+            // fflush(stdout);
         }
+        // printf("DEBUG: --- preprocess: batch end_flag = %d, end_pos = %d
+        // ---\n", in_batch_i_0.end_flag, in_batch_i_0.end_pos); fflush(stdout);
         out_batch_intermediate_key.end_flag = in_batch_i_0.end_flag;
         out_batch_intermediate_key.end_pos = in_batch_i_0.end_pos;
         out_batch_intermediate_transform.end_flag = in_batch_i_0.end_flag;
@@ -327,8 +339,8 @@ void Reduc_141_unit_reduce(
                     key_elem = kt_elem.data.key;
                     transform_elem = kt_elem.data.transform;
                     struct_sb_41_t old_ele;
-                    // printf("DEBUG: --- key_elem = %d ---\n", key_elem);
-                    // fflush(stdout);
+                    // printf("DEBUG: --- key_elem = %d data = %.2f ---\n",
+                    // key_elem, (float)transform_elem.ele_0); fflush(stdout);
                     old_ele = key_mem[i][key_elem];
                     for (uint32_t i_search = 0; i_search < L + 1; i_search++) {
 #pragma HLS UNROLL
@@ -377,23 +389,26 @@ void Reduc_141_unit_reduce(
                         new_ele.ele_1 = true;
                         new_ele.ele_0 = transform_elem;
                     }
+                    // printf("DEBUG: --- new_data = %.2f ---\n",
+                    // (float)new_ele.ele_0.ele_0);
+                    fflush(stdout);
                     key_mem[i][key_elem] = new_ele;
                     key_buffer[i][L] = new_ele;
                     i_buffer[i][L] = key_elem;
                 }
             }
         }
-        // printf("DEBUG: --- Reduce unit PE for loop done ---\n");
+        // // printf("DEBUG: --- Reduce unit PE for loop done ---\n");
         // fflush(stdout);
         end_flag = true;
         for (uint32_t i = 0; i < PE_NUM; i++) {
 #pragma HLS UNROLL
-            // printf("DEBUG: --- setting end flag ---\n");
+            // // printf("DEBUG: --- setting end flag ---\n");
             // fflush(stdout);
             end_flag = (end_flag & all_end_flags[i]);
         }
         if (end_flag) {
-            // printf("DEBUG: --- end flag detected, breaking ---\n");
+            // // printf("DEBUG: --- end flag detected, breaking ---\n");
             // fflush(stdout);
             break;
         }
@@ -405,7 +420,7 @@ void Reduc_141_unit_reduce(
     start_pos = 0;
     struct_sbu_22_t data_pack;
     data_pack.end_flag = false;
-    struct_an_20_t data_to_write[PE_NUM << 1];
+    struct_an_20_t data_to_write[(PE_NUM << 1)];
 #pragma HLS ARRAY_PARTITION variable = data_to_write complete dim = 0
     uint32_t k;
     k = 0;
@@ -414,18 +429,24 @@ void Reduc_141_unit_reduce(
         for (uint32_t pe = 0; pe < PE_NUM; pe++) {
 #pragma HLS UNROLL
             if (key_mem[pe][(k + pe)].ele_1) {
-                data_to_write[(start_pos % PE_NUM << 1)] =
+                data_to_write[(start_pos % (PE_NUM << 1))] =
                     key_mem[pe][(k + pe)].ele_0;
                 data_cnt = (data_cnt + 1);
                 start_pos = (start_pos + 1);
+                // printf("DEBUG: --- mem data key = %d, elem = %.2f ---\n", k +
+                // pe, (float)key_mem[pe][(k + pe)].ele_0.ele_0);
             }
         }
         if ((data_cnt >= PE_NUM)) {
             data_pack.end_pos = PE_NUM;
             for (uint32_t i = 0; i < PE_NUM; i++) {
 #pragma HLS UNROLL
-                data_pack.data[i] =
-                    data_to_write[(((start_pos - data_cnt) + i) % PE_NUM << 1)];
+                data_pack.data[i] = data_to_write[(
+                    ((start_pos - data_cnt) + i) % (PE_NUM << 1))];
+                // printf("DEBUG: --- write data key = %d, elem = %.2f pos = %d
+                // ---\n", data_pack.data[i].ele_1.id,
+                // (float)data_pack.data[i].ele_0, (((start_pos - data_cnt) + i)
+                // % (PE_NUM << 1)));
             }
             o_0.write(data_pack);
             data_cnt = (data_cnt - PE_NUM);
@@ -435,11 +456,16 @@ void Reduc_141_unit_reduce(
     // 5. Drain any remaining data and send final batch with end_flag
     data_pack.end_flag = true;
     data_pack.end_pos = data_cnt;
+    // printf("DEBUG: --- data_cnt = %d ---\n", data_cnt);
     for (uint32_t i = 0; i < PE_NUM; i++) {
 #pragma HLS UNROLL
         if ((i < data_cnt)) {
             data_pack.data[i] =
-                data_to_write[(((start_pos - data_cnt) + i) % PE_NUM << 1)];
+                data_to_write[(((start_pos - data_cnt) + i) % (PE_NUM << 1))];
+            // printf("DEBUG: --- write data key = %d, elem = %.2f pos = %d
+            // ---\n", data_pack.data[i].ele_1.id,
+            // (float)data_pack.data[i].ele_0, (((start_pos - data_cnt) + i) %
+            // (PE_NUM << 1)));
         }
     }
     o_0.write(data_pack);
@@ -756,7 +782,7 @@ void Colle_65(hls::stream<struct_obu_19_t> &i_0,
         out_idx = 0;
         for (uint32_t i = 0; i < PE_NUM; i++) {
 #pragma HLS UNROLL
-            if (in_batch_i_0.data[i].valid) {
+            if (in_batch_i_0.data[i].valid && i < in_batch_i_0.end_pos) {
                 out_batch_o_0.data[out_idx] = in_batch_i_0.data[i].data;
                 out_idx = (out_idx + 1);
             }
@@ -971,103 +997,103 @@ static void graphyflow_dataflow(hls::stream<struct_ebu_7_t> &i_0_20_stream,
 #pragma HLS STREAM variable = stream_o_0_167 depth = 4
     hls::stream<struct_nbu_9_t> stream_o_1_171;
 #pragma HLS STREAM variable = stream_o_1_171 depth = 4
-    // printf("DEBUG: --- Starting Execution ---\n");
+    // // printf("DEBUG: --- Starting Execution ---\n");
     // fflush(stdout);
 
     // --- Function Calls (in topological order) ---
     CopyC_19(i_0_20_stream, stream_o_0_21, stream_o_1_22);
-    // printf("DEBUG: After CopyC_19\n");
+    // // printf("DEBUG: After CopyC_19\n");
     // fflush(stdout);
 
     CopyC_12(stream_o_0_21, stream_o_0_14, stream_o_1_15);
-    // printf("DEBUG: After CopyC_12\n");
+    // // printf("DEBUG: After CopyC_12\n");
     // fflush(stdout);
 
     Unary_16(stream_o_1_22, stream_o_0_18);
-    // printf("DEBUG: After Unary_16\n");
+    // // printf("DEBUG: After Unary_16\n");
     // fflush(stdout);
 
     Unary_6(stream_o_0_14, stream_o_0_8);
-    // printf("DEBUG: After Unary_6\n");
+    // // printf("DEBUG: After Unary_6\n");
     // fflush(stdout);
 
     Unary_9(stream_o_1_15, stream_o_0_11);
-    // printf("DEBUG: After Unary_9\n");
+    // // printf("DEBUG: After Unary_9\n");
     // fflush(stdout);
 
     Unary_23(stream_o_0_8, stream_o_0_25);
-    // printf("DEBUG: After Unary_23\n");
+    // // printf("DEBUG: After Unary_23\n");
     // fflush(stdout);
 
     Gathe_27(stream_o_0_25, stream_o_0_11, stream_o_0_18, stream_o_0_31);
-    // printf("DEBUG: After Gathe_27\n");
+    // // printf("DEBUG: After Gathe_27\n");
     // fflush(stdout);
 
     CopyC_57(stream_o_0_31, stream_o_0_59, stream_o_1_60);
-    // printf("DEBUG: After CopyC_57\n");
+    // // printf("DEBUG: After CopyC_57\n");
     // fflush(stdout);
 
     Scatt_32(stream_o_0_59, stream_o_2_36);
-    // printf("DEBUG: After Scatt_32\n");
+    // // printf("DEBUG: After Scatt_32\n");
     // fflush(stdout);
 
     BinOp_48(stream_o_2_36, stream_o_0_51);
-    // printf("DEBUG: After BinOp_48\n");
+    // // printf("DEBUG: After BinOp_48\n");
     // fflush(stdout);
 
     Condi_61(stream_o_1_60, stream_o_0_51, stream_o_0_64);
-    // printf("DEBUG: After Condi_61\n");
+    // // printf("DEBUG: After Condi_61\n");
     // fflush(stdout);
 
     Colle_65(stream_o_0_64, stream_o_0_67);
-    // printf("DEBUG: After Colle_65\n");
+    // // printf("DEBUG: After Colle_65\n");
     // fflush(stdout);
 
     // --- Start of Reduce Super-Block for Reduc_141 ---
     Reduc_141_pre_process(stream_o_0_67, reduce_141_intermediate_key,
                           reduce_141_intermediate_transform);
-    // printf("DEBUG: After Reduc_141_pre_process\n");
+    // // printf("DEBUG: After Reduc_141_pre_process\n");
     // fflush(stdout);
 
     stream_zipper_0(reduce_141_intermediate_key,
                     reduce_141_intermediate_transform, reduce_141_z2d_pair);
-    // printf("DEBUG: After stream_zipper_0\n");
+    // // printf("DEBUG: After stream_zipper_0\n");
     // fflush(stdout);
 
     demux_1(reduce_141_z2d_pair, reduce_141_d2o_pair);
-    // printf("DEBUG: After demux_1\n");
+    // // printf("DEBUG: After demux_1\n");
     // fflush(stdout);
 
     omega_switch_2(reduce_141_d2o_pair, reduce_141_o2u_pair);
-    // printf("DEBUG: After omega_switch_2\n");
+    // // printf("DEBUG: After omega_switch_2\n");
     // fflush(stdout);
 
     Reduc_141_unit_reduce(reduce_141_o2u_pair, reduce_141_uout_streams);
-    // printf("DEBUG: After Reduc_141_unit_reduce\n");
+    // // printf("DEBUG: After Reduc_141_unit_reduce\n");
     // fflush(stdout);
     // --- End of Reduce Super-Block for Reduc_141 ---
 
     Scatt_151(reduce_141_uout_streams, stream_o_0_153, stream_o_1_154);
-    // printf("DEBUG: After Scatt_151\n");
+    // // printf("DEBUG: After Scatt_151\n");
     // fflush(stdout);
 
     CopyC_168(stream_o_1_154, stream_o_0_170, stream_o_1_171);
-    // printf("DEBUG: After CopyC_168\n");
+    // // printf("DEBUG: After CopyC_168\n");
     // fflush(stdout);
 
     Unary_161(stream_o_0_170, stream_o_0_163);
-    // printf("DEBUG: After Unary_161\n");
+    // // printf("DEBUG: After Unary_161\n");
     // fflush(stdout);
 
     BinOp_164(stream_o_0_153, stream_o_0_163, stream_o_0_167);
-    // printf("DEBUG: After BinOp_164\n");
+    // // printf("DEBUG: After BinOp_164\n");
     // fflush(stdout);
 
     Gathe_173(stream_o_0_167, stream_o_1_171, o_0_176_stream);
-    // printf("DEBUG: After Gathe_173\n");
+    // // printf("DEBUG: After Gathe_173\n");
     // fflush(stdout);
 
-    // printf("DEBUG: --- Execution Finished Successfully ---\n");
+    // // printf("DEBUG: --- Execution Finished Successfully ---\n");
     // fflush(stdout);
 }
 
@@ -1083,19 +1109,45 @@ mem_to_stream_loop:
 }
 
 // Stream-to-Memory Function
-static void stream_to_mem_func(hls::stream<struct_sbu_22_t> &in_stream,
-                               struct_sbu_22_t *out, uint16_t num_batches) {
+static void stream_to_mem_func(
+    hls::stream<struct_sbu_22_t> &in_stream,
+    KernelOutputBatch *out) { // <--- 修改1: 类型变为 KernelOutputBatch*
 stream_to_mem_loop:
-    for (uint16_t i = 0; i < num_batches; ++i) {
+    int i = 0;
+    while (true) {
 #pragma HLS PIPELINE
-        out[i] = in_stream.read();
+        if (!in_stream.empty()) {
+            struct_sbu_22_t internal_batch = in_stream.read();
+            KernelOutputBatch output_batch; // <--- 修改2: 创建新的简单结构体
+
+            // --- 修改3: 循环转换数据 ---
+            for (int k = 0; k < PE_NUM; k++) {
+#pragma HLS UNROLL
+                output_batch.data[k].distance =
+                    (float)internal_batch.data[k]
+                        .ele_0; // ap_fixed 自动转为 float
+                output_batch.data[k].id = internal_batch.data[k].ele_1.id;
+                // printf("stream_to_mem_func: node_id = %d, dist = %.2f\n",
+                // output_batch.data[k].id, output_batch.data[k].distance);
+            }
+            output_batch.end_flag = internal_batch.end_flag;
+            output_batch.end_pos = internal_batch.end_pos;
+
+            out[i] = output_batch; // 写入到全局内存
+
+            // printf("DEBUG: --- end pos = %d ---\n", out[i].end_pos);
+
+            if (out[i].end_flag) {
+                break;
+            }
+            i++;
+        }
     }
 }
 
-extern "C" void
-graphyflow(const struct_ebu_7_t *i_0_20, struct_sbu_22_t *o_0_176,
-           int *stop_flag, // Note: stop_flag is now managed by the host
-           uint16_t input_length_in_batches) {
+extern "C" void graphyflow(const struct_ebu_7_t *i_0_20,
+                           KernelOutputBatch *o_0_176, int *stop_flag,
+                           uint16_t input_length_in_batches) {
 // AXI Interface Pragmas
 #pragma HLS INTERFACE m_axi port = i_0_20 offset = slave bundle = gmem0
 #pragma HLS INTERFACE m_axi port = o_0_176 offset = slave bundle = gmem1
@@ -1114,10 +1166,10 @@ graphyflow(const struct_ebu_7_t *i_0_20, struct_sbu_22_t *o_0_176,
 #pragma HLS STREAM variable = o_stream depth = 4
 
 #pragma HLS DATAFLOW
-    printf("Info: mem_to_stream_func started...\n");
+    // printf("Info: mem_to_stream_func started...\n");
     mem_to_stream_func(i_0_20, i_stream, input_length_in_batches);
-    printf("Info: GraphyFlow Kernel started...\n");
+    // printf("Info: GraphyFlow Kernel started...\n");
     graphyflow_dataflow(i_stream, o_stream);
-    printf("Info: stream_to_mem_func started...\n");
-    stream_to_mem_func(o_stream, o_0_176, input_length_in_batches);
+    // printf("Info: stream_to_mem_func started...\n");
+    stream_to_mem_func(o_stream, o_0_176);
 }

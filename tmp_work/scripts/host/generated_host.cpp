@@ -14,7 +14,7 @@ void AlgorithmHost::setup_buffers(const GraphCSR &graph, int start_node) {
     cl_int err;
 
     // Initialize host-side distances for Bellman-Ford
-    h_distances.assign(m_num_vertices, std::numeric_limits<int>::max());
+    h_distances.assign(m_num_vertices, 16384);
     if (start_node < m_num_vertices) {
         h_distances[start_node] = 0;
     }
@@ -73,6 +73,9 @@ void AlgorithmHost::setup_buffers(const GraphCSR &graph, int start_node) {
     // Allocate space for output data
     h_o_0_176.resize(m_num_batches);
 
+    std::cout << "DIAGNOSTIC_INFO: Host sizeof(KernelOutputBatch) = "
+              << sizeof(KernelOutputBatch) << " bytes." << std::endl;
+
     // --- Setup OpenCL Buffers ---
     OCL_CHECK(err, d_i_0_20 = cl::Buffer(m_context,
                                          CL_MEM_USE_HOST_PTR | CL_MEM_READ_ONLY,
@@ -80,7 +83,7 @@ void AlgorithmHost::setup_buffers(const GraphCSR &graph, int start_node) {
                                          h_i_0_20.data(), &err));
     OCL_CHECK(err, d_o_0_176 = cl::Buffer(
                        m_context, CL_MEM_USE_HOST_PTR | CL_MEM_WRITE_ONLY,
-                       m_num_batches * sizeof(struct_sbu_22_t),
+                       m_num_batches * sizeof(KernelOutputBatch),
                        h_o_0_176.data(), &err));
 
     // Setup stop_flag buffer
@@ -111,8 +114,41 @@ void AlgorithmHost::execute_kernel_iteration(cl::Event &event) {
 
 void AlgorithmHost::transfer_data_from_fpga() {
     cl_int err;
-    OCL_CHECK(err, err = m_q.enqueueMigrateMemObjects(
-                       {d_o_0_176, d_stop_flag}, CL_MIGRATE_MEM_OBJECT_HOST));
+
+    // --- 原来的代码 ---
+    // OCL_CHECK(err, err = m_q.enqueueMigrateMemObjects(
+    //                    {d_o_0_176, d_stop_flag},
+    //                    CL_MIGRATE_MEM_OBJECT_HOST));
+
+    // --- 新的、更强的“手动同步”代码 ---
+    // 第1步: 映射输出缓冲区。这是一个阻塞调用
+    // (CL_TRUE)，它会强制等待数据从内核同步过来。
+    void *mapped_ptr_output = m_q.enqueueMapBuffer(
+        d_o_0_176, CL_TRUE, CL_MAP_READ, 0,
+        m_num_batches * sizeof(KernelOutputBatch), nullptr, nullptr, &err);
+    // 检查映射是否成功
+    OCL_CHECK(err, (mapped_ptr_output == nullptr) ? -1 : CL_SUCCESS);
+
+    // 同样地，映射stop_flag缓冲区
+    void *mapped_ptr_stop =
+        m_q.enqueueMapBuffer(d_stop_flag, CL_TRUE, CL_MAP_READ, 0, sizeof(int),
+                             nullptr, nullptr, &err);
+    OCL_CHECK(err, (mapped_ptr_stop == nullptr) ? -1 : CL_SUCCESS);
+
+    // 对于 USE_HOST_PTR
+    // 缓冲区，OpenCL保证返回的指针就是我们最初提供的h_o_0_176.data()。
+    // 在这个Map调用返回后，h_o_0_176 和 h_stop_flag
+    // 里的数据就保证是最新、最完整的了。
+
+    // 第2步: 立即解除映射。因为数据已经同步回了我们的主机指针 h_o_0_176，
+    // 我们可以马上告诉OpenCL我们“用完了”，把所有权还给它。
+    OCL_CHECK(err,
+              err = m_q.enqueueUnmapMemObject(d_o_0_176, mapped_ptr_output));
+    OCL_CHECK(err,
+              err = m_q.enqueueUnmapMemObject(d_stop_flag, mapped_ptr_stop));
+
+    // 第3步 (可选但推荐): 调用finish()确保所有命令（包括Unmap）都已执行完毕。
+    m_q.finish();
 }
 
 bool AlgorithmHost::check_convergence_and_update() {
@@ -121,11 +157,16 @@ bool AlgorithmHost::check_convergence_and_update() {
     // Hardcoded Bellman-Ford update and convergence check logic
     std::map<int, ap_fixed<32, 16>> min_distances;
 
+    // printf("DEBUG: --- collecting minimum distances ---\n");
+    // printf("Length of output is %ld\n", h_o_0_176.size());
     // Collect minimum distances from kernel output
     for (const auto &batch : h_o_0_176) {
+        // printf("DEBUG: --- batch size is %d ---\n", batch.end_pos);
         for (int i = 0; i < batch.end_pos; ++i) {
-            int node_id = batch.data[i].ele_1.id;
-            ap_fixed<32, 16> dist = batch.data[i].ele_0;
+            int node_id = batch.data[i].id;
+            float dist_float = batch.data[i].distance;
+            ap_fixed<32, 16> dist = dist_float;
+            // printf("End: node_id = %d, dist = %.2f\n", node_id, (float)dist);
             if (min_distances.find(node_id) == min_distances.end() ||
                 dist < min_distances[node_id]) {
                 min_distances[node_id] = dist;

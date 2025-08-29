@@ -6,9 +6,7 @@ void demux_1(hls::stream<struct_kbu_33_t> &in_batch_stream, hls::stream<net_wrap
         net_wrapper_kt_pair_141_t_t wrapper_data;
         for (uint32_t i = 0; i < PE_NUM; i++) {
 #pragma HLS UNROLL
-            if (in_batch.end_pos >= i && in_batch.end_flag) {
-                wrapper_data.end_flag = true;
-            } else {
+            if (i < in_batch.end_pos && !in_batch.end_flag) {
                 wrapper_data.end_flag = false;
                 wrapper_data.data = in_batch.data[i];
                 out_streams[i].write(wrapper_data);
@@ -27,4 +25,29 @@ void demux_1(hls::stream<struct_kbu_33_t> &in_batch_stream, hls::stream<net_wrap
     }
 }
 
-记得把这个改掉
+void Colle_65(hls::stream<struct_obu_19_t> &i_0,
+              hls::stream<struct_sbu_14_t> &o_0) {
+    struct_obu_19_t in_batch_i_0;
+    struct_sbu_14_t out_batch_o_0;
+    while (true) {
+#pragma HLS PIPELINE
+        in_batch_i_0 = i_0.read();
+        uint8_t out_idx;
+        out_idx = 0;
+        for (uint32_t i = 0; i < PE_NUM; i++) {
+#pragma HLS UNROLL
+            if (in_batch_i_0.data[i].valid && i < in_batch_i_0.end_pos) {
+                out_batch_o_0.data[out_idx] = in_batch_i_0.data[i].data;
+                out_idx = (out_idx + 1);
+            }
+        }
+        out_batch_o_0.end_pos = out_idx;
+        out_batch_o_0.end_flag = in_batch_i_0.end_flag;
+        o_0.write(out_batch_o_0);
+        if (in_batch_i_0.end_flag) {
+            break;
+        }
+    }
+}
+
+记得把这2个改掉
