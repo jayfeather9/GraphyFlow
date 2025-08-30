@@ -1141,24 +1141,36 @@ emconfig:
         while_loop_body.append(CodeAssign(in_batch_var, read_expr))
 
         out_idx_type = HLSType(HLSBasicType.UINT8)
-        out_idx_var_decl = CodeVarDecl("out_idx", out_idx_type)
+        out_idx_var_decl = CodeVarDecl("out_idx", out_idx_type, init_val=0)  # Initialize to 0
         while_loop_body.append(out_idx_var_decl)
         out_idx_var = out_idx_var_decl.var
-        while_loop_body.append(CodeAssign(out_idx_var, HLSExpr(HLSExprT.CONST, 0)))
+        # The initialization is now part of the declaration
 
         # 4. Inner for loop for filtering
         in_elem_type = self.type_map[in_port.data_type]  # This is an Optional type
         out_elem_type = self.type_map[out_port.data_type]
 
         ga_op = UnaryOp.GET_ATTR
-        # Condition: in_batch_i_0.data[i].valid
-        cond_expr = HLSExpr(
+        # Part 1: in_batch_i_0.data[i].valid
+        valid_check_expr = HLSExpr(
             HLSExprT.UOP,
             (ga_op, "valid"),
             [HLSExpr(HLSExprT.VAR, HLSVar(f"in_batch_i_0.data[i]", in_elem_type))],
         )
 
-        ga_op = UnaryOp.GET_ATTR
+        # Part 2: i < in_batch_i_0.end_pos
+        end_pos_check_expr = HLSExpr(
+            HLSExprT.BINOP,
+            BinOp.LT,
+            [
+                HLSExpr(HLSExprT.VAR, HLSVar("i", HLSType(HLSBasicType.UINT))),
+                HLSExpr(HLSExprT.UOP, (ga_op, "end_pos"), [HLSExpr(HLSExprT.VAR, in_batch_var)]),
+            ],
+        )
+
+        # Combined Condition: data.valid && i < end_pos
+        cond_expr = HLSExpr(HLSExprT.BINOP, BinOp.AND, [valid_check_expr, end_pos_check_expr])
+
         # Assignment if valid: out_batch_o_0.data[out_idx++] = in_batch_i_0.data[i].data
         assign_data = CodeAssign(
             HLSVar(f"out_batch_o_0.data[{out_idx_var.name}]", out_elem_type),

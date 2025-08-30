@@ -186,7 +186,7 @@ class CodeVarDecl(HLSCodeLine):
         self.init_val = init_val
 
     def gen_code(self, indent_lvl: int = 0):
-        init_code = f" = {self.init_val}" if self.init_val else ""
+        init_code = f" = {self.init_val}" if self.init_val is not None else ""
         return indent_lvl * INDENT_UNIT + self.var.type.get_upper_decl(self.var.name) + init_code + ";\n"
 
 
