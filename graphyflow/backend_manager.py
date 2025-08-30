@@ -476,30 +476,30 @@ emconfig:
                     if is_stream_port:
                         self._get_batch_type(base_hls_type)
 
-    def _get_host_output_type(self) -> HLSType:
+    def generate_common_header(self, top_func_name: str) -> str:
         """
-        A helper function to define and return the host-friendly output batch type.
-        This centralizes the definition of KernelOutputBatch to avoid repetition.
+        Generates the full content of the common.h header file.
         """
-        # struct KernelOutputData { float distance; int32_t id; };
-        kernel_output_data_type = HLSType(
-            HLSBasicType.STRUCT,
-            sub_types=[HLSType(HLSBasicType.FLOAT, struct_name="float"), HLSType(HLSBasicType.INT)],
-            struct_prop_names=["distance", "id"],
-            struct_name="KernelOutputData",
-        )
+        # *** 关键：在排序前调用此方法，以确保 KernelOutput 类型被注册 ***
+        self._get_host_output_type()
 
-        # struct KernelOutputBatch { KernelOutputData data[PE_NUM]; bool end_flag; uint8_t end_pos; };
-        output_data_array_type = HLSType(
-            HLSBasicType.ARRAY, sub_types=[kernel_output_data_type], array_dims=[self.PE_NUM]
-        )
-        host_output_type = HLSType(
-            HLSBasicType.STRUCT,
-            sub_types=[output_data_array_type, HLSType(HLSBasicType.BOOL), HLSType(HLSBasicType.UINT8)],
-            struct_prop_names=["data", "end_flag", "end_pos"],
-            struct_name="KernelOutputBatch",
-        )
-        return host_output_type
+        header_guard = "__COMMON_H__"
+        code = f"#ifndef {header_guard}\n#define {header_guard}\n\n"
+
+        code += "#include <limits>\n"
+        code += "#include <string>\n"
+        code += "#include <vector>\n\n"
+        code += '#ifndef __SYNTHESIS__\n#include "xcl2.h"\n#endif\n\n'
+        code += "#include <ap_fixed.h>\n#include <stdint.h>\n\n"
+        code += f"#define PE_NUM {self.PE_NUM}\n\n"
+
+        code += "// --- Struct Type Definitions ---\n"
+        sorted_defs = self._topologically_sort_structs()
+        for hls_type, members in sorted_defs:
+            code += hls_type.gen_decl(members) + "\n"
+
+        code += f"#endif // {header_guard}\n"
+        return code
 
     def _define_functions_and_streams(self, comp_col: dfir.ComponentCollection, top_func_name: str):
         """
@@ -2274,6 +2274,40 @@ emconfig:
     #                            PHASE 4: Final Assembly                       #
     # ======================================================================== #
 
+    def _get_host_output_type(self) -> HLSType:
+        """
+        A helper function to define and return the host-friendly output batch type.
+        This centralizes the definition of KernelOutputBatch and registers the types.
+        """
+        kernel_output_data_type = HLSType(
+            HLSBasicType.STRUCT,
+            sub_types=[HLSType(HLSBasicType.REAL_FLOAT), HLSType(HLSBasicType.INT)],
+            struct_prop_names=["distance", "id"],
+            struct_name="KernelOutputData",
+        )
+        if kernel_output_data_type.name not in self.struct_definitions:
+            self.struct_definitions[kernel_output_data_type.name] = (
+                kernel_output_data_type,
+                ["distance", "id"],
+            )
+
+        output_data_array_type = HLSType(
+            HLSBasicType.ARRAY, sub_types=[kernel_output_data_type], array_dims=["PE_NUM"]
+        )
+        host_output_type = HLSType(
+            HLSBasicType.STRUCT,
+            sub_types=[output_data_array_type, HLSType(HLSBasicType.BOOL), HLSType(HLSBasicType.UINT8)],
+            struct_prop_names=["data", "end_flag", "end_pos"],
+            struct_name="KernelOutputBatch",
+        )
+        if host_output_type.name not in self.struct_definitions:
+            self.struct_definitions[host_output_type.name] = (
+                host_output_type,
+                ["data", "end_flag", "end_pos"],
+            )
+
+        return host_output_type
+
     def _topologically_sort_structs(self) -> List[Tuple[HLSType, List[str]]]:
         """Sorts struct definitions based on their member dependencies."""
         from collections import defaultdict
@@ -2281,34 +2315,50 @@ emconfig:
         adj = defaultdict(list)
         in_degree = defaultdict(int)
 
-        # Build dependency graph
-        for name, (hls_type, _) in self.struct_definitions.items():
-            for sub_type in hls_type.sub_types:
-                sub_basic_type = sub_type.type
-                sub_type_name = sub_type.name
-                if sub_basic_type == HLSBasicType.ARRAY:
-                    sub_basic_type = sub_type.sub_types[0].type
-                    sub_type_name = sub_type_name[:-8]
-                if sub_basic_type == HLSBasicType.STRUCT:
-                    adj[sub_type_name].append(name)
-                    in_degree[name] += 1
-                    # print(f"{sub_type_name} => {name}")
+        all_struct_names = self.struct_definitions.keys()
 
-        # print(in_degree)
+        # Build dependency graph
+        for dependent_struct_name, (hls_type, _) in self.struct_definitions.items():
+            if dependent_struct_name not in in_degree:
+                in_degree[dependent_struct_name] = 0
+
+            if not hls_type.sub_types:
+                continue
+
+            for member_type in hls_type.sub_types:
+
+                base_member_type = member_type
+                if base_member_type.type == HLSBasicType.ARRAY:
+                    base_member_type = base_member_type.sub_types[0]
+
+                if base_member_type.type == HLSBasicType.STRUCT:
+                    dependency_struct_name = base_member_type.name
+
+                    if dependency_struct_name in all_struct_names:
+                        # --- *** 关键修正：修复依赖关系 *** ---
+                        # The dependent_struct depends on the dependency_struct.
+                        # The edge is: dependency_struct -> dependent_struct.
+                        adj[dependency_struct_name].append(dependent_struct_name)
+                        in_degree[dependent_struct_name] += 1
+
         # Kahn's algorithm for topological sort
         queue = [name for name in self.struct_definitions if in_degree[name] == 0]
         sorted_structs = []
 
         while queue:
             u = queue.pop(0)
-            # print(f"Appending {u}")
-            sorted_structs.append(self.struct_definitions[u])
-            for v in adj[u]:
-                in_degree[v] -= 1
-                if in_degree[v] == 0:
-                    queue.append(v)
+            if u in self.struct_definitions:
+                sorted_structs.append(self.struct_definitions[u])
+                for v in adj[u]:
+                    in_degree[v] -= 1
+                    if in_degree[v] == 0:
+                        queue.append(v)
 
         if len(sorted_structs) != len(self.struct_definitions):
+            print("--- DEBUG: Cycle detected in struct dependencies ---")
+            print("Total structs:", len(self.struct_definitions))
+            print("Sorted structs:", len(sorted_structs))
+            print("Remaining in_degrees:", {k: v for k, v in in_degree.items() if v > 0})
             raise RuntimeError("A cycle was detected in the struct definitions.")
 
         return sorted_structs

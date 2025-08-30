@@ -15,6 +15,7 @@ class HLSBasicType(Enum):
     UINT8 = "uint8_t"
     INT = "int32_t"
     FLOAT = "ap_fixed<32, 16>"
+    REAL_FLOAT = "float"
     BOOL = "bool"
     STRUCT = "struct"
     STREAM = "stream"
@@ -58,7 +59,6 @@ class HLSType:
         self.is_const_ptr = is_const_ptr
 
         if basic_type.is_simple:
-            assert sub_types is None
             self.name = basic_type.value
             self.full_name = self.name
         elif basic_type == HLSBasicType.STREAM:
@@ -77,32 +77,51 @@ class HLSType:
             self.full_name = f"{const_str}{sub_types[0].full_name}*"
         elif basic_type == HLSBasicType.STRUCT:
             assert sub_types and len(sub_types) > 0
+            self.full_name = self._generate_canonical_name(sub_types, explicit_name=struct_name)
+
+            if self.full_name in HLSType._all_full_names:
+                existing_type = HLSType._full_to_type[self.full_name]
+                self.__dict__.update(existing_type.__dict__)
+                return
+
             self.name = struct_name if struct_name else self._generate_readable_name(sub_types)
-            self.full_name = self._generate_canonical_name(sub_types)
+
             if struct_prop_names:
                 assert len(struct_prop_names) == len(sub_types)
                 self.struct_prop_names = struct_prop_names
         else:
             assert False, f"Basic type {basic_type} not supported"
 
+        # Caching for truly new types
         if self.full_name in HLSType._all_full_names:
             existing_type = HLSType._full_to_type[self.full_name]
             self.__dict__.update(existing_type.__dict__)
-        else:
-            HLSType._all_full_names.add(self.full_name)
-            assert self.name not in HLSType._all_names
-            HLSType._all_names.add(self.name)
-            HLSType._full_to_type[self.full_name] = self
-            HLSType._name_to_full[self.name] = self.full_name
-            HLSType._id_cnt += 1
+            return
+
+        HLSType._all_full_names.add(self.full_name)
+
+        # --- *** 关键修正：仅对非简单类型进行名称冲突检查 *** ---
+        if not self.type.is_simple:
+            if self.name in HLSType._all_names:
+                if struct_name is not None:
+                    assert False, f"Struct name collision detected: {self.name}"
+                else:
+                    self.name = f"{self.name}_{self.readable_id}"
+
+        HLSType._all_names.add(self.name)
+        HLSType._full_to_type[self.full_name] = self
+        HLSType._name_to_full[self.name] = self.full_name
+        HLSType._id_cnt += 1
 
     @classmethod
     def get_type(cls, type_name):
         assert type_name in cls._all_names
         return cls._full_to_type[cls._name_to_full[type_name]]
 
-    def _generate_canonical_name(self, sub_types: List[HLSType]) -> str:
-        name_parts = [t.full_name.replace(" ", "_") for t in sub_types]
+    def _generate_canonical_name(self, sub_types: List[HLSType], explicit_name: Optional[str] = None) -> str:
+        name_parts = [t.full_name.replace(" ", "_").replace("*", "_ptr") for t in sub_types]
+        if explicit_name:
+            name_parts.insert(0, explicit_name)
         return f"struct_{'_'.join(name_parts)}_t"
 
     def _generate_readable_name(self, sub_types: List[HLSType]) -> str:
@@ -150,12 +169,21 @@ class HLSType:
         # Generate C++ typedef struct declaration
         assert self.type == HLSBasicType.STRUCT
         if member_names is None:
-            member_names = [f"ele_{i}" for i in range(len(self.sub_types))]
+            if self.struct_prop_names:
+                member_names = self.struct_prop_names
+            else:
+                member_names = [f"ele_{i}" for i in range(len(self.sub_types))]
+
         assert len(member_names) == len(self.sub_types)
         if self.struct_prop_names:
             assert self.struct_prop_names == member_names
         decls = [st.get_upper_decl(m_name) + ";" for st, m_name in zip(self.sub_types, member_names)]
-        return f"typedef struct {{\n" + f"\n".join([INDENT_UNIT + d for d in decls]) + f"\n}} {self.name};\n"
+
+        return (
+            f"struct __attribute__((packed)) {self.name} {{\n"
+            + f"\n".join([INDENT_UNIT + d for d in decls])
+            + f"\n}};\n"
+        )
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, HLSType):
