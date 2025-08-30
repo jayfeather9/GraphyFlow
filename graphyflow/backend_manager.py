@@ -76,13 +76,13 @@ class BackendManager:
         header_name = f"{top_func_name}.h"
 
         # 1. Discover top-level I/O ports
-        self.axi_input_ports = [
-            p.connection
-            for p in comp_col.inputs
-            if isinstance(p.parent, dfir.IOComponent)
-            and p.parent.io_type == dfir.IOComponent.IOType.INPUT
-            and p.connected
-        ]
+        top_level_inputs = []
+        for comp in comp_col.components:
+            if isinstance(comp, dfir.IOComponent) and comp.io_type == dfir.IOComponent.IOType.INPUT:
+                if comp.get_port("o_0").connected:
+                    top_level_inputs.append(comp.get_port("o_0").connection)
+
+        self.axi_input_ports = top_level_inputs
         self.axi_output_ports = comp_col.outputs
         self.top_level_io_ports = self.axi_input_ports + self.axi_output_ports
 
@@ -106,139 +106,104 @@ class BackendManager:
 
         return header_code, source_code
 
-    def generate_host_codes(self, top_func_name: str) -> Tuple[str, str]:
-        """生成 generated_host.h 和 generated_host.cpp 的内容"""
+    def generate_host_codes(self, top_func_name: str, template_path: Path) -> Tuple[str, str]:
+        """
+        Generates host C++ files by filling in template files.
+        """
+        h_template_path = template_path / "generated_host.h.template"
+        cpp_template_path = template_path / "generated_host.cpp.template"
 
-        # ----- 生成 generated_host.h -----
-        header_code = f"""
-#ifndef __GENERATED_HOST_H__
-#define __GENERATED_HOST_H__
+        with open(h_template_path, "r") as f:
+            h_template = f.read()
+        with open(cpp_template_path, "r") as f:
+            cpp_template = f.read()
 
-#include "common.h"
-#include "{top_func_name}.h" // 包含内核数据类型定义
-#include <vector>
+        # --- Generate Code Snippets ---
+        host_buffer_decls = []
+        device_buffer_decls = []
+        buffer_inits = []
+        write_buffers = []
+        set_args = []
+        read_buffers = []
 
-class AlgorithmHost {{
-public:
-    AlgorithmHost(cl::Context& context, cl::Kernel& kernel, cl::CommandQueue& q);
-    void setup_buffers(const GraphCSR& graph, int start_node);
-    void transfer_data_to_fpga();
-    void execute_kernel_iteration(cl::Event& event);
-    void transfer_data_from_fpga();
-    const std::vector<int>& get_results() const; // 保持接口兼容，即使内容可能为空
-    std::vector<int>& get_host_memory_for_verification();
-    int get_stop_flag() const;
+        for port in self.axi_input_ports:
+            batch_type = self.batch_type_map[self.type_map[port.data_type]]
+            var_name = port.unique_name
+            host_buffer_decls.append(
+                f"std::vector<{batch_type.name}, aligned_allocator<{batch_type.name}>> h_{var_name};"
+            )
+            device_buffer_decls.append(f"cl::Buffer d_{var_name};")
 
-private:
-    cl::Context& m_context;
-    cl::Kernel& m_kernel;
-    cl::CommandQueue& m_q;
-    int m_num_vertices;
-    
-    // Host-side memory
-"""
-        # 为每个内核IO参数声明 host vector 和 device buffer
-        for port in self.top_level_io_ports:
-            hls_type = self.batch_type_map[self.type_map[port.data_type]]
-            header_code += f"    std::vector<{hls_type.name}, aligned_allocator<{hls_type.name}>> h_{port.unique_name};\n"
-
-        header_code += "\n    // Device-side OpenCL buffers\n"
-        for port in self.top_level_io_ports:
-            header_code += f"    cl::Buffer d_{port.unique_name};\n"
-
-        header_code += """
-}};
-
-#endif // __GENERATED_HOST_H__
-"""
-
-        # ----- 生成 generated_host.cpp -----
-        cpp_code = f"""
-#include "generated_host.h"
-#include <iostream>
-
-// 构造函数
-AlgorithmHost::AlgorithmHost(cl::Context& context, cl::Kernel& kernel, cl::CommandQueue& q)
-    : m_context(context), m_kernel(kernel), m_q(q), m_num_vertices(0) {{
-}}
-
-void AlgorithmHost::setup_buffers(const GraphCSR& graph, int start_node) {{
-    m_num_vertices = graph.num_vertices;
-    cl_int err;
-
-    // --- 模拟数据填充 ---
-    // 这是需要根据具体应用修改的部分。
-    // 这里我们仅为buffer分配空间并填充一些默认值。
-    size_t num_elements = 1024; // 示例: 假设我们的流中有1024个元素
-"""
-        for port in self.top_level_io_ports:
-            hls_type = self.batch_type_map[self.type_map[port.data_type]]
-            is_input = port.port_type == dfir.PortType.IN
-
-            cpp_code += f"""
-    // Buffer for {port.unique_name}
-    h_{port.unique_name}.resize(num_elements);
-    // TODO: 使用有意义的数据填充 h_{port.unique_name}
-    for(size_t i = 0; i < num_elements; ++i) {{
-        // 示例填充
-        h_{port.unique_name}[i] = {{}}; // 使用默认构造函数
+            # Simplified data packing logic
+            buffer_inits.append(
+                f"""
+    // Setup for input port {var_name}
+    h_{var_name}.clear();
+    // TODO: Replace this with real data packing logic.
+    // For now, creating a placeholder buffer.
+    size_t num_elements_{var_name} = 1024; // Example size
+    h_{var_name}.resize(num_elements_{var_name});
+    if (!h_{var_name}.empty()) {{
+        h_{var_name}.back().end_flag = true;
     }}
-    h_{port.unique_name}[num_elements - 1].end_flag = true; // 设置最后一个元素的结束标志
+    m_num_batches = h_{var_name}.size(); // Assuming one input stream drives the length
 
-    cl_mem_flags flag = CL_MEM_{'READ_ONLY' if is_input else 'WRITE_ONLY'};
-    OCL_CHECK(err, d_{port.unique_name} = cl::Buffer(m_context, flag, h_{port.unique_name}.size() * sizeof({hls_type.name}), NULL, &err));
+    OCL_CHECK(err, d_{var_name} = cl::Buffer(m_context, CL_MEM_USE_HOST_PTR | CL_MEM_READ_ONLY,
+                                            h_{var_name}.size() * sizeof({batch_type.name}),
+                                            h_{var_name}.data(), &err));
 """
+            )
+            write_buffers.append(
+                f"OCL_CHECK(err, err = m_q.enqueueMigrateMemObjects({{d_{var_name}}}, 0 /* 0 means from host to device */));"
+            )
+            set_args.append(f"OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, d_{var_name}));")
 
-        cpp_code += "}\n\n"
+        for port in self.axi_output_ports:
+            host_output_type = self._get_host_output_type()  # KernelOutputBatch
+            var_name = port.unique_name
+            host_buffer_decls.append(
+                f"std::vector<{host_output_type.name}, aligned_allocator<{host_output_type.name}>> h_{var_name};"
+            )
+            device_buffer_decls.append(f"cl::Buffer d_{var_name};")
 
-        # transfer_data_to_fpga
-        cpp_code += "void AlgorithmHost::transfer_data_to_fpga() {\n    cl_int err;\n"
-        for port in self.top_level_io_ports:
-            if port.port_type == dfir.PortType.IN:
-                hls_type = self.batch_type_map[self.type_map[port.data_type]]
-                cpp_code += f"    OCL_CHECK(err, err = m_q.enqueueWriteBuffer(d_{port.unique_name}, CL_TRUE, 0, h_{port.unique_name}.size() * sizeof({hls_type.name}), h_{port.unique_name}.data(), nullptr, nullptr));\n"
-        cpp_code += "}\n\n"
+            buffer_inits.append(
+                f"""
+    // Setup for output port {var_name}
+    // Assuming output buffer is same size as input buffer for this example
+    h_{var_name}.resize(m_num_batches);
 
-        # execute_kernel_iteration
-        cpp_code += "void AlgorithmHost::execute_kernel_iteration(cl::Event& event) {\n    cl_int err;\n    int arg_idx = 0;\n"
-        cpp_code += "    uint16_t input_length = 1024; // 示例长度\n"
-        cpp_code += "    OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, input_length));\n"
-        for port in self.top_level_io_ports:
-            cpp_code += f"    OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, d_{port.unique_name}));\n"
-        cpp_code += "\n    OCL_CHECK(err, err = m_q.enqueueTask(m_kernel, nullptr, &event));\n}\n\n"
-
-        # transfer_data_from_fpga
-        cpp_code += "void AlgorithmHost::transfer_data_from_fpga() {\n    cl_int err;\n"
-        for port in self.top_level_io_ports:
-            if port.port_type == dfir.PortType.OUT:
-                hls_type = self.batch_type_map[self.type_map[port.data_type]]
-                cpp_code += f"    OCL_CHECK(err, err = m_q.enqueueReadBuffer(d_{port.unique_name}, CL_TRUE, 0, h_{port.unique_name}.size() * sizeof({hls_type.name}), h_{port.unique_name}.data(), nullptr, nullptr));\n"
-        cpp_code += "}\n\n"
-
-        # get_results (保持兼容性)
-        cpp_code += """
-const std::vector<int>& AlgorithmHost::get_results() const {
-    // 这个函数是为了与旧的验证流程兼容。
-    // 对于流式内核，可能没有一个单一的“距离”向量。
-    // 我们返回一个空的静态向量来满足接口要求。
-    static const std::vector<int> empty_results;
-    std::cout << "Warning: get_results() called on a streaming kernel. Returning empty vector." << std::endl;
-    // TODO: 实现有意义的结果提取逻辑
-    return empty_results;
-}
-
-std::vector<int>& AlgorithmHost::get_host_memory_for_verification() {
-    static std::vector<int> empty_vector;
-    return empty_vector;
-}
-
-int AlgorithmHost::get_stop_flag() const {
-    // 流式内核通常执行一次就结束，不像迭代算法。
-    // 返回1表示“停止”，这样主循环在fpga_executor中执行一次后就会退出。
-    return 1;
-}
+    OCL_CHECK(err, d_{var_name} = cl::Buffer(m_context, CL_MEM_USE_HOST_PTR | CL_MEM_WRITE_ONLY,
+                                            h_{var_name}.size() * sizeof({host_output_type.name}),
+                                            h_{var_name}.data(), &err));
 """
-        return header_code, cpp_code
+            )
+            set_args.append(f"OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, d_{var_name}));")
+            read_buffers.append(
+                f"OCL_CHECK(err, err = m_q.enqueueMigrateMemObjects({{d_{var_name}}}, CL_MIGRATE_MEM_OBJECT_HOST));"
+            )
+
+        # Add stop_flag and input_length arguments
+        set_args.append(
+            f"// Assuming a stop_flag and input_length are needed\n    OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, d_stop_flag)); // Placeholder"
+        )
+        set_args.append(f"OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, (uint16_t)m_num_batches));")
+
+        # --- Replace Placeholders ---
+        h_final = h_template.replace(
+            "// {{GRAPHYFLOW_HOST_BUFFER_DECLARATIONS}}", "\n    ".join(host_buffer_decls)
+        )
+        h_final = h_final.replace(
+            "// {{GRAPHYFLOW_DEVICE_BUFFER_DECLARATIONS}}", "\n    ".join(device_buffer_decls)
+        )
+
+        cpp_final = cpp_template.replace(
+            "// {{GRAPHYFLOW_BUFFER_INITIALIZATION}}", "\n    ".join(buffer_inits)
+        )
+        cpp_final = cpp_final.replace("// {{GRAPHYFLOW_ENQUEUE_WRITE_BUFFERS}}", "\n    ".join(write_buffers))
+        cpp_final = cpp_final.replace("// {{GRAPHYFLOW_SET_KERNEL_ARGS}}", "\n    ".join(set_args))
+        cpp_final = cpp_final.replace("// {{GRAPHYFLOW_ENQUEUE_READ_BUFFERS}}", "\n    ".join(read_buffers))
+
+        return h_final, cpp_final
 
     def generate_build_system_files(self, kernel_name: str, executable_name: str) -> Dict[str, str]:
         """生成所有需要的构建和执行文件的内容"""
@@ -923,6 +888,7 @@ emconfig:
         param_vars = []
 
         # 1. Build parameter lists for the top-level function signature
+        #    This now includes both inputs and outputs correctly.
         for port in self.axi_input_ports:
             batch_type = self.batch_type_map[self.type_map[port.data_type]]
             axi_ptr_type = HLSType(HLSBasicType.POINTER, sub_types=[batch_type], is_const_ptr=True)
@@ -941,9 +907,7 @@ emconfig:
         param_vars.append(HLSVar("stop_flag", HLSType(HLSBasicType.POINTER, [HLSType(HLSBasicType.INT)])))
 
         params_str_list.append("uint16_t input_length_in_batches")
-        param_vars.append(
-            HLSVar("input_length_in_batches", HLSType(HLSBasicType.UINT8, struct_name="uint16_t"))
-        )
+        param_vars.append(HLSVar("input_length_in_batches", HLSType(HLSBasicType.UINT16)))
 
         top_func_sig = (
             f'extern "C" void {top_func_name}(\n{INDENT_UNIT}'
@@ -955,7 +919,7 @@ emconfig:
         pragmas = []
         for i, var in enumerate(param_vars):
             bundle = f"gmem{i}"
-            if "input_length" not in var.name:
+            if var.type.type == HLSBasicType.POINTER:
                 pragmas.append(f"#pragma HLS INTERFACE m_axi port={var.name} offset=slave bundle={bundle}")
 
         for var in param_vars:
@@ -963,9 +927,9 @@ emconfig:
         pragmas.append("#pragma HLS INTERFACE s_axilite port=return")
 
         # 3. Generate Body
-        body = []
+        body: List[HLSCodeLine] = []
 
-        # Declare internal streams
+        # Declare internal streams that connect the dataflow stages
         internal_streams = []
         for port in self.top_level_io_ports:
             batch_type = self.batch_type_map[self.type_map[port.data_type]]
@@ -975,15 +939,13 @@ emconfig:
             internal_streams.append(stream_var)
 
             decl = CodeVarDecl(stream_var.name, stream_var.type)
-            # Use 'static' for streams inside a function to ensure they are properly implemented by HLS
             setattr(decl, "is_static", True)
             body.append(decl)
             body.append(CodePragma(f"STREAM variable={stream_var.name} depth={self.STREAM_DEPTH}"))
 
         body.append(CodePragma("DATAFLOW"))
 
-        # --- *** 关键修正：使用更清晰的逻辑构建函数调用参数 *** ---
-        # 4. Generate calls to sub-functions
+        # 4. Generate calls to sub-functions with correct parameters
 
         # Params for mem_to_stream_func
         m2s_axi_params = [p for p in param_vars if p.type.is_const_ptr]
@@ -1016,7 +978,6 @@ emconfig:
         # 5. Assemble final C++ string
         code = "\n".join(pragmas) + "\n"
         code += f"{top_func_sig} " + "{\n"
-        # Manually handle static declaration for CodeVarDecl
         for line in body:
             if isinstance(line, CodeVarDecl) and getattr(line, "is_static", False):
                 code += f"{INDENT_UNIT}static {line.gen_code().lstrip()}"

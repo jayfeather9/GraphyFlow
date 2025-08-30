@@ -1,0 +1,61 @@
+#include "generated_host.h"
+#include <iostream>
+#include <map>
+
+// Constructor
+AlgorithmHost::AlgorithmHost(cl::Context &context, cl::Kernel &kernel,
+                             cl::CommandQueue &q)
+    : m_context(context), m_kernel(kernel), m_q(q), m_num_vertices(0),
+      m_num_batches(0) {}
+
+void AlgorithmHost::setup_buffers(const GraphCSR &graph, int start_node) {
+    m_num_vertices = graph.num_vertices;
+    cl_int err;
+
+    // --- Data Packing Logic (Algorithm-Specific) ---
+    // TODO: This part needs to be adapted to the specific algorithm's needs.
+    // For now, we'll use a simplified placeholder logic.
+    
+    // This is where the generated code for initializing buffers will go.
+    // {{GRAPHYFLOW_BUFFER_INITIALIZATION}}
+}
+
+void AlgorithmHost::transfer_data_to_fpga() {
+    cl_int err;
+    // This is where the generated code for writing to device will go.
+    // {{GRAPHYFLOW_ENQUEUE_WRITE_BUFFERS}}
+}
+
+void AlgorithmHost::execute_kernel_iteration(cl::Event &event) {
+    cl_int err;
+    int arg_idx = 0;
+    
+    // This is where the generated code for setting kernel arguments will go.
+    // {{GRAPHYFLOW_SET_KERNEL_ARGS}}
+
+    OCL_CHECK(err, err = m_q.enqueueTask(m_kernel, nullptr, &event));
+}
+
+void AlgorithmHost::transfer_data_from_fpga() {
+    cl_int err;
+    // This is where the generated code for reading from device will go.
+    // {{GRAPHYFLOW_ENQUEUE_READ_BUFFERS}}
+}
+
+// Generic placeholder functions
+bool AlgorithmHost::check_convergence_and_update() {
+    // For our single-pass dataflow algorithm, this should indicate we are done.
+    return true; 
+}
+
+const std::vector<int> &AlgorithmHost::get_results() const {
+    static std::vector<int> final_results;
+    final_results.clear();
+
+    // TODO: Implement meaningful result extraction from output buffers
+    // e.g., iterate through h_o_0_176 and extract distances.
+
+    std::cout << "Warning: get_results() is a placeholder. Implement real result extraction." << std::endl;
+
+    return final_results;
+}

@@ -1,0 +1,41 @@
+#ifndef __GENERATED_HOST_H__
+#define __GENERATED_HOST_H__
+
+#include "common.h"
+#include <vector>
+#include "xcl2.h"
+
+class AlgorithmHost {
+  public:
+    AlgorithmHost(cl::Context &context, cl::Kernel &kernel, cl::CommandQueue &q);
+    
+    // This function will be dynamically generated
+    void setup_buffers(const GraphCSR &graph, int start_node);
+    
+    void transfer_data_to_fpga();
+    
+    // This function will be dynamically generated
+    void execute_kernel_iteration(cl::Event &event);
+
+    void transfer_data_from_fpga();
+
+    // These functions can remain generic for now
+    bool check_convergence_and_update();
+    const std::vector<int> &get_results() const;
+
+  private:
+    cl::Context &m_context;
+    cl::Kernel &m_kernel;
+    cl::CommandQueue &m_q;
+    int m_num_vertices;
+    size_t m_num_batches;
+
+    // {{GRAPHYFLOW_HOST_BUFFER_DECLARATIONS}}
+
+    // {{GRAPHYFLOW_DEVICE_BUFFER_DECLARATIONS}}
+
+    // Host-side state (can be adapted for different algorithms)
+    std::vector<ap_fixed<32, 16>> h_distances;
+};
+
+#endif // __GENERATED_HOST_H__
