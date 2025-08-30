@@ -19,6 +19,7 @@ class HLSBasicType(Enum):
     STRUCT = "struct"
     STREAM = "stream"
     ARRAY = "array"
+    POINTER = "pointer"
 
     def __repr__(self) -> str:
         return self.value
@@ -29,6 +30,7 @@ class HLSBasicType(Enum):
             HLSBasicType.STRUCT,
             HLSBasicType.STREAM,
             HLSBasicType.ARRAY,
+            HLSBasicType.POINTER,
         ]
 
 
@@ -46,12 +48,14 @@ class HLSType:
         struct_name: Optional[str] = None,
         struct_prop_names: Optional[List[str]] = None,
         array_dims: Optional[List[Union[str, int]]] = None,
+        is_const_ptr: bool = False,
     ) -> None:
         self.type = basic_type
         self.sub_types = sub_types
         self.readable_id = HLSType._id_cnt
         self.struct_prop_names = None
         self.array_dims = array_dims
+        self.is_const_ptr = is_const_ptr
 
         if basic_type.is_simple:
             assert sub_types is None
@@ -66,6 +70,11 @@ class HLSType:
             dims_str = "".join(f"[{d}]" for d in self.array_dims)
             self.name = f"{sub_types[0].name}{dims_str}"
             self.full_name = f"{sub_types[0].full_name}{dims_str}"
+        elif basic_type == HLSBasicType.POINTER:
+            assert sub_types and len(sub_types) == 1
+            const_str = "const " if self.is_const_ptr else ""
+            self.name = f"{const_str}{sub_types[0].name}*"
+            self.full_name = f"{const_str}{sub_types[0].full_name}*"
         elif basic_type == HLSBasicType.STRUCT:
             assert sub_types and len(sub_types) > 0
             self.name = struct_name if struct_name else self._generate_readable_name(sub_types)
@@ -80,8 +89,6 @@ class HLSType:
             existing_type = HLSType._full_to_type[self.full_name]
             self.__dict__.update(existing_type.__dict__)
         else:
-            # print(self.full_name)
-            # print(self.name)
             HLSType._all_full_names.add(self.full_name)
             assert self.name not in HLSType._all_names
             HLSType._all_names.add(self.name)
