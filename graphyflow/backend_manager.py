@@ -787,27 +787,38 @@ emconfig:
         params = []
         body = []
 
+        # 遍历所有被识别为顶层AXI输出的端口
         for port in self.axi_output_ports:
-            batch_type = self.batch_type_map[self.type_map[port.data_type]]
+            # 1. 获取内核内部使用的批处理类型 (e.g., struct_sbu_22_t)
+            internal_batch_type = self.batch_type_map[self.type_map[port.data_type]]
 
-            stream_param = HLSVar(f"in_{port.unique_name}_stream", HLSType(HLSBasicType.STREAM, [batch_type]))
+            # 2. 创建输入流参数 (hls::stream<T_internal>& in)
+            stream_param = HLSVar(
+                f"in_{port.unique_name}_stream", HLSType(HLSBasicType.STREAM, [internal_batch_type])
+            )
             params.append(stream_param)
 
+            # 3. 获取主机侧专用的输出类型 (KernelOutputBatch)
             host_output_type = self._get_host_output_type()
 
+            # 4. 创建AXI指针参数 (KernelOutputBatch* out)
             axi_ptr_type = HLSType(HLSBasicType.POINTER, sub_types=[host_output_type], is_const_ptr=False)
             axi_param = HLSVar(f"out_{port.unique_name}", axi_ptr_type)
             params.append(axi_param)
 
+            # 5. 构建函数体
             i_var = HLSVar("i", HLSType(HLSBasicType.INT))
-            internal_batch_var = HLSVar("internal_batch", batch_type)
+            internal_batch_var = HLSVar("internal_batch", internal_batch_type)
             output_batch_var = HLSVar("output_batch", host_output_type)
 
+            # 从 host_output_type 中反向推导出 KernelOutputData 类型
             kernel_output_data_type = host_output_type.sub_types[0].sub_types[0]
 
+            # a. 创建类型转换的 for 循环
             conversion_loop = CodeFor(
                 [
                     CodePragma("UNROLL"),
+                    # output_batch.data[k].distance = (float)internal_batch.data[k].ele_0;
                     CodeAssign(
                         HLSVar(
                             f"{output_batch_var.name}.data[k].distance", kernel_output_data_type.sub_types[0]
@@ -815,10 +826,12 @@ emconfig:
                         HLSExpr(
                             HLSExprT.VAR,
                             HLSVar(
-                                f"(float){internal_batch_var.name}.data[k].ele_0", HLSType(HLSBasicType.FLOAT)
+                                f"(float){internal_batch_var.name}.data[k].ele_0",
+                                HLSType(HLSBasicType.REAL_FLOAT),
                             ),
                         ),
                     ),
+                    # output_batch.data[k].id = internal_batch.data[k].ele_1.id;
                     CodeAssign(
                         HLSVar(f"{output_batch_var.name}.data[k].id", kernel_output_data_type.sub_types[1]),
                         HLSExpr(
@@ -830,59 +843,52 @@ emconfig:
                 "PE_NUM",
                 iter_name="k",
             )
+
+            # b. 创建主 while 循环体
             while_body = [
                 CodePragma("PIPELINE"),
-                CodeIf(
+                # *** 关键修正：添加 internal_batch 变量声明 ***
+                CodeVarDecl(internal_batch_var.name, internal_batch_var.type),
+                CodeAssign(
+                    internal_batch_var,
+                    HLSExpr(HLSExprT.STREAM_READ, None, [HLSExpr(HLSExprT.VAR, stream_param)]),
+                ),
+                CodeVarDecl(output_batch_var.name, output_batch_var.type),
+                conversion_loop,
+                CodeAssign(
+                    HLSVar(f"{output_batch_var.name}.end_flag", HLSType(HLSBasicType.BOOL)),
                     HLSExpr(
                         HLSExprT.UOP,
-                        UnaryOp.NOT,
-                        [HLSExpr(HLSExprT.STREAM_EMPTY, None, [HLSExpr(HLSExprT.VAR, stream_param)])],
+                        (UnaryOp.GET_ATTR, "end_flag"),
+                        [HLSExpr(HLSExprT.VAR, internal_batch_var)],
                     ),
-                    if_codes=[
-                        CodeAssign(
-                            internal_batch_var,
-                            HLSExpr(HLSExprT.STREAM_READ, None, [HLSExpr(HLSExprT.VAR, stream_param)]),
-                        ),
-                        CodeVarDecl(output_batch_var.name, output_batch_var.type),
-                        conversion_loop,
-                        CodeAssign(
-                            HLSVar(f"{output_batch_var.name}.end_flag", HLSType(HLSBasicType.BOOL)),
-                            HLSExpr(
-                                HLSExprT.UOP,
-                                (UnaryOp.GET_ATTR, "end_flag"),
-                                [HLSExpr(HLSExprT.VAR, internal_batch_var)],
-                            ),
-                        ),
-                        CodeAssign(
-                            HLSVar(f"{output_batch_var.name}.end_pos", HLSType(HLSBasicType.UINT8)),
-                            HLSExpr(
-                                HLSExprT.UOP,
-                                (UnaryOp.GET_ATTR, "end_pos"),
-                                [HLSExpr(HLSExprT.VAR, internal_batch_var)],
-                            ),
-                        ),
-                        CodeAssign(
-                            HLSVar(f"out_{port.unique_name}[i]", host_output_type),
-                            HLSExpr(HLSExprT.VAR, output_batch_var),
-                        ),
-                        CodeIf(
-                            HLSExpr(
-                                HLSExprT.VAR,
-                                HLSVar(f"out_{port.unique_name}[i].end_flag", HLSType(HLSBasicType.BOOL)),
-                            ),
-                            [CodeBreak()],
-                        ),
-                        CodeAssign(
-                            i_var,
-                            HLSExpr(
-                                HLSExprT.BINOP,
-                                BinOp.ADD,
-                                [HLSExpr(HLSExprT.VAR, i_var), HLSExpr(HLSExprT.CONST, 1)],
-                            ),
-                        ),
-                    ],
+                ),
+                CodeAssign(
+                    HLSVar(f"{output_batch_var.name}.end_pos", HLSType(HLSBasicType.UINT8)),
+                    HLSExpr(
+                        HLSExprT.UOP,
+                        (UnaryOp.GET_ATTR, "end_pos"),
+                        [HLSExpr(HLSExprT.VAR, internal_batch_var)],
+                    ),
+                ),
+                CodeAssign(
+                    HLSVar(f"{axi_param.name}[i]", host_output_type), HLSExpr(HLSExprT.VAR, output_batch_var)
+                ),
+                CodeIf(
+                    HLSExpr(
+                        HLSExprT.VAR, HLSVar(f"{axi_param.name}[i].end_flag", HLSType(HLSBasicType.BOOL))
+                    ),
+                    [CodeBreak()],
+                ),
+                CodeAssign(
+                    i_var,
+                    HLSExpr(
+                        HLSExprT.BINOP, BinOp.ADD, [HLSExpr(HLSExprT.VAR, i_var), HLSExpr(HLSExprT.CONST, 1)]
+                    ),
                 ),
             ]
+
+            # c. 组合成最终函数体
             body.extend(
                 [
                     CodeVarDecl(i_var.name, i_var.type, init_val=0),

@@ -97,7 +97,7 @@ def test_axi_kernel_generation():
 
 
 if __name__ == "__main__":
-    test_dir = project_root / "tests" / "task_1_2"
+    test_dir = project_root / "implement_tests" / "task_1_2"
     test_dir.mkdir(exist_ok=True)
 
     print(f"Running tests for Task 1.2. Test script location: {test_dir}")

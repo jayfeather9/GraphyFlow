@@ -96,7 +96,7 @@ def test_common_header_generation():
 
 
 if __name__ == "__main__":
-    test_dir = project_root / "tests" / "task_1_3"
+    test_dir = project_root / "implement_tests" / "task_1_3"
     test_dir.mkdir(exist_ok=True)
 
     print(f"Running tests for Task 1.3. Test script location: {test_dir}")
