@@ -1,11 +1,18 @@
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, Optional
 
-# 导入我们需要的GraphyFlow模块
 from .global_graph import GlobalGraph
 from .dataflow_ir import ComponentCollection
 from .backend_manager import BackendManager
+
+
+def _copy_and_template(src: Path, dest: Path, replacements: Dict[str, str]):
+    """Reads a file, replaces placeholders, and writes to a new location."""
+    content = src.read_text()
+    for placeholder, value in replacements.items():
+        content = content.replace(placeholder, value)
+    dest.write_text(content)
 
 
 def generate_project(
@@ -14,59 +21,62 @@ def generate_project(
     kernel_name: str,
     output_dir: Path,
     executable_name: str = "host",
+    template_dir_override: Optional[Path] = None,
 ):
     """
     Generates a complete Vitis project directory from a DFG-IR.
-
-    Args:
-        comp_col: The component collection representing the dataflow graph.
-        global_graph: The original GlobalGraph object (for type information).
-        kernel_name: The base name for the kernel files (e.g., 'graphyflow').
-        output_dir: The path to the directory where the project will be created.
-        executable_name: The name of the final host executable.
+    This version includes templating for build and run scripts.
     """
     print(f"--- Starting Project Generation for Kernel '{kernel_name}' ---")
 
     # 1. 定义路径
-    project_root = Path(__file__).parent.parent.resolve()
-    template_dir = project_root / "graphyflow" / "project_template"
+    if template_dir_override:
+        template_dir = template_dir_override
+    else:
+        project_root = Path(__file__).parent.parent.resolve()
+        template_dir = project_root / "graphyflow" / "project_template"
 
     if not template_dir.exists():
         raise FileNotFoundError(f"Project template directory not found at: {template_dir}")
 
     # 2. 创建输出目录结构
-    print(f"[1/5] Setting up Output Directory: '{output_dir}'")
+    print(f"[1/6] Setting up Output Directory: '{output_dir}'")
     if output_dir.exists():
         shutil.rmtree(output_dir)
 
-    host_script_dir = output_dir / "scripts" / "host"
-    kernel_script_dir = output_dir / "scripts" / "kernel"
+    scripts_dir = output_dir / "scripts"
+    host_script_dir = scripts_dir / "host"
+    kernel_script_dir = scripts_dir / "kernel"
     xclbin_dir = output_dir / "xclbin"
 
     host_script_dir.mkdir(parents=True, exist_ok=True)
     kernel_script_dir.mkdir(parents=True, exist_ok=True)
     xclbin_dir.mkdir(exist_ok=True)
 
-    # 3. 复制所有静态文件
-    print(f"[2/5] Copying Static Files from Template: '{template_dir}'")
-    # 使用 ignore 来排除 .template 文件，因为它们将被动态生成
-    shutil.copytree(template_dir, output_dir, dirs_exist_ok=True, ignore=shutil.ignore_patterns("*.template"))
+    # 3. 复制静态文件
+    print(f"[2/6] Copying Static Files from Template: '{template_dir}'")
+    static_files_to_ignore = ["Makefile", "run.sh", "system.cfg", "*.template"]
+    shutil.copytree(
+        template_dir, output_dir, dirs_exist_ok=True, ignore=shutil.ignore_patterns(*static_files_to_ignore)
+    )
 
-    # 4. 实例化后端并生成所有动态代码
-    print("[3/5] Generating Dynamic Source Code via BackendManager...")
+    # 4. 动态生成需要模板化的脚本文件
+    print("[3/6] Generating Templated Scripts...")
+    replacements = {"{{KERNEL_NAME}}": kernel_name, "{{EXECUTABLE_NAME}}": executable_name}
+    _copy_and_template(template_dir / "Makefile", output_dir / "Makefile", replacements)
+    _copy_and_template(template_dir / "run.sh", output_dir / "run.sh", replacements)
+    (output_dir / "run.sh").chmod(0o755)
+    _copy_and_template(template_dir / "system.cfg", output_dir / "system.cfg", replacements)
+
+    # 5. 实例化后端并生成所有动态代码
+    print("[4/6] Generating Dynamic Source Code via BackendManager...")
     bkd_mng = BackendManager()
-
-    # 生成内核 C++ 代码
     kernel_h, kernel_cpp = bkd_mng.generate_backend(comp_col, global_graph, kernel_name)
-
-    # 生成共享头文件
     common_h = bkd_mng.generate_common_header(kernel_name)
-
-    # 生成主机代码 (从模板)
     host_h, host_cpp = bkd_mng.generate_host_codes(kernel_name, template_dir / "scripts" / "host")
 
-    # 5. 部署所有动态生成的文件
-    print(f"[4/5] Deploying Generated Files to '{output_dir}'")
+    # 6. 部署所有动态生成的文件
+    print(f"[5/6] Deploying Generated Files to '{output_dir}'")
     with open(kernel_script_dir / f"{kernel_name}.h", "w") as f:
         f.write(kernel_h)
     with open(kernel_script_dir / f"{kernel_name}.cpp", "w") as f:
@@ -78,4 +88,4 @@ def generate_project(
     with open(host_script_dir / "generated_host.cpp", "w") as f:
         f.write(host_cpp)
 
-    print("[5/5] Project Generation Complete!")
+    print("[6/6] Project Generation Complete!")
