@@ -476,6 +476,31 @@ emconfig:
                     if is_stream_port:
                         self._get_batch_type(base_hls_type)
 
+    def _get_host_output_type(self) -> HLSType:
+        """
+        A helper function to define and return the host-friendly output batch type.
+        This centralizes the definition of KernelOutputBatch to avoid repetition.
+        """
+        # struct KernelOutputData { float distance; int32_t id; };
+        kernel_output_data_type = HLSType(
+            HLSBasicType.STRUCT,
+            sub_types=[HLSType(HLSBasicType.FLOAT, struct_name="float"), HLSType(HLSBasicType.INT)],
+            struct_prop_names=["distance", "id"],
+            struct_name="KernelOutputData",
+        )
+
+        # struct KernelOutputBatch { KernelOutputData data[PE_NUM]; bool end_flag; uint8_t end_pos; };
+        output_data_array_type = HLSType(
+            HLSBasicType.ARRAY, sub_types=[kernel_output_data_type], array_dims=[self.PE_NUM]
+        )
+        host_output_type = HLSType(
+            HLSBasicType.STRUCT,
+            sub_types=[output_data_array_type, HLSType(HLSBasicType.BOOL), HLSType(HLSBasicType.UINT8)],
+            struct_prop_names=["data", "end_flag", "end_pos"],
+            struct_name="KernelOutputBatch",
+        )
+        return host_output_type
+
     def _define_functions_and_streams(self, comp_col: dfir.ComponentCollection, top_func_name: str):
         """
         Phase 2: Creates HLSFunction objects, defines their signatures, and
@@ -483,43 +508,33 @@ emconfig:
         """
         self.hls_functions.clear()
         self.top_level_stream_decls.clear()
-        self.reduce_internal_streams.clear()
-        self.utility_functions.clear()
         self.reduce_helpers.clear()
+        self.utility_functions.clear()
 
+        # This map is used to track which ReduceComponent sub-graph components have been processed
+        # to avoid creating duplicate HLSFunction objects for them.
         processed_sub_comp_ids = set()
 
         for comp in comp_col.components:
             if isinstance(comp, dfir.ReduceComponent):
-                # 1. Create the two main HLS functions for the Reduce component
+                # 1. Create HLS functions for the Reduce component's stages
                 pre_process_func = HLSFunction(name=f"{comp.name}_pre_process", comp=comp)
                 unit_reduce_func = HLSFunction(name=f"{comp.name}_unit_reduce", comp=comp)
 
-                # 2. Define their signatures
-                # pre_process: stream in, two intermediate streams out
+                # 2. Define function signatures
                 in_type = self.type_map[comp.get_port("i_0").data_type]
                 key_type = self.type_map[comp.get_port("i_reduce_key_out").data_type]
                 transform_type = self.type_map[comp.get_port("i_reduce_transform_out").data_type]
 
-                i_0_type = HLSType(
-                    HLSBasicType.STREAM,
-                    sub_types=[self.batch_type_map[in_type]],
-                )
-                i_key_type = HLSType(
-                    HLSBasicType.STREAM,
-                    sub_types=[self.batch_type_map[key_type]],
-                )
-                i_t_type = HLSType(
-                    HLSBasicType.STREAM,
-                    sub_types=[self.batch_type_map[transform_type]],
-                )
                 pre_process_func.params = [
-                    HLSVar("i_0", i_0_type),
-                    HLSVar("intermediate_key", i_key_type),
-                    HLSVar("intermediate_transform", i_t_type),
+                    HLSVar("i_0", HLSType(HLSBasicType.STREAM, [self.batch_type_map[in_type]])),
+                    HLSVar("intermediate_key", HLSType(HLSBasicType.STREAM, [self.batch_type_map[key_type]])),
+                    HLSVar(
+                        "intermediate_transform",
+                        HLSType(HLSBasicType.STREAM, [self.batch_type_map[transform_type]]),
+                    ),
                 ]
 
-                # 创建 kt_pair_t 类型
                 kt_pair_type = HLSType(
                     HLSBasicType.STRUCT,
                     sub_types=[key_type, transform_type],
@@ -528,113 +543,70 @@ emconfig:
                 )
                 self.struct_definitions[kt_pair_type.name] = (kt_pair_type, ["key", "transform"])
 
-                member = [kt_pair_type, HLSType(HLSBasicType.BOOL), HLSType(HLSBasicType.UINT8)]
-                member_names = ["data", "end_flag", "end_pos"]
-
-                kt_wrap_type = HLSType(
+                net_wrapper_type = HLSType(
                     HLSBasicType.STRUCT,
-                    member,
+                    [kt_pair_type, HLSType(HLSBasicType.BOOL)],
                     struct_name=f"net_wrapper_{kt_pair_type.name}_t",
-                    struct_prop_names=member_names,
+                    struct_prop_names=["data", "end_flag"],
                 )
-                self.struct_definitions[kt_wrap_type.name] = (kt_wrap_type, member_names)
-
-                kt_wrap_stream = HLSType(HLSBasicType.STREAM, sub_types=[kt_wrap_type])
-                kt_wrap_array = HLSType(HLSBasicType.ARRAY, sub_types=[kt_wrap_stream], array_dims=["PE_NUM"])
-
-                # a. Define the un-batched, single stream types for parallel PEs
-                # single_key_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[key_type])
-                # single_transform_stream_type = HLSType(
-                #     HLSBasicType.STREAM, sub_types=[transform_type]
-                # )
+                self.struct_definitions[net_wrapper_type.name] = (net_wrapper_type, ["data", "end_flag"])
 
                 out_dfir_type = comp.get_port("o_0").data_type
-                base_data_type = self._get_batch_type(self.type_map[out_dfir_type.type_])
-                single_data_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[base_data_type])
+                base_out_batch_type = self._get_batch_type(self.type_map[out_dfir_type])
 
-                # b. Create ARRAY types for the stream arrays
-                # key_stream_array_type = HLSType(
-                #     HLSBasicType.ARRAY, sub_types=[single_key_stream_type], array_dims=["PE_NUM"]
-                # )
-                # transform_stream_array_type = HLSType(
-                #     HLSBasicType.ARRAY,
-                #     sub_types=[single_transform_stream_type],
-                #     array_dims=["PE_NUM"],
-                # )
-                # output_stream_array_type = HLSType(
-                #     HLSBasicType.ARRAY, sub_types=[single_data_stream_type], array_dims=["PE_NUM"]
-                # )
-
-                # c. Set the new parameters for unit_reduce_func
                 unit_reduce_func.params = [
-                    HLSVar("kt_wrap_item", kt_wrap_array),
-                    # HLSVar("intermediate_key", key_stream_array_type),
-                    # HLSVar("intermediate_transform", transform_stream_array_type),
-                    HLSVar("o_0", single_data_stream_type),
+                    HLSVar(
+                        "kt_wrap_item",
+                        HLSType(
+                            HLSBasicType.ARRAY,
+                            [HLSType(HLSBasicType.STREAM, [net_wrapper_type])],
+                            array_dims=["PE_NUM"],
+                        ),
+                    ),
+                    HLSVar("o_0", HLSType(HLSBasicType.STREAM, [base_out_batch_type])),
                 ]
 
-                self.hls_functions[comp.readable_id] = pre_process_func
-                self.hls_functions[comp.readable_id + 1] = unit_reduce_func  # Use a unique-ish ID
+                self.hls_functions[pre_process_func.readable_id] = pre_process_func
+                self.hls_functions[unit_reduce_func.readable_id] = unit_reduce_func
 
-                # 2. 获取批处理类型
+                # 3. Generate utility functions
                 key_batch_type = self.batch_type_map[key_type]
                 transform_batch_type = self.batch_type_map[transform_type]
                 kt_pair_batch_type = self._get_batch_type(kt_pair_type)
 
-                # 3. 生成 Zipper
                 zipper_func = generate_stream_zipper(key_batch_type, transform_batch_type, kt_pair_batch_type)
-
-                # 4. 生成 Demux (现在它处理 kt_pair_batch)
-                demux_func = generate_demux(self.PE_NUM, kt_pair_batch_type, kt_wrap_type)
-
-                # 5. 生成 Omega Network (现在它处理 kt_pair 并根据 'key' 路由)
-                omega_funcs = generate_omega_network(self.PE_NUM, kt_wrap_type, routing_key_member="key")
+                demux_func = generate_demux(self.PE_NUM, kt_pair_batch_type, net_wrapper_type)
+                omega_funcs = generate_omega_network(self.PE_NUM, net_wrapper_type, routing_key_member="key")
                 omega_func = next(f for f in omega_funcs if "omega_switch" in f.name)
 
-                # 6. 生成 Unzipper
-                # key_stream_array_type = unit_reduce_func.params[0].type
-                # transform_stream_array_type = unit_reduce_func.params[1].type
-                # unzipper_func = generate_stream_unzipper(self.PE_NUM, kt_wrap_type, key_stream_array_type, transform_stream_array_type)
-
-                # 7. 生成 Reduction Tree (逻辑不变)
-                # out_dfir_type = comp.get_port("o_0").data_type
-                # base_data_type = self.type_map[out_dfir_type.type_]
-                # merge_func = generate_merge_stream_2x1(base_data_type)
-                # tree_func = generate_reduction_tree(self.PE_NUM, base_data_type, merge_func)
-
-                # 8. 存储所有生成的辅助函数
                 self.utility_functions.extend([zipper_func, demux_func] + omega_funcs)
 
-                # 9. 声明所有中间流并存储辅助模块信息
+                # 4. Store helpers and declare all necessary streams
                 helpers = {
+                    "pre_process": pre_process_func,
+                    "unit_reduce": unit_reduce_func,
                     "zipper": zipper_func,
                     "demux": demux_func,
                     "omega": omega_func,
-                    # "unzipper": unzipper_func,
-                    # "tree": tree_func,
-                    "unit_reduce": unit_reduce_func,
                 }
 
                 streams_to_declare = {
                     "zipper_to_demux": HLSVar(
                         f"reduce_{comp.readable_id}_z2d_pair",
-                        HLSType(HLSBasicType.STREAM, sub_types=[kt_pair_batch_type]),
+                        HLSType(HLSBasicType.STREAM, [kt_pair_batch_type]),
                     ),
                     "demux_to_omega": HLSVar(
                         f"reduce_{comp.readable_id}_d2o_pair", demux_func.params[1].type
                     ),
-                    "omega_to_unit": HLSVar(
-                        f"reduce_{comp.readable_id}_o2u_pair", omega_func.params[-1].type
-                    ),
-                    # "omega_to_unzipper": HLSVar(f"reduce_{comp.readable_id}_o2u_pair", unzipper_func.params[0].type),
-                    # "unzipper_to_unit_key": HLSVar(f"reduce_{comp.readable_id}_u2u_key", key_stream_array_type),
-                    # "unzipper_to_unit_transform": HLSVar(f"reduce_{comp.readable_id}_u2u_transform", transform_stream_array_type),
-                    "unit_to_final": HLSVar(
-                        f"reduce_{comp.readable_id}_uout_streams", unit_reduce_func.params[1].type
-                    ),
-                    # "unit_to_tree": HLSVar(f"reduce_{comp.readable_id}_u2t_streams", unit_reduce_func.params[2].type),
-                    # "tree_to_final": HLSVar(f"reduce_{comp.readable_id}_t2f_stream", tree_func.params[2].type)
+                    "omega_to_unit": HLSVar(f"reduce_{comp.readable_id}_o2u_pair", omega_func.params[1].type),
                 }
+
+                # --- *** 关键修正：在此处添加 'intermediate' 流到字典中 *** ---
+                for param_name in ["intermediate_key", "intermediate_transform"]:
+                    stream_type = next(p.type for p in pre_process_func.params if p.name == param_name)
+                    stream_var = HLSVar(f"reduce_{comp.readable_id}_{param_name}", stream_type)
+                    streams_to_declare[param_name] = stream_var
+                # -----------------------------------------------------------
 
                 for stream_var in streams_to_declare.values():
                     decl = CodeVarDecl(stream_var.name, stream_var.type)
@@ -693,40 +665,48 @@ emconfig:
                 continue
 
             hls_func = HLSFunction(name=comp.name, comp=comp)
-            # Normal components are always streamed
             for port in comp.ports:
                 if port.connection and isinstance(
                     port.connection.parent, (dfir.UnusedEndMarkerComponent, dfir.ConstantComponent)
                 ):
                     continue
-                dfir_type = port.data_type
-                if isinstance(dfir_type, dftype.ArrayType):
-                    dfir_type = dfir_type.type_
+
+                dfir_type = (
+                    port.data_type.type_ if isinstance(port.data_type, dftype.ArrayType) else port.data_type
+                )
                 base_hls_type = self.type_map[dfir_type]
                 batch_type = self.batch_type_map[base_hls_type]
                 param_type = HLSType(HLSBasicType.STREAM, sub_types=[batch_type])
                 hls_func.params.append(HLSVar(var_name=port.name, var_type=param_type))
             self.hls_functions[comp.readable_id] = hls_func
 
+        # --- *** 关键修正：使用更健壮的逻辑来声明所有中间流 *** ---
         # 2. Identify intermediate streams and add their declarations and pragmas
+        all_stream_comp_ids = {f.dfir_comp.readable_id for f in self.hls_functions.values()}
+
         visited_ports = set()
         for port in comp_col.all_connected_ports:
             if port.readable_id in visited_ports:
                 continue
+
             conn = port.connection
+
+            # A connection is intermediate if it's between two components that will be turned into HLS functions.
+            # This is simpler and more robust than the previous check.
             is_intermediate = (
-                port.parent.readable_id in self.hls_functions
-                and conn.parent.readable_id in self.hls_functions
-                and self.hls_functions[port.parent.readable_id].streamed
-                and self.hls_functions[conn.parent.readable_id].streamed
+                port.parent.readable_id in all_stream_comp_ids
+                and conn.parent.readable_id in all_stream_comp_ids
             )
+
             if is_intermediate:
-                dfir_type = port.data_type
-                if isinstance(dfir_type, dftype.ArrayType):
-                    dfir_type = dfir_type.type_
+                dfir_type = (
+                    port.data_type.type_ if isinstance(port.data_type, dftype.ArrayType) else port.data_type
+                )
                 base_hls_type = self.type_map[dfir_type]
                 batch_type = self.batch_type_map[base_hls_type]
                 stream_type = HLSType(HLSBasicType.STREAM, sub_types=[batch_type])
+
+                # The stream is always named after the output port that produces the data.
                 out_port = port if port.port_type == dfir.PortType.OUT else conn
                 stream_name = f"stream_{out_port.unique_name}"
 
@@ -806,7 +786,7 @@ emconfig:
         return func
 
     def _generate_stream_to_mem_func(self) -> HLSFunction:
-        """Phase 4.2: Generates the function that writes from streams to AXI pointers."""
+        """Generates the function that writes from streams to AXI pointers."""
         func = HLSFunction("stream_to_mem_func", comp=None)
 
         params = []
@@ -815,37 +795,20 @@ emconfig:
         for port in self.axi_output_ports:
             batch_type = self.batch_type_map[self.type_map[port.data_type]]
 
-            # Input stream parameter
             stream_param = HLSVar(f"in_{port.unique_name}_stream", HLSType(HLSBasicType.STREAM, [batch_type]))
             params.append(stream_param)
 
-            # 完整定义主机侧的数据类型
-            kernel_output_data_type = HLSType(
-                HLSBasicType.STRUCT,
-                sub_types=[HLSType(HLSBasicType.FLOAT, struct_name="float"), HLSType(HLSBasicType.INT)],
-                struct_prop_names=["distance", "id"],
-                struct_name="KernelOutputData",
-            )
-            output_data_array_type = HLSType(
-                HLSBasicType.ARRAY, sub_types=[kernel_output_data_type], array_dims=["PE_NUM"]
-            )
-            host_output_type = HLSType(
-                HLSBasicType.STRUCT,
-                sub_types=[output_data_array_type, HLSType(HLSBasicType.BOOL), HLSType(HLSBasicType.UINT8)],
-                struct_prop_names=["data", "end_flag", "end_pos"],
-                struct_name="KernelOutputBatch",
-            )
+            host_output_type = self._get_host_output_type()
 
-            # *** 此处是修正的关键 ***
-            # 使用新的指针类型来定义 AXI 输出指针 (T*)
             axi_ptr_type = HLSType(HLSBasicType.POINTER, sub_types=[host_output_type], is_const_ptr=False)
             axi_param = HLSVar(f"out_{port.unique_name}", axi_ptr_type)
             params.append(axi_param)
 
-            # Loop Body
             i_var = HLSVar("i", HLSType(HLSBasicType.INT))
             internal_batch_var = HLSVar("internal_batch", batch_type)
             output_batch_var = HLSVar("output_batch", host_output_type)
+
+            kernel_output_data_type = host_output_type.sub_types[0].sub_types[0]
 
             conversion_loop = CodeFor(
                 [
@@ -872,7 +835,6 @@ emconfig:
                 "PE_NUM",
                 iter_name="k",
             )
-
             while_body = [
                 CodePragma("PIPELINE"),
                 CodeIf(
@@ -926,7 +888,6 @@ emconfig:
                     ],
                 ),
             ]
-
             body.extend(
                 [
                     CodeVarDecl(i_var.name, i_var.type, init_val=0),
@@ -956,36 +917,40 @@ emconfig:
         return func
 
     def _generate_axi_kernel_wrapper(self, top_func_name: str) -> Tuple[str, str]:
-        """Phase 4.4: Generates the final extern "C" kernel with AXI pragmas."""
-        params = []
+        """Generates the final extern "C" kernel with AXI pragmas."""
+        params_str_list = []
         param_vars = []
+
+        # 1. Build parameter lists for the top-level function signature
         for port in self.axi_input_ports:
             batch_type = self.batch_type_map[self.type_map[port.data_type]]
-            axi_param = HLSVar(port.unique_name, HLSType(HLSBasicType.UINT, sub_types=[batch_type]))
-            axi_param.type.name = f"const {batch_type.name}*"
-            params.append(axi_param.type.get_upper_decl(axi_param.name))
+            axi_ptr_type = HLSType(HLSBasicType.POINTER, sub_types=[batch_type], is_const_ptr=True)
+            axi_param = HLSVar(port.unique_name, axi_ptr_type)
+            params_str_list.append(axi_param.type.get_upper_decl(axi_param.name))
             param_vars.append(axi_param)
 
         for port in self.axi_output_ports:
-            host_output_type = HLSType(HLSBasicType.STRUCT, struct_name="KernelOutputBatch")
-            axi_param = HLSVar(port.unique_name, HLSType(HLSBasicType.UINT, sub_types=[host_output_type]))
-            axi_param.type.name = f"{host_output_type.name}*"
-            params.append(axi_param.type.get_upper_decl(axi_param.name))
+            host_output_type = self._get_host_output_type()
+            axi_ptr_type = HLSType(HLSBasicType.POINTER, sub_types=[host_output_type], is_const_ptr=False)
+            axi_param = HLSVar(port.unique_name, axi_ptr_type)
+            params_str_list.append(axi_param.type.get_upper_decl(axi_param.name))
             param_vars.append(axi_param)
 
-        params.append("int* stop_flag")
-        param_vars.append(HLSVar("stop_flag", HLSType(HLSBasicType.UINT, struct_name="int*")))
+        params_str_list.append("int* stop_flag")
+        param_vars.append(HLSVar("stop_flag", HLSType(HLSBasicType.POINTER, [HLSType(HLSBasicType.INT)])))
 
-        params.append("uint16_t input_length_in_batches")
+        params_str_list.append("uint16_t input_length_in_batches")
         param_vars.append(
             HLSVar("input_length_in_batches", HLSType(HLSBasicType.UINT8, struct_name="uint16_t"))
         )
 
         top_func_sig = (
-            f'extern "C" void {top_func_name}(\n{INDENT_UNIT}' + f",\n{INDENT_UNIT}".join(params) + "\n)"
+            f'extern "C" void {top_func_name}(\n{INDENT_UNIT}'
+            + f",\n{INDENT_UNIT}".join(params_str_list)
+            + "\n)"
         )
 
-        # --- Generate Pragmas ---
+        # 2. Generate Pragmas
         pragmas = []
         for i, var in enumerate(param_vars):
             bundle = f"gmem{i}"
@@ -996,9 +961,8 @@ emconfig:
             pragmas.append(f"#pragma HLS INTERFACE s_axilite port={var.name}")
         pragmas.append("#pragma HLS INTERFACE s_axilite port=return")
 
-        # --- Generate Body ---
+        # 3. Generate Body
         body = []
-        body.append(CodePragma("DATAFLOW"))
 
         # Declare internal streams
         internal_streams = []
@@ -1008,33 +972,55 @@ emconfig:
                 f"{port.unique_name}_internal_stream", HLSType(HLSBasicType.STREAM, [batch_type])
             )
             internal_streams.append(stream_var)
-            body.append(
-                CodeVarDecl(stream_var.name, stream_var.type, is_static=True)
-            )  # Use static for streams
+
+            decl = CodeVarDecl(stream_var.name, stream_var.type)
+            # Use 'static' for streams inside a function to ensure they are properly implemented by HLS
+            setattr(decl, "is_static", True)
+            body.append(decl)
             body.append(CodePragma(f"STREAM variable={stream_var.name} depth={self.STREAM_DEPTH}"))
 
-        # Generate calls
-        m2s_params = (
-            [HLSVar(p.unique_name, p.type) for p in self.axi_input_ports]
-            + [s for s in internal_streams if "i_" in s.name]
-            + [HLSVar("input_length_in_batches", HLSType(HLSBasicType.UINT8))]
-        )
-        body.append(CodeCall(self.mem_to_stream_func, m2s_params))
+        body.append(CodePragma("DATAFLOW"))
 
-        df_core_params = [s for s in internal_streams if "i_" in s.name] + [
-            s for s in internal_streams if "o_" in s.name
+        # --- *** 关键修正：使用更清晰的逻辑构建函数调用参数 *** ---
+        # 4. Generate calls to sub-functions
+
+        # Params for mem_to_stream_func
+        m2s_axi_params = [p for p in param_vars if p.type.is_const_ptr]
+        m2s_stream_params = [
+            s for s in internal_streams if any(p.unique_name in s.name for p in self.axi_input_ports)
         ]
-        body.append(CodeCall(self.dataflow_core_func, df_core_params))
+        m2s_len_param = [p for p in param_vars if "input_length" in p.name]
+        body.append(CodeCall(self.mem_to_stream_func, m2s_axi_params + m2s_stream_params + m2s_len_param))
 
-        s2m_params = [s for s in internal_streams if "o_" in s.name] + [
-            HLSVar(p.unique_name, p.type) for p in self.axi_output_ports
+        # Params for dataflow_core_func
+        df_core_input_streams = [
+            s for s in internal_streams if any(p.unique_name in s.name for p in self.axi_input_ports)
         ]
-        body.append(CodeCall(self.stream_to_mem_func, s2m_params))
+        df_core_output_streams = [
+            s for s in internal_streams if any(p.unique_name in s.name for p in self.axi_output_ports)
+        ]
+        body.append(CodeCall(self.dataflow_core_func, df_core_input_streams + df_core_output_streams))
 
-        # --- Assemble final string ---
+        # Params for stream_to_mem_func
+        s2m_stream_params = [
+            s for s in internal_streams if any(p.unique_name in s.name for p in self.axi_output_ports)
+        ]
+        s2m_axi_params = [
+            p
+            for p in param_vars
+            if p.type.type == HLSBasicType.POINTER and not p.type.is_const_ptr and "stop_flag" not in p.name
+        ]
+        body.append(CodeCall(self.stream_to_mem_func, s2m_stream_params + s2m_axi_params))
+
+        # 5. Assemble final C++ string
         code = "\n".join(pragmas) + "\n"
         code += f"{top_func_sig} " + "{\n"
-        code += "".join([line.gen_code(1) for line in body])
+        # Manually handle static declaration for CodeVarDecl
+        for line in body:
+            if isinstance(line, CodeVarDecl) and getattr(line, "is_static", False):
+                code += f"{INDENT_UNIT}static {line.gen_code().lstrip()}"
+            else:
+                code += line.gen_code(1)
         code += "}\n"
 
         return code, top_func_sig
@@ -2353,122 +2339,127 @@ emconfig:
         return code
 
     def _generate_top_level_function_body(self) -> List[HLSCodeLine]:
-        """Generates the implementation of the top-level dataflow function body."""
+        """Generates the implementation of the dataflow core function body,
+        based on the proven logic from the original implementation."""
         from collections import defaultdict
 
         body: List[HLSCodeLine] = [CodePragma("DATAFLOW")]
 
-        # 1. Declare all intermediate streams (including those for Reduce)
+        # 1. Declare all intermediate streams
         for decl, pragma in self.top_level_stream_decls:
             body.append(decl)
             if pragma:
                 body.append(pragma)
 
-        # 2. Prepare maps for top-level I/O and intermediate streams
+        # 2. Prepare maps for I/O and intermediate streams
         stream_map = {decl.var.name: decl.var for decl, _ in self.top_level_stream_decls}
         top_io_map: Dict[int, HLSVar] = {}
 
-        # Re-fetch top-level ports based on the stored axi ports
-        top_level_inputs = self.axi_input_ports
-        top_level_outputs = self.axi_output_ports
+        # --- *** 关键修正：在此处重新发现顶层IO端口，确保状态最新 *** ---
+        # This logic is taken directly from the user-provided working code.
+        top_level_inputs = []
+        for comp in self.comp_col_store.components:
+            if isinstance(comp, dfir.IOComponent) and comp.io_type == dfir.IOComponent.IOType.INPUT:
+                if comp.get_port("o_0").connected:
+                    top_level_inputs.append(comp.get_port("o_0").connection)
+        top_level_outputs = self.comp_col_store.outputs
 
-        for p in top_level_inputs + top_level_outputs:
-            is_array = isinstance(p.data_type, dftype.ArrayType)
-            dtype = p.data_type.type_ if is_array else p.data_type
-            batch_type = self.batch_type_map[self.type_map[dtype]]
-            # The variable name in the call must match the dataflow core function's signature
+        current_top_level_io_ports = top_level_inputs + top_level_outputs
+        # ----------------------------------------------------------------
+
+        # Populate top_io_map using the fresh list of ports
+        for p in current_top_level_io_ports:
+            # Note: For ArrayType, we need its inner type for batching.
+            dfir_type = p.data_type.type_ if isinstance(p.data_type, dftype.ArrayType) else p.data_type
+            batch_type = self.batch_type_map[self.type_map[dfir_type]]
             top_io_map[p.readable_id] = HLSVar(
                 f"{p.unique_name}_stream", HLSType(HLSBasicType.STREAM, [batch_type])
             )
 
-        # 3. Topologically sort the top-level streamed functions before generating calls
+        # 3. Topologically sort functions (using the user-provided, proven logic)
         stream_funcs = [f for f in self.hls_functions.values() if f.streamed]
-        id_to_func = {f.dfir_comp.readable_id: f for f in stream_funcs}
-        comp_to_func = {f.dfir_comp: f for f in stream_funcs}
+        id_to_func = {f.readable_id: f for f in stream_funcs}
+        comp_to_func = {f.dfir_comp: f for f in stream_funcs}  # This is safe within this function's context
+        reduce_comp_to_pre = {}
 
         adj = defaultdict(list)
-        in_degree = {f.dfir_comp.readable_id: 0 for f in stream_funcs}
+        in_degree = {f.readable_id: 0 for f in stream_funcs}
 
-        # Build dependency graph
+        for func in stream_funcs:
+            if isinstance(func.dfir_comp, dfir.ReduceComponent) and "pre_process" in func.name:
+                in_port = func.dfir_comp.get_port("i_0")
+                if in_port.connected and in_port.connection.parent in comp_to_func:
+                    adj[comp_to_func[in_port.connection.parent].readable_id].append(func.readable_id)
+                    in_degree[func.readable_id] += 1
+                reduce_comp_to_pre[func.dfir_comp] = func
+
         for func in stream_funcs:
             comp = func.dfir_comp
+            if isinstance(comp, dfir.ReduceComponent):
+                if "pre_process" in func.name:
+                    continue
+                else:  # unit_reduce
+                    adj[reduce_comp_to_pre[comp].readable_id].append(func.readable_id)
+                    in_degree[func.readable_id] += 1
+                    continue
             for port in comp.in_ports:
                 if port.connected:
                     predecessor_comp = port.connection.parent
                     if predecessor_comp in comp_to_func:
-                        adj[predecessor_comp.readable_id].append(comp.readable_id)
-                        in_degree[comp.readable_id] += 1
+                        # For ReduceComponent, comp_to_func correctly points to unit_reduce, which produces the output
+                        adj[comp_to_func[predecessor_comp].readable_id].append(func.readable_id)
+                        in_degree[func.readable_id] += 1
 
-        # Handle ReduceComponent dependencies specifically
-        for comp in self.comp_col_store.components:
-            if isinstance(comp, dfir.ReduceComponent):
-                pre_process_func = next(
-                    f for f in self.hls_functions.values() if f.name == f"{comp.name}_pre_process"
-                )
-                unit_reduce_func = next(
-                    f for f in self.hls_functions.values() if f.name == f"{comp.name}_unit_reduce"
-                )
-
-                # unit_reduce depends on pre_process
-                adj[pre_process_func.dfir_comp.readable_id].append(unit_reduce_func.dfir_comp.readable_id)
-                in_degree[unit_reduce_func.dfir_comp.readable_id] += 1
-
-        queue = [comp_id for comp_id, degree in in_degree.items() if degree == 0]
-        sorted_comps = []
-
+        queue = [fid for fid, degree in in_degree.items() if degree == 0]
+        sorted_funcs = []
         while queue:
-            comp_id = queue.pop(0)
-            sorted_comps.append(id_to_func[comp_id].dfir_comp)
-
-            for successor_id in adj[comp_id]:
+            func_id = queue.pop(0)
+            sorted_funcs.append(id_to_func[func_id])
+            for successor_id in adj[func_id]:
                 in_degree[successor_id] -= 1
                 if in_degree[successor_id] == 0:
                     queue.append(successor_id)
 
-        if len(sorted_comps) != len(stream_funcs):
+        if len(sorted_funcs) != len(stream_funcs):
             raise RuntimeError("A cycle was detected in the top-level dataflow graph.")
 
-        # 4. Generate calls to all top-level functions in topological order
+        # 4. Generate calls (using the user-provided, proven logic)
         body.append(CodeComment("--- Function Calls (in topological order) ---"))
         handled_unit_reduce_ids = set()
-
-        for comp in sorted_comps:
-            func = comp_to_func[comp]
-
-            if "unit_reduce" in func.name and func.dfir_comp.readable_id in handled_unit_reduce_ids:
+        for func in sorted_funcs:
+            comp = func.dfir_comp
+            if "unit_reduce" in func.name and comp.readable_id in handled_unit_reduce_ids:
                 continue
 
-            if "pre_process" in func.name and isinstance(func.dfir_comp, dfir.ReduceComponent):
-                comp_id = func.dfir_comp.readable_id
+            if "pre_process" in func.name and isinstance(comp, dfir.ReduceComponent):
+                comp_id = comp.readable_id
                 helpers = self.reduce_helpers[comp_id]
                 streams = helpers["streams"]
                 unit_reduce_func = helpers["unit_reduce"]
 
-                body.append(CodeComment(f"--- Start of Reduce Super-Block for {func.dfir_comp.name} ---"))
+                body.append(CodeComment(f"--- Start of Reduce Super-Block for {comp.name} ---"))
 
-                # Call pre_process
-                in_port = func.dfir_comp.get_port("i_0")
-                predecessor_port = in_port.connection
-
-                if isinstance(predecessor_port.parent, dfir.IOComponent):
-                    in_stream_var = top_io_map[in_port.readable_id]
-                else:
-                    in_stream_var = stream_map[f"stream_{predecessor_port.unique_name}"]
+                in_port = comp.get_port("i_0")
+                pred_port = in_port.connection
+                in_stream_var = (
+                    top_io_map[in_port.readable_id]
+                    if isinstance(pred_port.parent, dfir.IOComponent)
+                    else stream_map[f"stream_{pred_port.unique_name}"]
+                )
 
                 pre_process_call_params = [
                     in_stream_var,
-                    self.reduce_internal_streams[comp_id]["intermediate_key"],
-                    self.reduce_internal_streams[comp_id]["intermediate_transform"],
+                    streams["intermediate_key"],
+                    streams["intermediate_transform"],
                 ]
                 body.append(CodeCall(func, pre_process_call_params))
 
-                # Call utility functions
                 body.append(
                     CodeCall(
                         helpers["zipper"],
                         [
-                            self.reduce_internal_streams[comp_id]["intermediate_key"],
-                            self.reduce_internal_streams[comp_id]["intermediate_transform"],
+                            streams["intermediate_key"],
+                            streams["intermediate_transform"],
                             streams["zipper_to_demux"],
                         ],
                     )
@@ -2478,23 +2469,22 @@ emconfig:
                 )
                 body.append(CodeCall(helpers["omega"], [streams["demux_to_omega"], streams["omega_to_unit"]]))
 
-                # Call unit_reduce
-                final_out_port = unit_reduce_func.dfir_comp.get_port("o_0")
-                if final_out_port.connection is None:  # Connected to top-level output
-                    out_stream_var = top_io_map[final_out_port.readable_id]
-                else:
-                    out_stream_var = stream_map[f"stream_{final_out_port.unique_name}"]
+                out_port = unit_reduce_func.dfir_comp.get_port("o_0")
+                out_stream_var = (
+                    top_io_map[out_port.readable_id]
+                    if out_port.connection is None
+                    else stream_map[f"stream_{out_port.unique_name}"]
+                )
 
-                unit_reduce_params = [streams["omega_to_unit"], out_stream_var]
-                body.append(CodeCall(unit_reduce_func, unit_reduce_params))
+                body.append(CodeCall(unit_reduce_func, [streams["omega_to_unit"], out_stream_var]))
 
-                body.append(CodeComment(f"--- End of Reduce Super-Block for {func.dfir_comp.name} ---"))
+                body.append(CodeComment(f"--- End of Reduce Super-Block for {comp.name} ---"))
                 handled_unit_reduce_ids.add(comp_id)
 
-            elif not isinstance(func.dfir_comp, dfir.ReduceComponent):
+            elif not isinstance(comp, dfir.ReduceComponent):
                 call_params: List[HLSVar] = []
                 for func_param in func.params:
-                    port = func.dfir_comp.get_port(func_param.name)
+                    port = comp.get_port(func_param.name)
 
                     if port.port_type == dfir.PortType.IN:
                         predecessor_port = port.connection
@@ -2503,11 +2493,10 @@ emconfig:
                         else:
                             call_params.append(stream_map[f"stream_{predecessor_port.unique_name}"])
                     else:  # OUT port
-                        if port.connection is None:  # Connected to top-level output
+                        if port.connection is None:
                             call_params.append(top_io_map[port.readable_id])
                         else:
                             call_params.append(stream_map[f"stream_{port.unique_name}"])
-
                 body.append(CodeCall(func, call_params))
 
         return body
