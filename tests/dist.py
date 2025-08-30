@@ -1,14 +1,16 @@
+# tests/dist.py
+
 import os
 import shutil
-import subprocess
 from pathlib import Path
 
+# 确保所有需要的模块都被导入
 from graphyflow.global_graph import *
 import graphyflow.dataflow_ir as dfir
 from graphyflow.visualize_ir import visualize_components
-from graphyflow.lambda_func import lambda_min, lambda_max
+from graphyflow.lambda_func import lambda_min
 from graphyflow.passes import delete_placeholder_components_pass
-import graphyflow.backend_manager as bkd
+from graphyflow.backend_manager import BackendManager
 
 # ==================== 配置 =======================
 # 定义内核和可执行文件的基础名称
@@ -17,13 +19,12 @@ EXECUTABLE_NAME = "graphyflow_host"
 
 # 定义项目路径
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
-OUTPUT_DIR = PROJECT_ROOT / "output"
-TMP_WORK_DIR = PROJECT_ROOT / "generated_project"
-HOST_SCRIPT_DIR = TMP_WORK_DIR / "scripts" / "host"
-KERNEL_SCRIPT_DIR = TMP_WORK_DIR / "scripts" / "kernel"
+# 定义最终生成项目的目录
+OUTPUT_DIR = PROJECT_ROOT / "generated_project"
+# 将 tmp_work 作为静态文件的模板源
+TEMPLATE_DIR = PROJECT_ROOT / "tmp_work"
 
-
-# ==================== 1. 定义图算法 =======================
+# ==================== 1. 定义图算法 (与之前相同) =======================
 print("--- Step 1: Defining Graph Algorithm using GraphyFlow ---")
 g = GlobalGraph(
     properties={
@@ -42,102 +43,116 @@ min_potential_distances = potential_dst_updates.reduce_by(
 updated_node_distances = min_potential_distances.map_(
     map_func=lambda dist, node: (lambda_min(dist, node.distance), node)
 )
-# g.finish_iter(updated_node_distances, {"node": ["distance"]}, None) # 假设单次执行，无终止条件
 
-
-# ==================== 2. 前端处理和IR优化 =======================
+# ==================== 2. 前端处理和IR优化 (与之前相同) =======================
 print("\n--- Step 2: Frontend Processing & IR Optimization ---")
 dfirs = g.to_dfir()
-dfirs[0] = delete_placeholder_components_pass(dfirs[0])
-dot = visualize_components(str(dfirs[0]))
-OUTPUT_DIR.mkdir(exist_ok=True)
-dot.render(str(OUTPUT_DIR / "component_graph"), view=False, format="png")
-print(f"Component graph visualization saved to {OUTPUT_DIR / 'component_graph.png'}")
+comp_col = delete_placeholder_components_pass(dfirs[0])
+print("DFG-IR generated and optimized.")
 
 
-# ==================== 3. 后端代码生成 =======================
-print("\n--- Step 3: Backend C++/Build System Code Generation ---")
-bkd_mng = bkd.BackendManager()
+# ==================== 3. 创建输出目录结构 =======================
+print(f"\n--- Step 3: Setting up Output Directory: '{OUTPUT_DIR}' ---")
+if OUTPUT_DIR.exists():
+    shutil.rmtree(OUTPUT_DIR)
+    print(f"Removed existing directory: {OUTPUT_DIR}")
 
-# 生成内核代码
-kernel_h, kernel_cpp = bkd_mng.generate_backend(dfirs[0], g, KERNEL_NAME)
-print(f"Generated kernel code for '{KERNEL_NAME}'.")
+HOST_SCRIPT_DIR = OUTPUT_DIR / "scripts" / "host"
+KERNEL_SCRIPT_DIR = OUTPUT_DIR / "scripts" / "kernel"
+XCLBIN_DIR = OUTPUT_DIR / "xclbin"
 
-# 生成Host代码
-host_h, host_cpp = bkd_mng.generate_host_codes(KERNEL_NAME)
-print("Generated host-side interface code (generated_host.h/.cpp).")
-
-# 生成构建系统文件
-build_files = bkd_mng.generate_build_system_files(KERNEL_NAME, EXECUTABLE_NAME)
-print("Generated parameterized build system files (Makefiles, run.sh, etc.).")
-
-
-# ==================== 4. 将生成的文件部署到编译目录 =======================
-print(f"\n--- Step 4: Deploying Generated Files to '{TMP_WORK_DIR}' ---")
-
-# 确保目标目录存在
-KERNEL_SCRIPT_DIR.mkdir(parents=True, exist_ok=True)
 HOST_SCRIPT_DIR.mkdir(parents=True, exist_ok=True)
+KERNEL_SCRIPT_DIR.mkdir(parents=True, exist_ok=True)
+XCLBIN_DIR.mkdir(exist_ok=True)
+print("Created project directory structure.")
 
-with open(OUTPUT_DIR / f"{KERNEL_NAME}.h", "w") as f:
-    f.write(kernel_h)
 
-# 写入内核文件
+# ==================== 4. 后端代码生成 =======================
+print("\n--- Step 4: Backend C++/Build System Code Generation ---")
+bkd_mng = BackendManager()
+
+# 生成内核代码 (graphyflow.h, graphyflow.cpp)
+kernel_h, kernel_cpp = bkd_mng.generate_backend(comp_col, g, KERNEL_NAME)
+print(f"Generated kernel HLS code for '{KERNEL_NAME}'.")
+
+# 生成共享头文件 (common.h)
+common_h = bkd_mng.generate_common_header(KERNEL_NAME)
+print("Generated shared header file 'common.h'.")
+
+# 注意：主机代码和构建文件生成将在后续阶段完善，目前可能只是占位符
+host_h, host_cpp = bkd_mng.generate_host_codes(KERNEL_NAME)
+print("Generated host-side interface code (placeholders for now).")
+build_files = bkd_mng.generate_build_system_files(KERNEL_NAME, EXECUTABLE_NAME)
+print("Generated build system files (Makefiles, etc.).")
+
+
+# ==================== 5. 部署生成的文件 =======================
+print(f"\n--- Step 5: Deploying Generated Files to '{OUTPUT_DIR}' ---")
+
+# 写入动态生成的内核文件
 with open(KERNEL_SCRIPT_DIR / f"{KERNEL_NAME}.h", "w") as f:
     f.write(kernel_h)
 with open(KERNEL_SCRIPT_DIR / f"{KERNEL_NAME}.cpp", "w") as f:
     f.write(kernel_cpp)
-print(f"Copied kernel files to {KERNEL_SCRIPT_DIR}")
+print(f"Deployed: {KERNEL_NAME}.h, {KERNEL_NAME}.cpp")
 
-# 写入Host文件
-with open(HOST_SCRIPT_DIR / "generated_host.h", "w") as f:
-    f.write(host_h)
-with open(HOST_SCRIPT_DIR / "generated_host.cpp", "w") as f:
-    f.write(host_cpp)
-print(f"Copied host files to {HOST_SCRIPT_DIR}")
+# 写入动态生成的共享头文件
+with open(HOST_SCRIPT_DIR / "common.h", "w") as f:
+    f.write(common_h)
+print(f"Deployed: common.h")
 
-# 写入构建系统文件
-for filename, content in build_files.items():
-    if "kernel.mk" in filename:
-        target_path = KERNEL_SCRIPT_DIR / filename
-    elif "fpga_executor.cpp" in filename:  # fpga_executor.cpp 也在 host 目录
-        target_path = HOST_SCRIPT_DIR / filename
-    else:
-        target_path = TMP_WORK_DIR / filename
-
-    with open(target_path, "w") as f:
-        f.write(content)
-print(f"Updated build system files in '{TMP_WORK_DIR}'.")
+# 写入动态生成的主机文件 (当前为占位符)
+# with open(HOST_SCRIPT_DIR / "generated_host.h", "w") as f: f.write(host_h)
+# with open(HOST_SCRIPT_DIR / "generated_host.cpp", "w") as f: f.write(host_cpp)
+# print(f"Deployed: generated_host.h, generated_host.cpp (placeholders)")
 
 
-# # ==================== 5. 执行编译和仿真 =======================
-# print(f"\n--- Step 5: Running Compilation and Simulation in '{TMP_WORK_DIR}' ---")
+# ==================== 6. 复制所有静态文件 =======================
+print(f"\n--- Step 6: Copying Static Files from '{TEMPLATE_DIR}' ---")
 
-# try:
-#     # 执行 make clean all
-#     print("\n[CMD] make cleanall all")
-#     # check=True 会在命令失败时抛出异常
-#     subprocess.run(["make", "cleanall", "all"], cwd=TMP_WORK_DIR, check=True, capture_output=True, text=True)
-#     print("Build successful.")
+# 定义需要复制的静态文件列表
+static_root_files = ["Makefile", "run.sh", "system.cfg", "global_para.mk", "gen_random_graph.py"]
+static_script_files = ["clean.mk", "help.mk", "main.mk", "utils.mk"]
+static_host_files = [
+    "fpga_executor.cpp",
+    "fpga_executor.h",
+    "graph_loader.cpp",
+    "graph_loader.h",
+    "host.cpp",
+    "host.mk",
+    "host_verifier.cpp",
+    "host_verifier.h",
+    "xcl2.cpp",
+    "xcl2.h",
+    # 注意: 我们暂时从模板复制这些文件，后续会动态生成
+    "generated_host.cpp",
+    "generated_host.h",
+]
+static_kernel_files = ["kernel.mk"]
 
-#     # 执行 run.sh
-#     print("\n[CMD] ./run.sh")
-#     result = subprocess.run(["./run.sh"], cwd=TMP_WORK_DIR, check=True, capture_output=True, text=True)
+# 执行复制
+try:
+    for f in static_root_files:
+        shutil.copy(TEMPLATE_DIR / f, OUTPUT_DIR / f)
 
-#     # 打印仿真输出
-#     print("\n--- Simulation Output ---")
-#     print(result.stdout)
-#     if result.stderr:
-#         print("\n--- Simulation Stderr ---")
-#         print(result.stderr)
+    for f in static_script_files:
+        shutil.copy(TEMPLATE_DIR / "scripts" / f, OUTPUT_DIR / "scripts" / f)
 
-# except subprocess.CalledProcessError as e:
-#     print("\n--- AN ERROR OCCURRED ---")
-#     print(f"Command '{' '.join(e.cmd)}' failed with exit code {e.returncode}.")
-#     print("\n--- Stdout ---")
-#     print(e.stdout)
-#     print("\n--- Stderr ---")
-#     print(e.stderr)
-# except FileNotFoundError:
-#     print("\n--- ERROR ---")
-#     print("Could not execute command. Is 'make' or 'bash' installed and in your PATH?")
+    for f in static_host_files:
+        shutil.copy(TEMPLATE_DIR / "scripts" / "host" / f, HOST_SCRIPT_DIR / f)
+
+    for f in static_kernel_files:
+        shutil.copy(TEMPLATE_DIR / "scripts" / "kernel" / f, KERNEL_SCRIPT_DIR / f)
+
+    print("All static files copied successfully.")
+
+except FileNotFoundError as e:
+    print(f"\n[ERROR] Could not copy static files. Make sure the '{TEMPLATE_DIR}' directory is complete.")
+    print(f"File not found: {e.filename}")
+    exit(1)
+
+
+print("\n========================================================")
+print("Generation process completed successfully!")
+print(f"Project files are located in: {OUTPUT_DIR}")
+print("========================================================")

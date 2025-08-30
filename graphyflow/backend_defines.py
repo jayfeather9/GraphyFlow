@@ -13,6 +13,7 @@ INDENT_UNIT = "    "
 class HLSBasicType(Enum):
     UINT = "uint32_t"
     UINT8 = "uint8_t"
+    UINT16 = "uint16_t"
     INT = "int32_t"
     FLOAT = "ap_fixed<32, 16>"
     REAL_FLOAT = "float"

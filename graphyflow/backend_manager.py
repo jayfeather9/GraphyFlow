@@ -744,7 +744,7 @@ emconfig:
                     self._translate_unstreamed_component(func)
 
     def _generate_mem_to_stream_func(self) -> HLSFunction:
-        """Phase 4.1: Generates the function that reads from AXI pointers into streams."""
+        """Generates the function that reads from AXI pointers into streams."""
         func = HLSFunction("mem_to_stream_func", comp=None)
 
         params = []
@@ -753,24 +753,19 @@ emconfig:
         for port in self.axi_input_ports:
             batch_type = self.batch_type_map[self.type_map[port.data_type]]
 
-            # *** 此处是修正的关键 ***
-            # 使用新的指针类型来定义 AXI 输入指针 (const T*)
             axi_ptr_type = HLSType(HLSBasicType.POINTER, sub_types=[batch_type], is_const_ptr=True)
             axi_param = HLSVar(f"in_{port.unique_name}", axi_ptr_type)
             params.append(axi_param)
 
-            # Output stream parameter
-            stream_param = HLSVar(
-                f"out_{port.unique_name}_stream", HLSType(HLSBasicType.STREAM, [batch_type])
-            )
+            stream_type = HLSType(HLSBasicType.STREAM, [batch_type])
+            stream_param = HLSVar(f"out_{port.unique_name}_stream", stream_type)
             params.append(stream_param)
 
-            # Loop body
             loop = CodeFor(
                 codes=[
                     CodePragma("PIPELINE"),
                     CodeWriteStream(
-                        stream_param, HLSExpr(HLSExprT.VAR, HLSVar(f"in_{port.unique_name}[i]", batch_type))
+                        stream_param, HLSExpr(HLSExprT.VAR, HLSVar(f"{axi_param.name}[i]", batch_type))
                     ),
                 ],
                 iter_limit="num_batches",
@@ -778,9 +773,9 @@ emconfig:
             )
             body.append(loop)
 
-        # Add num_batches parameter
-        # 使用 struct_name 来覆盖默认名称，生成 uint16_t
-        params.append(HLSVar("num_batches", HLSType(HLSBasicType.UINT8, struct_name="uint16_t")))
+        num_batches_type = HLSType(HLSBasicType.UINT16)
+        params.append(HLSVar("num_batches", num_batches_type))
+
         func.params = params
         func.codes = body
         return func
