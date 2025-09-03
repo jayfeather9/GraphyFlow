@@ -130,14 +130,10 @@ class BackendManager:
         host_buffer_decls = []
         device_buffer_decls = []
 
-        # --- Add members required for iterative logic (from tmp_work) ---
-        host_buffer_decls.append("std::vector<ap_fixed<32, 16>> h_distances;")
-        host_buffer_decls.append("std::vector<int, aligned_allocator<int>> h_stop_flag;")
-        device_buffer_decls.append("cl::Buffer d_stop_flag;")
-
         # --- Generate Code Snippets based on AXI ports ---
 
         # 1. Setup Buffers Implementation
+        # (This part will be fixed in Step 2 of the plan)
         setup_buffers_impl.extend(
             [
                 "m_num_vertices = graph.num_vertices;",
@@ -149,9 +145,13 @@ class BackendManager:
 
         # This packing logic is specific to the Bellman-Ford example structure
         # A more generic generator might abstract this further.
-        input_packing_logic = []
+        input_packing_logic = []  # Placeholder for Step 2
         repack_inputs_impl.append("// Repack input buffers with updated distances for the next iteration.")
 
+        # --- ** FIX STARTS HERE ** ---
+        # Logic to populate declarations for the header file
+
+        # AXI Input Buffers
         for port in self.axi_input_ports:
             batch_type = self.batch_type_map[self.type_map[port.data_type]]
             var_name = port.unique_name
@@ -160,36 +160,7 @@ class BackendManager:
             )
             device_buffer_decls.append(f"cl::Buffer d_{var_name};")
 
-            # Simplified initial packing logic (can be made more detailed if needed)
-            input_packing_logic.extend(
-                [
-                    f"h_{var_name}.clear();",
-                    "// NOTE: This is a simplified packing logic for demonstration.",
-                    "// A real implementation would iterate through graph edges and pack them.",
-                    f"m_num_batches = 1024; // Example value, should be calculated based on graph size.",
-                    f"h_{var_name}.resize(m_num_batches);",
-                    f"if (!h_{var_name}.empty()) {{ h_{var_name}.back().end_flag = true; }}",
-                ]
-            )
-            setup_buffers_impl.append(
-                f"OCL_CHECK(err, d_{var_name} = cl::Buffer(m_context, CL_MEM_USE_HOST_PTR | CL_MEM_READ_ONLY, h_{var_name}.size() * sizeof({batch_type.name}), h_{var_name}.data(), &err));"
-            )
-
-            # Repacking logic for iterative algorithms
-            repack_inputs_impl.append(f"for (auto& batch : h_{var_name}) {{")
-            repack_inputs_impl.append("    for (int i = 0; i < batch.end_pos; ++i) {")
-            repack_inputs_impl.append(
-                "        batch.data[i].src.distance = h_distances[batch.data[i].src.id];"
-            )
-            repack_inputs_impl.append(
-                "        batch.data[i].dst.distance = h_distances[batch.data[i].dst.id];"
-            )
-            repack_inputs_impl.append("    }")
-            repack_inputs_impl.append("}")
-
-        setup_buffers_impl.extend(input_packing_logic)
-
-        # Output buffers and result collection
+        # AXI Output Buffers
         for port in self.axi_output_ports:
             host_output_type = self._get_host_output_type()  # KernelOutputBatch
             var_name = port.unique_name
@@ -198,15 +169,48 @@ class BackendManager:
             )
             device_buffer_decls.append(f"cl::Buffer d_{var_name};")
 
-            setup_buffers_impl.extend(
-                [
-                    f"h_{var_name}.resize(m_num_batches); // Assume output size relates to input size",
-                    f"OCL_CHECK(err, d_{var_name} = cl::Buffer(m_context, CL_MEM_USE_HOST_PTR | CL_MEM_WRITE_ONLY, h_{var_name}.size() * sizeof({host_output_type.name}), h_{var_name}.data(), &err));",
-                ]
+        # Control Buffers (stop_flag)
+        host_buffer_decls.append("std::vector<int, aligned_allocator<int>> h_stop_flag;")
+        device_buffer_decls.append("cl::Buffer d_stop_flag;")
+
+        # --- ** FIX ENDS HERE ** ---
+
+        # (The rest of the logic for the .cpp file remains the same for now)
+        # Simplified initial packing logic (to be replaced in Step 2)
+        input_packing_logic.extend(
+            [
+                f"h_{self.axi_input_ports[0].unique_name}.clear();",
+                "// NOTE: This is a simplified packing logic for demonstration.",
+                "// A real implementation would iterate through graph edges and pack them.",
+                f"m_num_batches = 1024; // Example value, should be calculated based on graph size.",
+                f"h_{self.axi_input_ports[0].unique_name}.resize(m_num_batches);",
+                f"if (!h_{self.axi_input_ports[0].unique_name}.empty()) {{ h_{self.axi_input_ports[0].unique_name}.back().end_flag = true; }}",
+            ]
+        )
+        for port in self.axi_input_ports:
+            batch_type = self.batch_type_map[self.type_map[port.data_type]]
+            setup_buffers_impl.append(
+                f"OCL_CHECK(err, d_{port.unique_name} = cl::Buffer(m_context, CL_MEM_USE_HOST_PTR | CL_MEM_READ_ONLY, h_{port.unique_name}.size() * sizeof({batch_type.name}), h_{port.unique_name}.data(), &err));"
             )
 
-            # Result collection logic
-            collect_results_impl.append(f"for (const auto& batch : h_{var_name}) {{")
+        repack_inputs_impl.append(f"for (auto& batch : h_{self.axi_input_ports[0].unique_name}) {{")
+        repack_inputs_impl.append("    for (int i = 0; i < batch.end_pos; ++i) {")
+        repack_inputs_impl.append("        batch.data[i].src.distance = h_distances[batch.data[i].src.id];")
+        repack_inputs_impl.append("        batch.data[i].dst.distance = h_distances[batch.data[i].dst.id];")
+        repack_inputs_impl.append("    }")
+        repack_inputs_impl.append("}")
+
+        setup_buffers_impl.extend(input_packing_logic)
+
+        for port in self.axi_output_ports:
+            host_output_type = self._get_host_output_type()
+            setup_buffers_impl.extend(
+                [
+                    f"h_{port.unique_name}.resize(m_num_batches); // Assume output size relates to input size",
+                    f"OCL_CHECK(err, d_{port.unique_name} = cl::Buffer(m_context, CL_MEM_USE_HOST_PTR | CL_MEM_WRITE_ONLY, h_{port.unique_name}.size() * sizeof({host_output_type.name}), h_{port.unique_name}.data(), &err));",
+                ]
+            )
+            collect_results_impl.append(f"for (const auto& batch : h_{port.unique_name}) {{")
             collect_results_impl.append("    for (int i = 0; i < batch.end_pos; ++i) {")
             collect_results_impl.append("        int node_id = batch.data[i].id;")
             collect_results_impl.append("        ap_fixed<32, 16> dist = batch.data[i].distance;")
@@ -225,7 +229,6 @@ class BackendManager:
             ]
         )
 
-        # 2. Transfer to FPGA Implementation
         input_buffers_list = ", ".join([f"d_{p.unique_name}" for p in self.axi_input_ports])
         transfer_to_fpga_impl.extend(
             [
@@ -235,7 +238,6 @@ class BackendManager:
             ]
         )
 
-        # 3. Execute Kernel Implementation
         execute_kernel_impl.extend(["cl_int err;", "int arg_idx = 0;"])
         for port in self.axi_input_ports:
             execute_kernel_impl.append(
@@ -253,7 +255,6 @@ class BackendManager:
             ]
         )
 
-        # 4. Transfer from FPGA Implementation
         output_buffers_list = ", ".join([f"d_{p.unique_name}" for p in self.axi_output_ports])
         transfer_from_fpga_impl.extend(
             [
