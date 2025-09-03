@@ -109,8 +109,8 @@ class BackendManager:
     def generate_host_codes(self, top_func_name: str, template_path: Path) -> Tuple[str, str]:
         """
         Generates host C++ files by filling in a new, more detailed template.
-        This version is adapted for iterative algorithms like Bellman-Ford,
-        based on the structure seen in the tmp_work example.
+        This version is adapted for iterative algorithms like Bellman-Ford and
+        implements correct graph-to-batch packing logic.
         """
         h_template_path = template_path / "generated_host.h.template"
         cpp_template_path = template_path / "generated_host.cpp.template"
@@ -120,184 +120,229 @@ class BackendManager:
         with open(cpp_template_path, "r") as f:
             cpp_template = f.read()
 
-        # --- Initialize Snippets for Each Placeholder ---
-        setup_buffers_impl = []
-        transfer_to_fpga_impl = []
-        execute_kernel_impl = []
-        transfer_from_fpga_impl = []
-        collect_results_impl = []
-        repack_inputs_impl = []
+        # --- Initialize Snippets for Declarations ---
         host_buffer_decls = []
         device_buffer_decls = []
 
-        # --- Generate Code Snippets based on AXI ports ---
+        # --- AXI Input/Output Port Analysis ---
+        # Assuming single graph input and single graph output for this algorithm
+        assert len(self.axi_input_ports) == 1, "Host generator expects one AXI input port for graph data."
+        assert len(self.axi_output_ports) == 1, "Host generator expects one AXI output port for results."
 
-        # 1. Setup Buffers Implementation
-        # (This part will be fixed in Step 2 of the plan)
-        setup_buffers_impl.extend(
-            [
-                "m_num_vertices = graph.num_vertices;",
-                "cl_int err;",
-                "h_distances.assign(m_num_vertices, INFINITY_DIST);",
-                "if (start_node < m_num_vertices) { h_distances[start_node] = 0; }",
-            ]
+        input_port = self.axi_input_ports[0]
+        output_port = self.axi_output_ports[0]
+
+        input_var_name = input_port.unique_name
+        output_var_name = output_port.unique_name
+
+        input_batch_type = self.batch_type_map[self.type_map[input_port.data_type]]
+        output_host_type = self._get_host_output_type()  # KernelOutputBatch
+
+        # --- Generate Header Declarations ---
+        host_buffer_decls.append(
+            f"std::vector<{input_batch_type.name}, aligned_allocator<{input_batch_type.name}>> h_{input_var_name};"
         )
+        device_buffer_decls.append(f"cl::Buffer d_{input_var_name};")
 
-        # This packing logic is specific to the Bellman-Ford example structure
-        # A more generic generator might abstract this further.
-        input_packing_logic = []  # Placeholder for Step 2
-        repack_inputs_impl.append("// Repack input buffers with updated distances for the next iteration.")
+        host_buffer_decls.append(
+            f"std::vector<{output_host_type.name}, aligned_allocator<{output_host_type.name}>> h_{output_var_name};"
+        )
+        device_buffer_decls.append(f"cl::Buffer d_{output_var_name};")
 
-        # --- ** FIX STARTS HERE ** ---
-        # Logic to populate declarations for the header file
-
-        # AXI Input Buffers
-        for port in self.axi_input_ports:
-            batch_type = self.batch_type_map[self.type_map[port.data_type]]
-            var_name = port.unique_name
-            host_buffer_decls.append(
-                f"std::vector<{batch_type.name}, aligned_allocator<{batch_type.name}>> h_{var_name};"
-            )
-            device_buffer_decls.append(f"cl::Buffer d_{var_name};")
-
-        # AXI Output Buffers
-        for port in self.axi_output_ports:
-            host_output_type = self._get_host_output_type()  # KernelOutputBatch
-            var_name = port.unique_name
-            host_buffer_decls.append(
-                f"std::vector<{host_output_type.name}, aligned_allocator<{host_output_type.name}>> h_{var_name};"
-            )
-            device_buffer_decls.append(f"cl::Buffer d_{var_name};")
-
-        # Control Buffers (stop_flag)
         host_buffer_decls.append("std::vector<int, aligned_allocator<int>> h_stop_flag;")
         device_buffer_decls.append("cl::Buffer d_stop_flag;")
 
-        # --- ** FIX ENDS HERE ** ---
+        # --- Generate CPP Implementation Strings ---
+        indent = "    "
 
-        # (The rest of the logic for the .cpp file remains the same for now)
-        # Simplified initial packing logic (to be replaced in Step 2)
-        input_packing_logic.extend(
-            [
-                f"h_{self.axi_input_ports[0].unique_name}.clear();",
-                "// NOTE: This is a simplified packing logic for demonstration.",
-                "// A real implementation would iterate through graph edges and pack them.",
-                f"m_num_batches = 1024; // Example value, should be calculated based on graph size.",
-                f"h_{self.axi_input_ports[0].unique_name}.resize(m_num_batches);",
-                f"if (!h_{self.axi_input_ports[0].unique_name}.empty()) {{ h_{self.axi_input_ports[0].unique_name}.back().end_flag = true; }}",
-            ]
-        )
-        for port in self.axi_input_ports:
-            batch_type = self.batch_type_map[self.type_map[port.data_type]]
-            setup_buffers_impl.append(
-                f"OCL_CHECK(err, d_{port.unique_name} = cl::Buffer(m_context, CL_MEM_USE_HOST_PTR | CL_MEM_READ_ONLY, h_{port.unique_name}.size() * sizeof({batch_type.name}), h_{port.unique_name}.data(), &err));"
-            )
+        # 1. setup_buffers() Implementation
+        # This string contains the full, correct graph packing logic.
+        setup_buffers_impl = f"""
+void AlgorithmHost::setup_buffers(const GraphCSR &graph, int start_node) {{
+    m_num_vertices = graph.num_vertices;
+    cl_int err;
+    
+    h_distances.assign(m_num_vertices, INFINITY_DIST);
+    if (start_node < m_num_vertices) {{ h_distances[start_node] = 0; }}
 
-        repack_inputs_impl.append(f"for (auto& batch : h_{self.axi_input_ports[0].unique_name}) {{")
-        repack_inputs_impl.append("    for (int i = 0; i < batch.end_pos; ++i) {")
-        repack_inputs_impl.append("        batch.data[i].src.distance = h_distances[batch.data[i].src.id];")
-        repack_inputs_impl.append("        batch.data[i].dst.distance = h_distances[batch.data[i].dst.id];")
-        repack_inputs_impl.append("    }")
-        repack_inputs_impl.append("}")
+    h_{input_var_name}.clear();
+    {input_batch_type.name} current_batch;
+    int edges_in_batch = 0;
 
-        setup_buffers_impl.extend(input_packing_logic)
+    for (int u = 0; u < graph.num_vertices; ++u) {{
+        for (int i = graph.offsets[u]; i < graph.offsets[u + 1]; ++i) {{
+            int v = graph.columns[i];
+            int w = graph.weights[i];
 
-        for port in self.axi_output_ports:
-            host_output_type = self._get_host_output_type()
-            setup_buffers_impl.extend(
-                [
-                    f"h_{port.unique_name}.resize(m_num_batches); // Assume output size relates to input size",
-                    f"OCL_CHECK(err, d_{port.unique_name} = cl::Buffer(m_context, CL_MEM_USE_HOST_PTR | CL_MEM_WRITE_ONLY, h_{port.unique_name}.size() * sizeof({host_output_type.name}), h_{port.unique_name}.data(), &err));",
-                ]
-            )
-            collect_results_impl.append(f"for (const auto& batch : h_{port.unique_name}) {{")
-            collect_results_impl.append("    for (int i = 0; i < batch.end_pos; ++i) {")
-            collect_results_impl.append("        int node_id = batch.data[i].id;")
-            collect_results_impl.append("        ap_fixed<32, 16> dist = batch.data[i].distance;")
-            collect_results_impl.append(
-                "        if (min_distances.find(node_id) == min_distances.end() || dist < min_distances[node_id]) {"
-            )
-            collect_results_impl.append("            min_distances[node_id] = dist;")
-            collect_results_impl.append("        }")
-            collect_results_impl.append("    }")
-            collect_results_impl.append("}")
+            edge_t edge;
+            edge.src.id = u;
+            edge.src.distance = h_distances[u];
+            edge.dst.id = v;
+            edge.dst.distance = h_distances[v];
+            edge.weight = w;
 
-        setup_buffers_impl.extend(
-            [
-                "h_stop_flag.resize(1);",
-                "OCL_CHECK(err, d_stop_flag = cl::Buffer(m_context, CL_MEM_USE_HOST_PTR | CL_MEM_READ_WRITE, sizeof(int), h_stop_flag.data(), &err));",
-            ]
-        )
+            current_batch.data[edges_in_batch] = edge;
+            edges_in_batch++;
 
-        input_buffers_list = ", ".join([f"d_{p.unique_name}" for p in self.axi_input_ports])
-        transfer_to_fpga_impl.extend(
-            [
-                "cl_int err;",
-                "h_stop_flag[0] = 0; // Reset stop flag before each iteration",
-                f"OCL_CHECK(err, err = m_q.enqueueMigrateMemObjects({{{input_buffers_list}, d_stop_flag}}, 0));",
-            ]
-        )
+            if (edges_in_batch == PE_NUM) {{
+                current_batch.end_pos = PE_NUM;
+                current_batch.end_flag = false;
+                h_{input_var_name}.push_back(current_batch);
+                edges_in_batch = 0;
+            }}
+        }}
+    }}
 
-        execute_kernel_impl.extend(["cl_int err;", "int arg_idx = 0;"])
-        for port in self.axi_input_ports:
-            execute_kernel_impl.append(
-                f"OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, d_{port.unique_name}));"
-            )
-        for port in self.axi_output_ports:
-            execute_kernel_impl.append(
-                f"OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, d_{port.unique_name}));"
-            )
-        execute_kernel_impl.extend(
-            [
-                "OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, d_stop_flag));",
-                "OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, (uint16_t)m_num_batches));",
-                "OCL_CHECK(err, err = m_q.enqueueTask(m_kernel, nullptr, &event));",
-            ]
-        )
+    if (edges_in_batch > 0) {{
+        current_batch.end_pos = edges_in_batch;
+        current_batch.end_flag = false;
+        h_{input_var_name}.push_back(current_batch);
+    }}
+    
+    if (!h_{input_var_name}.empty()) {{
+        h_{input_var_name}.back().end_flag = true;
+    }}
 
-        output_buffers_list = ", ".join([f"d_{p.unique_name}" for p in self.axi_output_ports])
-        transfer_from_fpga_impl.extend(
-            [
-                "cl_int err;",
-                f"OCL_CHECK(err, err = m_q.enqueueMigrateMemObjects({{{output_buffers_list}, d_stop_flag}}, CL_MIGRATE_MEM_OBJECT_HOST));",
-                "m_q.finish(); // Ensure data is synced back to host",
-            ]
-        )
+    m_num_batches = h_{input_var_name}.size();
+    h_{output_var_name}.resize(m_num_batches);
+    h_stop_flag.resize(1);
+
+    OCL_CHECK(err, d_{input_var_name} = cl::Buffer(m_context, CL_MEM_USE_HOST_PTR | CL_MEM_READ_ONLY, h_{input_var_name}.size() * sizeof({input_batch_type.name}), h_{input_var_name}.data(), &err));
+    OCL_CHECK(err, d_{output_var_name} = cl::Buffer(m_context, CL_MEM_USE_HOST_PTR | CL_MEM_WRITE_ONLY, h_{output_var_name}.size() * sizeof({output_host_type.name}), h_{output_var_name}.data(), &err));
+    OCL_CHECK(err, d_stop_flag = cl::Buffer(m_context, CL_MEM_USE_HOST_PTR | CL_MEM_READ_WRITE, sizeof(int), h_stop_flag.data(), &err));
+}}
+"""
+
+        # 2. transfer_data_to_fpga() Implementation
+        transfer_to_fpga_impl = f"""
+void AlgorithmHost::transfer_data_to_fpga() {{
+    cl_int err;
+    h_stop_flag[0] = 0; // Reset stop flag before each iteration
+    OCL_CHECK(err, err = m_q.enqueueMigrateMemObjects({{d_{input_var_name}, d_stop_flag}}, 0));
+}}
+"""
+
+        # 3. execute_kernel_iteration() Implementation
+        execute_kernel_impl = f"""
+void AlgorithmHost::execute_kernel_iteration(cl::Event &event) {{
+    cl_int err;
+    int arg_idx = 0;
+    OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, d_{input_var_name}));
+    OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, d_{output_var_name}));
+    OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, d_stop_flag));
+    OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, (uint16_t)m_num_batches));
+    OCL_CHECK(err, err = m_q.enqueueTask(m_kernel, nullptr, &event));
+}}
+"""
+
+        # 4. transfer_data_from_fpga() Implementation
+        transfer_from_fpga_impl = f"""
+void AlgorithmHost::transfer_data_from_fpga() {{
+    cl_int err;
+    OCL_CHECK(err, err = m_q.enqueueMigrateMemObjects({{d_{output_var_name}, d_stop_flag}}, CL_MIGRATE_MEM_OBJECT_HOST));
+    m_q.finish(); // Ensure data is synced back to host
+}}
+"""
+
+        # 5. check_convergence_and_update() & get_results() Implementation
+        convergence_impl = f"""
+bool AlgorithmHost::check_convergence_and_update() {{
+    bool changed = false;
+    std::map<int, ap_fixed<32, 16>> min_distances;
+
+    for (const auto& batch : h_{output_var_name}) {{
+        for (int i = 0; i < batch.end_pos; ++i) {{
+            int node_id = batch.data[i].id;
+            ap_fixed<32, 16> dist = batch.data[i].distance;
+            if (min_distances.find(node_id) == min_distances.end() || dist < min_distances[node_id]) {{
+                min_distances[node_id] = dist;
+            }}
+        }}
+    }}
+
+    for (auto const &[node_id, new_dist] : min_distances) {{
+        if (new_dist < h_distances[node_id]) {{
+            h_distances[node_id] = new_dist;
+            changed = true;
+        }}
+    }}
+
+    if (changed) {{
+        for (auto& batch : h_{input_var_name}) {{
+            for (int i = 0; i < batch.end_pos; ++i) {{
+                batch.data[i].src.distance = h_distances[batch.data[i].src.id];
+                batch.data[i].dst.distance = h_distances[batch.data[i].dst.id];
+            }}
+        }}
+    }}
+
+    return !changed;
+}}
+
+const std::vector<int> &AlgorithmHost::get_results() const {{
+    static std::vector<int> final_distances;
+    final_distances.clear();
+    final_distances.reserve(h_distances.size());
+    for (const auto &dist : h_distances) {{
+        if (dist > std::numeric_limits<int>::max()) {{
+            final_distances.push_back(std::numeric_limits<int>::max());
+        }} else {{
+            final_distances.push_back(dist.to_int());
+        }}
+    }}
+    return final_distances;
+}}
+"""
 
         # --- Replace Placeholders in Templates ---
-        indent = "    "
         cpp_final = cpp_template
-        cpp_final = cpp_final.replace(
-            "// {{GRAPHYFLOW_SETUP_BUFFERS_IMPL}}",
-            f"void AlgorithmHost::setup_buffers(const GraphCSR &graph, int start_node) {{\n{indent}"
-            + f"\n{indent}".join(setup_buffers_impl)
-            + "\n}",
-        )
-        cpp_final = cpp_final.replace(
-            "// {{GRAPHYFLOW_TRANSFER_TO_FPGA_IMPL}}",
-            f"void AlgorithmHost::transfer_data_to_fpga() {{\n{indent}"
-            + f"\n{indent}".join(transfer_to_fpga_impl)
-            + "\n}",
-        )
-        cpp_final = cpp_final.replace(
-            "// {{GRAPHYFLOW_EXECUTE_KERNEL_IMPL}}",
-            f"void AlgorithmHost::execute_kernel_iteration(cl::Event &event) {{\n{indent}"
-            + f"\n{indent}".join(execute_kernel_impl)
-            + "\n}",
-        )
-        cpp_final = cpp_final.replace(
-            "// {{GRAPHYFLOW_TRANSFER_FROM_FPGA_IMPL}}",
-            f"void AlgorithmHost::transfer_data_from_fpga() {{\n{indent}"
-            + f"\n{indent}".join(transfer_from_fpga_impl)
-            + "\n}",
-        )
-        cpp_final = cpp_final.replace(
-            "// {{GRAPHYFLOW_COLLECT_RESULTS_IMPL}}",
-            f"{indent*2}" + f"\n{indent*2}".join(collect_results_impl),
-        )
-        cpp_final = cpp_final.replace(
-            "// {{GRAPHYFLOW_REPACK_INPUTS_IMPL}}", f"{indent*2}" + f"\n{indent*2}".join(repack_inputs_impl)
-        )
+        cpp_final = cpp_final.replace("// {{GRAPHYFLOW_SETUP_BUFFERS_IMPL}}", setup_buffers_impl)
+        cpp_final = cpp_final.replace("// {{GRAPHYFLOW_TRANSFER_TO_FPGA_IMPL}}", transfer_to_fpga_impl)
+        cpp_final = cpp_final.replace("// {{GRAPHYFLOW_EXECUTE_KERNEL_IMPL}}", execute_kernel_impl)
+        cpp_final = cpp_final.replace("// {{GRAPHYFLOW_TRANSFER_FROM_FPGA_IMPL}}", transfer_from_fpga_impl)
+
+        # Combine convergence and result logic and replace its placeholder
+        # This replaces both the incorrect indentation and logic from the old version
+        convergence_and_results_placeholder = """// {{GRAPHYFLOW_COLLECT_RESULTS_IMPL}}
+
+    // Update host-side distances and check for any changes
+    for (auto const &[node_id, new_dist] : min_distances) {
+        if (new_dist < h_distances[node_id]) {
+            h_distances[node_id] = new_dist;
+            changed = true;
+        }
+    }
+
+    // If distances changed, the input buffers need to be repacked with the new distance values for the next iteration.
+    if (changed) {
+        // {{GRAPHYFLOW_REPACK_INPUTS_IMPL}}
+    }
+
+    return !changed; // Return true if converged (no changes)
+}
+
+const std::vector<int> &AlgorithmHost::get_results() const {
+    // This function converts the final ap_fixed distances to integers for verification.
+    static std::vector<int> final_distances;
+    final_distances.clear();
+    final_distances.reserve(h_distances.size());
+    for (const auto &dist : h_distances) {
+        if (dist > std::numeric_limits<int>::max()) {
+            final_distances.push_back(std::numeric_limits<int>::max());
+        } else {
+            final_distances.push_back(dist.to_int());
+        }
+    }
+    return final_distances;"""
+        # A bit complex, but we need to find the whole block to replace
+        start_str = "bool AlgorithmHost::check_convergence_and_update() {"
+        end_str = "return final_distances;\n}"
+
+        cpp_final_start = cpp_final.find(start_str)
+        cpp_final_end = cpp_final.find(end_str) + len(end_str)
+
+        if cpp_final_start != -1 and cpp_final_end != -1:
+            cpp_final = cpp_final[:cpp_final_start] + convergence_impl + cpp_final[cpp_final_end:]
 
         h_final = h_template
         h_final = h_final.replace(
@@ -307,7 +352,7 @@ class BackendManager:
             "// {{GRAPHYFLOW_DEVICE_BUFFER_DECLARATIONS}}", f"\n{indent}".join(device_buffer_decls)
         )
 
-        return h_final, cpp_final
+        return h_final, cpp_final.strip()
 
     def generate_build_system_files(self, kernel_name: str, executable_name: str) -> Dict[str, str]:
         """
@@ -815,14 +860,14 @@ emconfig:
             internal_batch_var = HLSVar("internal_batch", internal_batch_type)
             output_batch_var = HLSVar("output_batch", host_output_type)
 
-            # 从 host_output_type 中反向推导出 KernelOutputData 类型
             kernel_output_data_type = host_output_type.sub_types[0].sub_types[0]
 
+            # --- ** FIX STARTS HERE ** ---
             # a. 创建类型转换的 for 循环
             conversion_loop = CodeFor(
                 [
                     CodePragma("UNROLL"),
-                    # output_batch.data[k].distance = (float)internal_batch.data[k].ele_0;
+                    # This assignment now generates the correct `(float)` cast.
                     CodeAssign(
                         HLSVar(
                             f"{output_batch_var.name}.data[k].distance", kernel_output_data_type.sub_types[0]
@@ -835,7 +880,6 @@ emconfig:
                             ),
                         ),
                     ),
-                    # output_batch.data[k].id = internal_batch.data[k].ele_1.id;
                     CodeAssign(
                         HLSVar(f"{output_batch_var.name}.data[k].id", kernel_output_data_type.sub_types[1]),
                         HLSExpr(
@@ -847,11 +891,11 @@ emconfig:
                 "PE_NUM",
                 iter_name="k",
             )
+            # --- ** FIX ENDS HERE ** ---
 
             # b. 创建主 while 循环体
             while_body = [
                 CodePragma("PIPELINE"),
-                # *** 关键修正：添加 internal_batch 变量声明 ***
                 CodeVarDecl(internal_batch_var.name, internal_batch_var.type),
                 CodeAssign(
                     internal_batch_var,
