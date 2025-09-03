@@ -8,18 +8,10 @@
 class AlgorithmHost {
   public:
     AlgorithmHost(cl::Context &context, cl::Kernel &kernel, cl::CommandQueue &q);
-    
-    // This function will be dynamically generated
     void setup_buffers(const GraphCSR &graph, int start_node);
-    
     void transfer_data_to_fpga();
-    
-    // This function will be dynamically generated
     void execute_kernel_iteration(cl::Event &event);
-
     void transfer_data_from_fpga();
-
-    // These functions can remain generic for now
     bool check_convergence_and_update();
     const std::vector<int> &get_results() const;
 
@@ -30,11 +22,15 @@ class AlgorithmHost {
     int m_num_vertices;
     size_t m_num_batches;
 
+    // Host-side memory
     // {{GRAPHYFLOW_HOST_BUFFER_DECLARATIONS}}
+    std::vector<int, aligned_allocator<int>> h_stop_flag;
 
+    // Device-side OpenCL buffers
     // {{GRAPHYFLOW_DEVICE_BUFFER_DECLARATIONS}}
+    cl::Buffer d_stop_flag;
 
-    // Host-side state (can be adapted for different algorithms)
+    // Host-side state
     std::vector<ap_fixed<32, 16>> h_distances;
 };
 

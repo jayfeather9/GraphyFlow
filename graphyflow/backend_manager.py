@@ -108,7 +108,9 @@ class BackendManager:
 
     def generate_host_codes(self, top_func_name: str, template_path: Path) -> Tuple[str, str]:
         """
-        Generates host C++ files by filling in template files.
+        Generates host C++ files by filling in a new, more detailed template.
+        This version is adapted for iterative algorithms like Bellman-Ford,
+        based on the structure seen in the tmp_work example.
         """
         h_template_path = template_path / "generated_host.h.template"
         cpp_template_path = template_path / "generated_host.cpp.template"
@@ -118,13 +120,37 @@ class BackendManager:
         with open(cpp_template_path, "r") as f:
             cpp_template = f.read()
 
-        # --- Generate Code Snippets ---
+        # --- Initialize Snippets for Each Placeholder ---
+        setup_buffers_impl = []
+        transfer_to_fpga_impl = []
+        execute_kernel_impl = []
+        transfer_from_fpga_impl = []
+        collect_results_impl = []
+        repack_inputs_impl = []
         host_buffer_decls = []
         device_buffer_decls = []
-        buffer_inits = []
-        write_buffers = []
-        set_args = []
-        read_buffers = []
+
+        # --- Add members required for iterative logic (from tmp_work) ---
+        host_buffer_decls.append("std::vector<ap_fixed<32, 16>> h_distances;")
+        host_buffer_decls.append("std::vector<int, aligned_allocator<int>> h_stop_flag;")
+        device_buffer_decls.append("cl::Buffer d_stop_flag;")
+
+        # --- Generate Code Snippets based on AXI ports ---
+
+        # 1. Setup Buffers Implementation
+        setup_buffers_impl.extend(
+            [
+                "m_num_vertices = graph.num_vertices;",
+                "cl_int err;",
+                "h_distances.assign(m_num_vertices, INFINITY_DIST);",
+                "if (start_node < m_num_vertices) { h_distances[start_node] = 0; }",
+            ]
+        )
+
+        # This packing logic is specific to the Bellman-Ford example structure
+        # A more generic generator might abstract this further.
+        input_packing_logic = []
+        repack_inputs_impl.append("// Repack input buffers with updated distances for the next iteration.")
 
         for port in self.axi_input_ports:
             batch_type = self.batch_type_map[self.type_map[port.data_type]]
@@ -134,30 +160,36 @@ class BackendManager:
             )
             device_buffer_decls.append(f"cl::Buffer d_{var_name};")
 
-            # Simplified data packing logic
-            buffer_inits.append(
-                f"""
-    // Setup for input port {var_name}
-    h_{var_name}.clear();
-    // TODO: Replace this with real data packing logic.
-    // For now, creating a placeholder buffer.
-    size_t num_elements_{var_name} = 1024; // Example size
-    h_{var_name}.resize(num_elements_{var_name});
-    if (!h_{var_name}.empty()) {{
-        h_{var_name}.back().end_flag = true;
-    }}
-    m_num_batches = h_{var_name}.size(); // Assuming one input stream drives the length
-
-    OCL_CHECK(err, d_{var_name} = cl::Buffer(m_context, CL_MEM_USE_HOST_PTR | CL_MEM_READ_ONLY,
-                                            h_{var_name}.size() * sizeof({batch_type.name}),
-                                            h_{var_name}.data(), &err));
-"""
+            # Simplified initial packing logic (can be made more detailed if needed)
+            input_packing_logic.extend(
+                [
+                    f"h_{var_name}.clear();",
+                    "// NOTE: This is a simplified packing logic for demonstration.",
+                    "// A real implementation would iterate through graph edges and pack them.",
+                    f"m_num_batches = 1024; // Example value, should be calculated based on graph size.",
+                    f"h_{var_name}.resize(m_num_batches);",
+                    f"if (!h_{var_name}.empty()) {{ h_{var_name}.back().end_flag = true; }}",
+                ]
             )
-            write_buffers.append(
-                f"OCL_CHECK(err, err = m_q.enqueueMigrateMemObjects({{d_{var_name}}}, 0 /* 0 means from host to device */));"
+            setup_buffers_impl.append(
+                f"OCL_CHECK(err, d_{var_name} = cl::Buffer(m_context, CL_MEM_USE_HOST_PTR | CL_MEM_READ_ONLY, h_{var_name}.size() * sizeof({batch_type.name}), h_{var_name}.data(), &err));"
             )
-            set_args.append(f"OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, d_{var_name}));")
 
+            # Repacking logic for iterative algorithms
+            repack_inputs_impl.append(f"for (auto& batch : h_{var_name}) {{")
+            repack_inputs_impl.append("    for (int i = 0; i < batch.end_pos; ++i) {")
+            repack_inputs_impl.append(
+                "        batch.data[i].src.distance = h_distances[batch.data[i].src.id];"
+            )
+            repack_inputs_impl.append(
+                "        batch.data[i].dst.distance = h_distances[batch.data[i].dst.id];"
+            )
+            repack_inputs_impl.append("    }")
+            repack_inputs_impl.append("}")
+
+        setup_buffers_impl.extend(input_packing_logic)
+
+        # Output buffers and result collection
         for port in self.axi_output_ports:
             host_output_type = self._get_host_output_type()  # KernelOutputBatch
             var_name = port.unique_name
@@ -166,59 +198,132 @@ class BackendManager:
             )
             device_buffer_decls.append(f"cl::Buffer d_{var_name};")
 
-            buffer_inits.append(
-                f"""
-    // Setup for output port {var_name}
-    // Assuming output buffer is same size as input buffer for this example
-    h_{var_name}.resize(m_num_batches);
-
-    OCL_CHECK(err, d_{var_name} = cl::Buffer(m_context, CL_MEM_USE_HOST_PTR | CL_MEM_WRITE_ONLY,
-                                            h_{var_name}.size() * sizeof({host_output_type.name}),
-                                            h_{var_name}.data(), &err));
-"""
-            )
-            set_args.append(f"OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, d_{var_name}));")
-            read_buffers.append(
-                f"OCL_CHECK(err, err = m_q.enqueueMigrateMemObjects({{d_{var_name}}}, CL_MIGRATE_MEM_OBJECT_HOST));"
+            setup_buffers_impl.extend(
+                [
+                    f"h_{var_name}.resize(m_num_batches); // Assume output size relates to input size",
+                    f"OCL_CHECK(err, d_{var_name} = cl::Buffer(m_context, CL_MEM_USE_HOST_PTR | CL_MEM_WRITE_ONLY, h_{var_name}.size() * sizeof({host_output_type.name}), h_{var_name}.data(), &err));",
+                ]
             )
 
-        # Add stop_flag and input_length arguments
-        set_args.append(
-            f"// Assuming a stop_flag and input_length are needed\n    OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, d_stop_flag)); // Placeholder"
+            # Result collection logic
+            collect_results_impl.append(f"for (const auto& batch : h_{var_name}) {{")
+            collect_results_impl.append("    for (int i = 0; i < batch.end_pos; ++i) {")
+            collect_results_impl.append("        int node_id = batch.data[i].id;")
+            collect_results_impl.append("        ap_fixed<32, 16> dist = batch.data[i].distance;")
+            collect_results_impl.append(
+                "        if (min_distances.find(node_id) == min_distances.end() || dist < min_distances[node_id]) {"
+            )
+            collect_results_impl.append("            min_distances[node_id] = dist;")
+            collect_results_impl.append("        }")
+            collect_results_impl.append("    }")
+            collect_results_impl.append("}")
+
+        setup_buffers_impl.extend(
+            [
+                "h_stop_flag.resize(1);",
+                "OCL_CHECK(err, d_stop_flag = cl::Buffer(m_context, CL_MEM_USE_HOST_PTR | CL_MEM_READ_WRITE, sizeof(int), h_stop_flag.data(), &err));",
+            ]
         )
-        set_args.append(f"OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, (uint16_t)m_num_batches));")
 
-        # --- Replace Placeholders ---
-        h_final = h_template.replace(
-            "// {{GRAPHYFLOW_HOST_BUFFER_DECLARATIONS}}", "\n    ".join(host_buffer_decls)
+        # 2. Transfer to FPGA Implementation
+        input_buffers_list = ", ".join([f"d_{p.unique_name}" for p in self.axi_input_ports])
+        transfer_to_fpga_impl.extend(
+            [
+                "cl_int err;",
+                "h_stop_flag[0] = 0; // Reset stop flag before each iteration",
+                f"OCL_CHECK(err, err = m_q.enqueueMigrateMemObjects({{{input_buffers_list}, d_stop_flag}}, 0));",
+            ]
+        )
+
+        # 3. Execute Kernel Implementation
+        execute_kernel_impl.extend(["cl_int err;", "int arg_idx = 0;"])
+        for port in self.axi_input_ports:
+            execute_kernel_impl.append(
+                f"OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, d_{port.unique_name}));"
+            )
+        for port in self.axi_output_ports:
+            execute_kernel_impl.append(
+                f"OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, d_{port.unique_name}));"
+            )
+        execute_kernel_impl.extend(
+            [
+                "OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, d_stop_flag));",
+                "OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, (uint16_t)m_num_batches));",
+                "OCL_CHECK(err, err = m_q.enqueueTask(m_kernel, nullptr, &event));",
+            ]
+        )
+
+        # 4. Transfer from FPGA Implementation
+        output_buffers_list = ", ".join([f"d_{p.unique_name}" for p in self.axi_output_ports])
+        transfer_from_fpga_impl.extend(
+            [
+                "cl_int err;",
+                f"OCL_CHECK(err, err = m_q.enqueueMigrateMemObjects({{{output_buffers_list}, d_stop_flag}}, CL_MIGRATE_MEM_OBJECT_HOST));",
+                "m_q.finish(); // Ensure data is synced back to host",
+            ]
+        )
+
+        # --- Replace Placeholders in Templates ---
+        indent = "    "
+        cpp_final = cpp_template
+        cpp_final = cpp_final.replace(
+            "// {{GRAPHYFLOW_SETUP_BUFFERS_IMPL}}",
+            f"void AlgorithmHost::setup_buffers(const GraphCSR &graph, int start_node) {{\n{indent}"
+            + f"\n{indent}".join(setup_buffers_impl)
+            + "\n}",
+        )
+        cpp_final = cpp_final.replace(
+            "// {{GRAPHYFLOW_TRANSFER_TO_FPGA_IMPL}}",
+            f"void AlgorithmHost::transfer_data_to_fpga() {{\n{indent}"
+            + f"\n{indent}".join(transfer_to_fpga_impl)
+            + "\n}",
+        )
+        cpp_final = cpp_final.replace(
+            "// {{GRAPHYFLOW_EXECUTE_KERNEL_IMPL}}",
+            f"void AlgorithmHost::execute_kernel_iteration(cl::Event &event) {{\n{indent}"
+            + f"\n{indent}".join(execute_kernel_impl)
+            + "\n}",
+        )
+        cpp_final = cpp_final.replace(
+            "// {{GRAPHYFLOW_TRANSFER_FROM_FPGA_IMPL}}",
+            f"void AlgorithmHost::transfer_data_from_fpga() {{\n{indent}"
+            + f"\n{indent}".join(transfer_from_fpga_impl)
+            + "\n}",
+        )
+        cpp_final = cpp_final.replace(
+            "// {{GRAPHYFLOW_COLLECT_RESULTS_IMPL}}",
+            f"{indent*2}" + f"\n{indent*2}".join(collect_results_impl),
+        )
+        cpp_final = cpp_final.replace(
+            "// {{GRAPHYFLOW_REPACK_INPUTS_IMPL}}", f"{indent*2}" + f"\n{indent*2}".join(repack_inputs_impl)
+        )
+
+        h_final = h_template
+        h_final = h_final.replace(
+            "// {{GRAPHYFLOW_HOST_BUFFER_DECLARATIONS}}", f"\n{indent}".join(host_buffer_decls)
         )
         h_final = h_final.replace(
-            "// {{GRAPHYFLOW_DEVICE_BUFFER_DECLARATIONS}}", "\n    ".join(device_buffer_decls)
+            "// {{GRAPHYFLOW_DEVICE_BUFFER_DECLARATIONS}}", f"\n{indent}".join(device_buffer_decls)
         )
-
-        cpp_final = cpp_template.replace(
-            "// {{GRAPHYFLOW_BUFFER_INITIALIZATION}}", "\n    ".join(buffer_inits)
-        )
-        cpp_final = cpp_final.replace("// {{GRAPHYFLOW_ENQUEUE_WRITE_BUFFERS}}", "\n    ".join(write_buffers))
-        cpp_final = cpp_final.replace("// {{GRAPHYFLOW_SET_KERNEL_ARGS}}", "\n    ".join(set_args))
-        cpp_final = cpp_final.replace("// {{GRAPHYFLOW_ENQUEUE_READ_BUFFERS}}", "\n    ".join(read_buffers))
 
         return h_final, cpp_final
 
     def generate_build_system_files(self, kernel_name: str, executable_name: str) -> Dict[str, str]:
-        """生成所有需要的构建和执行文件的内容"""
-
+        """
+        Generates all necessary build and execution files.
+        This version is updated based on the more complete `tmp_work` example.
+        """
         files = {}
 
         # Makefile
         files[
             "Makefile"
         ] = f"""
-# This file is auto-generated by the GraphyFlow backend.
+# This file is auto-generated by GraphyFlow.
 KERNEL_NAME := {kernel_name}
 EXECUTABLE := {executable_name}
 
-TARGET := sw_emu
+TARGET ?= sw_emu
 DEVICE := /opt/xilinx/platforms/xilinx_u55c_gen3x16_xdma_3_202210_1/xilinx_u55c_gen3x16_xdma_3_202210_1.xpfm
 
 .PHONY: all clean cleanall exe check
@@ -226,98 +331,57 @@ DEVICE := /opt/xilinx/platforms/xilinx_u55c_gen3x16_xdma_3_202210_1/xilinx_u55c_
 include scripts/main.mk
 
 check: all
-	./run.sh
+	./run.sh $(TARGET)
 """
-        # fpga_executor.cpp (修改内核名称宏)
-        files[
-            "fpga_executor.cpp"
-        ] = f"""
-#include "fpga_executor.h"
-#include "generated_host.h" 
-#include <iostream>
 
-#define KERNEL_NAME "{kernel_name}"
-
-// ... (fpga_executor.cpp 的其余内容保持不变) ...
-std::vector<int> run_fpga_kernel(
-    const std::string& xclbin_path,
-    const GraphCSR& graph,
-    int start_node,
-    double& total_kernel_time_sec)
-{{
-    cl_int err;
-    auto devices = xcl::get_xil_devices();
-    auto device = devices[0];
-    OCL_CHECK(err, cl::Context context(device, NULL, NULL, NULL, &err));
-    OCL_CHECK(err, cl::CommandQueue q(context, device, CL_QUEUE_PROFILING_ENABLE, &err));
-    auto fileBuf = xcl::read_binary_file(xclbin_path);
-    cl::Program::Binaries bins{{{{fileBuf.data(), fileBuf.size()}}}};
-    OCL_CHECK(err, cl::Program program(context, {{device}}, bins, NULL, &err));
-    OCL_CHECK(err, cl::Kernel kernel(program, KERNEL_NAME, &err));
-
-    AlgorithmHost algo_host(context, kernel, q);
-    algo_host.setup_buffers(graph, start_node);
-    total_kernel_time_sec = 0;
-    int max_iterations = graph.num_vertices;
-    int iter = 0;
-    std::cout << "\\nStarting FPGA execution..." << std::endl;
-
-    // 对于流式内核, 这个循环只会执行一次 (因为 get_stop_flag 返回 1)
-    while (iter < max_iterations) {{
-        algo_host.transfer_data_to_fpga();
-        cl::Event event;
-        algo_host.execute_kernel_iteration(event);
-        event.wait();
-        algo_host.transfer_data_from_fpga();
-
-        unsigned long start = 0, end = 0;
-        event.getProfilingInfo(CL_PROFILING_COMMAND_START, &start);
-        event.getProfilingInfo(CL_PROFILING_COMMAND_END, &end);
-        double iteration_time_ns = end - start;
-        total_kernel_time_sec += iteration_time_ns * 1.0e-9;
-        double mteps = (double)graph.num_edges / (iteration_time_ns * 1.0e-9) / 1.0e6;
-
-        std::cout << "FPGA Iteration " << iter << ": "
-                  << "Time = " << (iteration_time_ns * 1.0e-6) << " ms, "
-                  << "Throughput = " << mteps << " MTEPS" << std::endl;
-        
-        iter++;
-        
-        if (algo_host.get_stop_flag() == 1) {{
-            std::cout << "FPGA computation finished after " << iter << " execution(s)." << std::endl;
-            break;
-        }}
-    }}
-
-    const std::vector<int>& final_results_ref = algo_host.get_results();
-    std::vector<int> final_results = final_results_ref;
-    
-    return final_results;
-}}
-"""
         # run.sh
         files[
             "run.sh"
         ] = f"""
 #!/bin/bash
-# This file is auto-generated by the GraphyFlow backend.
-source /home/feiyang/set_env.sh
-export XCL_EMULATION_MODE=sw_emu
+# This file is auto-generated by GraphyFlow.
+TARGET=${{1:-sw_emu}} # Default to sw_emu if no argument is given
+EXECUTABLE="{executable_name}"
+KERNEL="{kernel_name}"
+
+echo "--- Running for target: $TARGET ---"
+
+# 1. Setup Environment
+source /opt/xilinx/xrt/setup.sh
+source /opt/Xilinx/Vitis/2022.2/settings64.sh # Adjust to your Vitis version
+
+if [ "$TARGET" = "sw_emu" ] || [ "$TARGET" = "hw_emu" ]; then
+    export XCL_EMULATION_MODE=$TARGET
+else
+    unset XCL_EMULATION_MODE
+fi
+
+# 2. Find xclbin
+XCLBIN_FILE="./xclbin/${{KERNEL}}.${{TARGET}}.xclbin"
+if [ ! -f "$XCLBIN_FILE" ]; then
+    echo "Error: XCLBIN file not found at '$XCLBIN_FILE'"
+    echo "Please build for the target '$TARGET' first using: make all TARGET=$TARGET"
+    exit 1
+fi
+
+# 3. Run Host Executable
 DATASET="./graph.txt"
-./{executable_name} ./xclbin/{kernel_name}.sw_emu.xclbin $DATASET
+./${{EXECUTABLE}} ${{XCLBIN_FILE}} $DATASET
 """
+        (files["run.sh"])  # Make it executable - this is a comment, actual chmod happens in project_generator
+
         # system.cfg
         files[
             "system.cfg"
         ] = f"""
-# This file is auto-generated by the GraphyFlow backend.
+# This file is auto-generated by GraphyFlow.
 [connectivity]
 nk={kernel_name}:1:{kernel_name}_1
 """
         # scripts/kernel/kernel.mk
         files[
-            "kernel.mk"
-        ] = """
+            "scripts/kernel/kernel.mk"
+        ] = f"""
 # Makefile for the Vitis Kernel
 VPP := v++
 # KERNEL_NAME is passed from the top Makefile
@@ -326,10 +390,11 @@ XCLBIN_DIR := ./xclbin
 XCLBIN_FILE := $(XCLBIN_DIR)/$(KERNEL_NAME).$(TARGET).xclbin
 KERNEL_XO := $(XCLBIN_DIR)/$(KERNEL_NAME).$(TARGET).xo
 EMCONFIG_FILE := ./emconfig.json
-CLFLAGS += --kernel $(KERNEL_NAME)
-CLFLAGS += -Iscripts/kernel
+
+# Include host directory for common.h
+CLFLAGS += --kernel $(KERNEL_NAME) -Iscripts/kernel -Iscripts/host
+
 LDFLAGS_VPP += --config ./system.cfg
-LDFLAGS_VPP += -Iscripts/kernel
 
 $(KERNEL_XO): $(KERNEL_SRC)
 	@mkdir -p $(XCLBIN_DIR)
@@ -444,8 +509,9 @@ emconfig:
     def generate_common_header(self, top_func_name: str) -> str:
         """
         Generates the full content of the common.h header file.
+        This version now INCLUDES the GraphCSR definition.
         """
-        # *** 关键：在排序前调用此方法，以确保 KernelOutput 类型被注册 ***
+        # 确保 host output types 被定义并注册
         self._get_host_output_type()
 
         header_guard = "__COMMON_H__"
@@ -455,6 +521,18 @@ emconfig:
         code += "#include <string>\n"
         code += "#include <vector>\n\n"
         code += '#ifndef __SYNTHESIS__\n#include "xcl2.h"\n#endif\n\n'
+
+        code += "// A constant representing infinity for distance initialization\n"
+        code += "const int INFINITY_DIST = 16384;\n\n"
+        code += "// Structure to hold the graph in Compressed Sparse Row (CSR) format\n"
+        code += "struct GraphCSR {\n"
+        code += "    int num_vertices;\n"
+        code += "    int num_edges;\n"
+        code += "    std::vector<int> offsets;\n"
+        code += "    std::vector<int> columns;\n"
+        code += "    std::vector<int> weights;\n"
+        code += "};\n\n"
+
         code += "#include <ap_fixed.h>\n#include <stdint.h>\n\n"
         code += f"#define PE_NUM {self.PE_NUM}\n\n"
 
@@ -476,17 +554,13 @@ emconfig:
         self.reduce_helpers.clear()
         self.utility_functions.clear()
 
-        # This map is used to track which ReduceComponent sub-graph components have been processed
-        # to avoid creating duplicate HLSFunction objects for them.
         processed_sub_comp_ids = set()
 
         for comp in comp_col.components:
             if isinstance(comp, dfir.ReduceComponent):
-                # 1. Create HLS functions for the Reduce component's stages
                 pre_process_func = HLSFunction(name=f"{comp.name}_pre_process", comp=comp)
                 unit_reduce_func = HLSFunction(name=f"{comp.name}_unit_reduce", comp=comp)
 
-                # 2. Define function signatures
                 in_type = self.type_map[comp.get_port("i_0").data_type]
                 key_type = self.type_map[comp.get_port("i_reduce_key_out").data_type]
                 transform_type = self.type_map[comp.get_port("i_reduce_transform_out").data_type]
@@ -502,12 +576,11 @@ emconfig:
 
                 kt_pair_type = HLSType(
                     HLSBasicType.STRUCT,
-                    sub_types=[key_type, transform_type],
+                    [key_type, transform_type],
                     struct_name=f"kt_pair_{comp.readable_id}_t",
                     struct_prop_names=["key", "transform"],
                 )
                 self.struct_definitions[kt_pair_type.name] = (kt_pair_type, ["key", "transform"])
-
                 net_wrapper_type = HLSType(
                     HLSBasicType.STRUCT,
                     [kt_pair_type, HLSType(HLSBasicType.BOOL)],
@@ -518,7 +591,6 @@ emconfig:
 
                 out_dfir_type = comp.get_port("o_0").data_type
                 base_out_batch_type = self._get_batch_type(self.type_map[out_dfir_type])
-
                 unit_reduce_func.params = [
                     HLSVar(
                         "kt_wrap_item",
@@ -534,19 +606,15 @@ emconfig:
                 self.hls_functions[pre_process_func.readable_id] = pre_process_func
                 self.hls_functions[unit_reduce_func.readable_id] = unit_reduce_func
 
-                # 3. Generate utility functions
                 key_batch_type = self.batch_type_map[key_type]
                 transform_batch_type = self.batch_type_map[transform_type]
                 kt_pair_batch_type = self._get_batch_type(kt_pair_type)
-
                 zipper_func = generate_stream_zipper(key_batch_type, transform_batch_type, kt_pair_batch_type)
                 demux_func = generate_demux(self.PE_NUM, kt_pair_batch_type, net_wrapper_type)
                 omega_funcs = generate_omega_network(self.PE_NUM, net_wrapper_type, routing_key_member="key")
                 omega_func = next(f for f in omega_funcs if "omega_switch" in f.name)
-
                 self.utility_functions.extend([zipper_func, demux_func] + omega_funcs)
 
-                # 4. Store helpers and declare all necessary streams
                 helpers = {
                     "pre_process": pre_process_func,
                     "unit_reduce": unit_reduce_func,
@@ -555,6 +623,7 @@ emconfig:
                     "omega": omega_func,
                 }
 
+                # --- *** 关键修正：移除多余的 internal_streams 逻辑，只保留 streams_to_declare *** ---
                 streams_to_declare = {
                     "zipper_to_demux": HLSVar(
                         f"reduce_{comp.readable_id}_z2d_pair",
@@ -564,16 +633,13 @@ emconfig:
                         f"reduce_{comp.readable_id}_d2o_pair", demux_func.params[1].type
                     ),
                     "omega_to_unit": HLSVar(f"reduce_{comp.readable_id}_o2u_pair", omega_func.params[1].type),
+                    # 从 pre_process_func.params 直接获取正确的 HLSVar 对象
+                    "intermediate_key": pre_process_func.params[1],
+                    "intermediate_transform": pre_process_func.params[2],
                 }
 
-                # --- *** 关键修正：在此处添加 'intermediate' 流到字典中 *** ---
-                for param_name in ["intermediate_key", "intermediate_transform"]:
-                    stream_type = next(p.type for p in pre_process_func.params if p.name == param_name)
-                    stream_var = HLSVar(f"reduce_{comp.readable_id}_{param_name}", stream_type)
-                    streams_to_declare[param_name] = stream_var
-                # -----------------------------------------------------------
-
                 for stream_var in streams_to_declare.values():
+                    # 为顶层函数声明这些流
                     decl = CodeVarDecl(stream_var.name, stream_var.type)
                     pragma = CodePragma(f"STREAM variable={stream_var.name} depth={self.STREAM_DEPTH}")
                     self.top_level_stream_decls.append((decl, pragma))
@@ -581,22 +647,7 @@ emconfig:
                 helpers["streams"] = streams_to_declare
                 self.reduce_helpers[comp.readable_id] = helpers
 
-                internal_streams: Dict[str, HLSVar] = {}
-                for param_name in ["intermediate_key", "intermediate_transform"]:
-                    # 从刚刚创建的函数签名中获取流的类型
-                    stream_type = next(p.type for p in pre_process_func.params if p.name == param_name)
-                    # 为这个流创建一个在顶层函数中唯一的变量名
-                    stream_var = HLSVar(f"reduce_{comp.readable_id}_{param_name}", stream_type)
-                    internal_streams[param_name] = stream_var
-
-                    # 将声明和 pragma 添加到顶层函数体
-                    decl = CodeVarDecl(stream_var.name, stream_var.type)
-                    pragma = CodePragma(f"STREAM variable={stream_var.name} depth={self.STREAM_DEPTH}")
-                    self.top_level_stream_decls.append((decl, pragma))
-
-                self.reduce_internal_streams[comp.readable_id] = internal_streams
-
-                # 3. Mark all sub-graph components as processed
+                # 标记子图组件为已处理 (逻辑不变)
                 for port_name in [
                     "o_reduce_key_in",
                     "o_reduce_transform_in",
@@ -616,7 +667,7 @@ emconfig:
                                 if p.connected and not isinstance(p.connection.parent, dfir.ReduceComponent):
                                     q.append(p.connection.parent)
 
-        # --- Original logic for non-reduce components ---
+        # 处理普通组件 (逻辑不变)
         for comp in comp_col.components:
             if comp.readable_id in processed_sub_comp_ids or isinstance(
                 comp,
@@ -628,14 +679,12 @@ emconfig:
                 ),
             ):
                 continue
-
             hls_func = HLSFunction(name=comp.name, comp=comp)
             for port in comp.ports:
                 if port.connection and isinstance(
                     port.connection.parent, (dfir.UnusedEndMarkerComponent, dfir.ConstantComponent)
                 ):
                     continue
-
                 dfir_type = (
                     port.data_type.type_ if isinstance(port.data_type, dftype.ArrayType) else port.data_type
                 )
@@ -645,24 +694,17 @@ emconfig:
                 hls_func.params.append(HLSVar(var_name=port.name, var_type=param_type))
             self.hls_functions[comp.readable_id] = hls_func
 
-        # --- *** 关键修正：使用更健壮的逻辑来声明所有中间流 *** ---
-        # 2. Identify intermediate streams and add their declarations and pragmas
+        # 声明中间流 (逻辑不变)
         all_stream_comp_ids = {f.dfir_comp.readable_id for f in self.hls_functions.values()}
-
         visited_ports = set()
         for port in comp_col.all_connected_ports:
             if port.readable_id in visited_ports:
                 continue
-
             conn = port.connection
-
-            # A connection is intermediate if it's between two components that will be turned into HLS functions.
-            # This is simpler and more robust than the previous check.
             is_intermediate = (
                 port.parent.readable_id in all_stream_comp_ids
                 and conn.parent.readable_id in all_stream_comp_ids
             )
-
             if is_intermediate:
                 dfir_type = (
                     port.data_type.type_ if isinstance(port.data_type, dftype.ArrayType) else port.data_type
@@ -670,15 +712,11 @@ emconfig:
                 base_hls_type = self.type_map[dfir_type]
                 batch_type = self.batch_type_map[base_hls_type]
                 stream_type = HLSType(HLSBasicType.STREAM, sub_types=[batch_type])
-
-                # The stream is always named after the output port that produces the data.
                 out_port = port if port.port_type == dfir.PortType.OUT else conn
                 stream_name = f"stream_{out_port.unique_name}"
-
                 decl = CodeVarDecl(stream_name, stream_type)
                 pragma = CodePragma(f"STREAM variable={stream_name} depth={self.STREAM_DEPTH}")
                 self.top_level_stream_decls.append((decl, pragma))
-
             visited_ports.add(port.readable_id)
             visited_ports.add(conn.readable_id)
 
@@ -883,12 +921,11 @@ emconfig:
         return func
 
     def _generate_axi_kernel_wrapper(self, top_func_name: str) -> Tuple[str, str]:
-        """Generates the final extern "C" kernel with AXI pragmas."""
+        """Generates the final extern "C" kernel with AXI pragmas placed correctly."""
         params_str_list = []
         param_vars = []
 
-        # 1. Build parameter lists for the top-level function signature
-        #    This now includes both inputs and outputs correctly.
+        # 1. Build parameter list for the top-level function signature
         for port in self.axi_input_ports:
             batch_type = self.batch_type_map[self.type_map[port.data_type]]
             axi_ptr_type = HLSType(HLSBasicType.POINTER, sub_types=[batch_type], is_const_ptr=True)
@@ -905,7 +942,6 @@ emconfig:
 
         params_str_list.append("int* stop_flag")
         param_vars.append(HLSVar("stop_flag", HLSType(HLSBasicType.POINTER, [HLSType(HLSBasicType.INT)])))
-
         params_str_list.append("uint16_t input_length_in_batches")
         param_vars.append(HLSVar("input_length_in_batches", HLSType(HLSBasicType.UINT16)))
 
@@ -915,21 +951,22 @@ emconfig:
             + "\n)"
         )
 
-        # 2. Generate Pragmas
+        # 2. Prepare Pragmas and Body
         pragmas = []
         for i, var in enumerate(param_vars):
             bundle = f"gmem{i}"
             if var.type.type == HLSBasicType.POINTER:
                 pragmas.append(f"#pragma HLS INTERFACE m_axi port={var.name} offset=slave bundle={bundle}")
-
         for var in param_vars:
             pragmas.append(f"#pragma HLS INTERFACE s_axilite port={var.name}")
         pragmas.append("#pragma HLS INTERFACE s_axilite port=return")
 
-        # 3. Generate Body
         body: List[HLSCodeLine] = []
 
-        # Declare internal streams that connect the dataflow stages
+        # --- *** 关键修正：将 Pragma 作为 CodeLine 对象添加到函数体列表的开头 *** ---
+        for p_str in pragmas:
+            body.append(CodePragma(p_str.replace("#pragma HLS ", "")))
+
         internal_streams = []
         for port in self.top_level_io_ports:
             batch_type = self.batch_type_map[self.type_map[port.data_type]]
@@ -937,7 +974,6 @@ emconfig:
                 f"{port.unique_name}_internal_stream", HLSType(HLSBasicType.STREAM, [batch_type])
             )
             internal_streams.append(stream_var)
-
             decl = CodeVarDecl(stream_var.name, stream_var.type)
             setattr(decl, "is_static", True)
             body.append(decl)
@@ -945,9 +981,7 @@ emconfig:
 
         body.append(CodePragma("DATAFLOW"))
 
-        # 4. Generate calls to sub-functions with correct parameters
-
-        # Params for mem_to_stream_func
+        # Generate calls (logic remains the same)
         m2s_axi_params = [p for p in param_vars if p.type.is_const_ptr]
         m2s_stream_params = [
             s for s in internal_streams if any(p.unique_name in s.name for p in self.axi_input_ports)
@@ -955,7 +989,6 @@ emconfig:
         m2s_len_param = [p for p in param_vars if "input_length" in p.name]
         body.append(CodeCall(self.mem_to_stream_func, m2s_axi_params + m2s_stream_params + m2s_len_param))
 
-        # Params for dataflow_core_func
         df_core_input_streams = [
             s for s in internal_streams if any(p.unique_name in s.name for p in self.axi_input_ports)
         ]
@@ -964,7 +997,6 @@ emconfig:
         ]
         body.append(CodeCall(self.dataflow_core_func, df_core_input_streams + df_core_output_streams))
 
-        # Params for stream_to_mem_func
         s2m_stream_params = [
             s for s in internal_streams if any(p.unique_name in s.name for p in self.axi_output_ports)
         ]
@@ -975,9 +1007,8 @@ emconfig:
         ]
         body.append(CodeCall(self.stream_to_mem_func, s2m_stream_params + s2m_axi_params))
 
-        # 5. Assemble final C++ string
-        code = "\n".join(pragmas) + "\n"
-        code += f"{top_func_sig} " + "{\n"
+        # 3. Assemble final C++ string
+        code = f"{top_func_sig} " + "{\n"
         for line in body:
             if isinstance(line, CodeVarDecl) and getattr(line, "is_static", False):
                 code += f"{INDENT_UNIT}static {line.gen_code().lstrip()}"
@@ -2514,28 +2545,13 @@ emconfig:
         return body
 
     def _generate_source_file(self, header_name: str, axi_wrapper_func_str: str) -> str:
-        """Generates the full content of the .cpp source file."""
+        """Generates the full content of the .cpp source file with correct function order."""
         code = f'#include "{header_name}"\n\n'
 
-        # Generate AXI helper functions
-        for func in [self.mem_to_stream_func, self.stream_to_mem_func, self.dataflow_core_func]:
-            if func:
-                # Manually construct signature for static functions
-                params_str_list = []
-                for p in func.params:
-                    # Special handling for pointer names in m2s/s2m
-                    if "*" in p.type.name:
-                        params_str_list.append(p.type.name.replace("*", f" *{p.name}"))
-                    elif "uint16_t" in p.type.name:
-                        params_str_list.append(f"uint16_t {p.name}")
-                    else:
-                        params_str_list.append(p.type.get_upper_param(p.name, True))
+        # --- *** 关键修正：调整函数定义顺序 *** ---
+        # 顺序: 辅助网络 -> DFIR组件 -> AXI数据搬运 -> AXI顶层封装
 
-                params_str = ", ".join(params_str_list)
-                code += f"static void {func.name}({params_str}) " + "{\n"
-                code += "".join([line.gen_code(1) for line in func.codes])
-                code += "}\n\n"
-
+        # 1. Utility Network Functions (callees)
         if self.utility_functions:
             code += "// --- Utility Network Functions ---\n"
             for func in self.utility_functions:
@@ -2546,7 +2562,7 @@ emconfig:
                 code += "".join([line.gen_code(1) for line in func.codes])
                 code += "}\n\n"
 
-        # Generate implementations for all HLS component functions
+        # 2. DFIR Component Functions (callees)
         code += "// --- DFIR Component Functions ---\n"
         for func in self.hls_functions.values():
             params_str = ", ".join([p.type.get_upper_param(p.name, True) for p in func.params])
@@ -2554,7 +2570,25 @@ emconfig:
             code += "".join([line.gen_code(1) for line in func.codes])
             code += "}\n\n"
 
-        # Generate top-level AXI kernel wrapper
+        # 3. AXI Helper Functions (callers)
+        #    Note: The dataflow core function must come AFTER the components it calls.
+        for func in [self.mem_to_stream_func, self.stream_to_mem_func, self.dataflow_core_func]:
+            if func:
+                params_str_list = []
+                for p in func.params:
+                    if p.type.type == HLSBasicType.POINTER:
+                        params_str_list.append(p.type.get_upper_decl(p.name))
+                    elif "uint16_t" in p.type.name:
+                        params_str_list.append(f"uint16_t {p.name}")
+                    else:
+                        params_str_list.append(p.type.get_upper_param(p.name, True))
+
+                params_str = ", ".join(params_str_list)
+                code += f"static void {func.name}({params_str}) " + "{\n"
+                code += "".join([line.gen_code(1) for line in func.codes])
+                code += "}\n\n"
+
+        # 4. Top-level AXI Kernel Wrapper (final caller)
         code += axi_wrapper_func_str
 
         return code
