@@ -112,6 +112,8 @@ class BackendManager:
         This version is adapted for iterative algorithms like Bellman-Ford and
         implements correct graph-to-batch packing logic.
         """
+        # This function requires significant changes to inject the helper
+        # and modify the buffer packing logic.
         h_template_path = template_path / "generated_host.h.template"
         cpp_template_path = template_path / "generated_host.cpp.template"
 
@@ -125,38 +127,36 @@ class BackendManager:
         device_buffer_decls = []
 
         # --- AXI Input/Output Port Analysis ---
-        # Assuming single graph input and single graph output for this algorithm
-        assert len(self.axi_input_ports) == 1, "Host generator expects one AXI input port for graph data."
-        assert len(self.axi_output_ports) == 1, "Host generator expects one AXI output port for results."
+        assert len(self.axi_input_ports) == 1, "Host generator expects one AXI input port."
+        assert len(self.axi_output_ports) == 1, "Host generator expects one AXI output port."
 
         input_port = self.axi_input_ports[0]
         output_port = self.axi_output_ports[0]
-
         input_var_name = input_port.unique_name
         output_var_name = output_port.unique_name
-
         input_batch_type = self.batch_type_map[self.type_map[input_port.data_type]]
-        output_host_type = self._get_host_output_type()  # KernelOutputBatch
+        output_host_type = self._get_host_output_type()
 
         # --- Generate Header Declarations ---
         host_buffer_decls.append(
+            f"// These now use the POD versions of the structs defined in common.h\n    "
             f"std::vector<{input_batch_type.name}, aligned_allocator<{input_batch_type.name}>> h_{input_var_name};"
         )
         device_buffer_decls.append(f"cl::Buffer d_{input_var_name};")
-
         host_buffer_decls.append(
             f"std::vector<{output_host_type.name}, aligned_allocator<{output_host_type.name}>> h_{output_var_name};"
         )
         device_buffer_decls.append(f"cl::Buffer d_{output_var_name};")
-
         host_buffer_decls.append("std::vector<int, aligned_allocator<int>> h_stop_flag;")
         device_buffer_decls.append("cl::Buffer d_stop_flag;")
 
         # --- Generate CPP Implementation Strings ---
-        indent = "    "
-
-        # 1. setup_buffers() Implementation
-        # This string contains the full, correct graph packing logic.
+        helper_func = """
+// Helper function to convert ap_fixed to int32_t by reinterpreting its bits
+static int32_t ap_fixed_to_int32(const ap_fixed<32, 16>& val) {
+    return *reinterpret_cast<const int32_t*>(&val);
+}
+"""
         setup_buffers_impl = f"""
 void AlgorithmHost::setup_buffers(const GraphCSR &graph, int start_node) {{
     m_num_vertices = graph.num_vertices;
@@ -174,12 +174,12 @@ void AlgorithmHost::setup_buffers(const GraphCSR &graph, int start_node) {{
             int v = graph.columns[i];
             int w = graph.weights[i];
 
-            edge_t edge;
+            edge_t edge; // This is now the POD version of edge_t
             edge.src.id = u;
-            edge.src.distance = h_distances[u];
+            edge.src.distance = ap_fixed_to_int32(h_distances[u]);
             edge.dst.id = v;
-            edge.dst.distance = h_distances[v];
-            edge.weight = w;
+            edge.dst.distance = ap_fixed_to_int32(h_distances[v]);
+            edge.weight = ap_fixed_to_int32(ap_fixed<32, 16>(w));
 
             current_batch.data[edges_in_batch] = edge;
             edges_in_batch++;
@@ -212,8 +212,6 @@ void AlgorithmHost::setup_buffers(const GraphCSR &graph, int start_node) {{
     OCL_CHECK(err, d_stop_flag = cl::Buffer(m_context, CL_MEM_USE_HOST_PTR | CL_MEM_READ_WRITE, sizeof(int), h_stop_flag.data(), &err));
 }}
 """
-
-        # 2. transfer_data_to_fpga() Implementation
         transfer_to_fpga_impl = f"""
 void AlgorithmHost::transfer_data_to_fpga() {{
     cl_int err;
@@ -221,8 +219,6 @@ void AlgorithmHost::transfer_data_to_fpga() {{
     OCL_CHECK(err, err = m_q.enqueueMigrateMemObjects({{d_{input_var_name}, d_stop_flag}}, 0));
 }}
 """
-
-        # 3. execute_kernel_iteration() Implementation
         execute_kernel_impl = f"""
 void AlgorithmHost::execute_kernel_iteration(cl::Event &event) {{
     cl_int err;
@@ -234,8 +230,6 @@ void AlgorithmHost::execute_kernel_iteration(cl::Event &event) {{
     OCL_CHECK(err, err = m_q.enqueueTask(m_kernel, nullptr, &event));
 }}
 """
-
-        # 4. transfer_data_from_fpga() Implementation
         transfer_from_fpga_impl = f"""
 void AlgorithmHost::transfer_data_from_fpga() {{
     cl_int err;
@@ -243,8 +237,6 @@ void AlgorithmHost::transfer_data_from_fpga() {{
     m_q.finish(); // Ensure data is synced back to host
 }}
 """
-
-        # 5. check_convergence_and_update() & get_results() Implementation
         convergence_impl = f"""
 bool AlgorithmHost::check_convergence_and_update() {{
     bool changed = false;
@@ -270,8 +262,8 @@ bool AlgorithmHost::check_convergence_and_update() {{
     if (changed) {{
         for (auto& batch : h_{input_var_name}) {{
             for (int i = 0; i < batch.end_pos; ++i) {{
-                batch.data[i].src.distance = h_distances[batch.data[i].src.id];
-                batch.data[i].dst.distance = h_distances[batch.data[i].dst.id];
+                batch.data[i].src.distance = ap_fixed_to_int32(h_distances[batch.data[i].src.id]);
+                batch.data[i].dst.distance = ap_fixed_to_int32(h_distances[batch.data[i].dst.id]);
             }}
         }}
     }}
@@ -296,48 +288,14 @@ const std::vector<int> &AlgorithmHost::get_results() const {{
 
         # --- Replace Placeholders in Templates ---
         cpp_final = cpp_template
+        cpp_final = cpp_final.replace("// {{GRAPHYFLOW_HELPER_FUNCTIONS}}", helper_func)
         cpp_final = cpp_final.replace("// {{GRAPHYFLOW_SETUP_BUFFERS_IMPL}}", setup_buffers_impl)
         cpp_final = cpp_final.replace("// {{GRAPHYFLOW_TRANSFER_TO_FPGA_IMPL}}", transfer_to_fpga_impl)
         cpp_final = cpp_final.replace("// {{GRAPHYFLOW_EXECUTE_KERNEL_IMPL}}", execute_kernel_impl)
         cpp_final = cpp_final.replace("// {{GRAPHYFLOW_TRANSFER_FROM_FPGA_IMPL}}", transfer_from_fpga_impl)
 
-        # Combine convergence and result logic and replace its placeholder
-        # This replaces both the incorrect indentation and logic from the old version
-        convergence_and_results_placeholder = """// {{GRAPHYFLOW_COLLECT_RESULTS_IMPL}}
-
-    // Update host-side distances and check for any changes
-    for (auto const &[node_id, new_dist] : min_distances) {
-        if (new_dist < h_distances[node_id]) {
-            h_distances[node_id] = new_dist;
-            changed = true;
-        }
-    }
-
-    // If distances changed, the input buffers need to be repacked with the new distance values for the next iteration.
-    if (changed) {
-        // {{GRAPHYFLOW_REPACK_INPUTS_IMPL}}
-    }
-
-    return !changed; // Return true if converged (no changes)
-}
-
-const std::vector<int> &AlgorithmHost::get_results() const {
-    // This function converts the final ap_fixed distances to integers for verification.
-    static std::vector<int> final_distances;
-    final_distances.clear();
-    final_distances.reserve(h_distances.size());
-    for (const auto &dist : h_distances) {
-        if (dist > std::numeric_limits<int>::max()) {
-            final_distances.push_back(std::numeric_limits<int>::max());
-        } else {
-            final_distances.push_back(dist.to_int());
-        }
-    }
-    return final_distances;"""
-        # A bit complex, but we need to find the whole block to replace
         start_str = "bool AlgorithmHost::check_convergence_and_update() {"
         end_str = "return final_distances;\n}"
-
         cpp_final_start = cpp_final.find(start_str)
         cpp_final_end = cpp_final.find(end_str) + len(end_str)
 
@@ -346,10 +304,15 @@ const std::vector<int> &AlgorithmHost::get_results() const {
 
         h_final = h_template
         h_final = h_final.replace(
-            "// {{GRAPHYFLOW_HOST_BUFFER_DECLARATIONS}}", f"\n{indent}".join(host_buffer_decls)
+            "// {{GRAPHYFLOW_HOST_BUFFER_DECLARATIONS}}", "\n    ".join(host_buffer_decls)
         )
         h_final = h_final.replace(
-            "// {{GRAPHYFLOW_DEVICE_BUFFER_DECLARATIONS}}", f"\n{indent}".join(device_buffer_decls)
+            "// {{GRAPHYFLOW_DEVICE_BUFFER_DECLARATIONS}}", "\n    ".join(device_buffer_decls)
+        )
+        h_final = h_final.replace(
+            "// {{GRAPHYFLOW_HOST_STATE_DECLARATIONS}}",
+            "// This can remain as ap_fixed since it's only used for host-side logic.\n    "
+            "std::vector<ap_fixed<32, 16>> h_distances;",
         )
 
         return h_final, cpp_final.strip()
@@ -836,52 +799,51 @@ emconfig:
         params = []
         body = []
 
-        # 遍历所有被识别为顶层AXI输出的端口
         for port in self.axi_output_ports:
-            # 1. 获取内核内部使用的批处理类型 (e.g., struct_sbu_22_t)
             internal_batch_type = self.batch_type_map[self.type_map[port.data_type]]
-
-            # 2. 创建输入流参数 (hls::stream<T_internal>& in)
             stream_param = HLSVar(
                 f"in_{port.unique_name}_stream", HLSType(HLSBasicType.STREAM, [internal_batch_type])
             )
             params.append(stream_param)
-
-            # 3. 获取主机侧专用的输出类型 (KernelOutputBatch)
             host_output_type = self._get_host_output_type()
-
-            # 4. 创建AXI指针参数 (KernelOutputBatch* out)
             axi_ptr_type = HLSType(HLSBasicType.POINTER, sub_types=[host_output_type], is_const_ptr=False)
             axi_param = HLSVar(f"out_{port.unique_name}", axi_ptr_type)
             params.append(axi_param)
 
-            # 5. 构建函数体
             i_var = HLSVar("i", HLSType(HLSBasicType.INT))
             internal_batch_var = HLSVar("internal_batch", internal_batch_type)
             output_batch_var = HLSVar("output_batch", host_output_type)
 
-            kernel_output_data_type = host_output_type.sub_types[0].sub_types[0]
+            # New variables for casting
+            final_dist_fp_var = HLSVar("final_dist_fp", HLSType(HLSBasicType.FLOAT))
+            internal_ele_0_var = HLSVar(f"internal_batch.data[k].ele_0", HLSType(HLSBasicType.AP_FIXED_POD))
 
-            # --- ** FIX STARTS HERE ** ---
-            # a. 创建类型转换的 for 循环
             conversion_loop = CodeFor(
                 [
                     CodePragma("UNROLL"),
-                    # This assignment now generates the correct `(float)` cast.
+                    CodeVarDecl(final_dist_fp_var.name, final_dist_fp_var.type),
                     CodeAssign(
-                        HLSVar(
-                            f"{output_batch_var.name}.data[k].distance", kernel_output_data_type.sub_types[0]
-                        ),
+                        final_dist_fp_var,
                         HLSExpr(
                             HLSExprT.VAR,
                             HLSVar(
-                                f"(float){internal_batch_var.name}.data[k].ele_0",
-                                HLSType(HLSBasicType.REAL_FLOAT),
+                                f"*reinterpret_cast<ap_fixed<32, 16>*>(&{internal_ele_0_var.name})",
+                                HLSType(HLSBasicType.FLOAT),
                             ),
                         ),
                     ),
                     CodeAssign(
-                        HLSVar(f"{output_batch_var.name}.data[k].id", kernel_output_data_type.sub_types[1]),
+                        HLSVar(
+                            f"{output_batch_var.name}.data[k].distance",
+                            HLSType(HLSBasicType.REAL_FLOAT),
+                        ),
+                        HLSExpr(
+                            HLSExprT.VAR,
+                            HLSVar(f"(float){final_dist_fp_var.name}", HLSType(HLSBasicType.REAL_FLOAT)),
+                        ),
+                    ),
+                    CodeAssign(
+                        HLSVar(f"{output_batch_var.name}.data[k].id", HLSType(HLSBasicType.INT)),
                         HLSExpr(
                             HLSExprT.VAR,
                             HLSVar(f"{internal_batch_var.name}.data[k].ele_1.id", HLSType(HLSBasicType.INT)),
@@ -891,9 +853,7 @@ emconfig:
                 "PE_NUM",
                 iter_name="k",
             )
-            # --- ** FIX ENDS HERE ** ---
 
-            # b. 创建主 while 循环体
             while_body = [
                 CodePragma("PIPELINE"),
                 CodeVarDecl(internal_batch_var.name, internal_batch_var.type),
@@ -936,7 +896,6 @@ emconfig:
                 ),
             ]
 
-            # c. 组合成最终函数体
             body.extend(
                 [
                     CodeVarDecl(i_var.name, i_var.type, init_val=0),
@@ -1103,24 +1062,20 @@ emconfig:
 
         hls_type: HLSType
 
-        # --- BASE CASES ---
         if isinstance(dfir_type, dftype.IntType):
             hls_type = HLSType(HLSBasicType.INT)
         elif isinstance(dfir_type, dftype.FloatType):
-            hls_type = HLSType(HLSBasicType.FLOAT)
+            hls_type = HLSType(HLSBasicType.AP_FIXED_POD)  # MODIFIED
         elif isinstance(dfir_type, dftype.BoolType):
             hls_type = HLSType(HLSBasicType.BOOL)
-
-        # --- RECURSIVE CASES ---
         elif isinstance(dfir_type, dftype.TupleType):
-            sub_types = [self._to_hls_type(t, global_graph) for t in dfir_type.types]
+            sub_types = [self._to_hls_type(t) for t in dfir_type.types]
             member_names = [f"ele_{i}" for i in range(len(sub_types))]
             hls_type = HLSType(HLSBasicType.STRUCT, sub_types, struct_prop_names=member_names)
             if hls_type.name not in self.struct_definitions:
                 self.struct_definitions[hls_type.name] = (hls_type, member_names)
-
         elif isinstance(dfir_type, dftype.OptionalType):
-            data_type = self._to_hls_type(dfir_type.type_, global_graph)
+            data_type = self._to_hls_type(dfir_type.type_)
             valid_type = HLSType(HLSBasicType.BOOL)
             hls_type = HLSType(
                 HLSBasicType.STRUCT,
@@ -1130,25 +1085,21 @@ emconfig:
             )
             if hls_type.name not in self.struct_definitions:
                 self.struct_definitions[hls_type.name] = (hls_type, ["data", "valid"])
-
         elif isinstance(dfir_type, dftype.SpecialType):
-            # Assumes global_graph has node_properties and edge_properties dicts
             props = (
                 global_graph.node_properties
                 if dfir_type.type_name == "node"
                 else global_graph.edge_properties
             )
             prop_names = list(props.keys())
-            prop_types = [self._to_hls_type(t, global_graph) for t in props.values()]
+            prop_types = [self._to_hls_type(t) for t in props.values()]
             struct_name = f"{dfir_type.type_name}_t"
             hls_type = HLSType(HLSBasicType.STRUCT, prop_types, struct_name, prop_names)
             if hls_type.name not in self.struct_definitions:
                 self.struct_definitions[hls_type.name] = (hls_type, prop_names)
-
         else:
             raise NotImplementedError(f"DFIR type conversion not implemented for {type(dfir_type)}")
 
-        # Cache the result before returning
         self.type_map[dfir_type] = hls_type
         if is_array_type:
             self.type_map[dfir.ArrayType(dfir_type)] = hls_type
@@ -1287,24 +1238,51 @@ emconfig:
 
     def _translate_binop_op(self, comp: dfir.BinOpComponent, iterator: str) -> List[HLSCodeLine]:
         """Generates the core logic for a BinOpComponent."""
-        # Assume i_0, i_1 are inputs and o_0 is output
         in0_type = self.batch_type_map[self.type_map[comp.input_type]].sub_types[0].sub_types[0]
         in1_type = self.batch_type_map[self.type_map[comp.input_type]].sub_types[0].sub_types[0]
         out_type = self.batch_type_map[self.type_map[comp.output_type]].sub_types[0].sub_types[0]
 
-        # Operands from input batches, indexed by the iterator
         op1 = HLSExpr(HLSExprT.VAR, HLSVar(f"in_batch_i_0.data[{iterator}]", in0_type))
         op1 = HLSExpr.check_const(op1, comp.in_ports[0])
         op2 = HLSExpr(HLSExprT.VAR, HLSVar(f"in_batch_i_1.data[{iterator}]", in1_type))
         op2 = HLSExpr.check_const(op2, comp.in_ports[1])
-
-        # The binary operation expression
-        bin_expr = HLSExpr(HLSExprT.BINOP, comp.op, [op1, op2])
-
-        # The variable to store the result in the output batch
         target_var = HLSVar(f"out_batch_o_0.data[{iterator}]", out_type)
 
-        return [CodeAssign(target_var, bin_expr)]
+        # Check if we need to perform reinterpret_cast for ap_fixed operations
+        if in0_type.type == HLSBasicType.AP_FIXED_POD:
+            ap_fixed_type = HLSType(HLSBasicType.FLOAT)
+            val1 = HLSVar(f"val1", ap_fixed_type)
+            val2 = HLSVar(f"val2", ap_fixed_type)
+            result = HLSVar(f"result", ap_fixed_type)
+
+            cast_op1 = CodeAssign(
+                val1,
+                HLSExpr(
+                    HLSExprT.VAR, HLSVar(f"*reinterpret_cast<ap_fixed<32, 16>*>(&{op1.code})", ap_fixed_type)
+                ),
+            )
+            cast_op2 = CodeAssign(
+                val2,
+                HLSExpr(
+                    HLSExprT.VAR, HLSVar(f"*reinterpret_cast<ap_fixed<32, 16>*>(&{op2.code})", ap_fixed_type)
+                ),
+            )
+
+            bin_expr = HLSExpr(
+                HLSExprT.BINOP, comp.op, [HLSExpr(HLSExprT.VAR, val1), HLSExpr(HLSExprT.VAR, val2)]
+            )
+
+            assign_result = CodeVarDecl(result.name, result.type, init_val=bin_expr.code)
+
+            cast_back = CodeAssign(
+                target_var,
+                HLSExpr(HLSExprT.VAR, HLSVar(f"*reinterpret_cast<int32_t*>(&{result.name})", out_type)),
+            )
+
+            return [cast_op1, cast_op2, assign_result, cast_back]
+        else:
+            bin_expr = HLSExpr(HLSExprT.BINOP, comp.op, [op1, op2])
+            return [CodeAssign(target_var, bin_expr)]
 
     def _translate_unary_op(self, comp: dfir.UnaryOpComponent, iterator: str) -> List[HLSCodeLine]:
         """Generates the core logic for a UnaryOpComponent."""
@@ -1522,7 +1500,7 @@ emconfig:
     ) -> List[HLSCodeLine]:
         """
         Traverses a sub-graph from start to end ports and generates the inlined logic.
-        (This is the fully expanded version with more component types)
+        This version correctly handles reinterpret_casting for AP_FIXED_POD types.
         """
         code_lines: List[HLSCodeLine] = []
         p2var_map = io_var_map.copy()
@@ -1542,13 +1520,12 @@ emconfig:
             inputs_ready = all(p.connection in p2var_map for p in comp.in_ports)
             if not inputs_ready:
                 q.append(comp)
-                if head > len(q) * 2 + len(start_ports) * 2:  # More robust deadlock check
+                if head > len(q) * 2 + len(start_ports) * 2:
                     raise RuntimeError(
                         f"Deadlock in sub-graph topological sort, stuck at component {comp.name}"
                     )
                 continue
 
-            # --- Inputs are ready, process the component ---
             # a. Create HLSVars for the output ports
             for out_port in comp.out_ports:
                 if out_port.connected:
@@ -1563,14 +1540,63 @@ emconfig:
                         p2var_map[out_port] = temp_var
 
             # b. Translate the component's logic into CodeLine(s)
-            # This is a non-batched, direct translation of the component's logic
             if isinstance(comp, dfir.BinOpComponent):
-                op1 = HLSExpr(HLSExprT.VAR, p2var_map[comp.get_port("i_0").connection])
-                op1 = HLSExpr.check_const(op1, comp.get_port("i_0"))
-                op2 = HLSExpr(HLSExprT.VAR, p2var_map[comp.get_port("i_1").connection])
-                op2 = HLSExpr.check_const(op2, comp.get_port("i_1"))
-                expr = HLSExpr(HLSExprT.BINOP, comp.op, [op1, op2])
-                code_lines.append(CodeAssign(p2var_map[comp.get_port("o_0")], expr))
+                op1_expr = HLSExpr(HLSExprT.VAR, p2var_map[comp.get_port("i_0").connection])
+                op1_expr = HLSExpr.check_const(op1_expr, comp.get_port("i_0"))
+                op2_expr = HLSExpr(HLSExprT.VAR, p2var_map[comp.get_port("i_1").connection])
+                op2_expr = HLSExpr.check_const(op2_expr, comp.get_port("i_1"))
+                target_var = p2var_map[comp.get_port("o_0")]
+
+                # Check if we need to handle POD ap_fixed types
+                if op1_expr.val.type.type == HLSBasicType.AP_FIXED_POD:
+                    ap_fixed_type = HLSType(HLSBasicType.FLOAT)
+
+                    is_comparison = comp.op in [BinOp.EQ, BinOp.NE, BinOp.LT, BinOp.GT, BinOp.LE, BinOp.GE]
+
+                    # Cast inputs to ap_fixed
+                    lhs_var = HLSVar(f"lhs_{comp.readable_id}", ap_fixed_type)
+                    rhs_var = HLSVar(f"rhs_{comp.readable_id}", ap_fixed_type)
+                    code_lines.append(CodeComment("Convert from int32_t POD to ap_fixed for calculation"))
+                    code_lines.append(
+                        CodeVarDecl(
+                            lhs_var.name,
+                            lhs_var.type,
+                            init_val=f"*reinterpret_cast<ap_fixed<32, 16>*>(&{op1_expr.code})",
+                        )
+                    )
+                    code_lines.append(
+                        CodeVarDecl(
+                            rhs_var.name,
+                            rhs_var.type,
+                            init_val=f"*reinterpret_cast<ap_fixed<32, 16>*>(&{op2_expr.code})",
+                        )
+                    )
+
+                    # Perform operation
+                    op_expr = HLSExpr(
+                        HLSExprT.BINOP,
+                        comp.op,
+                        [HLSExpr(HLSExprT.VAR, lhs_var), HLSExpr(HLSExprT.VAR, rhs_var)],
+                    )
+
+                    if is_comparison:
+                        # Result is bool, no cast back needed
+                        code_lines.append(CodeAssign(target_var, op_expr))
+                    else:  # Arithmetic or MIN/MAX
+                        result_var = HLSVar(f"temp_{comp.name}_o_0_ap_result", ap_fixed_type)
+                        code_lines.append(CodeVarDecl(result_var.name, result_var.type))
+                        code_lines.append(CodeAssign(result_var, op_expr))
+
+                        # Cast result back to int32_t
+                        assign_back_expr = HLSExpr(
+                            HLSExprT.VAR,
+                            HLSVar(f"*reinterpret_cast<int32_t*>(&{result_var.name})", target_var.type),
+                        )
+                        code_lines.append(CodeAssign(target_var, assign_back_expr))
+                else:
+                    # Standard integer/boolean logic
+                    expr = HLSExpr(HLSExprT.BINOP, comp.op, [op1_expr, op2_expr])
+                    code_lines.append(CodeAssign(target_var, expr))
 
             elif isinstance(comp, dfir.UnaryOpComponent):
                 op1 = HLSExpr(HLSExprT.VAR, p2var_map[comp.get_port("i_0").connection])
@@ -1595,13 +1621,14 @@ emconfig:
                 for i, in_port in enumerate(comp.in_ports):
                     in_var_expr = HLSExpr(HLSExprT.VAR, p2var_map[in_port.connection])
                     in_var_expr = HLSExpr.check_const(in_var_expr, in_port)
-                    # Assign to a member of the target struct
                     member_var = HLSVar(f"{target_struct_var.name}.ele_{i}", in_var_expr.val.type)
                     code_lines.append(CodeAssign(member_var, in_var_expr))
 
             elif isinstance(comp, dfir.ScatterComponent):
                 in_var = p2var_map[comp.get_port("i_0").connection]
                 for i, out_port in enumerate(comp.out_ports):
+                    if isinstance(out_port.connection.parent, dfir.UnusedEndMarkerComponent):
+                        continue
                     ga_op = UnaryOp.GET_ATTR
                     sub_name = in_var.type.get_nth_subname(i)
                     expr = HLSExpr(HLSExprT.UOP, (ga_op, sub_name), [HLSExpr(HLSExprT.VAR, in_var)])
@@ -1613,31 +1640,21 @@ emconfig:
                 cond_expr = HLSExpr(HLSExprT.VAR, p2var_map[comp.get_port("i_cond").connection])
                 cond_expr = HLSExpr.check_const(cond_expr, comp.get_port("i_cond"))
                 target_struct_var = p2var_map[comp.get_port("o_0")]
-
-                # Assign to .data member
                 assign_data = CodeAssign(
-                    HLSVar(f"{target_struct_var.name}.data", data_expr.val.type),
-                    data_expr,
+                    HLSVar(f"{target_struct_var.name}.data", data_expr.val.type), data_expr
                 )
-                # Assign to .valid member
                 assign_valid = CodeAssign(
-                    HLSVar(f"{target_struct_var.name}.valid", cond_expr.val.type),
-                    cond_expr,
+                    HLSVar(f"{target_struct_var.name}.valid", cond_expr.val.type), cond_expr
                 )
                 code_lines.extend([assign_data, assign_valid])
 
             elif isinstance(comp, dfir.CollectComponent):
                 in_opt_var = p2var_map[comp.get_port("i_0").connection]
                 out_var = p2var_map[comp.get_port("o_0")]
-
-                # Condition: in_opt_var.valid
                 valid_op = UnaryOp.GET_ATTR
                 cond_expr = HLSExpr(HLSExprT.UOP, (valid_op, "valid"), [HLSExpr(HLSExprT.VAR, in_opt_var)])
-
-                # Assignment: out_var = in_opt_var.data
                 data_op = UnaryOp.GET_ATTR
                 assign_expr = HLSExpr(HLSExprT.UOP, (data_op, "data"), [HLSExpr(HLSExprT.VAR, in_opt_var)])
-
                 if_block = CodeIf(cond_expr, [CodeAssign(out_var, assign_expr)])
                 code_lines.append(if_block)
 
@@ -1659,8 +1676,6 @@ emconfig:
                         visited_ids.add(successor_comp.readable_id)
 
         code_lines.append(CodeComment(" -- Inline sub graph end --"))
-        # print("One inline:")
-        # print("".join(x.gen_code(0) for x in code_lines))
         return code_lines
 
     def _translate_reduce_preprocess_op(self, comp: dfir.ReduceComponent, iterator: str) -> List[HLSCodeLine]:

@@ -16,6 +16,7 @@ class HLSBasicType(Enum):
     UINT16 = "uint16_t"
     INT = "int32_t"
     FLOAT = "ap_fixed<32, 16>"
+    AP_FIXED_POD = "int32_t"
     REAL_FLOAT = "float"
     BOOL = "bool"
     STRUCT = "struct"
