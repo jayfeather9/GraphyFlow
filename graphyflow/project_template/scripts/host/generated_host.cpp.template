@@ -12,6 +12,8 @@ AlgorithmHost::AlgorithmHost(cl::Context &context, cl::Kernel &kernel,
 
 // --- DYNAMICALLY GENERATED SECTIONS ---
 
+// {{GRAPHYFLOW_HELPER_FUNCTIONS}}
+
 // {{GRAPHYFLOW_SETUP_BUFFERS_IMPL}}
 
 // {{GRAPHYFLOW_TRANSFER_TO_FPGA_IMPL}}

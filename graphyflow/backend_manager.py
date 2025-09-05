@@ -1234,54 +1234,84 @@ emconfig:
         body.append(CodeWhile(codes=while_loop_body, iter_expr=HLSExpr(HLSExprT.CONST, True)))
         return body
 
+    def _add_pod_to_float_cast(
+        self, pod_expr: HLSExpr, code_list: List[HLSCodeLine], base_name: str
+    ) -> HLSExpr:
+        """
+        Generates code to cast a POD type (int32_t) to a computational float (ap_fixed).
+        Handles both variables and constants correctly by returning an HLSExpr.
+        Appends prerequisite declarations to code_list for variables.
+        """
+        # If the expression is a constant, return a direct C++ cast expression.
+        # This will generate "((ap_fixed<32, 16>)0.0)" which is legal C++.
+        if pod_expr.type == HLSExprT.CONST:
+            return HLSExpr(HLSExprT.UOP, UnaryOp.CAST_FLOAT, [pod_expr])
+
+        # If the expression is a variable, generate the reinterpret_cast logic.
+        elif pod_expr.type == HLSExprT.VAR:
+            ap_fixed_type = HLSType(HLSBasicType.FLOAT)
+            float_var = HLSVar(base_name, ap_fixed_type)
+
+            # 1. Declare a new ap_fixed variable.
+            # 2. Initialize it by reinterpreting the bits of the input POD variable.
+            cast_str = f"*reinterpret_cast<ap_fixed<32, 16>*>(&{pod_expr.code})"
+            code_list.append(CodeVarDecl(float_var.name, float_var.type, init_val=cast_str))
+
+            # 3. Return an expression that refers to this new temporary variable.
+            return HLSExpr(HLSExprT.VAR, float_var)
+
+        else:
+            raise TypeError(f"Unsupported HLSExpr type for casting: {pod_expr.type}")
+
+    def _add_float_to_pod_cast(self, float_var: HLSVar, code_list: List[HLSCodeLine], target_pod_var: HLSVar):
+        """
+        Generates code to cast a computational float (ap_fixed) back to a POD type (int32_t).
+        (This function remains unchanged as its input is always a variable)
+        """
+        cast_str = f"*reinterpret_cast<int32_t*>(&{float_var.name})"
+        assign_expr = HLSExpr(HLSExprT.VAR, HLSVar(cast_str, target_pod_var.type))
+        code_list.append(CodeAssign(target_pod_var, assign_expr))
+
     # --- Component-Specific Translators for Inner Loop Logic ---
 
+    # In graphyflow/backend_manager.py, replace the existing _translate_binop_op function
+
     def _translate_binop_op(self, comp: dfir.BinOpComponent, iterator: str) -> List[HLSCodeLine]:
-        """Generates the core logic for a BinOpComponent."""
+        """
+        Generates the core logic for a BinOpComponent.
+        This version uses the robust _add_pod_to_float_cast helper.
+        """
         in0_type = self.batch_type_map[self.type_map[comp.input_type]].sub_types[0].sub_types[0]
-        in1_type = self.batch_type_map[self.type_map[comp.input_type]].sub_types[0].sub_types[0]
         out_type = self.batch_type_map[self.type_map[comp.output_type]].sub_types[0].sub_types[0]
 
-        op1 = HLSExpr(HLSExprT.VAR, HLSVar(f"in_batch_i_0.data[{iterator}]", in0_type))
-        op1 = HLSExpr.check_const(op1, comp.in_ports[0])
-        op2 = HLSExpr(HLSExprT.VAR, HLSVar(f"in_batch_i_1.data[{iterator}]", in1_type))
-        op2 = HLSExpr.check_const(op2, comp.in_ports[1])
+        op1_expr = HLSExpr(HLSExprT.VAR, HLSVar(f"in_batch_i_0.data[{iterator}]", in0_type))
+        op1_expr = HLSExpr.check_const(op1_expr, comp.in_ports[0])
+        op2_expr = HLSExpr(HLSExprT.VAR, HLSVar(f"in_batch_i_1.data[{iterator}]", in0_type))
+        op2_expr = HLSExpr.check_const(op2_expr, comp.in_ports[1])
         target_var = HLSVar(f"out_batch_o_0.data[{iterator}]", out_type)
 
-        # Check if we need to perform reinterpret_cast for ap_fixed operations
         if in0_type.type == HLSBasicType.AP_FIXED_POD:
-            ap_fixed_type = HLSType(HLSBasicType.FLOAT)
-            val1 = HLSVar(f"val1", ap_fixed_type)
-            val2 = HLSVar(f"val2", ap_fixed_type)
-            result = HLSVar(f"result", ap_fixed_type)
+            code = []
+            is_comparison = comp.op in [BinOp.EQ, BinOp.NE, BinOp.LT, BinOp.GT, BinOp.LE, BinOp.GE]
 
-            cast_op1 = CodeAssign(
-                val1,
-                HLSExpr(
-                    HLSExprT.VAR, HLSVar(f"*reinterpret_cast<ap_fixed<32, 16>*>(&{op1.code})", ap_fixed_type)
-                ),
-            )
-            cast_op2 = CodeAssign(
-                val2,
-                HLSExpr(
-                    HLSExprT.VAR, HLSVar(f"*reinterpret_cast<ap_fixed<32, 16>*>(&{op2.code})", ap_fixed_type)
-                ),
-            )
+            # Unified handling for both constants and variables
+            final_op1_expr = self._add_pod_to_float_cast(op1_expr, code, f"val1_{comp.readable_id}")
+            final_op2_expr = self._add_pod_to_float_cast(op2_expr, code, f"val2_{comp.readable_id}")
 
-            bin_expr = HLSExpr(
-                HLSExprT.BINOP, comp.op, [HLSExpr(HLSExprT.VAR, val1), HLSExpr(HLSExprT.VAR, val2)]
-            )
+            bin_expr = HLSExpr(HLSExprT.BINOP, comp.op, [final_op1_expr, final_op2_expr])
 
-            assign_result = CodeVarDecl(result.name, result.type, init_val=bin_expr.code)
+            if is_comparison:
+                code.append(CodeAssign(target_var, bin_expr))
+            else:  # Arithmetic or MIN/MAX
+                ap_fixed_type = HLSType(HLSBasicType.FLOAT)
+                result_var = HLSVar(f"result_{comp.readable_id}", ap_fixed_type)
+                code.append(CodeVarDecl(result_var.name, result_var.type))
+                code.append(CodeAssign(result_var, bin_expr))
+                self._add_float_to_pod_cast(result_var, code, target_var)
 
-            cast_back = CodeAssign(
-                target_var,
-                HLSExpr(HLSExprT.VAR, HLSVar(f"*reinterpret_cast<int32_t*>(&{result.name})", out_type)),
-            )
-
-            return [cast_op1, cast_op2, assign_result, cast_back]
+            return code
         else:
-            bin_expr = HLSExpr(HLSExprT.BINOP, comp.op, [op1, op2])
+            bin_expr = HLSExpr(HLSExprT.BINOP, comp.op, [op1_expr, op2_expr])
             return [CodeAssign(target_var, bin_expr)]
 
     def _translate_unary_op(self, comp: dfir.UnaryOpComponent, iterator: str) -> List[HLSCodeLine]:
@@ -1492,6 +1522,8 @@ emconfig:
 
     # --- Reduce Component Translation Logic ---
 
+    # In graphyflow/backend_manager.py, replace the existing _inline_sub_graph_logic function
+
     def _inline_sub_graph_logic(
         self,
         start_ports: List[dfir.Port],
@@ -1500,46 +1532,37 @@ emconfig:
     ) -> List[HLSCodeLine]:
         """
         Traverses a sub-graph from start to end ports and generates the inlined logic.
-        This version correctly handles reinterpret_casting for AP_FIXED_POD types.
+        This version uses the robust _add_pod_to_float_cast helper.
         """
         code_lines: List[HLSCodeLine] = []
         p2var_map = io_var_map.copy()
         code_lines.append(CodeComment(" -- Inline sub graph --"))
 
-        # 1. Topologically sort the sub-graph
         q = [p.connection.parent for p in start_ports if p.connected]
         visited_ids = set([c.readable_id for c in q])
-
         head = 0
         while head < len(q):
             comp = q[head]
             head += 1
-
             code_lines.append(CodeComment(f"Starting for comp {comp.name}"))
-
             inputs_ready = all(p.connection in p2var_map for p in comp.in_ports)
             if not inputs_ready:
                 q.append(comp)
                 if head > len(q) * 2 + len(start_ports) * 2:
-                    raise RuntimeError(
-                        f"Deadlock in sub-graph topological sort, stuck at component {comp.name}"
-                    )
+                    raise RuntimeError(f"Deadlock in sub-graph topological sort at component {comp.name}")
                 continue
 
-            # a. Create HLSVars for the output ports
             for out_port in comp.out_ports:
                 if out_port.connected:
                     if out_port.connection == end_port:
                         p2var_map[out_port] = p2var_map[end_port]
                     else:
                         temp_var = HLSVar(
-                            f"temp_{out_port.parent.name}_{out_port.name}",
-                            self.type_map[out_port.data_type],
+                            f"temp_{out_port.parent.name}_{out_port.name}", self.type_map[out_port.data_type]
                         )
                         code_lines.append(CodeVarDecl(temp_var.name, temp_var.type))
                         p2var_map[out_port] = temp_var
 
-            # b. Translate the component's logic into CodeLine(s)
             if isinstance(comp, dfir.BinOpComponent):
                 op1_expr = HLSExpr(HLSExprT.VAR, p2var_map[comp.get_port("i_0").connection])
                 op1_expr = HLSExpr.check_const(op1_expr, comp.get_port("i_0"))
@@ -1547,54 +1570,28 @@ emconfig:
                 op2_expr = HLSExpr.check_const(op2_expr, comp.get_port("i_1"))
                 target_var = p2var_map[comp.get_port("o_0")]
 
-                # Check if we need to handle POD ap_fixed types
                 if op1_expr.val.type.type == HLSBasicType.AP_FIXED_POD:
-                    ap_fixed_type = HLSType(HLSBasicType.FLOAT)
-
                     is_comparison = comp.op in [BinOp.EQ, BinOp.NE, BinOp.LT, BinOp.GT, BinOp.LE, BinOp.GE]
 
-                    # Cast inputs to ap_fixed
-                    lhs_var = HLSVar(f"lhs_{comp.readable_id}", ap_fixed_type)
-                    rhs_var = HLSVar(f"rhs_{comp.readable_id}", ap_fixed_type)
-                    code_lines.append(CodeComment("Convert from int32_t POD to ap_fixed for calculation"))
-                    code_lines.append(
-                        CodeVarDecl(
-                            lhs_var.name,
-                            lhs_var.type,
-                            init_val=f"*reinterpret_cast<ap_fixed<32, 16>*>(&{op1_expr.code})",
-                        )
+                    final_op1_expr = self._add_pod_to_float_cast(
+                        op1_expr, code_lines, f"lhs_{comp.readable_id}"
                     )
-                    code_lines.append(
-                        CodeVarDecl(
-                            rhs_var.name,
-                            rhs_var.type,
-                            init_val=f"*reinterpret_cast<ap_fixed<32, 16>*>(&{op2_expr.code})",
-                        )
+                    final_op2_expr = self._add_pod_to_float_cast(
+                        op2_expr, code_lines, f"rhs_{comp.readable_id}"
                     )
 
-                    # Perform operation
-                    op_expr = HLSExpr(
-                        HLSExprT.BINOP,
-                        comp.op,
-                        [HLSExpr(HLSExprT.VAR, lhs_var), HLSExpr(HLSExprT.VAR, rhs_var)],
-                    )
+                    op_expr = HLSExpr(HLSExprT.BINOP, comp.op, [final_op1_expr, final_op2_expr])
 
                     if is_comparison:
-                        # Result is bool, no cast back needed
                         code_lines.append(CodeAssign(target_var, op_expr))
-                    else:  # Arithmetic or MIN/MAX
+                    else:
+                        ap_fixed_type = HLSType(HLSBasicType.FLOAT)
+                        # Your fix for variable naming is integrated here
                         result_var = HLSVar(f"temp_{comp.name}_o_0_ap_result", ap_fixed_type)
                         code_lines.append(CodeVarDecl(result_var.name, result_var.type))
                         code_lines.append(CodeAssign(result_var, op_expr))
-
-                        # Cast result back to int32_t
-                        assign_back_expr = HLSExpr(
-                            HLSExprT.VAR,
-                            HLSVar(f"*reinterpret_cast<int32_t*>(&{result_var.name})", target_var.type),
-                        )
-                        code_lines.append(CodeAssign(target_var, assign_back_expr))
+                        self._add_float_to_pod_cast(result_var, code_lines, target_var)
                 else:
-                    # Standard integer/boolean logic
                     expr = HLSExpr(HLSExprT.BINOP, comp.op, [op1_expr, op2_expr])
                     code_lines.append(CodeAssign(target_var, expr))
 
@@ -1607,7 +1604,6 @@ emconfig:
                     comp_op_var = (comp_op_var, comp.select_index)
                 expr = HLSExpr(HLSExprT.UOP, comp_op_var, [op1])
                 code_lines.append(CodeAssign(p2var_map[comp.get_port("o_0")], expr))
-
             elif isinstance(comp, dfir.CopyComponent):
                 in_var_expr = HLSExpr(HLSExprT.VAR, p2var_map[comp.get_port("i_0").connection])
                 in_var_expr = HLSExpr.check_const(in_var_expr, comp.get_port("i_0"))
@@ -1615,7 +1611,6 @@ emconfig:
                 target_o1 = p2var_map[comp.get_port("o_1")]
                 code_lines.append(CodeAssign(target_o0, in_var_expr))
                 code_lines.append(CodeAssign(target_o1, in_var_expr))
-
             elif isinstance(comp, dfir.GatherComponent):
                 target_struct_var = p2var_map[comp.get_port("o_0")]
                 for i, in_port in enumerate(comp.in_ports):
@@ -1623,7 +1618,6 @@ emconfig:
                     in_var_expr = HLSExpr.check_const(in_var_expr, in_port)
                     member_var = HLSVar(f"{target_struct_var.name}.ele_{i}", in_var_expr.val.type)
                     code_lines.append(CodeAssign(member_var, in_var_expr))
-
             elif isinstance(comp, dfir.ScatterComponent):
                 in_var = p2var_map[comp.get_port("i_0").connection]
                 for i, out_port in enumerate(comp.out_ports):
@@ -1657,14 +1651,11 @@ emconfig:
                 assign_expr = HLSExpr(HLSExprT.UOP, (data_op, "data"), [HLSExpr(HLSExprT.VAR, in_opt_var)])
                 if_block = CodeIf(cond_expr, [CodeAssign(out_var, assign_expr)])
                 code_lines.append(if_block)
-
             elif isinstance(comp, dfir.UnusedEndMarkerComponent):
-                pass  # Do nothing for unused markers
-
+                pass
             else:
                 code_lines.append(CodeComment(f"Inlined logic for {comp.__class__} ({comp.name})"))
 
-            # c. Add successors to the queue
             for p in comp.out_ports:
                 if p.connected and not isinstance(
                     p.connection.parent,
