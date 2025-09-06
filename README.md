@@ -12,10 +12,10 @@ GraphyFlow employs a multi-stage compilation architecture to transform a high-le
 
 ```mermaid
 graph TD
-    A[<b>Step 1: Algorithm Definition</b><br/>User writes a graph algorithm in Python using the GraphyFlow API<br/><i>(e.g., tests/new_dist.py)</i>] --> B{<b>Step 2: Frontend Compilation</b><br/>The Python API builds a high-level graph representation<br/><i>(graphyflow/global_graph.py)</i>};
-    B --> C[<b>Step 3: DFG-IR Generation</b><br/>The graph is converted into a<br/>Dataflow-Graph Intermediate Representation<br/><i>(graphyflow/dataflow_ir.py)</i>];
-    C --> D{<b>Step 4: Backend Code Generation</b><br/>The Backend Manager traverses the DFG-IR to generate<br/>HLS C++, Host C++, and build scripts<br/><i>(graphyflow/backend_manager.py)</i>};
-    D --> E[<b>Step 5: Project Assembly</b><br/>All generated and static template files<br/>are assembled into a complete Vitis project<br/><i>(graphyflow/project_generator.py)</i>];
+    A["Step 1: Algorithm Definition<br/>User writes a graph algorithm in Python using the GraphyFlow API<br/>(e.g., tests/new_dist.py)"] --> B{"Step 2: Frontend Compilation<br/>The Python API builds a high-level graph representation<br/>(graphyflow/global_graph.py)"};
+    B --> C["Step 3: DFG-IR Generation<br/>The graph is converted into a<br/>Dataflow-Graph Intermediate Representation<br/>(graphyflow/dataflow_ir.py)"];
+    C --> D{"Step 4: Backend Code Generation<br/>The Backend Manager traverses the DFG-IR to generate<br/>HLS C++, Host C++, and build scripts<br/>(graphyflow/backend_manager.py)"};
+    D --> E["Step 5: Project Assembly<br/>All generated and static template files<br/>are assembled into a complete Vitis project<br/>(graphyflow/project_generator.py)"];
 ```
 
 ## 3\. Prerequisites
