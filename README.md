@@ -12,10 +12,37 @@ GraphyFlow employs a multi-stage compilation architecture to transform a high-le
 
 ```mermaid
 graph TD
-    A["Step 1: Algorithm Definition<br/>User writes a graph algorithm in Python using the GraphyFlow API<br/>(e.g., tests/new_dist.py)"] --> B{"Step 2: Frontend Compilation<br/>The Python API builds a high-level graph representation<br/>(graphyflow/global_graph.py)"};
-    B --> C["Step 3: DFG-IR Generation<br/>The graph is converted into a<br/>Dataflow-Graph Intermediate Representation<br/>(graphyflow/dataflow_ir.py)"];
-    C --> D{"Step 4: Backend Code Generation<br/>The Backend Manager traverses the DFG-IR to generate<br/>HLS C++, Host C++, and build scripts<br/>(graphyflow/backend_manager.py)"};
-    D --> E["Step 5: Project Assembly<br/>All generated and static template files<br/>are assembled into a complete Vitis project<br/>(graphyflow/project_generator.py)"];
+    subgraph Frontend
+        A[Python API Definition] --> B(High-Level Graph Builder);
+    end
+
+    subgraph Compiler Core
+        B --> C{DFG-IR Generation};
+        C --> D(Backend Code Gen.<br/>(HLS C++, Host C++));
+    end
+
+    subgraph Project Generation
+        D --> E[Vitis Project Assembly];
+        E --> F[Runnable Vitis Project];
+    end
+
+    subgraph User Interaction
+        A --- Input(User Algorithm);
+        F --- Output(FPGA Bitstream & Host Executable);
+    end
+
+    C -- Dataflow IR --> D;
+    B -- Intermediate Graph --> C;
+    E -- Project Templates --> F;
+
+    style A fill:#f9f,stroke:#333,stroke-width:2px
+    style B fill:#bbf,stroke:#333,stroke-width:2px
+    style C fill:#ccf,stroke:#333,stroke-width:2px
+    style D fill:#ddf,stroke:#333,stroke-width:2px
+    style E fill:#eef,stroke:#333,stroke-width:2px
+    style F fill:#efe,stroke:#333,stroke-width:2px
+    style Input fill:#eee,stroke:#333,stroke-width:1px
+    style Output fill:#eee,stroke:#333,stroke-width:1px
 ```
 
 ## 3\. Prerequisites
