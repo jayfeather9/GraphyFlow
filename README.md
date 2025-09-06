@@ -13,27 +13,27 @@ GraphyFlow employs a multi-stage compilation architecture to transform a high-le
 ```mermaid
 graph TD
     subgraph Frontend
-        A[Python API Definition] --> B(High-Level Graph Builder);
+        A["Python API Definition"] --> B("High-Level Graph Builder");
     end
 
-    subgraph Compiler Core
-        B --> C{DFG-IR Generation};
-        C --> D(Backend Code Gen.<br/>(HLS C++, Host C++));
+    subgraph "Compiler Core"
+        B --> C{"DFG-IR Generation"};
+        C --> D("Backend Code Gen.<br/>(HLS C++, Host C++)");
     end
 
-    subgraph Project Generation
-        D --> E[Vitis Project Assembly];
-        E --> F[Runnable Vitis Project];
+    subgraph "Project Generation"
+        D --> E["Vitis Project Assembly"];
+        E --> F["Runnable Vitis Project"];
     end
 
-    subgraph User Interaction
-        A --- Input(User Algorithm);
-        F --- Output(FPGA Bitstream & Host Executable);
+    subgraph "User Interaction"
+        A --- Input("User Algorithm");
+        F --- Output("FPGA Bitstream & Host Executable");
     end
 
-    C -- Dataflow IR --> D;
-    B -- Intermediate Graph --> C;
-    E -- Project Templates --> F;
+    C -- "Dataflow IR" --> D;
+    B -- "Intermediate Graph" --> C;
+    E -- "Project Templates" --> F;
 
     style A fill:#f9f,stroke:#333,stroke-width:2px
     style B fill:#bbf,stroke:#333,stroke-width:2px
