@@ -177,3 +177,6 @@ out.txt
 # Graphviz
 component_graph
 component_graph.png
+
+# others
+copy.sh

@@ -1,4 +1,4 @@
-import dataflow_ir as dfir
+import graphyflow.dataflow_ir as dfir
 from typing import List, Tuple, Set
 
 
@@ -31,18 +31,13 @@ def delete_placeholder_components_pass(
                 comp_col.outputs.remove(ph_output_port)
                 comp_col.outputs.append(upstream_connected_port)
 
-            if (
-                upstream_connected_port is not None
-                and downstream_connected_port is not None
-            ):
+            if upstream_connected_port is not None and downstream_connected_port is not None:
                 upstream_connected_port.connect(downstream_connected_port)
 
         else:
             components_to_keep.append(comp)
 
-    comp_col = dfir.ComponentCollection(
-        components_to_keep, comp_col.inputs, comp_col.outputs
-    )
+    comp_col = dfir.ComponentCollection(components_to_keep, comp_col.inputs, comp_col.outputs)
     comp_col.update_ports()
 
     return comp_col
@@ -59,9 +54,7 @@ if __name__ == "__main__":
         }
     )
     nodes = g.add_graph_input("edge")
-    src_dst_weight = nodes.map_(
-        map_func=lambda edge: (edge.src.weight, edge.dst.weight, edge)
-    )
+    src_dst_weight = nodes.map_(map_func=lambda edge: (edge.src.weight, edge.dst.weight, edge))
     # first_reduce = src_dst_weight.reduce_by(
     #     reduce_key=lambda sw, dw, e: sw,
     #     reduce_transform=lambda sw, dw, e: (sw, dw, e),

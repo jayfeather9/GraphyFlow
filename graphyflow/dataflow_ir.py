@@ -40,9 +40,7 @@ class Port(DfirNode):
         self.name = name
         self.unique_name = f"{self.name}_{self.readable_id}"
         self.port_type = PortType.OUT if name.startswith("o_") else PortType.IN
-        self.data_type = (
-            parent.input_type if self.port_type == PortType.IN else parent.output_type
-        )
+        self.data_type = parent.input_type if self.port_type == PortType.IN else parent.output_type
         self.parent = parent
         self.connection = None
 
@@ -59,6 +57,16 @@ class Port(DfirNode):
     @property
     def connected(self) -> bool:
         return self.connection is not None
+
+    @property
+    def from_const(self) -> bool:
+        assert self.port_type == PortType.IN and self.connected
+        return isinstance(self.connection.parent, ConstantComponent)
+
+    @property
+    def from_const_val(self):
+        assert self.from_const
+        return self.connection.parent.value
 
     def copy(self, copy_comp: CopyComponent) -> Port:
         assert self.port_type == PortType.OUT
@@ -92,27 +100,20 @@ class Port(DfirNode):
 
 
 class ComponentCollection(DfirNode):
-    def __init__(
-        self, components: List[Component], inputs: List[Port], outputs: List[Port]
-    ) -> None:
+    def __init__(self, components: List[Component], inputs: List[Port], outputs: List[Port]) -> None:
         super().__init__()
         self.components = components
         self.inputs = inputs
         self.outputs = outputs
         in_and_out = inputs + outputs
-        assert all(
-            all(p.connected or p in in_and_out for p in c.ports)
-            for c in self.components
-        )
+        assert all(all(p.connected or p in in_and_out for p in c.ports) for c in self.components)
 
     def __repr__(self) -> str:
         return f"ComponentCollection(\n  components: {self.components},\n  inputs: {self.inputs},\n  outputs: {self.outputs}\n)"
 
     @property
     def all_connected_ports(self) -> List[Port]:
-        return [
-            p for p in sum([comp.ports for comp in self.components], []) if p.connected
-        ]
+        return [p for p in sum([comp.ports for comp in self.components], []) if p.connected]
 
     @property
     def output_types(self) -> List[DfirType]:
@@ -135,9 +136,7 @@ class ComponentCollection(DfirNode):
 
     def add_front(self, component: Component, ports: Dict[str, Port]) -> None:
         assert all(p in self.inputs for p in ports.values())
-        assert all(
-            not p.connected or p in self.all_connected_ports for p in component.in_ports
-        )
+        assert all(not p.connected or p in self.all_connected_ports for p in component.in_ports)
         component.connect(ports)
         if not self.added(component):
             self.components.insert(0, component)
@@ -148,10 +147,7 @@ class ComponentCollection(DfirNode):
 
     def add_back(self, component: Component, ports: Dict[str, Port]) -> None:
         assert all(p in self.outputs for p in ports.values())
-        assert all(
-            not p.connected or p in self.all_connected_ports
-            for p in component.out_ports
-        )
+        assert all(not p.connected or p in self.all_connected_ports for p in component.out_ports)
         component.connect(ports)
         if not self.added(component):
             self.components.append(component)
@@ -267,9 +263,7 @@ class Component(DfirNode):
         return f"{self.__class__.__name__[:5]}_{self.readable_id}"
 
     def to_hls(self) -> hls.HLSFunction:
-        assert (
-            False
-        ), f"Abstract method to_hls() should be implemented for {self.__class__.__name__}"
+        assert False, f"Abstract method to_hls() should be implemented for {self.__class__.__name__}"
 
     def get_hls_function(
         self,
@@ -318,9 +312,7 @@ class IOComponent(Component):
 
 class ConstantComponent(Component):
     def __init__(self, data_type: DfirType, value: Any) -> None:
-        super().__init__(
-            None, data_type, ["o_0"], parallel=isinstance(data_type, ArrayType)
-        )
+        super().__init__(None, data_type, ["o_0"], parallel=isinstance(data_type, ArrayType))
         self.value = value
 
     def additional_info(self) -> str:
@@ -337,8 +329,11 @@ class CopyComponent(Component):
     def to_hls(self) -> hls.HLSFunction:
         code_in_loop = [
             r"#type:i_0# copy_src = #read:i_0#;",
-            r"o_0.write(copy_src);",
-            r"o_1.write(copy_src);",
+            r"bool #end_flag_val# = copy_src.end_flag;",
+            # r"o_0.write(copy_src);",
+            # r"o_1.write(copy_src);",
+            r"#write_notrans:o_0,copy_src#",
+            r"#write_notrans:o_1,copy_src#",
         ]
         return self.get_hls_function(code_in_loop)
 
@@ -363,16 +358,21 @@ class GatherComponent(Component):
         super().__init__(output_type, output_type, ports, parallel, specific_port_types)
 
     def to_hls(self) -> hls.HLSFunction:
-        code_in_loop = []
+        code_in_loop = ["bool #end_flag_val# = false;"]
         for i in range(len(self.in_ports)):
-            code_in_loop.append(
-                f"#type:{self.in_ports[i].name}# gather_src_{i} = #read:i_{i}#;"
+            code_in_loop.extend(
+                [
+                    f"#type:{self.in_ports[i].name}# gather_src_{i} = #read:i_{i}#;",
+                    f"#end_flag_val# |= gather_src_{i}.end_flag;",
+                    f"#peel:{self.in_ports[i].name},gather_src_{i},real_gather_src_{i}#",
+                ]
             )
         code_in_loop += [
             r"#type:o_0# gather_result = {"
-            + ", ".join(f"gather_src_{i}" for i in range(len(self.in_ports)))
+            + ", ".join(f"real_gather_src_{i}" for i in range(len(self.in_ports)))
+            + ", #end_flag_val#"
             + r"};",
-            r"o_0.write(gather_result);",
+            r"#write_notrans:o_0,gather_result#",
         ]
         return self.get_hls_function(code_in_loop)
 
@@ -404,8 +404,9 @@ class ScatterComponent(Component):
     def to_hls(self) -> hls.HLSFunction:
         code_in_loop = []
         code_in_loop.append(r"#type:i_0# scatter_src = #read:i_0#;")
+        code_in_loop.append(r"bool #end_flag_val# = scatter_src.end_flag;")
         for i in range(len(self.out_ports)):
-            code_in_loop.append(f"o_{i}.write(scatter_src.ele_{i});")
+            code_in_loop.append(f"#write:o_{i},scatter_src.ele_{i}#")
         return self.get_hls_function(code_in_loop)
 
 
@@ -414,6 +415,7 @@ class BinOp(Enum):
     SUB = "-"
     MUL = "*"
     DIV = "/"
+    MOD = "%"
     AND = "&"
     OR = "|"
     EQ = "=="
@@ -422,11 +424,29 @@ class BinOp(Enum):
     GT = ">"
     LE = "<="
     GE = ">="
+    SL = "<<"
+    SR = ">>"
     MIN = "min"
     MAX = "max"
 
     def __repr__(self) -> str:
         return self.value
+
+    def gen_repr(self, part_a, part_b):
+        if self.value in ["min", "max"]:
+            translate_dict = {"min": "<", "max": ">"}
+            repr = f"(({part_a}) {translate_dict[self.value]} ({part_b}) ? {part_a} : {part_b})"
+        else:
+            repr = f"{part_a} {self.value} {part_b}"
+        return "{ " + repr + " }"
+
+    def gen_repr_forbkd(self, part_a, part_b):
+        if self.value in ["min", "max"]:
+            translate_dict = {"min": "<", "max": ">"}
+            repr = f"(({part_a}) {translate_dict[self.value]} ({part_b}) ? {part_a} : {part_b})"
+        else:
+            repr = f"{part_a} {self.value} {part_b}"
+        return "(" + repr + ")"
 
     def output_type(self, input_type: DfirType) -> DfirType:
         if self in [
@@ -438,6 +458,8 @@ class BinOp(Enum):
             BinOp.OR,
             BinOp.MIN,
             BinOp.MAX,
+            BinOp.SL,
+            BinOp.SR,
         ]:
             return input_type
         elif self in [BinOp.EQ, BinOp.NE, BinOp.LT, BinOp.GT, BinOp.LE, BinOp.GE]:
@@ -454,9 +476,7 @@ class BinOpComponent(Component):
         else:
             parallel = False
             output_type = op.output_type(input_type)
-        assert not isinstance(output_type, OptionalType) and not isinstance(
-            output_type, TupleType
-        )
+        assert not isinstance(output_type, OptionalType) and not isinstance(output_type, TupleType)
         super().__init__(input_type, output_type, ["i_0", "i_1", "o_0"], parallel)
         self.op = op
 
@@ -467,7 +487,9 @@ class BinOpComponent(Component):
         code_in_loop = [
             r"#type:i_0# binop_src_0 = #read:i_0#;",
             r"#type:i_1# binop_src_1 = #read:i_1#;",
-            f"o_0.write(binop_src_0 {self.op.value} binop_src_1);",
+            r"bool #end_flag_val# = binop_src_0.end_flag | binop_src_1.end_flag;",
+            f"#type_inner:o_0# binop_out = {self.op.gen_repr('binop_src_0#may_ele:i_0#', 'binop_src_1#may_ele:i_1#')};",
+            r"#write:o_0,binop_out#",
         ]
         return self.get_hls_function(code_in_loop)
 
@@ -513,9 +535,7 @@ class UnaryOp(Enum):
             # get node id from node or get src/dst node id from edge
             return IntType() if input_type.type_name == "node" else SpecialType("node")
         elif self == UnaryOp.SELECT:
-            raise RuntimeError(
-                "Output type for select operation should be decided outside of UnaryOp"
-            )
+            raise RuntimeError("Output type for select operation should be decided outside of UnaryOp")
         else:
             raise ValueError(f"Unsupported unary operation: {self}")
 
@@ -540,6 +560,7 @@ class UnaryOpComponent(Component):
             inside_output_type = real_input_type.types[select_index]
         elif op == UnaryOp.GET_ATTR:
             assert attr_type is not None
+            assert select_index is not None
             inside_output_type = attr_type
         else:
             assert not isinstance(
@@ -560,31 +581,32 @@ class UnaryOpComponent(Component):
     def to_hls(self) -> hls.HLSFunction:
         if self.op == UnaryOp.GET_LENGTH:
             code_before_loop = [
-                r"uint16_t length = 0;",
+                r"uint32_t length = 0;",
             ]
             code_in_loop = [
                 r"#read:i_0#;",
                 r"length++;",
             ]
             code_after_loop = [
-                r"#output_length# = 1;",
-                r"o_0.write(length);",
+                # r"#output_length# = 1;",
+                r"#write:o_0,length#",
             ]
-            return self.get_hls_function(
-                code_in_loop, code_before_loop, code_after_loop
-            )
+            return self.get_hls_function(code_in_loop, code_before_loop, code_after_loop)
         else:
             trans_dict = {
-                UnaryOp.NOT: "!#read:i_0#",
-                UnaryOp.NEG: "-#read:i_0#",
-                UnaryOp.CAST_BOOL: "(bool)(#read:i_0#)",
-                UnaryOp.CAST_INT: "(int16_t)(#read:i_0#)",
-                UnaryOp.CAST_FLOAT: "(ap_fixed<32, 16>)(#read:i_0#)",
-                UnaryOp.SELECT: f"#read:i_0#.ele_{self.select_index}",
-                UnaryOp.GET_ATTR: f"#read:i_0#.{self.select_index}",
+                UnaryOp.NOT: "{!unary_src#may_ele:i_0#}",
+                UnaryOp.NEG: "{-unary_src#may_ele:i_0#}",
+                UnaryOp.CAST_BOOL: "{(bool)(unary_src#may_ele:i_0#)}",
+                UnaryOp.CAST_INT: "{(int32_t)(unary_src#may_ele:i_0#)}",
+                UnaryOp.CAST_FLOAT: "{(ap_fixed<32, 16>)(unary_src#may_ele:i_0#)}",
+                UnaryOp.SELECT: f"unary_src.ele_{self.select_index}",
+                UnaryOp.GET_ATTR: f"unary_src.{self.select_index}",
             }
             code_in_loop = [
-                f"o_0.write({trans_dict[self.op]});",
+                f"#type:i_0# unary_src = #read:i_0#;",
+                f"bool #end_flag_val# = unary_src.end_flag;",
+                f"#type_inner:o_0# unary_out = {trans_dict[self.op]};",
+                f"#write:o_0,unary_out#",
             ]
             return self.get_hls_function(code_in_loop)
 
@@ -611,8 +633,11 @@ class ConditionalComponent(Component):
         code_in_loop = [
             r"#type:i_data# cond_data = #read:i_data#;",
             r"#type:i_cond# cond = #read:i_cond#;",
-            r"#opt_type:o_0# cond_result = {cond_data, cond};",
-            r"o_0.write(cond_result);",
+            r"bool #end_flag_val# = cond_data.end_flag | cond.end_flag;",
+            r"#peel:i_data,cond_data,real_cond_data#",
+            r"#peel:i_cond,cond,real_cond#",
+            r"#opt_type:o_0# cond_result = {real_cond_data, real_cond};",
+            r"#write:o_0,cond_result#",
         ]
         return self.get_hls_function(code_in_loop)
 
@@ -625,17 +650,17 @@ class CollectComponent(Component):
         super().__init__(input_type, output_type, ["i_0", "o_0"], parallel=True)
 
     def to_hls(self) -> hls.HLSFunction:
-        code_before_loop = [
-            r"#output_length# = 0;",
-        ]
+        # code_before_loop = [
+        #     r"#output_length# = 0;",
+        # ]
         code_in_loop = [
-            r"#opt_type:i_0# collect_src = #read:i_0#;",
-            r"if (collect_src.valid) {",
-            r"    o_0.write(collect_src.data);",
-            r"    #output_length#++;",
+            r"#type:i_0# collect_src = #read:i_0#;",
+            r"bool #end_flag_val# = collect_src.end_flag;",
+            r"if (collect_src.valid.ele || #end_flag_val#) {",
+            r"    #write:o_0,collect_src.data#",
             r"}",
         ]
-        return self.get_hls_function(code_in_loop, code_before_loop)
+        return self.get_hls_function(code_in_loop)
 
 
 class ReduceComponent(Component):
@@ -682,66 +707,133 @@ class ReduceComponent(Component):
         # Generate 1st func for key & transform pre-process
         code_in_loop = [
             r"#type:i_0# reduce_src = #read:i_0#;",
-            f'hls::stream<#type:i_0#> reduce_key_in_stream("reduce_key_in_stream");',
-            r"#pragma HLS STREAM variable=reduce_key_in_stream depth=4",
-            f'hls::stream<#type:i_0#> reduce_transform_in_stream("reduce_transform_in_stream");',
-            r"#pragma HLS STREAM variable=reduce_transform_in_stream depth=4",
-            f"reduce_key_in_stream.write(reduce_src);",
-            f"reduce_transform_in_stream.write(reduce_src);",
-            f"#call_once:{func_key_name},reduce_key_in_stream,intermediate_key#;",
-            f"#call_once:{func_transform_name},reduce_transform_in_stream,intermediate_transform#;",
+            r"bool #end_flag_val# = reduce_src.end_flag;",
+            # f'hls::stream<#type:i_0#> reduce_key_in_stream("reduce_key_in_stream");',
+            # r"#pragma HLS STREAM variable=reduce_key_in_stream depth=4",
+            # f'hls::stream<#type:i_0#> reduce_transform_in_stream("reduce_transform_in_stream");',
+            # r"#pragma HLS STREAM variable=reduce_transform_in_stream depth=4",
+            # r"reduce_src.end_flag = true;",
+            # f"reduce_key_in_stream.write(reduce_src);",
+            # f"reduce_transform_in_stream.write(reduce_src);",
+            # f'hls::stream<#type:i_reduce_key_out#> reduce_key_out_stream("reduce_key_out_stream");',
+            # r"#pragma HLS STREAM variable=reduce_key_out_stream depth=4",
+            # f'hls::stream<#type:i_reduce_transform_out#> reduce_transform_out_stream("reduce_transform_out_stream");',
+            # r"#pragma HLS STREAM variable=reduce_transform_out_stream depth=4",
+            f"#type:i_reduce_key_out# reduce_key_out;",
+            f"#type:i_reduce_transform_out# reduce_transform_out;",
+            f"#call_once:{func_key_name},reduce_src,reduce_key_out#;",
+            f"#call_once:{func_transform_name},reduce_src,reduce_transform_out#;",
+            # r"#type:i_reduce_key_out# reduce_key_out = reduce_key_out_stream.read();",
+            r"reduce_key_out.end_flag = #end_flag_val#;",
+            r"intermediate_key.write(reduce_key_out);",
+            # r"#type:i_reduce_transform_out# reduce_transform_out = reduce_transform_out_stream.read();",
+            r"reduce_transform_out.end_flag = #end_flag_val#;",
+            r"intermediate_transform.write(reduce_transform_out);",
         ]
         stage_1_func = self.get_hls_function(code_in_loop, name_tail="pre_process")
 
         # Generate 2nd func for unit-reduce
         code_before_loop = [
-            r"static #reduce_key_struct# key_mem[MAX_NUM];",
-            r"#pragma HLS ARRAY_PARTITION variable=key_mem block factor=#partition_factor# dim=0",
+            r"#reduce_key_struct# key_mem[MAX_NUM];",
+            # r"#pragma HLS ARRAY_PARTITION variable=key_mem dim=0 complete",
+            r"#pragma HLS BIND_STORAGE variable = key_mem type = RAM_2P impl = URAM",
+            r"#pragma HLS dependence variable=key_mem inter false",
+            r"#reduce_key_struct# key_buffer[L + 1];",
+            r"#pragma HLS ARRAY_PARTITION variable=key_buffer dim=0 complete",
+            r"uint32_t i_buffer[L + 1];",
+            r"#pragma HLS ARRAY_PARTITION variable=i_buffer dim=0 complete",
+            r"for (int i_clear_buffer = 0; i_clear_buffer < L + 1; i_clear_buffer++) {",
+            r"#pragma HLS UNROLL",
+            r"    i_buffer[i_clear_buffer] = MAX_NUM + 1;",
+            r"}",
+            # r"#pragma HLS ARRAY_PARTITION variable=key_mem complete dim=0",
             r"CLEAR_REDUCE_VALID: for (int i_reduce_clear = 0; i_reduce_clear < MAX_NUM; i_reduce_clear++) {",
-            r"#pragma HLS PIPELINE",
-            r"    key_mem[i_reduce_clear].valid = 0;",
+            r"#pragma HLS UNROLL",
+            r"    key_mem[i_reduce_clear].valid.ele = 0;",
             r"}",
         ]
         code_in_loop = [
-            # the reduce_key_struct is {key, data, valid}, the loop uses one loop ahead
+            # the reduce_key_struct is {key, valid}, the loop uses one loop ahead
             # to clear the valid bit to 0 with pipeline
             f"#type:i_reduce_key_out# reduce_key_out = #read:intermediate_key#;",
             f"#type:i_reduce_transform_out# reduce_transform_out = #read:intermediate_transform#;",
-            r"bool merged = false;",
-            r"SCAN_BRAM_INTER_LOOP: for (int i_in_reduce = 0; i_in_reduce < MAX_NUM; i_in_reduce++) {",
-            r"#pragma HLS PIPELINE",
-            r"    #reduce_key_struct# cur_ele = key_mem[i_in_reduce];",
-            r"    if (!merged && !cur_ele.valid) {",
-            r"        key_mem[i_in_reduce].valid = 1;",
-            r"        key_mem[i_in_reduce].key = reduce_key_out;",
-            r"        key_mem[i_in_reduce].data = reduce_transform_out;",
-            r"        merged = true;",
-            r"    } else if (!merged && cur_ele.valid && #cmpeq:i_reduce_key_out,cur_ele.key,reduce_key_out#) {",
-            # new a stream to call the reduce unit
-            '        hls::stream<#type:o_reduce_unit_start_0#> reduce_unit_stream_0("reduce_unit_stream_0");',
-            r"#pragma HLS STREAM variable=reduce_unit_stream_0 depth=4",
-            '        hls::stream<#type:o_reduce_unit_start_1#> reduce_unit_stream_1("reduce_unit_stream_1");',
-            r"#pragma HLS STREAM variable=reduce_unit_stream_1 depth=4",
-            '        hls::stream<#type:i_reduce_unit_end#> reduce_unit_stream_out("reduce_unit_stream_out");',
-            r"#pragma HLS STREAM variable=reduce_unit_stream_out depth=4",
-            r"        reduce_unit_stream_0.write(cur_ele.data);",
-            r"        reduce_unit_stream_1.write(reduce_transform_out);",
-            f"        #call_once:{func_unit_name},reduce_unit_stream_0,reduce_unit_stream_1,reduce_unit_stream_out#;",
-            r"        #type:i_reduce_unit_end# reduce_unit_out = #read:reduce_unit_stream_out#;",
-            r"        key_mem[i_in_reduce].data = reduce_unit_out;",
-            r"        merged = true;",
+            r"bool #end_flag_val# = reduce_key_out.end_flag | reduce_transform_out.end_flag;",
+            # r"bool merged = false;",
+            r"#peel:i_reduce_key_out,reduce_key_out,real_reduce_key_out#",
+            r"#peel:i_reduce_transform_out,reduce_transform_out,real_reduce_transform_out#",
+            # r"SCAN_BRAM_INTER_LOOP: for (int i_in_reduce = 0; i_in_reduce < MAX_NUM; i_in_reduce++) {",
+            # r"#pragma HLS PIPELINE",
+            # r"    #reduce_key_struct# cur_ele = key_mem[i_in_reduce];",
+            # r"    if (!merged && !cur_ele.valid.ele) {",
+            # r"        key_mem[i_in_reduce].valid.ele = 1;",
+            # r"        key_mem[i_in_reduce].key#may_ele:i_reduce_key_out# = real_reduce_key_out;",
+            # r"        key_mem[i_in_reduce].data#may_ele:i_reduce_transform_out# = real_reduce_transform_out;",
+            # r"        merged = true;",
+            # r"    } else if (!merged && cur_ele.valid.ele && #cmpeq:i_reduce_key_out,cur_ele.key,real_reduce_key_out#) {",
+            # # new a stream to call the reduce unit
+            # '        hls::stream<#type:o_reduce_unit_start_0#> reduce_unit_stream_0("reduce_unit_stream_0");',
+            # r"#pragma HLS STREAM variable=reduce_unit_stream_0 depth=4",
+            # '        hls::stream<#type:o_reduce_unit_start_1#> reduce_unit_stream_1("reduce_unit_stream_1");',
+            # r"#pragma HLS STREAM variable=reduce_unit_stream_1 depth=4",
+            # '        hls::stream<#type:i_reduce_unit_end#> reduce_unit_stream_out("reduce_unit_stream_out");',
+            # r"#pragma HLS STREAM variable=reduce_unit_stream_out depth=4",
+            # r"        #write:reduce_unit_stream_0,cur_ele.data#may_ele:i_reduce_transform_out#,#type:i_reduce_transform_out##",
+            # r"        #write:reduce_unit_stream_1,real_reduce_transform_out,#type:i_reduce_transform_out##",
+            # f"        #call_once:{func_unit_name},reduce_unit_stream_0,reduce_unit_stream_1,reduce_unit_stream_out#;",
+            # r"        #type:i_reduce_unit_end# reduce_unit_out = #read:reduce_unit_stream_out#;",
+            # r"        #peel:i_reduce_unit_end,reduce_unit_out,real_reduce_unit_out#",
+            # r"        key_mem[i_in_reduce].data#may_ele:i_reduce_transform_out# = real_reduce_unit_out;",
+            # r"        merged = true;",
+            # r"    }",
+            r"#reduce_key_struct# old_ele = key_mem[real_reduce_key_out#may_ele:i_reduce_key_out#];",
+            r"for (int i_search_buffer = 0; i_search_buffer < L + 1; i_search_buffer++) {",
+            r"#pragma HLS UNROLL",
+            r"    {",
+            r"        if (real_reduce_key_out#may_ele:i_reduce_key_out# == i_buffer[i_search_buffer]) old_ele = key_buffer[i_search_buffer];",
             r"    }",
             r"}",
+            r"for (int i_move_buffer = 0; i_move_buffer < L; i_move_buffer++) {",
+            r"#pragma HLS UNROLL",
+            r"    {",
+            r"        i_buffer[i_move_buffer] = i_buffer[i_move_buffer + 1];",
+            r"        key_buffer[i_move_buffer] = key_buffer[i_move_buffer + 1];",
+            r"    }",
+            r"}",
+            r"#reduce_key_struct# new_ele;",
+            r"if (!old_ele.valid.ele) {",
+            r"    new_ele.valid.ele = 1;",
+            r"    new_ele.data = real_reduce_transform_out;",
+            r"} else {",
+            # '    hls::stream<#type:o_reduce_unit_start_0#> reduce_unit_stream_0("reduce_unit_stream_0");',
+            # r"#pragma HLS STREAM variable=reduce_unit_stream_0 depth=1",
+            # '    hls::stream<#type:o_reduce_unit_start_1#> reduce_unit_stream_1("reduce_unit_stream_1");',
+            # r"#pragma HLS STREAM variable=reduce_unit_stream_1 depth=1",
+            # '    hls::stream<#type:i_reduce_unit_end#> reduce_unit_stream_out("reduce_unit_stream_out");',
+            # r"#pragma HLS STREAM variable=reduce_unit_stream_out depth=1",
+            # r"    #write:reduce_unit_stream_0,old_ele.data,#type:i_reduce_transform_out##",
+            # r"    #write:reduce_unit_stream_1,real_reduce_transform_out,#type:i_reduce_transform_out##",
+            r"    #write_nostream:old_ele_data,old_ele.data,#type:i_reduce_transform_out##",
+            r"    #write_nostream:new_ele_data,real_reduce_transform_out,#type:i_reduce_transform_out##",
+            r"    #type:i_reduce_unit_end# reduce_unit_out;",
+            f"    #call_once:{func_unit_name},old_ele_data,new_ele_data,reduce_unit_out#;",
+            # r"    #type:i_reduce_unit_end# reduce_unit_out = #read:reduce_unit_stream_out#;",
+            r"    #peel:i_reduce_unit_end,reduce_unit_out,real_reduce_unit_out#",
+            r"    new_ele.data = real_reduce_unit_out;",
+            r"}",
+            r"key_mem[real_reduce_key_out#may_ele:i_reduce_key_out#] = new_ele;",
+            r"key_buffer[L] = new_ele;",
+            r"i_buffer[L] = real_reduce_key_out#may_ele:i_reduce_key_out#;",
         ]
         code_after_loop = [
-            r"#output_length# = 0;",
+            # r"#output_length# = 0;",
             r"WRITE_KEY_MEM_LOOP: for (int i_write_key_mem = 0; i_write_key_mem < MAX_NUM; i_write_key_mem++) {",
             r"#pragma HLS PIPELINE",
-            r"    if (key_mem[i_write_key_mem].valid) {",
-            f"        o_0.write(key_mem[i_write_key_mem].data);",
-            r"        #output_length#++;",
+            r"    if (key_mem[i_write_key_mem].valid.ele) {",
+            r"        #write_noend:o_0,key_mem[i_write_key_mem].data#may_ele:o_0##",
+            # r"        #output_length#++;",
             r"    }",
             r"}",
+            r"#write:o_0,key_mem[0].data#may_ele:o_0##",
         ]
         stage_2_func = self.get_hls_function(
             code_in_loop, code_before_loop, code_after_loop, name_tail="unit_reduce"

@@ -26,9 +26,7 @@ def parse_components(text):
             if not in_component and "Component(" in text[max(0, i - 15) : i + 1]:
                 in_component = True
                 comp_st = i - 1
-                while comp_st >= 0 and (
-                    text[comp_st] == "_" or text[comp_st].isalpha()
-                ):
+                while comp_st >= 0 and (text[comp_st] == "_" or text[comp_st].isalpha()):
                     comp_st -= 1
                 comp_st += 1
 

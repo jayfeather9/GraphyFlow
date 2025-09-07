@@ -23,9 +23,7 @@ g = GlobalGraph(
 )
 nodes = g.add_graph_input("edge")
 # apply = nodes.filter(filter_func=lambda node: node.id + 5 > 10)
-src_dst_weight = nodes.map_(
-    map_func=lambda edge: (edge.src.weight, edge.dst.weight, edge)
-)
+src_dst_weight = nodes.map_(map_func=lambda edge: (edge.src.weight, edge.dst.weight, edge))
 test = src_dst_weight.reduce_by(
     reduce_key=lambda data: data[2].dst,
     reduce_transform=lambda data: (data[0], data[1], data[2].dst),

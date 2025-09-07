@@ -29,9 +29,9 @@ total_nodes_val = g_pr.add_graph_input("node").length()
 # 准备 PageRank贡献 消息：
 # 对于每条边，源节点将其当前的 pagerank / out_degree 传递给目标节点
 # 简化：假设出度不为 0
-pr_contributions = edges_pr.filter(
-    filter_func=lambda edge: edge.src.out_degree > 0
-).map_(map_func=lambda edge: (edge.dst, edge.src.pagerank / edge.src.out_degree))
+pr_contributions = edges_pr.filter(filter_func=lambda edge: edge.src.out_degree > 0).map_(
+    map_func=lambda edge: (edge.dst, edge.src.pagerank / edge.src.out_degree)
+)
 
 # 按目标节点聚合，累加收到的所有 PageRank 贡献
 summed_contributions = pr_contributions.reduce_by(

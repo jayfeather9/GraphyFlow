@@ -10,9 +10,7 @@ g = GlobalGraph(
     }
 )
 nodes = g.add_graph_input("edge")
-src_dst_weight = nodes.map_(
-    map_func=lambda edge: (edge.src.weight, edge.dst.weight, edge)
-)
+src_dst_weight = nodes.map_(map_func=lambda edge: (edge.src.weight, edge.dst.weight, edge))
 # filtered = src_dst_weight.filter(filter_func=lambda sw, dw, e: sw > dw)
 # result = filtered.map_(map_func=lambda sw, dw, e: e.e_id)
 
