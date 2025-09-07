@@ -1,0 +1,38 @@
+#ifndef __GENERATED_HOST_H__
+#define __GENERATED_HOST_H__
+
+#include "common.h"
+#include <vector>
+#include "xcl2.h"
+
+class AlgorithmHost {
+  public:
+    AlgorithmHost(cl::Context &context, cl::Kernel &kernel, cl::CommandQueue &q);
+    void setup_buffers(const GraphCSR &graph, int start_node);
+    void transfer_data_to_fpga();
+    void execute_kernel_iteration(cl::Event &event);
+    void transfer_data_from_fpga();
+    bool check_convergence_and_update();
+    const std::vector<int> &get_results() const;
+
+  private:
+    // OpenCL-related objects
+    cl::Context &m_context;
+    cl::Kernel &m_kernel;
+    cl::CommandQueue &m_q;
+
+    // Algorithm state
+    int m_num_vertices;
+    size_t m_num_batches;
+
+    // Host-side memory buffers (aligned for efficient DMA)
+    // {{GRAPHYFLOW_HOST_BUFFER_DECLARATIONS}}
+    
+    // Host-side state for iterative algorithm (Bellman-Ford)
+    std::vector<ap_fixed<32, 16>> h_distances;
+
+    // Device-side OpenCL buffer handles
+    // {{GRAPHYFLOW_DEVICE_BUFFER_DECLARATIONS}}
+};
+
+#endif // __GENERATED_HOST_H__

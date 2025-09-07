@@ -1,0 +1,66 @@
+#include "generated_host.h"
+#include <iostream>
+#include <map>
+#include <limits>
+#include <cstring> // For memcpy
+
+// Constructor
+AlgorithmHost::AlgorithmHost(cl::Context &context, cl::Kernel &kernel,
+                             cl::CommandQueue &q)
+    : m_context(context), m_kernel(kernel), m_q(q), m_num_vertices(0),
+      m_num_batches(0) {}
+
+// --- DYNAMICALLY GENERATED SECTIONS ---
+
+// {{GRAPHYFLOW_HELPER_FUNCTIONS}}
+
+// {{GRAPHYFLOW_SETUP_BUFFERS_IMPL}}
+
+// {{GRAPHYFLOW_TRANSFER_TO_FPGA_IMPL}}
+
+// {{GRAPHYFLOW_EXECUTE_KERNEL_IMPL}}
+
+// {{GRAPHYFLOW_TRANSFER_FROM_FPGA_IMPL}}
+
+
+// --- LOGIC FOR RESULT PROCESSING (GENERIC FOR ITERATIVE ALGORITHMS) ---
+
+bool AlgorithmHost::check_convergence_and_update() {
+    bool changed = false;
+
+    // This logic is generic for algorithms that output node distances/values.
+    // It collects the minimum distances produced by the kernel in one iteration.
+    std::map<int, ap_fixed<32, 16>> min_distances;
+
+    // {{GRAPHYFLOW_COLLECT_RESULTS_IMPL}}
+
+    // Update host-side distances and check for any changes
+    for (auto const &[node_id, new_dist] : min_distances) {
+        if (new_dist < h_distances[node_id]) {
+            h_distances[node_id] = new_dist;
+            changed = true;
+        }
+    }
+
+    // If distances changed, the input buffers need to be repacked with the new distance values for the next iteration.
+    if (changed) {
+        // {{GRAPHYFLOW_REPACK_INPUTS_IMPL}}
+    }
+
+    return !changed; // Return true if converged (no changes)
+}
+
+const std::vector<int> &AlgorithmHost::get_results() const {
+    // This function converts the final ap_fixed distances to integers for verification.
+    static std::vector<int> final_distances;
+    final_distances.clear();
+    final_distances.reserve(h_distances.size());
+    for (const auto &dist : h_distances) {
+        if (dist > std::numeric_limits<int>::max()) {
+            final_distances.push_back(std::numeric_limits<int>::max());
+        } else {
+            final_distances.push_back(dist.to_int());
+        }
+    }
+    return final_distances;
+}

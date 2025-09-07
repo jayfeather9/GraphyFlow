@@ -257,8 +257,6 @@ def generate_demux(n: int, batch_type: hls.HLSType, wrapper_type: hls.HLSType) -
     gen_id = _get_unique_id()
     func_name = f"demux_{gen_id}"
 
-    base_data_type = batch_type.sub_types[0].sub_types[0]
-
     in_stream_type = hls.HLSType(hls.HLSBasicType.STREAM, sub_types=[batch_type])
     out_stream_type = hls.HLSType(hls.HLSBasicType.STREAM, sub_types=[wrapper_type])
     out_stream_array_type = hls.HLSType(hls.HLSBasicType.ARRAY, sub_types=[out_stream_type], array_dims=[n])
@@ -271,11 +269,14 @@ def generate_demux(n: int, batch_type: hls.HLSType, wrapper_type: hls.HLSType) -
     in_batch_var = hls.HLSVar("in_batch", batch_type)
     wrapper_var = hls.HLSVar("wrapper_data", wrapper_type)
 
-    inner_loop_body = [
-        hls.CodePragma("UNROLL"),
+    # --- 修正后的内部循环逻辑 ---
+    # 仅当 `i < in_batch.end_pos` 时才分发数据
+    inner_loop_body_if = [
         hls.CodeAssign(
-            hls.HLSVar(f"{wrapper_var.name}.data", base_data_type),
-            hls.HLSExpr(hls.HLSExprT.VAR, hls.HLSVar(f"{in_batch_var.name}.data[i]", base_data_type)),
+            hls.HLSVar(f"{wrapper_var.name}.data", wrapper_type.sub_types[0]),
+            hls.HLSExpr(
+                hls.HLSExprT.VAR, hls.HLSVar(f"{in_batch_var.name}.data[i]", wrapper_type.sub_types[0])
+            ),
         ),
         hls.CodeAssign(
             hls.HLSVar(f"{wrapper_var.name}.end_flag", hls.HLSType(hls.HLSBasicType.BOOL)),
@@ -283,28 +284,48 @@ def generate_demux(n: int, batch_type: hls.HLSType, wrapper_type: hls.HLSType) -
         ),
         hls.CodeWriteStream(hls.HLSVar(f"out_streams[i]", out_stream_type), wrapper_var),
     ]
-    for_loop = hls.CodeFor(inner_loop_body, iter_limit="PE_NUM", iter_name="i")
 
-    end_flag_expr = hls.HLSExpr(
-        hls.HLSExprT.UOP,
-        (dfir.UnaryOp.GET_ATTR, "end_flag"),
-        [hls.HLSExpr(hls.HLSExprT.VAR, in_batch_var)],
+    cond_expr = hls.HLSExpr(
+        hls.HLSExprT.BINOP,
+        dfir.BinOp.LT,
+        [
+            hls.HLSExpr(hls.HLSExprT.VAR, hls.HLSVar("i", hls.HLSType(hls.HLSBasicType.UINT))),
+            hls.HLSExpr(
+                hls.HLSExprT.UOP,
+                (dfir.UnaryOp.GET_ATTR, "end_pos"),
+                [hls.HLSExpr(hls.HLSExprT.VAR, in_batch_var)],
+            ),
+        ],
     )
-    break_if = hls.CodeIf(end_flag_expr, [hls.CodeBreak()])
 
+    inner_for_loop = hls.CodeFor(
+        [hls.CodePragma("UNROLL"), hls.CodeIf(cond_expr, inner_loop_body_if)],
+        iter_limit="PE_NUM",
+        iter_name="i",
+    )
+
+    # While 循环体
     while_body = [
         hls.CodePragma("PIPELINE"),
         hls.CodeAssign(
             in_batch_var,
             hls.HLSExpr(hls.HLSExprT.STREAM_READ, None, [hls.HLSExpr(hls.HLSExprT.VAR, params[0])]),
         ),
-        hls.CodeVarDecl(wrapper_var.name, wrapper_var.type),
-        for_loop,
-        break_if,
+        hls.CodeVarDecl(wrapper_var.name, wrapper_type),
+        inner_for_loop,
+        hls.CodeIf(
+            hls.HLSExpr(
+                hls.HLSExprT.UOP,
+                (dfir.UnaryOp.GET_ATTR, "end_flag"),
+                [hls.HLSExpr(hls.HLSExprT.VAR, in_batch_var)],
+            ),
+            [hls.CodeBreak()],
+        ),
     ]
 
+    # 结束标志传播逻辑
     end_wrapper_var = hls.HLSVar("end_wrapper", wrapper_type)
-    send_end_flag_loop = hls.CodeFor(
+    final_loop = hls.CodeFor(
         [
             hls.CodePragma("UNROLL"),
             hls.CodeWriteStream(hls.HLSVar(f"out_streams[i]", out_stream_type), end_wrapper_var),
@@ -317,12 +338,12 @@ def generate_demux(n: int, batch_type: hls.HLSType, wrapper_type: hls.HLSType) -
         hls.CodeVarDecl(in_batch_var.name, in_batch_var.type),
         hls.CodeWhile(codes=while_body, iter_expr=hls.HLSExpr(hls.HLSExprT.CONST, True)),
         hls.CodeComment("Propagate end_flag to all output streams"),
-        hls.CodeVarDecl("end_wrapper", wrapper_type),
+        hls.CodeVarDecl(end_wrapper_var.name, end_wrapper_var.type),
         hls.CodeAssign(
-            hls.HLSVar("end_wrapper.end_flag", hls.HLSType(hls.HLSBasicType.BOOL)),
+            hls.HLSVar(f"{end_wrapper_var.name}.end_flag", hls.HLSType(hls.HLSBasicType.BOOL)),
             hls.HLSExpr(hls.HLSExprT.CONST, True),
         ),
-        send_end_flag_loop,
+        final_loop,
     ]
 
     demux_func = hls.HLSFunction(name=func_name, comp=None)
