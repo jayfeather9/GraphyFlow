@@ -1,4 +1,4 @@
-# GraphyFlow: A High-Level Synthesis Framework for Graph Computing on FPGAs
+# GraphyFlow: A Flexible High-Level Synthesis Framework for Efficient Graph Computing on FPGAs
 
 ## 1\. Overview
 
@@ -12,37 +12,10 @@ GraphyFlow employs a multi-stage compilation architecture to transform a high-le
 
 ```mermaid
 graph TD
-    subgraph Frontend
-        A["Python API Definition"] --> B("High-Level Graph Builder");
-    end
-
-    subgraph "Compiler Core"
-        B --> C{"DFG-IR Generation"};
-        C --> D("Backend Code Gen.<br/>(HLS C++, Host C++)");
-    end
-
-    subgraph "Project Generation"
-        D --> E["Vitis Project Assembly"];
-        E --> F["Runnable Vitis Project"];
-    end
-
-    subgraph "User Interaction"
-        A --- Input("User Algorithm");
-        F --- Output("FPGA Bitstream & Host Executable");
-    end
-
-    C -- "Dataflow IR" --> D;
-    B -- "Intermediate Graph" --> C;
-    E -- "Project Templates" --> F;
-
-    style A fill:#f9f,stroke:#333,stroke-width:2px
-    style B fill:#bbf,stroke:#333,stroke-width:2px
-    style C fill:#ccf,stroke:#333,stroke-width:2px
-    style D fill:#ddf,stroke:#333,stroke-width:2px
-    style E fill:#eef,stroke:#333,stroke-width:2px
-    style F fill:#efe,stroke:#333,stroke-width:2px
-    style Input fill:#eee,stroke:#333,stroke-width:1px
-    style Output fill:#eee,stroke:#333,stroke-width:1px
+    A[<b>Step 1: Algorithm Definition</b><br/>User writes a graph algorithm in Python using the GraphyFlow API<br/><i>(e.g., tests/new_dist.py)</i>] --> B{<b>Step 2: Frontend Compilation</b><br/>The Python API builds a high-level graph representation<br/><i>(graphyflow/global_graph.py)</i>};
+    B --> C[<b>Step 3: DFG-IR Generation</b><br/>The graph is converted into a<br/>Dataflow-Graph Intermediate Representation<br/><i>(graphyflow/dataflow_ir.py)</i>];
+    C --> D{<b>Step 4: Backend Code Generation</b><br/>The Backend Manager traverses the DFG-IR to generate<br/>HLS C++, Host C++, and build scripts<br/><i>(graphyflow/backend_manager.py)</i>};
+    D --> E[<b>Step 5: Project Assembly</b><br/>All generated and static template files<br/>are assembled into a complete Vitis project<br/><i>(graphyflow/project_generator.py)</i>];
 ```
 
 ## 3\. Prerequisites
@@ -52,97 +25,109 @@ To use GraphyFlow and build the generated projects, you will need the following 
   * **Python 3.x**: For running the GraphyFlow framework itself.
   * **Xilinx Vitis**: The core toolchain for HLS and building the FPGA binaries. The project files seem to be configured for **Vitis 2022.2**, so using this version is recommended for compatibility.
   * **Xilinx Runtime (XRT)**: Required for communication between the host and the FPGA. This is typically installed with Vitis.
-  * **Environment Variables**: Ensure that the Vitis and XRT environment setup scripts have been sourced (e.g., `source /opt/Xilinx/Vitis/2022.2/settings64.sh` and `source /opt/xilinx/xrt/setup.sh`).
+  * **Environment Variables**: Before building the project, ensure that the Vitis and XRT environment setup scripts have been sourced. Execute the following commands, adjusting the paths to match your installation:
+  ```shell
+    # Source Vitis environment
+    source /path/to/Xilinx/Vitis/2022.2/settings64.sh
+
+    # Source XRT environment
+    source /opt/xilinx/xrt/setup.sh
+  ```
 
 ## 4\. Directory Structure
 
 The GraphyFlow repository is organized as follows:
 
 ```
-GraphyFlow/
+CCFSys2025_GraphyFlow/
+├── README.md                # This README file
 ├── graphyflow/              # Core framework source code
-│   ├── backend_manager.py     # The main backend compiler
-│   ├── dataflow_ir.py         # Defines the Intermediate Representation
+│   ├── backend_manager.py     # The main backend compiler for C++/HLS generation
+│   ├── dataflow_ir.py         # Defines the Intermediate Representation (IR)
 │   ├── global_graph.py        # The user-facing Python API for algorithm definition
 │   ├── project_generator.py   # Assembles the final Vitis project
 │   └── project_template/      # Static template files for a Vitis project
-├── tests/                   # Example scripts demonstrating how to use GraphyFlow
-│   ├── new_dist.py            # The primary example for generating a project
-│   └── ...
-└── README.md                # This README file
+└── tests/                   # Example scripts demonstrating how to use GraphyFlow
+    └── bellman_ford.py        # The primary example for generating a project
 ```
 
 ## 5\. How to Run the Example
 
-The following steps guide you through generating, building, and running the provided distance computation project.
+The following steps guide you through generating, building, and running the provided Bellman-Ford project.
 
-### Step 1: Generate the Vitis Project
+### 5\.1 Input Data Format (`graph.txt`)
 
-The framework uses the pre-defined algorithm in `tests/new_dist.py` to generate a complete Vitis project. This script begins by defining the data structure of the graph's nodes and edges for the compiler:
+The generated host application expects an input graph file named graph.txt to be present in the execution directory (generated_project/). This file should be a simple text file representing the graph as an edge list.
+
+Each line should represent a directed edge with the format source_node destination_node [weight].
+
+Node IDs are 0-indexed integers.
+
+If the weight is omitted, it defaults to 1.
+
+The project template also includes a Python script gen_random_graph.py to generate sample graph files.
+
+An example graph.txt could look like this:
+
+```
+1 5
+5 1
+6 2
+1 3
+2 6
+4 0
+3 1
+7 6
+5 6
+3 5
+0 2
+2 0
+5 3
+6 5
+6 7
+0 4
+```
+
+### 5\.2 Step 1: Generate the Vitis Project
+The framework uses the pre-defined algorithm in tests/bellman_ford.py to generate a complete Vitis project. To start the process, execute the following command from the root of the CCFSys2025_GraphyFlow directory:
+
+```shell
+PYTHONPATH=$(pwd) python3 tests/bellman_ford.py
+```
+
+This command temporarily adds the project root to your Python path and runs the generation script. After it completes, a new directory named generated_project/ will be created, containing the full Vitis project.
+
+### 5\.3 Step 2: Build the FPGA Kernel and Host Executable
+Navigate into the generated project directory and use the provided Makefile to build the project. Before running make, ensure you have sourced the Vitis and XRT environment scripts as described in the "Prerequisites" section.
 
 ```python
-# tests/new_dist.py (Snippet)
-# --- Define graph properties ---
-g = GlobalGraph(
-    properties={
-        "node": {"distance": dfir.FloatType()},
-        "edge": {"weight": dfir.FloatType()},
-    }
-)
-```
-
-To generate the project, execute the following command from the root of the `GraphyFlow` directory:
-
-```bash
-PYTHONPATH=$(pwd) python3 tests/new_dist.py
-```
-
-This command temporarily adds the `GraphyFlow` project root to your Python path, allowing the script to import the necessary framework modules. After it completes, a new directory `generated_project/` will be created.
-
-### Step 2: Build the FPGA Kernel and Host Executable
-
-Navigate into the generated project directory and use the provided `Makefile` to build the project. You must specify a target platform.
-
-```bash
+# Navigate to the generated project
 cd generated_project/
+
+# Build and run for software emulation
 make check TARGET=sw_emu
 ```
 
-  * The `make check` command is a convenient wrapper that first builds everything (`all`) and then runs the simulation (`run.sh`).
-  * `TARGET` can be one of the following:
-      * `sw_emu`: Software emulation (fastest build).
-      * `hw_emu`: Hardware emulation (more accurate, slower build).
-      * `hw`: Full hardware synthesis (very slow, for running on the actual FPGA).
+- The `make check` command builds the project and runs the simulation afterwards.
+- `TARGET` can be one of the following:
+    - `sw_emu`: Software emulation (fastest build).
+    - `hw_emu`: Hardware emulation (more accurate, slower build).
+    - `hw`: Full hardware synthesis (for running on the actual FPGA).
 
-### Step 3: Run the Project
+### 5\.4 Step 3: Run the Project
+If you built the project using `make all` instead of `make check`, you can run the emulation manually with the `run.sh` script:
 
-If you built the project using `make all` instead of `make check`, you can run the software emulation manually:
-
-```bash
+```shell
 ./run.sh sw_emu
 ```
 
-The script will execute the host program, which loads the generated FPGA binary (`.xclbin`), prepares a sample graph, runs the computation, verifies the result against a CPU implementation, and prints a success or failure message.
+The script will execute the host program, which loads the FPGA binary (`.xclbin`), runs the computation on the `graph.txt` file, verifies the result against a CPU implementation, and prints a success or failure message.
 
-## 6\. Algorithm Definition API
+## 6\. Detailed Documentation
 
-You can define graph algorithms by chaining together a series of high-level dataflow operators.
+For a deeper understanding of the framework's architecture and components, please refer to the detailed documentation:
 
-  * `n.map_(map_func)`
-
-      * **Description**: Applies a lambda function `map_func` to each element of the input data array `n`.
-      * **Lambda Input**: A single element from the array `n`.
-      * **Lambda Output**: The transformed element.
-
-  * `n.filter(filter_func)`
-
-      * **Description**: Filters the input array `n`, keeping only the elements for which `filter_func` returns `True`.
-      * **Lambda Input**: A single element from the array `n`.
-      * **Lambda Output**: A boolean value.
-
-  * `n.reduce_by(reduce_key, reduce_transform, reduce_method)`
-
-      * **Description**: A powerful operator that performs a grouped reduction.
-      * **`reduce_key`**: A lambda that computes a key for each element. Elements with the same key are grouped together.
-      * **`reduce_transform`**: A lambda that transforms each element within a group before reduction.
-      * **`reduce_method`**: A lambda that takes two transformed elements and combines them into one. This function must be commutative and associative (e.g., `add`, `min`, `max`). The final output is an array containing one reduced value for each group.
+- docs/frontend.md: Describes the user-facing Python API for defining graph algorithms.
+- docs/ir.md: Explains the structure of the Dataflow-Graph Intermediate Representation (DFG-IR).
+- docs/backend_kernel.md: Details the process of translating the IR into HLS C++ for the FPGA kernel.
+- docs/backend_host.md: Covers the generation of the host application, build system, and other supporting files.
