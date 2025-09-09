@@ -60,8 +60,7 @@ int main(int argc, char **argv) {
     std::cout << "Total FPGA Kernel Execution Time: "
               << total_kernel_time_sec * 1000.0 << " ms" << std::endl;
     std::cout << "Total MTEPS (Edges / Total Time): "
-              << ((double)graph.num_edges * (double)graph.num_vertices) /
-                     total_kernel_time_sec / 1.0e6
+              << ((double)graph.num_edges) / total_kernel_time_sec / 1.0e6
               << " MTEPS" << std::endl;
 
     return (error_count == 0) ? EXIT_SUCCESS : EXIT_FAILURE;

@@ -507,6 +507,15 @@ class CodeComment(HLSCodeLine):
         return indent_lvl * INDENT_UNIT + "// " + self.text.strip() + "\n"
 
 
+class CodeOther(HLSCodeLine):
+    def __init__(self, text: str) -> None:
+        super().__init__()
+        self.text = text
+
+    def gen_code(self, indent_lvl: int = 0) -> str:
+        return indent_lvl * INDENT_UNIT + self.text + "\n"
+
+
 class HLSFunction:
     _readable_id_cnt = 0
 

@@ -27,6 +27,7 @@ from graphyflow.backend_defines import (
     CodeVarDecl,
     CodeWhile,
     CodeWriteStream,
+    CodeOther,
 )
 from graphyflow.backend_utils import generate_demux, generate_omega_network, generate_stream_zipper
 
@@ -1861,13 +1862,14 @@ emconfig:
         )
         body.append(clear_ibuf_outer_loop)
 
-        target_valid_flag = HLSVar("key_mem[pe][i].ele_1", HLSType(HLSBasicType.BOOL))
-        assign_valid_false = CodeAssign(target_valid_flag, HLSExpr(HLSExprT.CONST, False))
-        clear_valid_inner_loop = CodeFor([CodePragma("UNROLL"), assign_valid_false], "MAX_NUM", iter_name="i")
-        clear_valid_outer_loop = CodeFor(
-            [CodePragma("UNROLL"), clear_valid_inner_loop], "PE_NUM", iter_name="pe"
-        )
-        body.append(clear_valid_outer_loop)
+        # target_valid_flag = HLSVar("key_mem[pe][i].ele_1", HLSType(HLSBasicType.BOOL))
+        # assign_valid_false = CodeAssign(target_valid_flag, HLSExpr(HLSExprT.CONST, False))
+        # clear_valid_inner_loop = CodeFor([CodePragma("UNROLL"), assign_valid_false], "MAX_NUM", iter_name="i")
+        # clear_valid_outer_loop = CodeFor(
+        #     [CodePragma("UNROLL"), clear_valid_inner_loop], "PE_NUM", iter_name="pe"
+        # )
+        # body.append(clear_valid_outer_loop)
+        body.append(CodeOther("memset(key_mem, 0, sizeof(key_mem));"))
 
         body.append(CodeComment("3. Main processing loop for aggregation across PEs"))
         end_flag_var = HLSVar("end_flag", HLSType(HLSBasicType.BOOL))
@@ -2412,6 +2414,7 @@ emconfig:
         header_guard = f"__GRAPHYFLOW_{top_func_name.upper()}_H__"
         code = f"#ifndef {header_guard}\n#define {header_guard}\n\n"
         code += "#include <hls_stream.h>\n#include <ap_fixed.h>\n#include <stdint.h>\n\n"
+        code += "#include <string.h>\n\n"
         code += f"#define PE_NUM {self.PE_NUM}\n"
         code += f"#define MAX_NUM {self.MAX_NUM}\n"
         code += f"#define L {self.L}\n\n"
