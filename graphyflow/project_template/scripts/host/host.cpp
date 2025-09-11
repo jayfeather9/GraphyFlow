@@ -27,8 +27,9 @@ int main(int argc, char **argv) {
     // 2. 在 FPGA 上运行 (调用新的通用执行器)
     std::cout << "\n--- Step 2: Running on FPGA ---" << std::endl;
     double total_kernel_time_sec = 0;
-    std::vector<int> fpga_distances =
-        run_fpga_kernel(xclbin_file, graph, start_node, total_kernel_time_sec);
+    int iter_count = 0;
+    std::vector<int> fpga_distances = run_fpga_kernel(
+        xclbin_file, graph, start_node, total_kernel_time_sec, iter_count);
 
     // 3. 在 Host CPU 上验证 (不变, 按你的要求保留)
     std::cout << "\n--- Step 3: Verifying on Host CPU ---" << std::endl;
@@ -60,7 +61,8 @@ int main(int argc, char **argv) {
     std::cout << "Total FPGA Kernel Execution Time: "
               << total_kernel_time_sec * 1000.0 << " ms" << std::endl;
     std::cout << "Total MTEPS (Edges / Total Time): "
-              << ((double)graph.num_edges) / total_kernel_time_sec / 1.0e6
+              << ((double)graph.num_edges * iter_count) /
+                     total_kernel_time_sec / 1.0e6
               << " MTEPS" << std::endl;
 
     return (error_count == 0) ? EXIT_SUCCESS : EXIT_FAILURE;

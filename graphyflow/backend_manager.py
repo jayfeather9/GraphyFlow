@@ -37,8 +37,8 @@ class BackendManager:
 
     def __init__(self):
         self.PE_NUM = 8
-        self.STREAM_DEPTH = 8
-        self.MAX_NUM = 16384  # For ReduceComponent key_mem size
+        self.STREAM_DEPTH = 4
+        self.MAX_NUM = 32768  # For ReduceComponent key_mem size
         self.L = 4  # For ReduceComponent buffer size
         # Mappings to store results of type analysis
         self.type_map: Dict[dftype.DfirType, HLSType] = {}
