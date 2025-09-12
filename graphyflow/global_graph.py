@@ -1,4 +1,5 @@
 from __future__ import annotations
+from abc import abstractmethod
 from typing import Callable, List, Optional, Dict
 from uuid import UUID
 import uuid as uuid_lib
@@ -33,6 +34,12 @@ class Node:
     def lambdas(self) -> List[Dict]:
         return self._lambda_funcs
 
+    @abstractmethod
+    def to_dfir(
+        self, input_type: dfir.DfirType, props: Tuple[Dict[str, Any], Dict[str, Any]]
+    ) -> dfir.ComponentCollection:
+        pass
+
     def __repr__(self) -> str:
         formatted_lambdas = "\n".join(format_lambda(lambda_func) for lambda_func in self._lambda_funcs)
         return f"Node(name={self.class_name}, preds={[node.class_name for node in self._pred_nodes]}, lambdas = {formatted_lambdas})"
@@ -45,9 +52,9 @@ class Inputer(Node):
 
     def to_dfir(
         self,
-        placeholder: List[dfir.DfirType],
+        input_type: dfir.DfirType,
         props: Tuple[Dict[str, Any], Dict[str, Any]],
-    ) -> dfir.DfirNode:
+    ) -> dfir.ComponentCollection:
         if isinstance(self.input_type, BasicNode):
             input_type = dfir.SpecialType("node")
         elif isinstance(self.input_type, BasicEdge):
@@ -72,9 +79,9 @@ class GetLength(Node):
         super().__init__()
         self.is_simple = True
 
-    def to_dfir(self, input_type: dfir.DfirType) -> dfir.DfirNode:
-        u_comp = dfir.UnaryOpComponent(dfir.UnaryOp.GET_LENGTH, input_type)
-        return dfir.ComponentCollection([u_comp], [u_comp.in_ports[0]], [u_comp.out_ports[0]])
+    # def to_dfir(self, input_type: dfir.DfirType) -> dfir.DfirNode:
+    #     u_comp = dfir.UnaryOpComponent(dfir.UnaryOp.GET_LENGTH, input_type)
+    #     return dfir.ComponentCollection([u_comp], [u_comp.in_ports[0]], [u_comp.out_ports[0]])
 
 
 class Filter(Node):
@@ -274,24 +281,24 @@ class ReduceBy(Node):
         return dfirs
 
 
-class Merge(Node):
-    def __init__(self):
-        super().__init__()
+# class Merge(Node):
+#     def __init__(self):
+#         super().__init__()
 
-    def to_dfir(
-        self, input_type: dfir.DfirType, props: Tuple[Dict[str, Any], Dict[str, Any]]
-    ) -> dfir.ComponentCollection:
-        pass
+#     def to_dfir(
+#         self, input_type: dfir.DfirType, props: Tuple[Dict[str, Any], Dict[str, Any]]
+#     ) -> dfir.ComponentCollection:
+#         pass
 
 
-class Append(Node):
-    def __init__(self):
-        super().__init__()
+# class Append(Node):
+#     def __init__(self):
+#         super().__init__()
 
-    def to_dfir(
-        self, input_type: dfir.DfirType, props: Tuple[Dict[str, Any], Dict[str, Any]]
-    ) -> dfir.ComponentCollection:
-        pass
+#     def to_dfir(
+#         self, input_type: dfir.DfirType, props: Tuple[Dict[str, Any], Dict[str, Any]]
+#     ) -> dfir.ComponentCollection:
+#         pass
 
 
 class GlobalGraph:
@@ -333,11 +340,11 @@ class GlobalGraph:
             cur_node=Inputer(input_type=(BasicNode(data_types) if type_ == "node" else BasicEdge(data_types)))
         )
 
-    def add_input(self, name: str, type_: str):
-        assert name not in self.input_names
-        self.input_names.append(name)
-        self.input_types[name] = type_
-        return self.pseudo_element(cur_node=Inputer(input_type=type_))
+    # def add_input(self, name: str, type_: str):
+    #     assert name not in self.input_names
+    #     self.input_names.append(name)
+    #     self.input_types[name] = type_
+    #     return self.pseudo_element(cur_node=Inputer(input_type=type_))
 
     def assign_node(self, node: Node):
         assert node.uuid not in self.nodes
@@ -356,7 +363,7 @@ class GlobalGraph:
         for attr_name, attr_types in attrs.items():
             datas._assign_successor(Updater(attr_name, attr_types))
 
-    def topo_sort_nodes(self) -> List[Node]:
+    def topo_sort_nodes(self) -> List[Tuple[UUID, Node]]:
         result = []
         waitings = list(self.nodes.items())
         while waitings:
@@ -368,18 +375,19 @@ class GlobalGraph:
             result.extend(new_ones)
         return result
 
-    def to_dfir(self) -> dfir.ComponentCollection:
+    def to_dfir(self) -> List[dfir.ComponentCollection]:
         nodes = self.topo_sort_nodes()
         node_dfirs = {}
         added_nodes = []
         for nid, n in nodes:
-            input_types = []
+            input_type = dfir.DfirType("Placeholder")
             if len(n.preds) > 0:
+                input_types: List[dfir.DfirType] = []
                 assert len(n.preds) == 1
                 input_types.extend(node_dfirs[n.preds[0].uuid].output_types)
                 assert len(input_types) == 1, f"{n.class_name} {input_types}"
-                input_types = input_types[0]
-            node_dfirs[nid] = n.to_dfir(input_types, (self.node_properties, self.edge_properties))
+                input_type = input_types[0]
+            node_dfirs[nid] = n.to_dfir(input_type, (self.node_properties, self.edge_properties))
             if len(n.preds) > 0:
                 node_dfirs[nid] = node_dfirs[n.preds[0].uuid].concat(
                     node_dfirs[nid],
@@ -410,7 +418,7 @@ class PseudoElement:
             self.graph.assign_node(cur_node)
 
     def __repr__(self) -> str:
-        return f"PseudoElement(cur_node={self.cur_node.class_name})"
+        return f"PseudoElement(cur_node={self.cur_node.class_name if self.cur_node else None})"
 
     def _assign_cur_node(self, cur_node: Node):
         assert self.cur_node is None
@@ -434,15 +442,15 @@ class PseudoElement:
     def reduce_by(self, **kvargs) -> PseudoElement:
         return self._assign_successor(ReduceBy(**kvargs))
 
-    def merge(self, other: PseudoElement) -> PseudoElement:
-        assert self.cur_node is not None and other.cur_node is not None
-        self.cur_node.set_pred_nodes([other.cur_node])
-        return self.graph.pseudo_element(cur_node=Merge())
+    # def merge(self, other: PseudoElement) -> PseudoElement:
+    #     assert self.cur_node is not None and other.cur_node is not None
+    #     self.cur_node.set_pred_nodes([other.cur_node])
+    #     return self.graph.pseudo_element(cur_node=Merge())
 
-    def append(self, other: PseudoElement) -> PseudoElement:
-        assert self.cur_node is not None and other.cur_node is not None
-        self.cur_node.set_pred_nodes([other.cur_node])
-        return self.graph.pseudo_element(cur_node=Append())
+    # def append(self, other: PseudoElement) -> PseudoElement:
+    #     assert self.cur_node is not None and other.cur_node is not None
+    #     self.cur_node.set_pred_nodes([other.cur_node])
+    #     return self.graph.pseudo_element(cur_node=Append())
 
     def to_tracer(self) -> Tracer:
         return Tracer(node_type="pseudo", pseudo_element=self)

@@ -43,8 +43,9 @@ def parse_components(text):
 
     component_texts = split_components_by_brackets(components_text)
     # print(("="*100 + "\n").join(component_texts))
+    get_group_1 = lambda m: m.group(1) if m else None
     component_matches = [
-        (re.match(r"(\w+)Component", comp).group(1), comp)
+        (get_group_1(re.match(r"(\w+)Component", comp)), comp)
         for comp in component_texts
         if re.match(r"(\w+)Component", comp)
     ]
@@ -52,6 +53,7 @@ def parse_components(text):
     for idx, (comp_type, comp_content) in enumerate(component_matches):
         # print(comp_type, comp_content)
         comp_id = f"comp_{idx}"
+        assert comp_type is not None
 
         component = {
             "id": comp_id,
@@ -98,7 +100,7 @@ def parse_components(text):
             port_num, port_name, port_type = port
             if port_num in port_to_component:
                 continue
-            print(port_num, port_name)
+            # print(port_num, port_name)
             component["ports"][port_num] = {
                 "name": port_name,
                 "type": port_type,

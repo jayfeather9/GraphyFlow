@@ -29,12 +29,14 @@ class PortType(Enum):
     def pluggable(self, other: PortType) -> bool:
         return self != other
 
-    def __eq__(self, other: PortType) -> bool:
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, PortType):
+            return NotImplemented
         return self.value == other.value
 
 
 class Port(DfirNode):
-    def __init__(self, name: str, parent: DfirNode) -> None:
+    def __init__(self, name: str, parent: Component) -> None:
         super().__init__()
         self.name = name
         self.unique_name = f"{self.name}_{self.readable_id}"
@@ -43,7 +45,9 @@ class Port(DfirNode):
         self.parent = parent
         self.connection = None
 
-    def __eq__(self, other: Port):
+    def __eq__(self, other: object):
+        if not isinstance(other, Port):
+            return NotImplemented
         return (
             self.unique_name == other.unique_name
             and str(self.parent) == str(other.parent)
@@ -59,17 +63,20 @@ class Port(DfirNode):
 
     @property
     def from_const(self) -> bool:
-        assert self.port_type == PortType.IN and self.connected
+        assert self.port_type == PortType.IN
+        assert self.connection is not None
         return isinstance(self.connection.parent, ConstantComponent)
 
     @property
     def from_const_val(self):
         assert self.from_const
+        assert self.connection is not None
+        assert isinstance(self.connection.parent, ConstantComponent)
         return self.connection.parent.value
 
     def copy(self, copy_comp: CopyComponent) -> Port:
         assert self.port_type == PortType.OUT
-        assert self.connected
+        assert self.connection is not None
         assert self.data_type == copy_comp.input_type
         assert all(not p.connected for p in copy_comp.ports)
         original_connection = self.connection
@@ -92,7 +99,7 @@ class Port(DfirNode):
         my_repr = f"Port[{self.readable_id}] {self.name} ({self.data_type})"
         direction = "=>" if self.port_type == PortType.OUT else "<="
         tgt = self.connection
-        if self.connection is None:
+        if tgt is None:
             return my_repr
         else:
             return f"{my_repr} {direction} [{tgt.readable_id}] {tgt.name} ({tgt.data_type})"
@@ -116,7 +123,8 @@ class ComponentCollection(DfirNode):
 
     @property
     def output_types(self) -> List[DfirType]:
-        return [p.data_type for p in self.outputs]
+        assert all(p.data_type is not None for p in self.outputs)
+        return [p.data_type for p in self.outputs if p.data_type is not None]
 
     def added(self, component: Component) -> bool:
         return component.readable_id in [c.readable_id for c in self.components]
@@ -184,6 +192,7 @@ class ComponentCollection(DfirNode):
                 assert port in (self.inputs + self.outputs)
                 return True
             else:
+                assert port.connection is not None
                 return port.connection.parent in result
 
         def check_reduce(comp: Component) -> bool:
@@ -206,8 +215,8 @@ class ComponentCollection(DfirNode):
 class Component(DfirNode):
     def __init__(
         self,
-        input_type: DfirType,
-        output_type: DfirType,
+        input_type: Optional[DfirType],
+        output_type: Optional[DfirType],
         ports: List[str],
         parallel: bool = False,
         specific_port_types: Optional[Dict[str, DfirType]] = None,
@@ -254,19 +263,15 @@ class Component(DfirNode):
                 ), f"{port.data_type} != {self.ports[idx].data_type}"
                 self.ports[idx].connect(port)
 
-    def additional_info(self) -> str:
-        return ""
+    def additional_info(self) -> List[str]:
+        return [""]
 
     @property
     def name(self) -> str:
         return f"{self.__class__.__name__[:5]}_{self.readable_id}"
 
-    def to_hls(self) -> hls.HLSFunction:
-        assert False, f"Abstract method to_hls() should be implemented for {self.__class__.__name__}"
-
     def __repr__(self) -> str:
         add_info = self.additional_info()
-        add_info = add_info if isinstance(add_info, list) else [add_info]
         add_info = "\n  ".join(add_info)
         add_info = "\n  " + add_info if add_info else ""
         return (
@@ -296,8 +301,8 @@ class ConstantComponent(Component):
         super().__init__(None, data_type, ["o_0"], parallel=isinstance(data_type, ArrayType))
         self.value = value
 
-    def additional_info(self) -> str:
-        return f"value: {self.value}"
+    def additional_info(self) -> List[str]:
+        return [f"value: {self.value}"]
 
 
 class CopyComponent(Component):
@@ -315,7 +320,9 @@ class GatherComponent(Component):
             ports.append(f"i_{i}")
             specific_port_types[f"i_{i}"] = input_types[i]
             if parallel:
-                output_types.append(input_types[i].type_)
+                cur_input_type = input_types[i]
+                assert isinstance(cur_input_type, ArrayType)
+                output_types.append(cur_input_type.type_)
             else:
                 output_types.append(input_types[i])
         output_type = TupleType(output_types)
@@ -335,6 +342,7 @@ class ScatterComponent(Component):
             real_input_type = input_type.type_
             parallel = True
         ports = ["i_0"]
+        assert isinstance(real_input_type, TupleType)
         for i in range(len(real_input_type.types)):
             ports.append(f"o_{i}")
         # output_type = input_type just for assign
@@ -420,8 +428,8 @@ class BinOpComponent(Component):
         super().__init__(input_type, output_type, ["i_0", "i_1", "o_0"], parallel)
         self.op = op
 
-    def additional_info(self) -> str:
-        return f"op: {self.op}"
+    def additional_info(self) -> List[str]:
+        return [f"op: {self.op}"]
 
 
 class UnaryOp(Enum):
@@ -502,11 +510,11 @@ class UnaryOpComponent(Component):
         self.op = op
         self.select_index = select_index
 
-    def additional_info(self) -> str:
+    def additional_info(self) -> List[str]:
         if self.op == UnaryOp.SELECT:
             return [f"op: {self.op}", f"select_index: {self.select_index}"]
         else:
-            return f"op: {self.op}"
+            return [f"op: {self.op}"]
 
 
 class ConditionalComponent(Component):
@@ -570,6 +578,72 @@ class ReduceComponent(Component):
                 "o_reduce_unit_start_1": accumulated_type,
             },
         )
+
+
+class FusedOpComponent(Component):
+    """
+    A container that wraps a complex subgraph (ComponentCollection) into a single component.
+    It exposes the inputs and outputs of the subgraph as its own ports.
+    The subgraph is restricted to contain only pure computational components.
+    """
+
+    def __init__(self, name: str, sub_graph: ComponentCollection) -> None:
+        self.sub_graph = sub_graph
+
+        # --- Validation Step ---
+        # Before creating the component, validate the types of components within the subgraph.
+        # This ensures that a FusedOpComponent only contains pure, stateless computational logic.
+        allowed_base_types = (
+            ScatterComponent,
+            GatherComponent,
+            ConstantComponent,
+            CopyComponent,
+            BinOpComponent,
+            UnusedEndMarkerComponent,
+        )
+        disallowed_unary_ops = (UnaryOp.SELECT, UnaryOp.GET_ATTR, UnaryOp.GET_LENGTH)
+        for comp in self.sub_graph.components:
+            if isinstance(comp, UnaryOpComponent):
+                if comp.op in disallowed_unary_ops:
+                    raise TypeError(
+                        f"FusedOpComponent cannot contain a UnaryOpComponent with the operation '{comp.op.name}'. "
+                        "Only pure arithmetic or casting operations are allowed."
+                    )
+            elif not isinstance(comp, allowed_base_types):
+                raise TypeError(
+                    f"Component type '{type(comp).__name__}' is not allowed inside a FusedOpComponent. "
+                    "Allowed types are: Scatter, Gather, Constant, Copy, BinOp, UnusedEndMarker, and specific UnaryOps."
+                )
+
+        # --- Port Generation Step ---
+        ports = []
+        specific_port_types = {}
+
+        for i, in_port in enumerate(sub_graph.inputs):
+            port_name = f"i_{i}"
+            ports.append(port_name)
+            specific_port_types[port_name] = in_port.data_type
+
+        for i, out_port in enumerate(sub_graph.outputs):
+            port_name = f"o_{i}"
+            ports.append(port_name)
+            specific_port_types[port_name] = out_port.data_type
+
+        super().__init__(
+            input_type=None,
+            output_type=None,
+            ports=ports,
+            parallel=False,
+            specific_port_types=specific_port_types,
+        )
+        self._custom_name = name
+
+    @property
+    def name(self) -> str:
+        return f"{self._custom_name}_{self.readable_id}"
+
+    def additional_info(self) -> List[str]:
+        return [f"sub_graph_components: {[c.name for c in self.sub_graph.components]}"]
 
 
 class PlaceholderComponent(Component):

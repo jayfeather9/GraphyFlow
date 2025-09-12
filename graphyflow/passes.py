@@ -43,6 +43,22 @@ def delete_placeholder_components_pass(
     return comp_col
 
 
+def simplify_reduce_comp_pass(
+    comp_col: dfir.ComponentCollection,
+) -> dfir.ComponentCollection:
+    """Make reduce comp satisfy the following conditions:
+    1. All the wrapped data types are extracted to basic types unless
+       they are nodes or edges and is only used to pass as part of result.
+    2. The key & transform is simplified to only 1 memory access component
+       and 1 fused calculation component.
+    """
+    for comp in comp_col.components:
+        if isinstance(comp, dfir.ReduceComponent):
+            pass
+    # tmp
+    return comp_col
+
+
 if __name__ == "__main__":
     from graphyflow.global_graph import *
     from graphyflow.visualize_ir import visualize_components
@@ -73,14 +89,14 @@ if __name__ == "__main__":
     dot = visualize_components(str(dfirs[0]))
     dot.render("component_graph", view=False, format="png")
     # print(dfirs[0].topo_sort())
-    import graphyflow.hls_utils as hls
+    # import graphyflow.hls_utils as hls
 
-    header, source = hls.global_hls_config.generate_hls_code(g, dfirs[0])
-    import os
+    # header, source = hls.global_hls_config.generate_hls_code(g, dfirs[0])
+    # import os
 
-    if not os.path.exists("output"):
-        os.makedirs("output")
-    with open("output/graphyflow.h", "w") as f:
-        f.write(header)
-    with open("output/graphyflow.cpp", "w") as f:
-        f.write(source)
+    # if not os.path.exists("output"):
+    #     os.makedirs("output")
+    # with open("output/graphyflow.h", "w") as f:
+    #     f.write(header)
+    # with open("output/graphyflow.cpp", "w") as f:
+    #     f.write(source)
