@@ -12,10 +12,10 @@ GraphyFlow employs a multi-stage compilation architecture to transform a high-le
 
 ```mermaid
 graph TD
-    A[<b>Step 1: Algorithm Definition</b><br/>User writes a graph algorithm in Python using the GraphyFlow API<br/><i>(e.g., tests/new_dist.py)</i>] --> B{<b>Step 2: Frontend Compilation</b><br/>The Python API builds a high-level graph representation<br/><i>(graphyflow/global_graph.py)</i>};
-    B --> C[<b>Step 3: DFG-IR Generation</b><br/>The graph is converted into a<br/>Dataflow-Graph Intermediate Representation<br/><i>(graphyflow/dataflow_ir.py)</i>];
-    C --> D{<b>Step 4: Backend Code Generation</b><br/>The Backend Manager traverses the DFG-IR to generate<br/>HLS C++, Host C++, and build scripts<br/><i>(graphyflow/backend_manager.py)</i>};
-    D --> E[<b>Step 5: Project Assembly</b><br/>All generated and static template files<br/>are assembled into a complete Vitis project<br/><i>(graphyflow/project_generator.py)</i>];
+    A["<b>Frontend API</b><br/>High-level graph algorithm written in Python<br>using functional operators like <i>map</i>, <i>filter</i>, and <i>reduce_by</i>."] --> B;
+    B{"<b>Dataflow IR (DFIR)</b><br/>An intermediate representation that captures the<br>algorithm's dataflow, decoupling it from<br>the hardware architecture."} --> C;
+    C["<b>Backend Compiler</b><br/>Systematically transforms the DFIR into deeply<br>pipelined, streaming HLS C++ for the kernel<br>and generates the host application."] --> D;
+    D(("<b>Generated Vitis Project</b><br/>A complete, self-verifying project containing<br>kernel/host source (C++), build scripts,<br>and a CPU golden model for verification."));
 ```
 
 ## 3\. Prerequisites

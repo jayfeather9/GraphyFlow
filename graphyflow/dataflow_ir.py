@@ -4,7 +4,6 @@ import copy
 from enum import Enum
 from typing import List, Optional, Union, Dict, Any, Tuple
 from graphyflow.dataflow_ir_datatype import *
-import graphyflow.hls_utils as hls
 
 
 class DfirNode:
@@ -265,21 +264,6 @@ class Component(DfirNode):
     def to_hls(self) -> hls.HLSFunction:
         assert False, f"Abstract method to_hls() should be implemented for {self.__class__.__name__}"
 
-    def get_hls_function(
-        self,
-        code_in_loop: List[str],
-        code_before_loop: Optional[List[str]] = [],
-        code_after_loop: Optional[List[str]] = [],
-        name_tail: Optional[str] = None,
-    ) -> hls.HLSFunction:
-        return hls.HLSFunction(
-            name=self.name + (f"_{name_tail}" if name_tail else ""),
-            comp=self,
-            code_in_loop=code_in_loop,
-            code_before_loop=code_before_loop,
-            code_after_loop=code_after_loop,
-        )
-
     def __repr__(self) -> str:
         add_info = self.additional_info()
         add_info = add_info if isinstance(add_info, list) else [add_info]
@@ -306,9 +290,6 @@ class IOComponent(Component):
         else:
             super().__init__(data_type, None, ["i_0"])
 
-    def to_hls(self) -> hls.HLSFunction:
-        assert False, "IOComponent should not be used in HLS"
-
 
 class ConstantComponent(Component):
     def __init__(self, data_type: DfirType, value: Any) -> None:
@@ -318,24 +299,10 @@ class ConstantComponent(Component):
     def additional_info(self) -> str:
         return f"value: {self.value}"
 
-    def to_hls(self) -> hls.HLSFunction:
-        assert False, "ConstantComponent should not be used in HLS"
-
 
 class CopyComponent(Component):
     def __init__(self, input_type: DfirType) -> None:
         super().__init__(input_type, input_type, ["i_0", "o_0", "o_1"])
-
-    def to_hls(self) -> hls.HLSFunction:
-        code_in_loop = [
-            r"#type:i_0# copy_src = #read:i_0#;",
-            r"bool #end_flag_val# = copy_src.end_flag;",
-            # r"o_0.write(copy_src);",
-            # r"o_1.write(copy_src);",
-            r"#write_notrans:o_0,copy_src#",
-            r"#write_notrans:o_1,copy_src#",
-        ]
-        return self.get_hls_function(code_in_loop)
 
 
 class GatherComponent(Component):
@@ -356,25 +323,6 @@ class GatherComponent(Component):
             output_type = ArrayType(output_type)
         ports.append("o_0")
         super().__init__(output_type, output_type, ports, parallel, specific_port_types)
-
-    def to_hls(self) -> hls.HLSFunction:
-        code_in_loop = ["bool #end_flag_val# = false;"]
-        for i in range(len(self.in_ports)):
-            code_in_loop.extend(
-                [
-                    f"#type:{self.in_ports[i].name}# gather_src_{i} = #read:i_{i}#;",
-                    f"#end_flag_val# |= gather_src_{i}.end_flag;",
-                    f"#peel:{self.in_ports[i].name},gather_src_{i},real_gather_src_{i}#",
-                ]
-            )
-        code_in_loop += [
-            r"#type:o_0# gather_result = {"
-            + ", ".join(f"real_gather_src_{i}" for i in range(len(self.in_ports)))
-            + ", #end_flag_val#"
-            + r"};",
-            r"#write_notrans:o_0,gather_result#",
-        ]
-        return self.get_hls_function(code_in_loop)
 
 
 class ScatterComponent(Component):
@@ -400,14 +348,6 @@ class ScatterComponent(Component):
                 for i, type_ in enumerate(real_input_type.types)
             },
         )
-
-    def to_hls(self) -> hls.HLSFunction:
-        code_in_loop = []
-        code_in_loop.append(r"#type:i_0# scatter_src = #read:i_0#;")
-        code_in_loop.append(r"bool #end_flag_val# = scatter_src.end_flag;")
-        for i in range(len(self.out_ports)):
-            code_in_loop.append(f"#write:o_{i},scatter_src.ele_{i}#")
-        return self.get_hls_function(code_in_loop)
 
 
 class BinOp(Enum):
@@ -482,16 +422,6 @@ class BinOpComponent(Component):
 
     def additional_info(self) -> str:
         return f"op: {self.op}"
-
-    def to_hls(self) -> hls.HLSFunction:
-        code_in_loop = [
-            r"#type:i_0# binop_src_0 = #read:i_0#;",
-            r"#type:i_1# binop_src_1 = #read:i_1#;",
-            r"bool #end_flag_val# = binop_src_0.end_flag | binop_src_1.end_flag;",
-            f"#type_inner:o_0# binop_out = {self.op.gen_repr('binop_src_0#may_ele:i_0#', 'binop_src_1#may_ele:i_1#')};",
-            r"#write:o_0,binop_out#",
-        ]
-        return self.get_hls_function(code_in_loop)
 
 
 class UnaryOp(Enum):
@@ -578,38 +508,6 @@ class UnaryOpComponent(Component):
         else:
             return f"op: {self.op}"
 
-    def to_hls(self) -> hls.HLSFunction:
-        if self.op == UnaryOp.GET_LENGTH:
-            code_before_loop = [
-                r"uint32_t length = 0;",
-            ]
-            code_in_loop = [
-                r"#read:i_0#;",
-                r"length++;",
-            ]
-            code_after_loop = [
-                # r"#output_length# = 1;",
-                r"#write:o_0,length#",
-            ]
-            return self.get_hls_function(code_in_loop, code_before_loop, code_after_loop)
-        else:
-            trans_dict = {
-                UnaryOp.NOT: "{!unary_src#may_ele:i_0#}",
-                UnaryOp.NEG: "{-unary_src#may_ele:i_0#}",
-                UnaryOp.CAST_BOOL: "{(bool)(unary_src#may_ele:i_0#)}",
-                UnaryOp.CAST_INT: "{(int32_t)(unary_src#may_ele:i_0#)}",
-                UnaryOp.CAST_FLOAT: "{(ap_fixed<32, 16>)(unary_src#may_ele:i_0#)}",
-                UnaryOp.SELECT: f"unary_src.ele_{self.select_index}",
-                UnaryOp.GET_ATTR: f"unary_src.{self.select_index}",
-            }
-            code_in_loop = [
-                f"#type:i_0# unary_src = #read:i_0#;",
-                f"bool #end_flag_val# = unary_src.end_flag;",
-                f"#type_inner:o_0# unary_out = {trans_dict[self.op]};",
-                f"#write:o_0,unary_out#",
-            ]
-            return self.get_hls_function(code_in_loop)
-
 
 class ConditionalComponent(Component):
     def __init__(self, input_type: DfirType) -> None:
@@ -629,18 +527,6 @@ class ConditionalComponent(Component):
             {"i_cond": cond_type},
         )
 
-    def to_hls(self) -> hls.HLSFunction:
-        code_in_loop = [
-            r"#type:i_data# cond_data = #read:i_data#;",
-            r"#type:i_cond# cond = #read:i_cond#;",
-            r"bool #end_flag_val# = cond_data.end_flag | cond.end_flag;",
-            r"#peel:i_data,cond_data,real_cond_data#",
-            r"#peel:i_cond,cond,real_cond#",
-            r"#opt_type:o_0# cond_result = {real_cond_data, real_cond};",
-            r"#write:o_0,cond_result#",
-        ]
-        return self.get_hls_function(code_in_loop)
-
 
 class CollectComponent(Component):
     def __init__(self, input_type: DfirType) -> None:
@@ -648,19 +534,6 @@ class CollectComponent(Component):
         assert isinstance(input_type.type_, OptionalType)
         output_type = ArrayType(input_type.type_.type_)
         super().__init__(input_type, output_type, ["i_0", "o_0"], parallel=True)
-
-    def to_hls(self) -> hls.HLSFunction:
-        # code_before_loop = [
-        #     r"#output_length# = 0;",
-        # ]
-        code_in_loop = [
-            r"#type:i_0# collect_src = #read:i_0#;",
-            r"bool #end_flag_val# = collect_src.end_flag;",
-            r"if (collect_src.valid.ele || #end_flag_val#) {",
-            r"    #write:o_0,collect_src.data#",
-            r"}",
-        ]
-        return self.get_hls_function(code_in_loop)
 
 
 class ReduceComponent(Component):
@@ -698,160 +571,12 @@ class ReduceComponent(Component):
             },
         )
 
-    def to_hls_list(
-        self,
-        func_key_name: str,
-        func_transform_name: str,
-        func_unit_name: str,
-    ) -> List[hls.HLSFunction]:
-        # Generate 1st func for key & transform pre-process
-        code_in_loop = [
-            r"#type:i_0# reduce_src = #read:i_0#;",
-            r"bool #end_flag_val# = reduce_src.end_flag;",
-            # f'hls::stream<#type:i_0#> reduce_key_in_stream("reduce_key_in_stream");',
-            # r"#pragma HLS STREAM variable=reduce_key_in_stream depth=4",
-            # f'hls::stream<#type:i_0#> reduce_transform_in_stream("reduce_transform_in_stream");',
-            # r"#pragma HLS STREAM variable=reduce_transform_in_stream depth=4",
-            # r"reduce_src.end_flag = true;",
-            # f"reduce_key_in_stream.write(reduce_src);",
-            # f"reduce_transform_in_stream.write(reduce_src);",
-            # f'hls::stream<#type:i_reduce_key_out#> reduce_key_out_stream("reduce_key_out_stream");',
-            # r"#pragma HLS STREAM variable=reduce_key_out_stream depth=4",
-            # f'hls::stream<#type:i_reduce_transform_out#> reduce_transform_out_stream("reduce_transform_out_stream");',
-            # r"#pragma HLS STREAM variable=reduce_transform_out_stream depth=4",
-            f"#type:i_reduce_key_out# reduce_key_out;",
-            f"#type:i_reduce_transform_out# reduce_transform_out;",
-            f"#call_once:{func_key_name},reduce_src,reduce_key_out#;",
-            f"#call_once:{func_transform_name},reduce_src,reduce_transform_out#;",
-            # r"#type:i_reduce_key_out# reduce_key_out = reduce_key_out_stream.read();",
-            r"reduce_key_out.end_flag = #end_flag_val#;",
-            r"intermediate_key.write(reduce_key_out);",
-            # r"#type:i_reduce_transform_out# reduce_transform_out = reduce_transform_out_stream.read();",
-            r"reduce_transform_out.end_flag = #end_flag_val#;",
-            r"intermediate_transform.write(reduce_transform_out);",
-        ]
-        stage_1_func = self.get_hls_function(code_in_loop, name_tail="pre_process")
-
-        # Generate 2nd func for unit-reduce
-        code_before_loop = [
-            r"#reduce_key_struct# key_mem[MAX_NUM];",
-            # r"#pragma HLS ARRAY_PARTITION variable=key_mem dim=0 complete",
-            r"#pragma HLS BIND_STORAGE variable = key_mem type = RAM_2P impl = URAM",
-            r"#pragma HLS dependence variable=key_mem inter false",
-            r"#reduce_key_struct# key_buffer[L + 1];",
-            r"#pragma HLS ARRAY_PARTITION variable=key_buffer dim=0 complete",
-            r"uint32_t i_buffer[L + 1];",
-            r"#pragma HLS ARRAY_PARTITION variable=i_buffer dim=0 complete",
-            r"for (int i_clear_buffer = 0; i_clear_buffer < L + 1; i_clear_buffer++) {",
-            r"#pragma HLS UNROLL",
-            r"    i_buffer[i_clear_buffer] = MAX_NUM + 1;",
-            r"}",
-            # r"#pragma HLS ARRAY_PARTITION variable=key_mem complete dim=0",
-            r"CLEAR_REDUCE_VALID: for (int i_reduce_clear = 0; i_reduce_clear < MAX_NUM; i_reduce_clear++) {",
-            r"#pragma HLS UNROLL",
-            r"    key_mem[i_reduce_clear].valid.ele = 0;",
-            r"}",
-        ]
-        code_in_loop = [
-            # the reduce_key_struct is {key, valid}, the loop uses one loop ahead
-            # to clear the valid bit to 0 with pipeline
-            f"#type:i_reduce_key_out# reduce_key_out = #read:intermediate_key#;",
-            f"#type:i_reduce_transform_out# reduce_transform_out = #read:intermediate_transform#;",
-            r"bool #end_flag_val# = reduce_key_out.end_flag | reduce_transform_out.end_flag;",
-            # r"bool merged = false;",
-            r"#peel:i_reduce_key_out,reduce_key_out,real_reduce_key_out#",
-            r"#peel:i_reduce_transform_out,reduce_transform_out,real_reduce_transform_out#",
-            # r"SCAN_BRAM_INTER_LOOP: for (int i_in_reduce = 0; i_in_reduce < MAX_NUM; i_in_reduce++) {",
-            # r"#pragma HLS PIPELINE",
-            # r"    #reduce_key_struct# cur_ele = key_mem[i_in_reduce];",
-            # r"    if (!merged && !cur_ele.valid.ele) {",
-            # r"        key_mem[i_in_reduce].valid.ele = 1;",
-            # r"        key_mem[i_in_reduce].key#may_ele:i_reduce_key_out# = real_reduce_key_out;",
-            # r"        key_mem[i_in_reduce].data#may_ele:i_reduce_transform_out# = real_reduce_transform_out;",
-            # r"        merged = true;",
-            # r"    } else if (!merged && cur_ele.valid.ele && #cmpeq:i_reduce_key_out,cur_ele.key,real_reduce_key_out#) {",
-            # # new a stream to call the reduce unit
-            # '        hls::stream<#type:o_reduce_unit_start_0#> reduce_unit_stream_0("reduce_unit_stream_0");',
-            # r"#pragma HLS STREAM variable=reduce_unit_stream_0 depth=4",
-            # '        hls::stream<#type:o_reduce_unit_start_1#> reduce_unit_stream_1("reduce_unit_stream_1");',
-            # r"#pragma HLS STREAM variable=reduce_unit_stream_1 depth=4",
-            # '        hls::stream<#type:i_reduce_unit_end#> reduce_unit_stream_out("reduce_unit_stream_out");',
-            # r"#pragma HLS STREAM variable=reduce_unit_stream_out depth=4",
-            # r"        #write:reduce_unit_stream_0,cur_ele.data#may_ele:i_reduce_transform_out#,#type:i_reduce_transform_out##",
-            # r"        #write:reduce_unit_stream_1,real_reduce_transform_out,#type:i_reduce_transform_out##",
-            # f"        #call_once:{func_unit_name},reduce_unit_stream_0,reduce_unit_stream_1,reduce_unit_stream_out#;",
-            # r"        #type:i_reduce_unit_end# reduce_unit_out = #read:reduce_unit_stream_out#;",
-            # r"        #peel:i_reduce_unit_end,reduce_unit_out,real_reduce_unit_out#",
-            # r"        key_mem[i_in_reduce].data#may_ele:i_reduce_transform_out# = real_reduce_unit_out;",
-            # r"        merged = true;",
-            # r"    }",
-            r"#reduce_key_struct# old_ele = key_mem[real_reduce_key_out#may_ele:i_reduce_key_out#];",
-            r"for (int i_search_buffer = 0; i_search_buffer < L + 1; i_search_buffer++) {",
-            r"#pragma HLS UNROLL",
-            r"    {",
-            r"        if (real_reduce_key_out#may_ele:i_reduce_key_out# == i_buffer[i_search_buffer]) old_ele = key_buffer[i_search_buffer];",
-            r"    }",
-            r"}",
-            r"for (int i_move_buffer = 0; i_move_buffer < L; i_move_buffer++) {",
-            r"#pragma HLS UNROLL",
-            r"    {",
-            r"        i_buffer[i_move_buffer] = i_buffer[i_move_buffer + 1];",
-            r"        key_buffer[i_move_buffer] = key_buffer[i_move_buffer + 1];",
-            r"    }",
-            r"}",
-            r"#reduce_key_struct# new_ele;",
-            r"if (!old_ele.valid.ele) {",
-            r"    new_ele.valid.ele = 1;",
-            r"    new_ele.data = real_reduce_transform_out;",
-            r"} else {",
-            # '    hls::stream<#type:o_reduce_unit_start_0#> reduce_unit_stream_0("reduce_unit_stream_0");',
-            # r"#pragma HLS STREAM variable=reduce_unit_stream_0 depth=1",
-            # '    hls::stream<#type:o_reduce_unit_start_1#> reduce_unit_stream_1("reduce_unit_stream_1");',
-            # r"#pragma HLS STREAM variable=reduce_unit_stream_1 depth=1",
-            # '    hls::stream<#type:i_reduce_unit_end#> reduce_unit_stream_out("reduce_unit_stream_out");',
-            # r"#pragma HLS STREAM variable=reduce_unit_stream_out depth=1",
-            # r"    #write:reduce_unit_stream_0,old_ele.data,#type:i_reduce_transform_out##",
-            # r"    #write:reduce_unit_stream_1,real_reduce_transform_out,#type:i_reduce_transform_out##",
-            r"    #write_nostream:old_ele_data,old_ele.data,#type:i_reduce_transform_out##",
-            r"    #write_nostream:new_ele_data,real_reduce_transform_out,#type:i_reduce_transform_out##",
-            r"    #type:i_reduce_unit_end# reduce_unit_out;",
-            f"    #call_once:{func_unit_name},old_ele_data,new_ele_data,reduce_unit_out#;",
-            # r"    #type:i_reduce_unit_end# reduce_unit_out = #read:reduce_unit_stream_out#;",
-            r"    #peel:i_reduce_unit_end,reduce_unit_out,real_reduce_unit_out#",
-            r"    new_ele.data = real_reduce_unit_out;",
-            r"}",
-            r"key_mem[real_reduce_key_out#may_ele:i_reduce_key_out#] = new_ele;",
-            r"key_buffer[L] = new_ele;",
-            r"i_buffer[L] = real_reduce_key_out#may_ele:i_reduce_key_out#;",
-        ]
-        code_after_loop = [
-            # r"#output_length# = 0;",
-            r"WRITE_KEY_MEM_LOOP: for (int i_write_key_mem = 0; i_write_key_mem < MAX_NUM; i_write_key_mem++) {",
-            r"#pragma HLS PIPELINE",
-            r"    if (key_mem[i_write_key_mem].valid.ele) {",
-            r"        #write_noend:o_0,key_mem[i_write_key_mem].data#may_ele:o_0##",
-            # r"        #output_length#++;",
-            r"    }",
-            r"}",
-            r"#write:o_0,key_mem[0].data#may_ele:o_0##",
-        ]
-        stage_2_func = self.get_hls_function(
-            code_in_loop, code_before_loop, code_after_loop, name_tail="unit_reduce"
-        )
-        return [stage_1_func, stage_2_func]
-
 
 class PlaceholderComponent(Component):
     def __init__(self, data_type: DfirType) -> None:
         super().__init__(data_type, data_type, ["i_0", "o_0"])
 
-    def to_hls(self) -> hls.HLSFunction:
-        assert False, "PlaceholderComponent should not be used in HLS"
-
 
 class UnusedEndMarkerComponent(Component):
     def __init__(self, input_type: DfirType) -> None:
         super().__init__(input_type, None, ["i_0"])
-
-    def to_hls(self) -> hls.HLSFunction:
-        assert False, "UnusedEndMarkerComponent should not be used in HLS"
