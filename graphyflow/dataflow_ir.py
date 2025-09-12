@@ -646,6 +646,108 @@ class FusedOpComponent(Component):
         return [f"sub_graph_components: {[c.name for c in self.sub_graph.components]}"]
 
 
+class MemoryReadComponent(Component):
+    """
+    Represents a specialized memory read interface.
+    It takes a list of access patterns to read sub-elements from a base 'node' or 'edge' object,
+    retrieved via a base ID. It builds an internal access tree and exposes each requested
+    sub-element as a dedicated output port. This component does not validate the access
+    paths against any schema; it assumes the provided paths and output types are correct.
+    """
+
+    def __init__(
+        self,
+        access_pattern: List[Tuple[str, List[Union[str, int]]]],
+        output_types: Dict[str, DfirType],
+        base_id_type: DfirType = IntType(),
+        parallel: bool = False,
+    ) -> None:
+        """
+        Initializes the MemoryReadComponent.
+
+        Args:
+            access_pattern: A list describing the data to be read. Each element is a tuple
+                            containing the base type ('node' or 'edge') and a list
+                            representing the access path (attributes or indices).
+                            Example: [("node", ["id"]), ("edge", ["src", "pr"])]
+            output_types: A dictionary mapping generated output port names to their DfirTypes.
+                          The key must match the port name generated from the access_pattern.
+                          Example: {"o_node_id": IntType(), "o_edge_src_pr": FloatType()}
+            base_id_type: The DFIR type of the input base ID. Defaults to IntType.
+            parallel: Boolean indicating if this is a parallel (batch) read operation.
+        """
+        self.access_pattern = access_pattern
+        self.access_tree = self._build_access_tree()
+        self.pattern_to_pname = {}
+
+        ports = []
+        specific_port_types = {}
+
+        # Dynamically generate an output port for each item in the access pattern.
+        for base_type, path in self.access_pattern:
+            # Create a sanitized, unique name for the output port.
+            # e.g., ("edge", ["weight_tuple", 1]) -> "o_edge_weight_tuple_1"
+            path_str = "_".join(map(str, path))
+            port_name = f"o_{base_type}_{path_str}"
+            ports.append(port_name)
+            self.pattern_to_pname[(base_type, tuple(path))] = port_name
+
+            # Check if the user provided a type for this generated port.
+            if port_name not in output_types:
+                raise ValueError(
+                    f"The 'output_types' dictionary is missing an entry for the generated port '{port_name}'. "
+                    f"Please provide a DfirType for every access pattern."
+                )
+
+            # Assign the specified type, wrapping in ArrayType if parallel.
+            data_type = output_types[port_name]
+            specific_port_types[port_name] = ArrayType(data_type) if parallel else data_type
+
+        super().__init__(
+            input_type=None,
+            output_type=None,
+            ports=ports,
+            parallel=parallel,
+            specific_port_types=specific_port_types,
+        )
+
+    def _build_access_tree(self) -> Dict:
+        """
+        Processes the flat access_pattern list into a nested dictionary (tree)
+        to represent the hierarchical access structure.
+        """
+        tree = {}
+        for base_type, path in self.access_pattern:
+            if base_type not in ["node", "edge"]:
+                raise ValueError(
+                    f"Base type in access pattern must be 'node' or 'edge', but got '{base_type}'."
+                )
+            current_level = tree.setdefault(base_type, {})
+            for key in path:
+                current_level = current_level.setdefault(key, {})
+        return tree
+
+    def visualize_access_tree(self) -> None:
+        """
+        Prints a human-readable visualization of the internal access tree to the console.
+        """
+        print("--- MemoryReadComponent Access Tree ---")
+
+        def _print_recursive(node: Dict, prefix: str):
+            sorted_items = sorted(node.items(), key=lambda x: str(x[0]))
+            for i, (key, sub_node) in enumerate(sorted_items):
+                connector = "└── " if i == len(sorted_items) - 1 else "├── "
+                print(f"{prefix}{connector}{key}")
+                new_prefix = prefix + ("    " if i == len(sorted_items) - 1 else "│   ")
+                _print_recursive(sub_node, new_prefix)
+
+        _print_recursive(self.access_tree, "")
+        print("-------------------------------------")
+
+    def additional_info(self) -> str:
+        return [f"read_paths: {len(self.access_pattern)}"]
+
+
 class PlaceholderComponent(Component):
     def __init__(self, data_type: DfirType) -> None:
         super().__init__(data_type, data_type, ["i_0", "o_0"])
@@ -654,3 +756,88 @@ class PlaceholderComponent(Component):
 class UnusedEndMarkerComponent(Component):
     def __init__(self, input_type: DfirType) -> None:
         super().__init__(input_type, None, ["i_0"])
+
+
+if __name__ == "__main__":
+    print("--- Running Tests for Custom DFIR Components ---")
+
+    # --- Test Case 1: MemoryReadComponent ---
+    # This test focuses on the access tree generation and visualization.
+    print("\n[1] Testing MemoryReadComponent...")
+
+    # Define a sample access pattern as per your specification.
+    mem_access_pattern = [
+        ("node", ["id"]),
+        ("edge", ["src", "pr"]),
+        ("edge", ["weight_tuple", 1]),
+        ("edge", ["src", "id"]),  # Add another nested access for a richer tree
+    ]
+
+    # Define the necessary output types for the ports that will be generated.
+    # The names must match the auto-generated port names.
+    mem_output_types = {
+        "o_node_id": IntType(),
+        "o_edge_src_pr": FloatType(),
+        "o_edge_weight_tuple_1": FloatType(),
+        "o_edge_src_id": IntType(),
+    }
+
+    try:
+        # Create an instance of the component.
+        mem_read_comp = MemoryReadComponent(access_pattern=mem_access_pattern, output_types=mem_output_types)
+
+        print("Successfully created MemoryReadComponent instance:")
+        print(mem_read_comp)
+
+        # Call the visualization method to test the tree printing.
+        mem_read_comp.visualize_access_tree()
+
+    except Exception as e:
+        print(f"An error occurred during MemoryReadComponent test: {e}")
+
+    # --- Test Case 2: FusedOpComponent ---
+    # This test verifies the creation and validation of the FusedOpComponent.
+    print("\n[2] Testing FusedOpComponent...")
+
+    try:
+        # 1. Create a simple valid subgraph: const1 + const2
+        const1 = ConstantComponent(IntType(), 10)
+        const2 = ConstantComponent(IntType(), 20)
+        binop = BinOpComponent(BinOp.ADD, IntType())
+
+        # Connect the components
+        const1.get_port("o_0").connect(binop.get_port("i_0"))
+        const2.get_port("o_0").connect(binop.get_port("i_1"))
+
+        # Define the subgraph collection
+        sub_graph = ComponentCollection(
+            components=[const1, const2, binop],
+            inputs=[],  # No external inputs for this subgraph
+            outputs=[binop.get_port("o_0")],
+        )
+
+        # 2. Create the FusedOpComponent
+        fused_comp = FusedOpComponent(name="my_fused_adder", sub_graph=sub_graph)
+        print("Successfully created FusedOpComponent instance with a valid subgraph:")
+        print(fused_comp)
+
+        # 3. Test the validation by creating an invalid subgraph
+        print("\n--- Intentionally triggering FusedOpComponent validation error... ---")
+        # GET_ATTR is a disallowed UnaryOp
+        invalid_unary_op = UnaryOpComponent(
+            UnaryOp.GET_ATTR, SpecialType("node"), select_index="id", attr_type=IntType()
+        )
+        invalid_sub_graph = ComponentCollection(
+            components=[invalid_unary_op],
+            inputs=[invalid_unary_op.get_port("i_0")],
+            outputs=[invalid_unary_op.get_port("o_0")],
+        )
+        # This line is expected to raise a TypeError
+        fused_comp_invalid = FusedOpComponent(name="invalid_op", sub_graph=invalid_sub_graph)
+
+    except TypeError as te:
+        print(f"Successfully caught expected validation error: {te}")
+    except Exception as e:
+        print(f"An unexpected error occurred during FusedOpComponent test: {e}")
+
+    print("\n--- All Tests Finished ---")
