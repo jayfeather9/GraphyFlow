@@ -112,6 +112,10 @@ class ComponentCollection(DfirNode):
         self.inputs = inputs
         self.outputs = outputs
         in_and_out = inputs + outputs
+        for c in self.components:
+            for p in c.ports:
+                if not p.connected:
+                    assert p in in_and_out, f"Port {p} of component {c} is not connected"
         assert all(all(p.connected or p in in_and_out for p in c.ports) for c in self.components)
 
     def __repr__(self) -> str:
@@ -680,8 +684,8 @@ class MemoryReadComponent(Component):
         self.access_tree = self._build_access_tree()
         self.pattern_to_pname = {}
 
-        ports = []
-        specific_port_types = {}
+        ports = ["i_base_id"]
+        specific_port_types = {"i_base_id": ArrayType(base_id_type) if parallel else base_id_type}
 
         # Dynamically generate an output port for each item in the access pattern.
         for base_type, path in self.access_pattern:

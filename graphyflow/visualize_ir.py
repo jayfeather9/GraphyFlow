@@ -160,19 +160,29 @@ def visualize_components(text):
             shape = "diamond"
         elif "Scatter" in comp["type"]:
             shape = "trapezium"
+        # --- 追加：为 FusedOpComponent 和 MemoryReadComponent 设置特殊形状 ---
+        elif "FusedOp" in comp["type"]:
+            shape = "Mrecord"
+        elif "MemoryRead" in comp["type"]:
+            shape = "cylinder"
         dot.node(comp["id"], comp["label"], shape=shape)
 
-    # Add edges
-    connections = set()
+    # Add edges for component-to-component connections
+    # We remove the `connections` set to allow multiple edges between the same two components.
     for comp in components:
-        for src_port, tgt_port in comp["connections"]:
-            if src_port in port_to_component and tgt_port in port_to_component:
-                src_comp = port_to_component[src_port]
-                tgt_comp = port_to_component[tgt_port]
-                if (src_comp, tgt_comp) not in connections:
-                    label = f'{comp["ports"][src_port]["name"]}: {comp["ports"][src_port]["type"]}'
-                    dot.edge(src_comp, tgt_comp, label)
-                    connections.add((src_comp, tgt_comp))
+        # Each tuple in comp["connections"] is a (source_port_id, target_port_id)
+        for src_port_id, tgt_port_id in comp["connections"]:
+            # Ensure both ports exist in our mapping
+            if src_port_id in port_to_component and tgt_port_id in port_to_component:
+                # Get the component IDs for the source and target
+                src_comp_id = port_to_component[src_port_id]
+                tgt_comp_id = port_to_component[tgt_port_id]
+
+                # Create a descriptive label for the edge from the source port's info
+                label = f'{comp["ports"][src_port_id]["name"]}: {comp["ports"][src_port_id]["type"]}'
+
+                # Create an edge for every connection found.
+                dot.edge(src_comp_id, tgt_comp_id, label=label)
 
     for port_num, port_name, port_type in inputs:
         # print(port_num, port_name, port_type)
