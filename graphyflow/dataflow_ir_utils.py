@@ -7,6 +7,73 @@ from graphyflow.dataflow_ir_datatype import *
 from graphyflow.dataflow_ir import *
 
 
+# ======================================================================== #
+#                  PASS 1: SIMPLIFY REDUCE COMPONENT                       #
+# ======================================================================== #
+
+
+def _extract_subgraph_from_reduce(reduce_comp: ReduceComponent, subgraph_type: str) -> ComponentCollection:
+    """
+    Extracts a subgraph (key, transform, or unit_reduce) from a ReduceComponent
+    and returns it as a new ComponentCollection.
+    """
+    # Define the entry and exit ports based on the subgraph type
+    if subgraph_type == "key":
+        start_ports = [reduce_comp.get_port("o_reduce_key_in")]
+        end_port = reduce_comp.get_port("i_reduce_key_out")
+    elif subgraph_type == "transform":
+        start_ports = [reduce_comp.get_port("o_reduce_transform_in")]
+        end_port = reduce_comp.get_port("i_reduce_transform_out")
+    elif subgraph_type == "unit_reduce":
+        start_ports = [
+            reduce_comp.get_port("o_reduce_unit_start_0"),
+            reduce_comp.get_port("o_reduce_unit_start_1"),
+        ]
+        end_port = reduce_comp.get_port("i_reduce_unit_end")
+    else:
+        raise ValueError(f"Unknown subgraph_type: {subgraph_type}")
+
+    subgraph_comps = set()
+    q = collections.deque()
+    visited_ids = set()
+
+    # Start forward traversal from the entry ports
+    for port in start_ports:
+        assert port.connected
+        comp = port.connection.parent
+        q.append(comp)
+        visited_ids.add(comp.readable_id)
+
+    # The end component is the one connected to the end_port
+    end_comp = end_port.connection.parent
+
+    while q:
+        comp = q.popleft()
+        subgraph_comps.add(comp)
+
+        # Stop traversal if we reach the end component of this specific subgraph
+        if comp == end_comp:
+            continue
+
+        for p_out in comp.out_ports:
+            if p_out.connected:
+                downstream_comp = p_out.connection.parent
+                # Do not traverse into the ReduceComponent itself
+                if isinstance(downstream_comp, ReduceComponent):
+                    continue
+                if downstream_comp.readable_id not in visited_ids:
+                    q.append(downstream_comp)
+                    visited_ids.add(downstream_comp.readable_id)
+
+    # Define the inputs and outputs for the new collection
+    subgraph_inputs = [p.connection for p in start_ports if p.connected]
+    subgraph_outputs = [end_port.connection]
+
+    return ComponentCollection(
+        components=list(subgraph_comps), inputs=subgraph_inputs, outputs=subgraph_outputs
+    )
+
+
 def _dead_code_elimination(
     components: List[Component], outputs: List[Port]
 ) -> Tuple[List[Component], List[Port]]:
@@ -353,7 +420,6 @@ if __name__ == "__main__":
     # ==================== 3. 执行重构 =======================
     print("\n--- Refactoring to MemoryRead + FusedOp ---")
     try:
-        # --- MINIMAL CHANGE START ---
         # Find and remove the IOComponent before passing to the refactor function.
         io_comp = next((c for c in comp_col.components if isinstance(c, IOComponent)), None)
         if not io_comp:
@@ -369,7 +435,6 @@ if __name__ == "__main__":
         comp_col_for_refactor = ComponentCollection(
             components=components_for_refactor, inputs=[new_input_port], outputs=comp_col.outputs
         )
-        # --- MINIMAL CHANGE END ---
 
         refactored_cc = refactor_to_memread_fusedop(comp_col_for_refactor, g)
         print("Refactoring successful. New Component Collection:")
