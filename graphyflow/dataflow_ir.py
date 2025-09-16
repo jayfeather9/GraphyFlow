@@ -48,11 +48,7 @@ class Port(DfirNode):
     def __eq__(self, other: object):
         if not isinstance(other, Port):
             return NotImplemented
-        return (
-            self.unique_name == other.unique_name
-            and str(self.parent) == str(other.parent)
-            and str(self) == str(other)
-        )
+        return self.unique_name == other.unique_name and str(self.parent) == str(other.parent)
 
     def __hash__(self) -> int:
         return hash(str(self) + self.unique_name)
@@ -192,12 +188,13 @@ class ComponentCollection(DfirNode):
 
     def topo_sort(self) -> List[Component]:
         def port_solved(port: Port) -> bool:
-            if not port.connected:
-                assert port in (self.inputs + self.outputs)
+            # A port is "solved" if it's an official input to this specific collection.
+            if port in self.inputs:
                 return True
-            else:
-                assert port.connection is not None
-                return port.connection.parent in result
+            # If it's not a collection input, it must be connected internally.
+            if not port.connected:
+                raise ConnectionError(f"Found unconnected internal port during topo_sort: {port}")
+            return port.connection.parent in result
 
         def check_reduce(comp: Component) -> bool:
             if not isinstance(comp, ReduceComponent):
@@ -206,11 +203,20 @@ class ComponentCollection(DfirNode):
 
         result = []
         waitings = copy.deepcopy(self.components)
+        last_waitings_len = len(waitings) + 1
+
         while waitings:
+            if len(waitings) >= last_waitings_len:
+                raise RuntimeError(
+                    f"Infinite loop detected in topo_sort. Possible cycle or unconnected internal graph. Waiting on: {[c.name for c in waitings]}"
+                )
+            last_waitings_len = len(waitings)
             new_ones = []
             for comp in waitings:
                 if all(port_solved(p) for p in comp.in_ports) or check_reduce(comp):
                     new_ones.append(comp)
+            if not new_ones:
+                continue
             waitings = [w for w in waitings if w not in new_ones]
             result.extend(new_ones)
         return result
@@ -721,6 +727,7 @@ class MemoryReadComponent(Component):
         to represent the hierarchical access structure.
         """
         tree = {}
+        print("Building access tree from pattern:", self.access_pattern)
         for base_type, path in self.access_pattern:
             if base_type not in ["node", "edge"]:
                 raise ValueError(

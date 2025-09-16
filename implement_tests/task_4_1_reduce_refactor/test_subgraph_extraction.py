@@ -53,7 +53,9 @@ def complex_reduce_graph() -> ComponentCollection:
     # Find the collection that contains the Reduce operation
     for collection in dfirs:
         if any(isinstance(c, ReduceComponent) for c in collection.components):
-            return delete_placeholder_components_pass(collection)
+            final_collection = delete_placeholder_components_pass(collection)
+            final_collection.global_graph_store = g  # <-- 请添加这一行
+            return final_collection
 
     raise RuntimeError("Failed to find a ComponentCollection with a ReduceComponent")
 

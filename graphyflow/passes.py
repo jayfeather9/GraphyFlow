@@ -43,6 +43,26 @@ def delete_placeholder_components_pass(
     return comp_col
 
 
+def remove_io_comp_pass(comp_col: dfir.ComponentCollection) -> dfir.ComponentCollection:
+    """Remove IOComponents, and make corresponding ports inputs ports of the collection."""
+    components_to_keep: List[dfir.Component] = []
+
+    for comp in comp_col.components:
+        if isinstance(comp, dfir.IOComponent):
+            assert len(comp.in_ports) == 0 or len(comp.out_ports) == 1
+            p_out = comp.out_ports[0]
+            assert p_out not in comp_col.outputs
+            comp_col.inputs.append(p_out.connection)
+            p_out.disconnect()
+        else:
+            components_to_keep.append(comp)
+
+    comp_col = dfir.ComponentCollection(components_to_keep, comp_col.inputs, comp_col.outputs)
+    comp_col.update_ports()
+
+    return comp_col
+
+
 def simplify_reduce_comp_pass(
     comp_col: dfir.ComponentCollection,
 ) -> dfir.ComponentCollection:

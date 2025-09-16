@@ -2,9 +2,23 @@ from __future__ import annotations
 import copy
 import collections
 from enum import Enum
-from typing import List, Optional, Union, Dict, Any, Tuple
+from typing import List, Optional, Union, Dict, Any, Tuple, Set
 from graphyflow.dataflow_ir_datatype import *
 from graphyflow.dataflow_ir import *
+from graphyflow.global_graph import GlobalGraph
+from graphyflow.passes import delete_placeholder_components_pass
+from graphyflow.visualize_ir import visualize_components
+from dataclasses import dataclass, field
+
+
+@dataclass(frozen=True)
+class DataOrigin:
+    """Stores the origin of a data stream for analysis."""
+
+    # The ultimate source: either a primary input port or a computed port.
+    source_port: Port
+    # The accumulated memory access path from the source.
+    access_path: Tuple[Union[str, int], ...] = field(default_factory=tuple)
 
 
 # ======================================================================== #
@@ -15,9 +29,9 @@ from graphyflow.dataflow_ir import *
 def _extract_subgraph_from_reduce(reduce_comp: ReduceComponent, subgraph_type: str) -> ComponentCollection:
     """
     Extracts a subgraph (key, transform, or unit_reduce) from a ReduceComponent
-    and returns it as a new ComponentCollection.
+    and returns it as a new, self-contained ComponentCollection where external
+    inputs are replaced by PlaceholderComponents.
     """
-    # Define the entry and exit ports based on the subgraph type
     if subgraph_type == "key":
         start_ports = [reduce_comp.get_port("o_reduce_key_in")]
         end_port = reduce_comp.get_port("i_reduce_key_out")
@@ -33,45 +47,126 @@ def _extract_subgraph_from_reduce(reduce_comp: ReduceComponent, subgraph_type: s
     else:
         raise ValueError(f"Unknown subgraph_type: {subgraph_type}")
 
-    subgraph_comps = set()
+    subgraph_comps_set = set()
     q = collections.deque()
     visited_ids = set()
-
-    # Start forward traversal from the entry ports
-    for port in start_ports:
-        assert port.connected
-        comp = port.connection.parent
-        q.append(comp)
-        visited_ids.add(comp.readable_id)
 
     # The end component is the one connected to the end_port
     end_comp = end_port.connection.parent
 
+    # Start forward traversal from the components connected to the entry ports
+    for port in start_ports:
+        if port.connected:
+            comp = port.connection.parent
+            if comp.readable_id not in visited_ids:
+                q.append(comp)
+                visited_ids.add(comp.readable_id)
+
     while q:
         comp = q.popleft()
-        subgraph_comps.add(comp)
-
-        # Stop traversal if we reach the end component of this specific subgraph
+        subgraph_comps_set.add(comp)
         if comp == end_comp:
             continue
-
         for p_out in comp.out_ports:
             if p_out.connected:
                 downstream_comp = p_out.connection.parent
-                # Do not traverse into the ReduceComponent itself
                 if isinstance(downstream_comp, ReduceComponent):
                     continue
                 if downstream_comp.readable_id not in visited_ids:
                     q.append(downstream_comp)
                     visited_ids.add(downstream_comp.readable_id)
 
-    # Define the inputs and outputs for the new collection
-    subgraph_inputs = [p.connection for p in start_ports if p.connected]
+    subgraph_comps = list(subgraph_comps_set)
     subgraph_outputs = [end_port.connection]
 
-    return ComponentCollection(
-        components=list(subgraph_comps), inputs=subgraph_inputs, outputs=subgraph_outputs
+    # Make the subgraph self-contained by replacing external inputs with placeholders
+    subgraph_inputs = []
+
+    # Identify the actual input ports of the subgraph components
+    actual_input_ports = []
+    for comp in subgraph_comps:
+        for p_in in comp.in_ports:
+            # An input port is an entry point if it's connected to something
+            # OUTSIDE the subgraph component set.
+            if p_in.connected and p_in.connection.parent not in subgraph_comps_set:
+                actual_input_ports.append(p_in)
+
+    # Replace each external connection with a placeholder
+    for p_in in actual_input_ports:
+        # Disconnect from the external ReduceComponent port
+        p_in.disconnect()
+
+        # Create and connect a placeholder
+        placeholder = PlaceholderComponent(p_in.data_type)
+        subgraph_comps.append(placeholder)
+        placeholder.get_port("o_0").connect(p_in)
+
+        # The placeholder's input is now the new official input for the collection
+        subgraph_inputs.append(placeholder.get_port("i_0"))
+
+    return ComponentCollection(components=subgraph_comps, inputs=subgraph_inputs, outputs=subgraph_outputs)
+
+
+def _refactor_and_consolidate_reduce_subgraphs(
+    reduce_comp: ReduceComponent, global_graph: GlobalGraph
+) -> Dict[str, Any]:
+    """
+    Extracts, refactors, and consolidates the subgraphs of a ReduceComponent.
+
+    This function performs the core refactoring on each of the three subgraphs
+    ('key', 'transform', 'unit_reduce'), separates their memory access from
+    computation, and returns the consolidated access patterns along with the
+    new pure-computation FusedOpComponents.
+
+    Returns:
+        A dictionary containing the three FusedOpComponents and the unified
+        set of memory access patterns required by all of them.
+    """
+    results = {}
+    all_access_patterns = set()
+
+    # 1. Refactor 'key' and 'transform' subgraphs
+    for subgraph_type in ["key", "transform"]:
+        subgraph_cc = _extract_subgraph_from_reduce(reduce_comp, subgraph_type)
+
+        # Refactor the subgraph to separate memory access from computation
+        refactored_cc = refactor_to_memread_fusedop(subgraph_cc, global_graph)
+
+        # The refactored graph should contain a MemoryRead and a FusedOp component
+        mem_read_comp = next(
+            (c for c in refactored_cc.components if isinstance(c, MemoryReadComponent)), None
+        )
+        fused_op_comp = next((c for c in refactored_cc.components if isinstance(c, FusedOpComponent)), None)
+        assert fused_op_comp is not None, f"FusedOpComponent not found after refactoring {subgraph_type}"
+
+        # Store the pure-computation part
+        results[f"fused_op_{subgraph_type}"] = fused_op_comp
+
+        # Consolidate the memory access patterns
+        if mem_read_comp:
+            for pattern in mem_read_comp.access_pattern:
+                # Convert path list to tuple to make it hashable for the set
+                all_access_patterns.add((pattern[0], tuple(pattern[1])))
+
+    # 2. Refactor 'unit_reduce' subgraph (no type dependency needed as per requirement)
+    # The assumption is that the transform output type remains consistent.
+    unit_subgraph_cc = _extract_subgraph_from_reduce(reduce_comp, "unit_reduce")
+    refactored_unit_cc = refactor_to_memread_fusedop(unit_subgraph_cc, global_graph)
+
+    mem_read_unit = next(
+        (c for c in refactored_unit_cc.components if isinstance(c, MemoryReadComponent)), None
     )
+    fused_op_unit = next((c for c in refactored_unit_cc.components if isinstance(c, FusedOpComponent)), None)
+    assert fused_op_unit is not None, "FusedOpComponent not found after refactoring unit_reduce"
+    results["fused_op_unit_reduce"] = fused_op_unit
+    if mem_read_unit:
+        for pattern in mem_read_unit.access_pattern:
+            all_access_patterns.add((pattern[0], tuple(pattern[1])))
+
+    # Convert set of tuples back to a list of lists for the MemoryReadComponent constructor
+    results["unified_access_pattern"] = [(base, list(path)) for base, path in all_access_patterns]
+
+    return results
 
 
 def _dead_code_elimination(
@@ -146,302 +241,358 @@ def _simplify_redundant_copies(components: List[Component]) -> List[Component]:
     return components
 
 
+# In: graphyflow/dataflow_ir_utils.py
+
+
 def refactor_to_memread_fusedop(
     original_cc: ComponentCollection, global_graph: GlobalGraph
 ) -> ComponentCollection:
     """
-    Refactors a ComponentCollection into a MemoryReadComponent followed by a FusedOpComponent.
-
-    This function analyzes a given ComponentCollection, separates memory access operations
-    (like getting node/edge attributes) from pure computation, and reconstructs the dataflow
-    into a two-stage pipeline.
-
-    Args:
-        original_cc: The original ComponentCollection to refactor.
-        global_graph: The GlobalGraph object, needed to resolve attribute types.
-
-    Returns:
-        A new ComponentCollection containing only a MemoryReadComponent and a FusedOpComponent.
+    Refactors a ComponentCollection into a MemoryReadComponent and a FusedOpComponent.
+    This is the final, robust implementation that handles complex Tuple inputs
+    by normalizing access paths and restructuring the input data flow.
     """
-    # --- Phase 1: Pre-analysis and Validation ---
-    allowed_types = (
-        ScatterComponent,
-        GatherComponent,
-        CopyComponent,
-        UnusedEndMarkerComponent,
-        BinOpComponent,
-        UnaryOpComponent,
-        ConstantComponent,
-    )
-    for comp in original_cc.components:
-        if not isinstance(comp, allowed_types):
-            raise TypeError(
-                f"Component type '{type(comp).__name__}' is not allowed for this refactoring pass."
-            )
+    # print("Original ComponentCollection to Refactor:")
+    # print(original_cc)
+    # ======================================================================== #
+    #                  PHASE 1: DATA-FLOW ANALYSIS                             #
+    # ======================================================================== #
+    port_origins: Dict[Port, DataOrigin] = {}
+    compute_ops: List[Component] = []
+    for p_in in original_cc.inputs:
+        port_origins[p_in] = DataOrigin(source_port=p_in)
 
-    if len(original_cc.inputs) != 1:
-        raise ValueError("Refactoring requires the ComponentCollection to have exactly one input.")
+    def shrink_scatter_gather(access_path: Tuple[Union[str, int], ...]) -> Tuple[Union[str, int], ...]:
+        """
+        Simplifies access paths by removing redundant Scatter/Gather patterns.
+        e.g., (0, 'g1', 1) -> (0,)
+        """
+        simplified_path = []
+        skip_next = False
+        while True:
+            skipped_len = 0
+            for i, elem in enumerate(access_path):
+                if skip_next:
+                    skip_next = False
+                    continue
+                if isinstance(elem, str) and elem.startswith("_g"):
+                    if i + 1 < len(access_path) and isinstance(access_path[i + 1], int):
+                        if access_path[i + 1] == int(elem[2:]):
+                            skip_next = True
+                            skipped_len += 2
+                            continue
+                simplified_path.append(elem)
+            if skipped_len == 0:
+                break
+            access_path = tuple(simplified_path)
+            simplified_path = []
+        return access_path
 
-    input_port = original_cc.inputs[0]
-    input_type = input_port.data_type
-    if not (isinstance(input_type, ArrayType) and isinstance(input_type.type_, SpecialType)):
-        raise ValueError(f"Input type must be Array<node> or Array<edge>, but got {input_type}.")
-
-    base_type_str = input_type.type_.type_name
-
-    # --- Phase 2: Memory Access Path Discovery ---
-    discovered_paths = set()
-    access_op_outputs = {}  # Map: original output Port -> (base_type, path)
-    memoized_paths = {}  # Memoization for trace_back function
-
-    # The trace_back helper function remains the same as the previous version.
-    def trace_back(port: Port) -> Tuple[str, List[Union[str, int]]]:
-        if port is None:
-            raise ValueError("trace_back was called with a None port.")
-
-        if port.readable_id in memoized_paths:
-            return memoized_paths[port.readable_id]
-
-        parent_comp = port.parent
-
-        input_port = parent_comp.in_ports[0]
-        if input_port in original_cc.inputs:
-            path_so_far = []
+    def get_origin(port: Port, access_index: Optional[int] = None) -> DataOrigin:
+        if port.connected:
+            origin = port_origins.get(port.connection)
         else:
-            source_output_port = input_port.connection
-            if source_output_port is None:
-                raise ConnectionError(
-                    f"Disconnected input port '{input_port.name}' on component '{parent_comp.name}' during trace."
-                )
-
-            _, path_so_far = trace_back(source_output_port)
-
-        if isinstance(parent_comp, (ScatterComponent, CopyComponent)):
-            final_path = path_so_far
-        elif isinstance(parent_comp, UnaryOpComponent) and parent_comp.op in (
-            UnaryOp.GET_ATTR,
-            UnaryOp.SELECT,
-        ):
-            final_path = path_so_far + [parent_comp.select_index]
+            origin = port_origins.get(port)
+        assert origin is not None, f"Missing origin for port {port}"
+        if access_index is None or type(origin) is DataOrigin:
+            assert type(origin) in [DataOrigin, list]
+            return origin
         else:
-            raise TypeError(
-                f"Trace back encountered an unexpected component type: {type(parent_comp).__name__}"
-            )
-
-        memoized_paths[port.readable_id] = (base_type_str, final_path)
-        return base_type_str, final_path
-
-    # We only discover paths for data that is consumed by a non-access, computational component.
-    for comp in original_cc.topo_sort():
-        is_access_op = isinstance(comp, UnaryOpComponent) and comp.op in (UnaryOp.GET_ATTR, UnaryOp.SELECT)
-
-        # If a component is NOT an access op, it's a computational "sink".
-        # We check if its inputs come from access ops.
-        if not is_access_op:
-            for p_in in comp.in_ports:
-                if p_in.connected:
-                    upstream_port = p_in.connection
-                    upstream_comp = upstream_port.parent
-
-                    # If the provider is an access op, we've found a memory-to-computation boundary.
-                    if isinstance(upstream_comp, UnaryOpComponent) and upstream_comp.op in (
-                        UnaryOp.GET_ATTR,
-                        UnaryOp.SELECT,
-                    ):
-                        # Trace this path back to its origin.
-                        base_type, path = trace_back(upstream_port)
-                        path_tuple = tuple(path)
-                        discovered_paths.add((base_type, path_tuple))
-                        access_op_outputs[upstream_port] = (base_type, path_tuple)
-
-    # --- Phase 3: New Component Construction ---
-
-    # 3.1 Construct MemoryReadComponent
-    def get_type_from_path(base_type: str, path: Tuple[Union[str, int], ...]) -> DfirType:
-        if base_type == "node":
-            current_props = global_graph.node_properties
-            current_type = SpecialType("node")
-        else:  # base_type == "edge"
-            current_props = global_graph.edge_properties
-            current_type = SpecialType("edge")
-        for key in path:
-            if isinstance(current_type, SpecialType):
-                if key not in current_props:
-                    raise KeyError(
-                        f"Attribute '{key}' not found in properties for type '{current_type.type_name}'."
-                    )
-                current_type = current_props[key]
-                if isinstance(current_type, SpecialType):
-                    current_props = (
-                        global_graph.node_properties
-                        if current_type.type_name == "node"
-                        else global_graph.edge_properties
-                    )
-            elif isinstance(current_type, TupleType):
-                current_type = current_type.types[key]
-            else:
-                raise TypeError(f"Cannot get attribute '{key}' from non-structural type {current_type}")
-
-        return current_type
-
-    access_pattern = list(discovered_paths)
-    output_types = {}
-    for base, path in access_pattern:
-        final_type = get_type_from_path(base, path)
-        port_name = f"o_{base}_{'_'.join(map(str, path))}"
-        output_types[port_name] = final_type
-
-    mem_read = MemoryReadComponent(
-        access_pattern=access_pattern, output_types=output_types, base_id_type=input_type.type_, parallel=True
-    )
-
-    # 3.2 Construct FusedOpComponent's Subgraph
-    fused_subgraph_comps = []
-    old_to_new_ports = {}
-    fused_subgraph_inputs = []
+            assert type(origin) is list, f"Expected list of origins for port {port}, got {origin}"
+            assert isinstance(access_index, int), "Access index must be an integer"
+            assert (
+                0 <= access_index < len(origin)
+            ), f"Access index {access_index} out of range for port {port}"
+            assert origin[access_index] is not None, f"Missing origin for port {port} at index {access_index}"
+            return origin[access_index]
 
     for comp in original_cc.topo_sort():
-        # Skip access ops, they are now handled by MemoryReadComponent
-        if comp.out_ports[0] in access_op_outputs:
-            path_tuple = access_op_outputs[comp.out_ports[0]]
+        origin = None
+        if isinstance(comp, ConstantComponent):
+            compute_ops.append(comp)
+            for p_out in comp.out_ports:
+                port_origins[p_out] = DataOrigin(source_port=p_out)
+            continue
+        assert comp.in_ports, f"Component {comp} has no input ports"
+        p_in = comp.in_ports[0]
 
-            # Create a new placeholder input port for the fused subgraph
-            pname = mem_read.pattern_to_pname[(path_tuple[0], tuple(path_tuple[1]))]
-            dtype = mem_read.get_port(pname).data_type
-
-            placeholder_input = PlaceholderComponent(dtype)
-            fused_subgraph_comps.append(placeholder_input)
-            fused_subgraph_inputs.append(placeholder_input.in_ports[0])
-            old_to_new_ports[comp.out_ports[0]] = placeholder_input.out_ports[0]
+        if isinstance(comp, UnaryOpComponent) and comp.op in (UnaryOp.GET_ATTR, UnaryOp.SELECT):
+            origin = get_origin(p_in, comp.select_index)
+            assert origin is not None
+            new_path = origin.access_path + (comp.select_index,)
+            new_path = shrink_scatter_gather(new_path)
+            new_origin = DataOrigin(source_port=origin.source_port, access_path=new_path)
+            port_origins[comp.out_ports[0]] = new_origin
+            continue
+        elif isinstance(comp, ScatterComponent):
+            for i, p_out in enumerate(comp.out_ports):
+                origin = get_origin(p_in, i)
+                assert origin is not None
+                new_path = origin.access_path + (i,)
+                new_path = shrink_scatter_gather(new_path)
+                new_origin = DataOrigin(source_port=origin.source_port, access_path=new_path)
+                port_origins[p_out] = new_origin
+            continue
+        elif isinstance(comp, GatherComponent):
+            assert comp.out_ports[0] not in port_origins
+            port_origins[comp.out_ports[0]] = [None for _ in comp.in_ports]
+            for i, p_in in enumerate(comp.in_ports):
+                assert p_in.connection is not None, f"Gather port {p_in} shouldn't be input."
+                origin = get_origin(p_in)
+                assert origin is not None
+                new_path = origin.access_path + (f"_g{i}",)
+                new_origin = DataOrigin(source_port=origin.source_port, access_path=new_path)
+                port_origins[comp.out_ports[0]][i] = new_origin
+            assert all(origin is not None for origin in port_origins[comp.out_ports[0]])
+            continue
+        elif isinstance(comp, (PlaceholderComponent, CopyComponent)):
+            origin = get_origin(p_in)
+            assert origin is not None
+            for p_out in comp.out_ports:
+                port_origins[p_out] = origin
             continue
 
-        # Deepcopy computational components
-        new_comp = copy.deepcopy(comp)
-        for port in new_comp.ports:
-            if port.connected:
-                port.disconnect()
-        fused_subgraph_comps.append(new_comp)
+        compute_ops.append(comp)
+        for p_out in comp.out_ports:
+            port_origins[p_out] = DataOrigin(source_port=p_out)
 
-        # Map old ports to new ports
-        for old_port, new_port in zip(comp.ports, new_comp.ports):
-            old_to_new_ports[old_port] = new_port
+    # ======================================================================== #
+    #                  PHASE 2                                                 #
+    # ======================================================================== #
 
-        # Reconnect inputs of the new component
-        for old_in_port, new_in_port in zip(comp.in_ports, new_comp.in_ports):
-            if old_in_port.connected:
-                original_source_port = old_in_port.connection
-                new_source_port = old_to_new_ports[original_source_port]
-                assert not new_source_port.connected
-                new_source_port.connect(new_in_port)
+    scatter_paths = {}
+    mem_paths = {}
+    mem_patterns = set()
 
-    # Determine outputs of the fused subgraph
-    fused_subgraph_outputs = [old_to_new_ports[p] for p in original_cc.outputs]
+    for comp in compute_ops:
+        print(f"Compute Component: {comp})")
+        for p_in in comp.in_ports:
+            origin = port_origins.get(p_in.connection) if p_in.connection else port_origins.get(p_in)
+            assert origin is not None, f"Missing origin for port {p_in} in component {comp}"
+            print(f"  Input Port: {p_in}, Origin: {origin}")
+            if origin.source_port not in original_cc.inputs:
+                assert len(origin.access_path) == 0
+                continue
+            if len(origin.access_path) == 0:
+                continue
+            current_type = origin.source_port.data_type
+            if isinstance(current_type, ArrayType):
+                current_type = current_type.type_
+            cur_scatter_path = []
+            cur_access_path = list(origin.access_path)
+            is_simple_access = False
+            while not isinstance(current_type, SpecialType):
+                if isinstance(current_type, TupleType):
+                    index = origin.access_path[0] if origin.access_path else 0
+                    cur_access_path = cur_access_path[1:]
+                    current_type = current_type.types[index]
+                    cur_scatter_path.append(index)
+                else:
+                    is_simple_access = True
+                    break
+            scatter_paths[p_in] = (origin.source_port, cur_scatter_path)
+            print(f"    Scatter Path: {cur_scatter_path}")
+            if not is_simple_access and len(cur_access_path) > 0:
+                mem_patterns.add((current_type.type_name, tuple(cur_access_path)))
+                mem_paths[p_in] = (current_type.type_name, tuple(cur_access_path))
+                print(
+                    f"    Memory Access Pattern: Base={current_type.type_name}, Path={tuple(cur_access_path)}"
+                )
 
-    # Phase 3.3: Clean up the generated subgraph before creating the Collection
+    print("Analyzing Output Ports:")
+    for p_out in original_cc.outputs:
+        origin = port_origins.get(p_out.connection) if p_out.connection else port_origins.get(p_out)
+        origins = origin if type(origin) is list else [origin]
+        for origin in origins:
+            print(f"Output Port: {p_out}, Origin: {origin}")
+            assert origin is not None, f"Missing origin for output port {p_out}"
+            if origin.source_port in original_cc.inputs:
+                assert len(origin.access_path) > 0, f"Straight passing through is not allowed now."
+                current_type = origin.source_port.data_type
+                if isinstance(current_type, ArrayType):
+                    current_type = current_type.type_
+                cur_scatter_path = []
+                cur_access_path = list(origin.access_path)
+                is_simple_access = False
+                while not isinstance(current_type, SpecialType):
+                    if isinstance(current_type, TupleType):
+                        index = origin.access_path[0] if origin.access_path else 0
+                        cur_access_path = cur_access_path[1:]
+                        current_type = current_type.types[index]
+                        cur_scatter_path.append(index)
+                    else:
+                        is_simple_access = True
+                        break
+                scatter_paths[origin.source_port] = (origin.source_port, cur_scatter_path)
+                print(f"    Scatter Path: {cur_scatter_path}")
+                if not is_simple_access and len(cur_access_path) > 0:
+                    mem_patterns.add((current_type.type_name, tuple(cur_access_path)))
+                    mem_paths[origin.source_port] = (current_type.type_name, tuple(cur_access_path))
+                    print(
+                        f"    Memory Access Pattern: Base={current_type.type_name}, Path={tuple(cur_access_path)}"
+                    )
 
-    # 1. Dead Code Elimination
-    fused_subgraph_comps, fused_subgraph_inputs = _dead_code_elimination(
-        fused_subgraph_comps, fused_subgraph_outputs
+    # ======================================================================== #
+    #                  PHASE 3                                                 #
+    # ======================================================================== #
+
+    print(scatter_paths)
+    print(mem_paths)
+
+    fused_input_ports = []
+    mem_targeting_ports = {}
+    mem_targeting_scatter_paths = {}
+    scatter_targeting_ports = {}
+    required_scatter_paths = {}
+    waiting_out_ports = []
+
+    def copy_in_port(old_port: Port, new_port: Port) -> CopyComponent:
+        print(f"Copying port {old_port} to new port {new_port}")
+        copy_comp = CopyComponent(old_port.data_type)
+        copy_comp.get_port("o_0").connect(old_port)
+        copy_comp.get_port("o_1").connect(new_port)
+        return copy_comp, copy_comp.get_port("i_0")
+
+    added_comps = []
+    for comp in compute_ops:
+        for p_out in comp.out_ports:
+            waiting_out_ports.extend(comp.out_ports)
+        if isinstance(comp, ConstantComponent):
+            continue
+        for p_in in comp.in_ports:
+            print(f"Processing input port {p_in} of component {comp}")
+            origin = get_origin(p_in)
+            assert origin is not None, f"Missing origin for port {p_in} in component {comp}"
+            if p_in in mem_paths:
+                mem_path = mem_paths[p_in]
+                assert p_in in scatter_paths, f"Missing scatter path for port {p_in} in component {comp}"
+                cur_scatter_path = tuple(scatter_paths[p_in][1])
+                p_in.disconnect()
+                if mem_path not in mem_targeting_ports:
+                    mem_targeting_ports[mem_path] = p_in
+                else:
+                    copy_comp, new_in_port = copy_in_port(p_in, mem_targeting_ports[mem_path])
+                    added_comps.append(copy_comp)
+                    mem_targeting_ports[mem_path] = new_in_port
+                if cur_scatter_path not in mem_targeting_scatter_paths:
+                    mem_targeting_scatter_paths[cur_scatter_path] = set()
+                mem_targeting_scatter_paths[cur_scatter_path].add(cur_scatter_path)
+                assert origin.source_port in original_cc.inputs
+                assert (
+                    cur_scatter_path not in required_scatter_paths
+                    or required_scatter_paths[cur_scatter_path] == "memory"
+                ), f"Conflict scatter path usage for path {cur_scatter_path}"
+                required_scatter_paths[cur_scatter_path] = "memory"
+                continue
+            if p_in in scatter_paths:
+                assert origin.source_port in original_cc.inputs
+                cur_scatter_path = tuple(scatter_paths[p_in][1])
+                p_in.disconnect()
+                assert (
+                    cur_scatter_path not in required_scatter_paths
+                    or required_scatter_paths[cur_scatter_path] == "through"
+                ), f"Conflict scatter path usage for path {cur_scatter_path}"
+                required_scatter_paths[cur_scatter_path] = "through"
+                if cur_scatter_path not in scatter_targeting_ports:
+                    scatter_targeting_ports[cur_scatter_path] = p_in
+                else:
+                    copy_comp, new_in_port = copy_in_port(p_in, scatter_targeting_ports[cur_scatter_path])
+                    added_comps.append(copy_comp)
+                    scatter_targeting_ports[cur_scatter_path] = new_in_port
+                continue
+            if origin.source_port.connected and origin.source_port in waiting_out_ports:
+                waiting_out_ports.remove(origin.source_port)
+                if p_in.connection != origin.source_port:
+                    p_in.disconnect()
+                    origin.source_port.disconnect()
+                    origin.source_port.connect(p_in)
+                continue
+            assert False, f"Port {p_in} in component {comp} should have been handled."
+    compute_ops.extend(added_comps)
+
+    if waiting_out_ports == original_cc.outputs:
+        print("No output ports need to be changed.")
+    else:
+        assert len(original_cc.outputs) == 1
+        out_origins = get_origin(original_cc.outputs[0])
+        assert type(out_origins) is list
+        resorted_origins = [None for _ in out_origins]
+        for origin in out_origins:
+            index = int(origin.access_path[-1][2:])
+            resorted_origins[index] = origin
+        out_origins = resorted_origins
+        gather_comp = GatherComponent([origin.source_port.data_type for origin in out_origins])
+        for i, origin in enumerate(out_origins):
+            if origin.source_port in waiting_out_ports:
+                waiting_out_ports.remove(origin.source_port)
+                gather_port = gather_comp.get_port(f"i_{i}")
+                origin.source_port.disconnect()
+                origin.source_port.connect(gather_port)
+            else:
+                assert origin.source_port in original_cc.inputs
+                gather_port = gather_comp.get_port(f"i_{i}")
+                if origin.source_port in mem_paths:
+                    mem_path = mem_paths[origin.source_port]
+                    assert (
+                        origin.source_port in scatter_paths
+                    ), f"Missing scatter path for port {origin.source_port} in gather."
+                    cur_scatter_path = tuple(scatter_paths[origin.source_port][1])
+                    if mem_path not in mem_targeting_ports:
+                        mem_targeting_ports[mem_path] = gather_port
+                    else:
+                        copy_comp, new_in_port = copy_in_port(gather_port, mem_targeting_ports[mem_path])
+                        compute_ops.append(copy_comp)
+                        mem_targeting_ports[mem_path] = new_in_port
+                    if cur_scatter_path not in mem_targeting_scatter_paths:
+                        mem_targeting_scatter_paths[cur_scatter_path] = set()
+                    mem_targeting_scatter_paths[cur_scatter_path].add(cur_scatter_path)
+                    assert origin.source_port in original_cc.inputs
+                    assert (
+                        cur_scatter_path not in required_scatter_paths
+                        or required_scatter_paths[cur_scatter_path] == "memory"
+                    ), f"Conflict scatter path usage for path {cur_scatter_path}"
+                    required_scatter_paths[cur_scatter_path] = "memory"
+                else:
+                    assert (
+                        origin.source_port in scatter_paths
+                    ), f"Missing scatter path for port {origin.source_port} in gather."
+                    cur_scatter_path = tuple(scatter_paths[origin.source_port][1])
+                    assert (
+                        cur_scatter_path not in required_scatter_paths
+                        or required_scatter_paths[cur_scatter_path] == "through"
+                    ), f"Conflict scatter path usage for path {cur_scatter_path}"
+                    required_scatter_paths[cur_scatter_path] = "through"
+                    if cur_scatter_path not in scatter_targeting_ports:
+                        scatter_targeting_ports[cur_scatter_path] = gather_port
+                    else:
+                        copy_comp, new_in_port = copy_in_port(
+                            gather_port, scatter_targeting_ports[cur_scatter_path]
+                        )
+                        compute_ops.append(copy_comp)
+                        scatter_targeting_ports[cur_scatter_path] = new_in_port
+        assert len(waiting_out_ports) == 0
+        waiting_out_ports.append(gather_comp.get_port("o_0"))
+        compute_ops.append(gather_comp)
+
+    print("Scatter Targeting Ports:")
+    for scatter_path, port in scatter_targeting_ports.items():
+        print(f"  Scatter Path: {scatter_path}, Port: {port}")
+    print("Memory Targeting Ports:")
+    for mem_path, port in mem_targeting_ports.items():
+        print(f"  Memory Path: {mem_path}, Port: {port}")
+
+    fused_comp_col = ComponentCollection(
+        components=compute_ops,
+        inputs=list(mem_targeting_ports.values()) + list(scatter_targeting_ports.values()),
+        outputs=waiting_out_ports,
     )
 
-    # 2. Simplify Redundant CopyComponents
-    fused_subgraph_comps = _simplify_redundant_copies(fused_subgraph_comps)
-
-    # 3. Final pass to remove placeholders created by access op replacement
-    temp_subgraph_for_cleanup = ComponentCollection(
-        components=fused_subgraph_comps, inputs=fused_subgraph_inputs, outputs=fused_subgraph_outputs
-    )
-    fused_subgraph = delete_placeholder_components_pass(temp_subgraph_for_cleanup)
-
-    fused_op = FusedOpComponent(name="fused_computation", sub_graph=fused_subgraph)
-
-    # --- Phase 4: Final Assembly ---
-    # The input to the new collection is the input of the first component in the new chain.
-    new_collection_input = mem_read.get_port("i_base_id")
-    # The outputs are the outputs of the last component in the chain.
-    new_collection_outputs = fused_op.out_ports
-
-    # Connect the internal components BEFORE creating the final collection.
-    # The order of mem_read outputs and fused_op inputs should correspond
-    # because they were both derived from the ordered `access_pattern` list.
-    if len(mem_read.out_ports) != len(fused_op.in_ports):
-        raise RuntimeError("Mismatch between MemoryRead outputs and FusedOp inputs during final assembly.")
-
-    for mem_output, fused_input in zip(mem_read.out_ports, fused_op.in_ports):
-        mem_output.connect(fused_input)
-
-    # Now, create the new collection with the correct, connected components and I/O ports.
-    # The constructor will now see that all internal ports are connected, and the
-    # external-facing ports (`i_base_id` and `fused_op.out_ports`) are correctly listed.
-    new_cc = ComponentCollection(
-        components=[mem_read, fused_op], inputs=[new_collection_input], outputs=new_collection_outputs
-    )
-
-    # The old input_port is no longer part of this new collection's interface.
-    # We don't need to connect it to anything. The update_ports() call is also handled
-    # implicitly by creating a new valid collection.
-    return new_cc
-
-
-if __name__ == "__main__":
     from pathlib import Path
-    from graphyflow.global_graph import GlobalGraph
-    from graphyflow.lambda_func import lambda_min
-    from graphyflow.passes import delete_placeholder_components_pass
-    from graphyflow.visualize_ir import visualize_components
 
-    # ==================== 配置 =======================
-    KERNEL_NAME = "graphyflow"
-    EXECUTABLE_NAME = "graphyflow_host"
-    PROJECT_ROOT = Path(__file__).parent.parent.resolve()
-    OUTPUT_DIR = PROJECT_ROOT / "generated_project"
+    output_dir = Path("output")
+    dot_orig = visualize_components(str(fused_comp_col))
+    dot_orig.render(output_dir / "fused_comp_col", view=False, format="png")
+    print("Generated graph for FusedOpComponent as fused_comp_col.png.")
 
-    # ==================== 1. 定义图算法 =======================
-    print("--- Defining Graph Algorithm using GraphyFlow ---")
-    g = GlobalGraph(
-        properties={
-            "node": {"distance": FloatType(), "id": IntType()},  # Add id for testing
-            "edge": {"weight": FloatType()},
-        }
-    )
-    edges = g.add_graph_input("edge")
-    # This map contains multiple memory accesses (edge.src, .src.distance, .dst, .weight)
-    pdu = edges.map_(map_func=lambda edge: (edge.src.distance, edge.dst, edge.weight + 5.0))
-
-    # ==================== 2. 前端处理 =======================
-    print("\n--- Frontend Processing ---")
-    dfirs = g.to_dfir()
-    comp_col = delete_placeholder_components_pass(dfirs[0])
-    print(str(comp_col))
-    dot = visualize_components(str(comp_col))
-    dot.render("component_graph_original", view=False, format="png")
-    print("Original DFG-IR generated as component_graph_original.png")
-
-    # ==================== 3. 执行重构 =======================
-    print("\n--- Refactoring to MemoryRead + FusedOp ---")
-    try:
-        # Find and remove the IOComponent before passing to the refactor function.
-        io_comp = next((c for c in comp_col.components if isinstance(c, IOComponent)), None)
-        if not io_comp:
-            raise RuntimeError("Could not find IOComponent in the initial graph.")
-
-        # The new input for the collection is the port that the IOComponent was connected to.
-        new_input_port = io_comp.out_ports[0].connection
-        new_input_port.disconnect()  # Isolate the rest of the graph from the IOComponent.
-
-        components_for_refactor = [c for c in comp_col.components if not isinstance(c, IOComponent)]
-
-        # Create a new ComponentCollection that is valid for refactoring.
-        comp_col_for_refactor = ComponentCollection(
-            components=components_for_refactor, inputs=[new_input_port], outputs=comp_col.outputs
-        )
-
-        refactored_cc = refactor_to_memread_fusedop(comp_col_for_refactor, g)
-        print("Refactoring successful. New Component Collection:")
-        print(refactored_cc)
-
-        dot_refactored = visualize_components(str(refactored_cc))
-        dot_refactored.render("component_graph_refactored", view=False, format="png")
-        print("Refactored DFG-IR generated as component_graph_refactored.png")
-    except (TypeError, ValueError, RuntimeError) as e:
-        print(f"Refactoring failed with an error: {e}")
+    fused_comp_col = delete_placeholder_components_pass(fused_comp_col)
+    fused_comp = FusedOpComponent("fused_op", fused_comp_col)
