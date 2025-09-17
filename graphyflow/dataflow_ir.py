@@ -599,6 +599,7 @@ class FusedOpComponent(Component):
 
     def __init__(self, name: str, sub_graph: ComponentCollection) -> None:
         self.sub_graph = sub_graph
+        self.port_mapping = {}
 
         # --- Validation Step ---
         # Before creating the component, validate the types of components within the subgraph.
@@ -628,16 +629,19 @@ class FusedOpComponent(Component):
         # --- Port Generation Step ---
         ports = []
         specific_port_types = {}
+        tmp_port_mapping = {}
 
         for i, in_port in enumerate(sub_graph.inputs):
             port_name = f"i_{i}"
             ports.append(port_name)
             specific_port_types[port_name] = in_port.data_type
+            tmp_port_mapping[in_port.readable_id] = port_name
 
         for i, out_port in enumerate(sub_graph.outputs):
             port_name = f"o_{i}"
             ports.append(port_name)
             specific_port_types[port_name] = out_port.data_type
+            tmp_port_mapping[out_port.readable_id] = port_name
 
         super().__init__(
             input_type=None,
@@ -647,6 +651,8 @@ class FusedOpComponent(Component):
             specific_port_types=specific_port_types,
         )
         self._custom_name = name
+        for id, port_name in tmp_port_mapping.items():
+            self.port_mapping[id] = self.get_port(port_name)
 
     @property
     def name(self) -> str:
@@ -690,8 +696,8 @@ class MemoryReadComponent(Component):
         self.access_tree = self._build_access_tree()
         self.pattern_to_pname = {}
 
-        ports = ["i_base_id"]
-        specific_port_types = {"i_base_id": ArrayType(base_id_type) if parallel else base_id_type}
+        ports = []
+        specific_port_types = {}
 
         # Dynamically generate an output port for each item in the access pattern.
         for base_type, path in self.access_pattern:
@@ -701,6 +707,11 @@ class MemoryReadComponent(Component):
             port_name = f"o_{base_type}_{path_str}"
             ports.append(port_name)
             self.pattern_to_pname[(base_type, tuple(path))] = port_name
+            
+            assert base_type in ["node", "edge"], f"Base type must be 'node' or 'edge', got '{base_type}'"
+            if f"i_{base_type}_id" not in ports:
+                ports.append(f"i_{base_type}_id")
+                specific_port_types[f"i_{base_type}_id"] = ArrayType(base_id_type) if parallel else base_id_type
 
             # Check if the user provided a type for this generated port.
             if port_name not in output_types:
@@ -711,7 +722,11 @@ class MemoryReadComponent(Component):
 
             # Assign the specified type, wrapping in ArrayType if parallel.
             data_type = output_types[port_name]
-            specific_port_types[port_name] = ArrayType(data_type) if parallel else data_type
+            # assert if parallel, must be arraytype
+            assert not (parallel and not isinstance(data_type, ArrayType)), (
+                f"Output type for port '{port_name}' must be an ArrayType since 'parallel' is True."
+            )
+            specific_port_types[port_name] = data_type
 
         super().__init__(
             input_type=None,

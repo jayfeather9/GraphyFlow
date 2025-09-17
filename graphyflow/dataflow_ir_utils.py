@@ -3,6 +3,8 @@ import copy
 import collections
 from enum import Enum
 from typing import List, Optional, Union, Dict, Any, Tuple, Set
+
+from torch import scatter
 from graphyflow.dataflow_ir_datatype import *
 from graphyflow.dataflow_ir import *
 from graphyflow.global_graph import GlobalGraph
@@ -193,9 +195,9 @@ def _dead_code_elimination(
     final_components = [c for c in components if c in live_components]
     final_inputs = []
     for comp in final_components:
-        # An input placeholder is identified as having an unconnected input port
-        if isinstance(comp, PlaceholderComponent) and not comp.in_ports[0].connected:
-            final_inputs.append(comp.in_ports[0])
+        for p_in in comp.in_ports:
+            if not p_in.connected:
+                final_inputs.append(p_in)
 
     return final_components, final_inputs
 
@@ -255,7 +257,7 @@ def refactor_to_memread_fusedop(
     # print("Original ComponentCollection to Refactor:")
     # print(original_cc)
     # ======================================================================== #
-    #                  PHASE 1: DATA-FLOW ANALYSIS                             #
+    #               PHASE 1: DATA-FLOW ANALYSIS & ORIGIN TRACING               #
     # ======================================================================== #
     port_origins: Dict[Port, DataOrigin] = {}
     compute_ops: List[Component] = []
@@ -357,7 +359,7 @@ def refactor_to_memread_fusedop(
             port_origins[p_out] = DataOrigin(source_port=p_out)
 
     # ======================================================================== #
-    #                  PHASE 2                                                 #
+    #         PHASE 2: IDENTIFYING MEMORY & SCATTER ACCESS PATTERNS            #
     # ======================================================================== #
 
     scatter_paths = {}
@@ -365,11 +367,11 @@ def refactor_to_memread_fusedop(
     mem_patterns = set()
 
     for comp in compute_ops:
-        print(f"Compute Component: {comp})")
+        # print(f"Compute Component: {comp})")
         for p_in in comp.in_ports:
             origin = port_origins.get(p_in.connection) if p_in.connection else port_origins.get(p_in)
             assert origin is not None, f"Missing origin for port {p_in} in component {comp}"
-            print(f"  Input Port: {p_in}, Origin: {origin}")
+            # print(f"  Input Port: {p_in}, Origin: {origin}")
             if origin.source_port not in original_cc.inputs:
                 assert len(origin.access_path) == 0
                 continue
@@ -391,22 +393,29 @@ def refactor_to_memread_fusedop(
                     is_simple_access = True
                     break
             scatter_paths[p_in] = (origin.source_port, cur_scatter_path)
-            print(f"    Scatter Path: {cur_scatter_path}")
+            # print(f"    Scatter Path: {cur_scatter_path}")
             if not is_simple_access and len(cur_access_path) > 0:
                 mem_patterns.add((current_type.type_name, tuple(cur_access_path)))
                 mem_paths[p_in] = (current_type.type_name, tuple(cur_access_path))
-                print(
-                    f"    Memory Access Pattern: Base={current_type.type_name}, Path={tuple(cur_access_path)}"
-                )
+                # print(
+                #     f"    Memory Access Pattern: Base={current_type.type_name}, Path={tuple(cur_access_path)}"
+                # )
 
-    print("Analyzing Output Ports:")
+    temp_out_subports = {}
+    # print("Analyzing Output Ports:")
     for p_out in original_cc.outputs:
         origin = port_origins.get(p_out.connection) if p_out.connection else port_origins.get(p_out)
         origins = origin if type(origin) is list else [origin]
-        for origin in origins:
-            print(f"Output Port: {p_out}, Origin: {origin}")
+        for i, origin in enumerate(origins):
+            # print(f"Output Port: {p_out}, Origin: {origin}")
             assert origin is not None, f"Missing origin for output port {p_out}"
             if origin.source_port in original_cc.inputs:
+                sub_type = p_out.data_type
+                assert isinstance(sub_type, ArrayType)
+                assert isinstance(sub_type.type_, TupleType)
+                sub_type = sub_type.type_.types[i]
+                temp_out_subports[i] = Port(f"o_final_out_{i}", p_out.parent)
+                temp_out_subports[i].data_type = sub_type
                 assert len(origin.access_path) > 0, f"Straight passing through is not allowed now."
                 current_type = origin.source_port.data_type
                 if isinstance(current_type, ArrayType):
@@ -423,31 +432,35 @@ def refactor_to_memread_fusedop(
                     else:
                         is_simple_access = True
                         break
-                scatter_paths[origin.source_port] = (origin.source_port, cur_scatter_path)
-                print(f"    Scatter Path: {cur_scatter_path}")
-                if not is_simple_access and len(cur_access_path) > 0:
+                scatter_paths[temp_out_subports[i]] = (origin.source_port, cur_scatter_path)
+                # print(f"    Scatter Path: {cur_scatter_path}")
+                # print(f"    Access Path: {cur_access_path}")
+                access_len_without_g = len(cur_access_path)
+                for path_idx, p in enumerate(cur_access_path):
+                    if isinstance(p, str) and p.startswith("_g"):
+                        access_len_without_g = path_idx
+                        break
+                if not is_simple_access and access_len_without_g > 0:
                     mem_patterns.add((current_type.type_name, tuple(cur_access_path)))
-                    mem_paths[origin.source_port] = (current_type.type_name, tuple(cur_access_path))
-                    print(
-                        f"    Memory Access Pattern: Base={current_type.type_name}, Path={tuple(cur_access_path)}"
-                    )
+                    mem_paths[temp_out_subports[i]] = (current_type.type_name, tuple(cur_access_path))
+                    # print(
+                    #     f"    Memory Access Pattern: Base={current_type.type_name}, Path={tuple(cur_access_path)}"
+                    # )
 
     # ======================================================================== #
-    #                  PHASE 3                                                 #
+    #             PHASE 3: BUILDING THE FUSED OPERATION COMPONENT              #
     # ======================================================================== #
 
-    print(scatter_paths)
-    print(mem_paths)
+    print(f"Identified Memory Access Paths: {mem_paths}")
+    print(f"Scatter Paths: {scatter_paths}")
 
-    fused_input_ports = []
     mem_targeting_ports = {}
     mem_targeting_scatter_paths = {}
     scatter_targeting_ports = {}
-    required_scatter_paths = {}
     waiting_out_ports = []
 
     def copy_in_port(old_port: Port, new_port: Port) -> CopyComponent:
-        print(f"Copying port {old_port} to new port {new_port}")
+        # print(f"Copying port {old_port} to new port {new_port}")
         copy_comp = CopyComponent(old_port.data_type)
         copy_comp.get_port("o_0").connect(old_port)
         copy_comp.get_port("o_1").connect(new_port)
@@ -460,7 +473,7 @@ def refactor_to_memread_fusedop(
         if isinstance(comp, ConstantComponent):
             continue
         for p_in in comp.in_ports:
-            print(f"Processing input port {p_in} of component {comp}")
+            # print(f"Processing input port {p_in} of component {comp}")
             origin = get_origin(p_in)
             assert origin is not None, f"Missing origin for port {p_in} in component {comp}"
             if p_in in mem_paths:
@@ -474,25 +487,17 @@ def refactor_to_memread_fusedop(
                     copy_comp, new_in_port = copy_in_port(p_in, mem_targeting_ports[mem_path])
                     added_comps.append(copy_comp)
                     mem_targeting_ports[mem_path] = new_in_port
-                if cur_scatter_path not in mem_targeting_scatter_paths:
-                    mem_targeting_scatter_paths[cur_scatter_path] = set()
-                mem_targeting_scatter_paths[cur_scatter_path].add(cur_scatter_path)
+                if mem_path in mem_targeting_scatter_paths:
+                    assert mem_targeting_scatter_paths[mem_path] == cur_scatter_path, (
+                        f"Conflict scatter paths for memory access pattern {mem_path}"
+                    )
+                mem_targeting_scatter_paths[mem_path] = cur_scatter_path
                 assert origin.source_port in original_cc.inputs
-                assert (
-                    cur_scatter_path not in required_scatter_paths
-                    or required_scatter_paths[cur_scatter_path] == "memory"
-                ), f"Conflict scatter path usage for path {cur_scatter_path}"
-                required_scatter_paths[cur_scatter_path] = "memory"
                 continue
             if p_in in scatter_paths:
                 assert origin.source_port in original_cc.inputs
                 cur_scatter_path = tuple(scatter_paths[p_in][1])
                 p_in.disconnect()
-                assert (
-                    cur_scatter_path not in required_scatter_paths
-                    or required_scatter_paths[cur_scatter_path] == "through"
-                ), f"Conflict scatter path usage for path {cur_scatter_path}"
-                required_scatter_paths[cur_scatter_path] = "through"
                 if cur_scatter_path not in scatter_targeting_ports:
                     scatter_targeting_ports[cur_scatter_path] = p_in
                 else:
@@ -521,7 +526,12 @@ def refactor_to_memread_fusedop(
             index = int(origin.access_path[-1][2:])
             resorted_origins[index] = origin
         out_origins = resorted_origins
-        gather_comp = GatherComponent([origin.source_port.data_type for origin in out_origins])
+        def trans_spe(t: DfirType) -> DfirType:
+            if isinstance(t, SpecialType):
+                return SpecialIdType.from_spe(t)
+            return t
+        gather_types = [ArrayType(trans_spe(g_type)) for g_type in original_cc.outputs[0].data_type.type_.types]
+        gather_comp = GatherComponent(gather_types)
         for i, origin in enumerate(out_origins):
             if origin.source_port in waiting_out_ports:
                 waiting_out_ports.remove(origin.source_port)
@@ -531,37 +541,29 @@ def refactor_to_memread_fusedop(
             else:
                 assert origin.source_port in original_cc.inputs
                 gather_port = gather_comp.get_port(f"i_{i}")
-                if origin.source_port in mem_paths:
-                    mem_path = mem_paths[origin.source_port]
+                if temp_out_subports[i] in mem_paths:
+                    mem_path = mem_paths[temp_out_subports[i]]
                     assert (
-                        origin.source_port in scatter_paths
-                    ), f"Missing scatter path for port {origin.source_port} in gather."
-                    cur_scatter_path = tuple(scatter_paths[origin.source_port][1])
+                        temp_out_subports[i] in scatter_paths
+                    ), f"Missing scatter path for port {temp_out_subports[i]} in gather."
+                    cur_scatter_path = tuple(scatter_paths[temp_out_subports[i]][1])
                     if mem_path not in mem_targeting_ports:
                         mem_targeting_ports[mem_path] = gather_port
                     else:
                         copy_comp, new_in_port = copy_in_port(gather_port, mem_targeting_ports[mem_path])
                         compute_ops.append(copy_comp)
                         mem_targeting_ports[mem_path] = new_in_port
-                    if cur_scatter_path not in mem_targeting_scatter_paths:
-                        mem_targeting_scatter_paths[cur_scatter_path] = set()
-                    mem_targeting_scatter_paths[cur_scatter_path].add(cur_scatter_path)
+                    if mem_path in mem_targeting_scatter_paths:
+                        assert mem_targeting_scatter_paths[mem_path] == cur_scatter_path, (
+                            f"Conflict scatter paths for memory access pattern {mem_path}"
+                        )
+                    mem_targeting_scatter_paths[mem_path] = cur_scatter_path
                     assert origin.source_port in original_cc.inputs
-                    assert (
-                        cur_scatter_path not in required_scatter_paths
-                        or required_scatter_paths[cur_scatter_path] == "memory"
-                    ), f"Conflict scatter path usage for path {cur_scatter_path}"
-                    required_scatter_paths[cur_scatter_path] = "memory"
                 else:
                     assert (
-                        origin.source_port in scatter_paths
-                    ), f"Missing scatter path for port {origin.source_port} in gather."
-                    cur_scatter_path = tuple(scatter_paths[origin.source_port][1])
-                    assert (
-                        cur_scatter_path not in required_scatter_paths
-                        or required_scatter_paths[cur_scatter_path] == "through"
-                    ), f"Conflict scatter path usage for path {cur_scatter_path}"
-                    required_scatter_paths[cur_scatter_path] = "through"
+                        temp_out_subports[i] in scatter_paths
+                    ), f"Missing scatter path for port {temp_out_subports[i]} in gather."
+                    cur_scatter_path = tuple(scatter_paths[temp_out_subports[i]][1])
                     if cur_scatter_path not in scatter_targeting_ports:
                         scatter_targeting_ports[cur_scatter_path] = gather_port
                     else:
@@ -574,18 +576,26 @@ def refactor_to_memread_fusedop(
         waiting_out_ports.append(gather_comp.get_port("o_0"))
         compute_ops.append(gather_comp)
 
-    print("Scatter Targeting Ports:")
-    for scatter_path, port in scatter_targeting_ports.items():
-        print(f"  Scatter Path: {scatter_path}, Port: {port}")
-    print("Memory Targeting Ports:")
-    for mem_path, port in mem_targeting_ports.items():
-        print(f"  Memory Path: {mem_path}, Port: {port}")
+    # print("Scatter Targeting Ports:")
+    # for scatter_path, port in scatter_targeting_ports.items():
+    #     print(f"  Scatter Path: {scatter_path}, Port: {port}")
+    # print("Memory Targeting Ports:")
+    # for mem_path, port in mem_targeting_ports.items():
+    #     print(f"  Memory Path: {mem_path}, Port: {port}")
 
+    print(compute_ops)
+        
+    compute_ops, input_ports = _dead_code_elimination(compute_ops, waiting_out_ports)
+    compute_ops = _simplify_redundant_copies(compute_ops)
+            
     fused_comp_col = ComponentCollection(
         components=compute_ops,
-        inputs=list(mem_targeting_ports.values()) + list(scatter_targeting_ports.values()),
+        inputs=input_ports,
         outputs=waiting_out_ports,
     )
+    # print(f"input ports: {input_ports}")
+    
+    fused_comp_col = delete_placeholder_components_pass(fused_comp_col)
 
     from pathlib import Path
 
@@ -594,5 +604,153 @@ def refactor_to_memread_fusedop(
     dot_orig.render(output_dir / "fused_comp_col", view=False, format="png")
     print("Generated graph for FusedOpComponent as fused_comp_col.png.")
 
-    fused_comp_col = delete_placeholder_components_pass(fused_comp_col)
     fused_comp = FusedOpComponent("fused_op", fused_comp_col)
+    
+    # extract "_g" from mem_paths
+    port_to_gather_paths = {}
+    new_mem_targeting_ports = {}
+    new_mem_targeting_scatter_paths = {}
+    for access_pattern, port in mem_targeting_ports.items():
+        base_type, path = access_pattern
+        gather_path = ()
+        old_scatter_path = mem_targeting_scatter_paths[access_pattern]
+        # everything after "_g" is useless for memory accesss
+        for i, p in enumerate(path):
+            if isinstance(p, str) and p.startswith("_g"):
+                gather_path = path[i:]
+                path = path[:i]
+                break
+        new_mem_targeting_ports[(base_type, path)] = port
+        new_mem_targeting_scatter_paths[(base_type, path)] = old_scatter_path
+        port_to_gather_paths[port] = gather_path
+    mem_targeting_ports = new_mem_targeting_ports
+    mem_targeting_scatter_paths = new_mem_targeting_scatter_paths
+    
+    # update port to fused outer ports
+    for access_pattern, ori_port in mem_targeting_ports.items():
+        new_port = fused_comp.port_mapping[ori_port.readable_id]
+        mem_targeting_ports[access_pattern] = new_port
+    for scatter_path, ori_port in scatter_targeting_ports.items():
+        new_port = fused_comp.port_mapping[ori_port.readable_id]
+        scatter_targeting_ports[scatter_path] = new_port
+    
+    access_patterns = []
+    output_types = {}
+    for access_pattern, port in mem_targeting_ports.items():
+        base_type, path = access_pattern
+        # e.g., ("edge", ["weight_tuple", 1]) -> "o_edge_weight_tuple_1"
+        path_str = "_".join(map(str, path))
+        port_name = f"o_{base_type}_{path_str}"
+        access_patterns.append((base_type, path))
+        assert isinstance(port.data_type, ArrayType)
+        output_types[port_name] = port.data_type
+    
+    mem_read_comp = MemoryReadComponent(
+        access_pattern=access_patterns,
+        output_types=output_types,
+        parallel=True,
+    )
+    
+    mem_read_comp.visualize_access_tree()
+    
+    print(f"port_to_gather_paths: {port_to_gather_paths}")
+    print(f"mem_targeting_ports: {mem_targeting_ports}")
+    print(f"mem_targeting_scatter_paths: {mem_targeting_scatter_paths}")
+    print(f"scatter_targeting_ports: {scatter_targeting_ports}")
+        
+    # ======================================================================== #
+    #             PHASE 4: ASSEMBLING THE FINAL REFACTORED GRAPH               #
+    # ======================================================================== #
+    
+    
+    def copy_out_port(out_port: Port, new_in_port: Port):
+        original_connection = out_port.connection
+        out_port.disconnect()
+        copy_comp = CopyComponent(out_port.data_type)
+        copy_comp.get_port("i_0").connect(out_port)
+        new_in_port.connect(copy_comp.get_port("o_1"))
+        original_connection.connect(copy_comp.get_port("o_0"))
+        return copy_comp
+    
+    # print(f"Memory Read Component: {mem_read_comp}")
+    # print(f"Fused Operation Component: {fused_comp}")
+    
+    # connect mem out ports to fused in ports
+    for access_pattern, fused_in_port in mem_targeting_ports.items():
+        base_type, path = access_pattern
+        mem_out_pname = mem_read_comp.pattern_to_pname[access_pattern]
+        mem_out_port = mem_read_comp.get_port(mem_out_pname)
+        fused_in_port.connect(mem_out_port)
+    
+    mem_scatter_paths = set(p for p in mem_targeting_scatter_paths.values())
+    scatter_only_paths = set(p for p in scatter_targeting_ports.keys())
+    scatter_paths = mem_scatter_paths.union(scatter_only_paths)
+    # print(scatter_paths, len(scatter_paths))
+    # print(f"All required scatter paths: {scatter_paths}")
+    components = [mem_read_comp, fused_comp]
+    if len(scatter_paths) == 1 and list(scatter_paths)[0] == ():
+        assert len(scatter_targeting_ports) == 0, "No scatter_only ports should be present for empty scatter path."
+        assert len(mem_read_comp.in_ports) == 1, "Only one input should be present for empty scatter path."
+        base_type = list(mem_targeting_ports.keys())[0][0]
+        assert all(base_type == p[0] for p in mem_targeting_ports.keys()), "All memory access patterns should share the same base type for empty scatter path."
+        base_id_port = mem_read_comp.get_port(f"i_{base_type}_id")
+        in_ports = [base_id_port]
+    else:
+        # assert all scatter paths depth=1
+        assert all(len(p) == 1 for p in scatter_paths), "Currently only support depth=1 scatter paths."
+        # assert only one input of original_cc
+        assert len(original_cc.inputs) == 1, "Currently only support one input."
+        input_datatype = original_cc.inputs[0].data_type
+        assert isinstance(input_datatype, ArrayType)
+        assert isinstance(input_datatype.type_, TupleType)
+        input_datatype = input_datatype.type_.types
+        input_datatype = [t if not isinstance(t, SpecialType) else SpecialIdType.from_spe(t) for t in input_datatype]
+        input_datatype = ArrayType(TupleType(input_datatype))
+        scatter_comp = ScatterComponent(input_datatype)
+        components.append(scatter_comp)
+        # handle the unconnected input ports
+        for i, p_out in enumerate(scatter_comp.out_ports):
+            if all(i != path[0] for path in scatter_paths):
+                # this port is not used, connect to a unusedendmarker
+                unused_marker = UnusedEndMarkerComponent(p_out.data_type)
+                p_out.connect(unused_marker.get_port("i_0"))
+        
+        # handle the scatter_only ports
+        for scatter_path, scatter_port in scatter_targeting_ports.items():
+            index = scatter_path[0]
+            scatter_out_port = scatter_comp.get_port(f"o_{index}")
+            if scatter_out_port.connected:
+                copy_comp = copy_out_port(scatter_out_port, scatter_port)
+                components.append(copy_comp)
+            else:
+                scatter_port.connect(scatter_out_port)
+        
+        # handle the mem_targeting_ports
+        connected_base_types = set()
+        for access_pattern, scatter_path in mem_targeting_scatter_paths.items():
+            base_type = access_pattern[0]
+            if base_type in connected_base_types:
+                continue
+            index = scatter_path[0]
+            scatter_out_port = scatter_comp.get_port(f"o_{index}")
+            connected_base_types.add(base_type)
+            mem_port = mem_read_comp.get_port(f"i_{base_type}_id")
+            if scatter_out_port.connected:
+                copy_comp = copy_out_port(scatter_out_port, mem_port)
+                components.append(copy_comp)
+            else:
+                mem_port.connect(scatter_out_port)
+        
+        in_ports = [scatter_comp.get_port("i_0")]
+    
+    # print(scatter_comp)
+    # print(fused_comp)
+    # print(mem_read_comp)
+    
+    out_ports = [fused_comp.get_port("o_0")]
+    
+    return ComponentCollection(
+        components=components,
+        inputs=in_ports,
+        outputs=out_ports,
+    )

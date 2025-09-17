@@ -24,11 +24,24 @@ class SpecialType(DfirType):
     def __init__(self, type_name: str) -> None:
         assert type_name in ["node", "edge"]
         super().__init__(type_name, is_basic_type=False)
-
+        
 
 class IntType(DfirType):
     def __init__(self) -> None:
         super().__init__("Int")
+
+
+class SpecialIdType(DfirType):
+    """Id of node or edge"""
+    
+    def __init__(self, type_name: str, base_id_type=IntType()) -> None:
+        assert type_name in ["node_id", "edge_id"]
+        super().__init__(type_name, is_basic_type=True)
+    
+    @classmethod
+    def from_spe(cls, spe: SpecialType) -> SpecialIdType:
+        assert spe.type_name in ["node", "edge"]
+        return cls(f"{spe.type_name}_id")
 
 
 class FloatType(DfirType):
