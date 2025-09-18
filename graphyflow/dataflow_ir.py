@@ -112,6 +112,8 @@ class ComponentCollection(DfirNode):
             for p in c.ports:
                 if not p.connected:
                     assert p in in_and_out, f"Port {p} of component {c} is not connected"
+                else:
+                    assert p.connection.parent in self.components, f"Port {p} of component {c} is connected to an external port"
         assert all(all(p.connected or p in in_and_out for p in c.ports) for c in self.components)
 
     def __repr__(self) -> str:
@@ -562,7 +564,7 @@ class ReduceComponent(Component):
         reduce_key_out_type: DfirType,
     ) -> None:
         assert isinstance(input_type, ArrayType)
-        real_input_type = input_type.type_
+        real_input_type = input_type
         super().__init__(
             input_type,
             ArrayType(accumulated_type),
@@ -613,6 +615,11 @@ class FusedOpComponent(Component):
             UnusedEndMarkerComponent,
         )
         disallowed_unary_ops = (UnaryOp.SELECT, UnaryOp.GET_ATTR, UnaryOp.GET_LENGTH)
+        placeholder_only = False
+        if any(isinstance(comp, PlaceholderComponent) for comp in self.sub_graph.components):
+            # assert there's only PlaceholderComponent (for holding places, or there will be no ops)
+            assert all(isinstance(comp, PlaceholderComponent) for comp in self.sub_graph.components)
+            placeholder_only = True
         for comp in self.sub_graph.components:
             if isinstance(comp, UnaryOpComponent):
                 if comp.op in disallowed_unary_ops:
@@ -621,10 +628,11 @@ class FusedOpComponent(Component):
                         "Only pure arithmetic or casting operations are allowed."
                     )
             elif not isinstance(comp, allowed_base_types):
-                raise TypeError(
-                    f"Component type '{type(comp).__name__}' is not allowed inside a FusedOpComponent. "
-                    "Allowed types are: Scatter, Gather, Constant, Copy, BinOp, UnusedEndMarker, and specific UnaryOps."
-                )
+                if not placeholder_only:
+                    raise TypeError(
+                        f"Component type '{type(comp).__name__}' is not allowed inside a FusedOpComponent. "
+                        "Allowed types are: Scatter, Gather, Constant, Copy, BinOp, UnusedEndMarker, and specific UnaryOps."
+                    )
 
         # --- Port Generation Step ---
         ports = []

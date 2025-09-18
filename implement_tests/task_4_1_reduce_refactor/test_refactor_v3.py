@@ -49,6 +49,9 @@ def subgraph_to_refactor() -> tuple[ComponentCollection, GlobalGraph]:
     # map1 = map0.map_(map_func=lambda e: (e, e.weight + 1.0 + e.dst.distance, 1.0))
     # map2 is the target subgraph for our refactoring test.
     map2 = map1.map_(map_func=lambda e, const_w, const_p: (e.src.id, e.weight + const_w + const_p, e))
+    
+    # map1 = edges.map_(map_func = lambda x: x)
+    # map2 = map1.map_(map_func=lambda e: (e, 2.0, 2.0))
 
     # dfirs = g.to_dfir()
     # full_graph = remove_io_comp_pass(dfirs[0])
@@ -96,6 +99,7 @@ def test_final_refactor_with_scatter_handling(subgraph_to_refactor):
 
     # --- Run the new refactoring function ---
     refactored_cc = refactor_to_memread_fusedop(original_subgraph, g)
+    print(refactored_cc)
 
     print("\n--- Refactored Component Collection (V3 Test) ---")
     print(refactored_cc)

@@ -5,6 +5,11 @@ from typing import List, Tuple, Set
 def delete_placeholder_components_pass(
     comp_col: dfir.ComponentCollection,
 ) -> dfir.ComponentCollection:
+    # if all comp in comp_col are PlaceholderComponent, just return it
+    # because we can't create an empty ComponentCollection
+    if all(isinstance(comp, dfir.PlaceholderComponent) for comp in comp_col.components):
+        print("Warning: All components are PlaceholderComponents. Returning the original collection.")
+        return comp_col
     components_to_keep: List[dfir.Component] = []
 
     for comp in comp_col.components:

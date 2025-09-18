@@ -198,7 +198,7 @@ class ReduceBy(Node):
         assert isinstance(input_type, dfir.ArrayType)
         assert len(self._lambda_funcs) == 3
 
-        element_type = input_type.type_
+        element_type = input_type
         if len(self.reduce_key["input_ids"]) == 1:
             reduce_key_dfirs = lambda_to_dfir(self.reduce_key, [element_type], props[0], props[1])
         else:

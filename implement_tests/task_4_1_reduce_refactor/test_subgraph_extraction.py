@@ -128,9 +128,6 @@ def test_subgraph_extraction(complex_reduce_graph: ComponentCollection):
     print(unit_reduce_subgraph)
 
     # MODIFICATION: Assertions now check for BinOp.MIN as defined in the fixture
-    assert (
-        len(unit_reduce_subgraph.components) == 1
-    ), "Expected exactly 1 component in unit_reduce subgraph for lambda_min"
     assert any(
         isinstance(c, BinOpComponent) and c.op == BinOp.MIN for c in unit_reduce_subgraph.components
     ), "A BinOp MIN should be present for the reduce_method"

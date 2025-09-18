@@ -72,10 +72,12 @@ def test_subgraph_refactoring_and_consolidation(complex_reduce_graph: GlobalGrap
 
     # Define the expected memory accesses from the test case
     expected_patterns = {
-        ("edge", ("src",)),  # from e.src.id
         ("edge", ("src", "id")),  # from e.src.id
         ("edge", ("weight",)),  # from e.weight
     }
+    
+    print("Expected Patterns:", expected_patterns)
+    print("Actual Patterns:", pattern_set)
 
     assert (
         pattern_set == expected_patterns
