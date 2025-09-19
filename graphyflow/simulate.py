@@ -37,6 +37,7 @@ def _simulate_component(
         dfir.PlaceholderComponent,
         dfir.ReduceComponent,
         dfir.MemoryReadComponent,
+        dfir.FusedOpComponent,
     )
     # Check if comp is one of the base supported types or ReduceComponent
     assert isinstance(
@@ -305,7 +306,7 @@ def _simulate_component(
             current_val = base_id
             current_type = base_type
 
-            print(f"Traversing path {path} starting from {base_type} ID {base_id}")
+            # print(f"Traversing path {path} starting from {base_type} ID {base_id}")
 
             for i, key in enumerate(path):
                 if current_type == "node":
@@ -368,6 +369,56 @@ def _simulate_component(
                         outputs[p_out_name] = value
 
         return outputs
+    if isinstance(comp, dfir.FusedOpComponent):
+        # A FusedOpComponent encapsulates a subgraph. Simulating it requires
+        # running the internal subgraph via a recursive call to run_flow.
+
+        # --- PHASE 1: Map FusedOp's inputs to the subgraph's internal input ports ---
+        subgraph_inputs = {}
+        internal_port_by_id = {p.readable_id: p for p in comp.sub_graph.inputs}
+
+        for internal_port_id, external_port in comp.port_mapping.items():
+            if external_port.port_type == dfir.PortType.IN:
+                # This is an input to the FusedOp, so its value is in `inputs`.
+                # We need to find the corresponding internal port in the subgraph.
+                assert internal_port_id in internal_port_by_id
+                internal_port = internal_port_by_id[internal_port_id]
+                subgraph_inputs[internal_port] = inputs[external_port.name]
+
+        # --- PHASE 2: Identify subgraph's target outputs and entry components ---
+        subgraph_target_ports = comp.sub_graph.outputs
+        subgraph_no_input_comps = [c for c in comp.sub_graph.components if not c.in_ports]
+
+        # --- PHASE 3: Execute the subgraph simulation ---
+        internal_results = run_flow(
+            from_ports_values=subgraph_inputs,
+            to_ports=subgraph_target_ports,
+            node_props=node_props,
+            edge_props=edge_props,
+            node_prop_types=node_prop_types,
+            edge_prop_types=edge_prop_types,
+            run_no_input_components=subgraph_no_input_comps,
+        )
+
+        # --- PHASE 4: Map the subgraph's internal results to FusedOp's outputs ---
+        outputs = {}
+        # Create a reverse mapping from internal port object to its mapped external port name
+        external_pname_by_internal_port = {}
+        for internal_id, external_port in comp.port_mapping.items():
+            if external_port.port_type == dfir.PortType.OUT:
+                for p in comp.sub_graph.outputs:
+                    if p.readable_id == internal_id:
+                        external_pname_by_internal_port[p] = external_port.name
+                        break
+
+        for internal_out_port, value in internal_results.items():
+            ext_port_name = external_pname_by_internal_port.get(internal_out_port)
+            assert (
+                ext_port_name is not None
+            ), f"Internal port {internal_out_port} not found in FusedOp port mapping."
+            outputs[ext_port_name] = value
+
+        return outputs
     else:
         # Handle unsupported components
         raise NotImplementedError(
@@ -418,11 +469,14 @@ def run_flow(
         ), f"Port {start_port} in from_ports_values must be an input port."
         component = start_port.parent
         if component.uuid not in processed_components:
-            assert all(
-                in_port in computed_values for in_port in component.in_ports
-            ), f"Component {component.uuid} has inputs not in {computed_values=}"
-            ready_queue.append(component)
-            processed_components.add(component.uuid)
+            # assert all(
+            #     in_port in computed_values for in_port in component.in_ports
+            # ), f"Component {component.uuid} with {component.in_ports} has inputs not in {computed_values=}"
+            if all(in_port in computed_values for in_port in component.in_ports) or (
+                isinstance(component, dfir.ReduceComponent) and component.get_port("i_0") in computed_values
+            ):
+                ready_queue.append(component)
+                processed_components.add(component.uuid)
 
     for component in list(set(run_no_input_components) - set(ready_queue)):
         assert len(component.in_ports) == 0, f"Component {component.uuid} has input ports"
