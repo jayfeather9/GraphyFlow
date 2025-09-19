@@ -3553,6 +3553,18 @@ emconfig:
                         )
                     )
                     # The calls to demux and omega are removed.
+                    out_port = unit_reduce_func.dfir_comp.get_port("o_0")
+                    out_stream_var = (
+                        top_io_map[out_port.readable_id]
+                        if out_port.connection is None
+                        else stream_map[f"stream_{out_port.unique_name}"]
+                    )
+
+                    # unit_reduce now takes the zipped stream directly.
+                    body.append(CodeCall(unit_reduce_func, [streams["zipper_to_unit_reduce"], out_stream_var]))
+
+                    body.append(CodeComment(f"--- End of Reduce Super-Block for {comp.name} ---"))
+                    handled_unit_reduce_ids.add(comp_id)
                 elif REDUCE_MODE == 'big_pipeline':
                     body.append(
                         CodeCall(
@@ -3568,20 +3580,18 @@ emconfig:
                         CodeCall(helpers["demux"], [streams["zipper_to_demux"], streams["demux_to_omega"]])
                     )
                     body.append(CodeCall(helpers["omega"], [streams["demux_to_omega"], streams["omega_to_unit"]]))
+                    
+                    out_port = unit_reduce_func.dfir_comp.get_port("o_0")
+                    out_stream_var = (
+                        top_io_map[out_port.readable_id]
+                        if out_port.connection is None
+                        else stream_map[f"stream_{out_port.unique_name}"]
+                    )
+                    body.append(CodeCall(unit_reduce_func, [streams["omega_to_unit"], out_stream_var]))
+                    body.append(CodeComment(f"--- End of Reduce Super-Block for {comp.name} ---"))
+                    handled_unit_reduce_ids.add(comp_id)
 
-                # shared logic
-                out_port = unit_reduce_func.dfir_comp.get_port("o_0")
-                out_stream_var = (
-                    top_io_map[out_port.readable_id]
-                    if out_port.connection is None
-                    else stream_map[f"stream_{out_port.unique_name}"]
-                )
-
-                # unit_reduce now takes the zipped stream directly.
-                body.append(CodeCall(unit_reduce_func, [streams["zipper_to_unit_reduce"], out_stream_var]))
-
-                body.append(CodeComment(f"--- End of Reduce Super-Block for {comp.name} ---"))
-                handled_unit_reduce_ids.add(comp_id)
+                
 
             elif not isinstance(comp, dfir.ReduceComponent):  # This part is unchanged
                 call_params: List[HLSVar] = []
