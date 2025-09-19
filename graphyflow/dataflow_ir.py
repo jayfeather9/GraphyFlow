@@ -507,7 +507,9 @@ class UnaryOpComponent(Component):
             parallel = False
             real_input_type = input_type
         if op == UnaryOp.SELECT:
-            assert isinstance(real_input_type, TupleType)
+            assert isinstance(
+                real_input_type, TupleType
+            ), f"input type {real_input_type} is not a tuple type for {op}"
             assert select_index is not None
             inside_output_type = real_input_type.types[select_index]
         elif op == UnaryOp.GET_ATTR:
@@ -569,7 +571,7 @@ class ReduceComponent(Component):
         real_input_type = input_type
         super().__init__(
             input_type,
-            ArrayType(accumulated_type),
+            accumulated_type,
             [
                 "i_0",
                 "o_0",

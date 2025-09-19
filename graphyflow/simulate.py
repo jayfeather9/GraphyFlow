@@ -1,6 +1,6 @@
 import graphyflow.dataflow_ir as dfir
 from graphyflow.global_graph import GlobalGraph
-from typing import Dict, List, Tuple, Any, Callable, Optional, Set
+from typing import Dict, List, Tuple, Any, Callable, Optional, Set, Union
 import collections
 
 
@@ -17,6 +17,8 @@ def _simulate_component(
     inputs: Dict[str, Any],
     node_props: Dict[int, Dict[str, Any]],
     edge_props: Dict[int, Dict[str, Any]],
+    node_prop_types: Dict[str, dfir.DfirType],
+    edge_prop_types: Dict[str, dfir.DfirType],
 ) -> Dict[str, Any]:
     """
     Simulates a single DFIR component based on its type and inputs.
@@ -33,7 +35,8 @@ def _simulate_component(
         dfir.ConditionalComponent,
         dfir.CollectComponent,
         dfir.PlaceholderComponent,
-        dfir.ReduceComponent,  # Add ReduceComponent here as _simulate_component handles it
+        dfir.ReduceComponent,
+        dfir.MemoryReadComponent,
     )
     # Check if comp is one of the base supported types or ReduceComponent
     assert isinstance(
@@ -184,7 +187,12 @@ def _simulate_component(
 
         # Assume comp has a 'parallel' attribute
         if getattr(comp, "parallel", False):
-            assert isinstance(input_val, list), "Parallel UnaryOp requires list input"
+            assert isinstance(
+                input_val, (list, tuple)
+            ), f"Parallel UnaryOp requires list input, got {type(input_val)}"
+            print(
+                f"UnaryOpComponent {comp.op} operating in parallel mode on input: {input_val}"
+            )  # Debug print
             result = [op_func(item) for item in input_val]
         else:
             result = op_func(input_val)
@@ -237,8 +245,11 @@ def _simulate_component(
         reduce_exit = find_subgraph_exit_port(comp.get_port("i_reduce_unit_end"))
         groups = {}
         for element in input_array:
-            key_result_dict = run_flow({key_entry: element}, [key_exit], node_props, edge_props)
-            key = key_result_dict[key_exit]
+            key_result_dict = run_flow(
+                {key_entry: (element,)}, [key_exit], node_props, edge_props, node_prop_types, edge_prop_types
+            )
+            assert len(key_result_dict[key_exit]) == 1
+            key = key_result_dict[key_exit][0]
             if key not in groups:
                 groups[key] = []
             groups[key].append(element)
@@ -251,32 +262,112 @@ def _simulate_component(
             for element in elements_in_group:
                 if is_first:
                     reduction_result_dict = run_flow(
-                        {transform_entry: element},
+                        {transform_entry: (element,)},
                         [transform_exit],
                         node_props,
                         edge_props,
+                        node_prop_types,
+                        edge_prop_types,
                     )
-                    accumulated_value = reduction_result_dict[transform_exit]
+                    assert len(reduction_result_dict[transform_exit]) == 1
+                    accumulated_value = reduction_result_dict[transform_exit][0]
                     is_first = False
                 else:
                     transform_result_dict = run_flow(
-                        {transform_entry: element},
+                        {transform_entry: (element,)},
                         [transform_exit],
                         node_props,
                         edge_props,
+                        node_prop_types,
+                        edge_prop_types,
                     )
                     reduction_result_dict = run_flow(
                         {
-                            accum_entry_0: accumulated_value,
-                            accum_entry_1: transform_result_dict[transform_exit],
+                            accum_entry_0: (accumulated_value,),
+                            accum_entry_1: (transform_result_dict[transform_exit][0],),
                         },
                         [reduce_exit],
                         node_props,
                         edge_props,
+                        node_prop_types,
+                        edge_prop_types,
                     )
-                    accumulated_value = reduction_result_dict[reduce_exit]
+                    assert len(reduction_result_dict[reduce_exit]) == 1
+                    accumulated_value = reduction_result_dict[reduce_exit][0]
             final_results.append(accumulated_value)
         return {"o_0": final_results}
+    if isinstance(comp, dfir.MemoryReadComponent):
+        outputs = {}
+
+        # --- Helper function for traversing properties ---
+        def _get_prop_from_path(base_id: int, base_type: str, path: List[Union[str, int]]):
+            """Traverses node/edge props to get a final value."""
+            current_val = base_id
+            current_type = base_type
+
+            print(f"Traversing path {path} starting from {base_type} ID {base_id}")
+
+            for i, key in enumerate(path):
+                if current_type == "node":
+                    assert current_val in node_props, f"Node ID {current_val} not found in node_props."
+                    current_val = node_props[current_val][key]
+                    current_type = node_prop_types[key].type_name
+                elif current_type == "edge":
+                    assert current_val in edge_props, f"Edge ID {current_val} not found in edge_props."
+                    prop = edge_props[current_val][key]
+                    current_type = edge_prop_types[key].type_name
+                    current_val = prop
+                    # If we get a special type (like 'src' or 'dst'), update type for next iteration
+                    if current_type not in ("node", "edge"):
+                        # Ensure we are at the end of the path if we hit a non-special type value
+                        assert (
+                            i == len(path) - 1
+                        ), f"Path traversal for {path} ended prematurely at key '{key}'."
+                else:
+                    raise TypeError(f"Unsupported base type for property access: {current_type}")
+            return current_val
+
+        # --- PHASE 1: Initialize output lists ---
+        for port in comp.out_ports:
+            outputs[port.name] = [] if comp.parallel else None
+
+        # --- PHASE 2: Group patterns by their input source ---
+        # This is more efficient than iterating all patterns for each input ID.
+        patterns_by_input = collections.defaultdict(list)
+        for in_idx, base_type, path in comp.access_pattern:
+            p_in_name = f"i_{in_idx}_{base_type}_id"
+            patterns_by_input[p_in_name].append((in_idx, base_type, path))
+
+        # --- PHASE 3: Process each input and its associated patterns ---
+        for p_in_name, patterns in patterns_by_input.items():
+            base_ids = inputs[p_in_name]
+
+            if not comp.parallel:
+                # Ensure scalar input for non-parallel mode
+                assert not isinstance(base_ids, list), "MemoryRead in scalar mode received a list of IDs."
+                base_ids = [base_ids]  # Wrap for uniform processing
+
+            for base_id in base_ids:
+                for in_idx, base_type, path in patterns:
+                    # Get the corresponding output port name for this pattern
+                    p_out_name = comp.pattern_to_pname.get((in_idx, (base_type, tuple(path))))
+                    assert (
+                        p_out_name is not None
+                    ), f"Could not find output port for pattern {(in_idx, base_type, path)}"
+
+                    # Fetch the data
+                    value = _get_prop_from_path(base_id, base_type, path)
+
+                    if comp.parallel:
+                        outputs[p_out_name].append(value)
+                    else:
+                        # For scalar mode, ensure we only assign once
+                        assert (
+                            outputs[p_out_name] is None
+                        ), f"Output port {p_out_name} already has a value in scalar mode."
+                        outputs[p_out_name] = value
+
+        return outputs
     else:
         # Handle unsupported components
         raise NotImplementedError(
@@ -289,6 +380,8 @@ def run_flow(
     to_ports: List[dfir.Port],
     node_props: Dict[int, Dict[str, Any]],
     edge_props: Dict[int, Dict[str, Any]],
+    node_prop_types: Dict[str, dfir.DfirType],
+    edge_prop_types: Dict[str, dfir.DfirType],
     run_no_input_components: List[dfir.Component] = [],
     data_for_io_comp=None,
 ) -> Dict[dfir.Port, Any]:
@@ -371,7 +464,9 @@ def run_flow(
             ), f"IO component {component_to_run.uuid} is not an input component"
             outputs = {"o_0": data_for_io_comp[component_to_run.output_type.type_.type_name]}
         else:
-            outputs = _simulate_component(component_to_run, current_inputs, node_props, edge_props)
+            outputs = _simulate_component(
+                component_to_run, current_inputs, node_props, edge_props, node_prop_types, edge_prop_types
+            )
         # print(f"Finished running component {component_to_run}, outputs: {outputs}")
 
         # --- Process outputs and update state ---
@@ -490,6 +585,8 @@ class DfirSimulator:
             to_ports=to_ports,
             node_props=self.node_data,
             edge_props=self.edge_data,
+            node_prop_types=self.node_properties_schema,
+            edge_prop_types=self.edge_properties_schema,
             run_no_input_components=no_input_components,
             data_for_io_comp={
                 "node": [node_id for node_id in self.node_data.keys()],
@@ -516,8 +613,8 @@ if __name__ == "__main__":
     print("Running Simulation Test...")
 
     g = GlobalGraph(properties={"node": {"weight": dfir.IntType()}, "edge": {}})
-    nodes = g.add_graph_input("edge")
-    src_dst_weight = nodes.map_(map_func=lambda edge: (edge.src.weight, edge.dst, edge))
+    edges = g.add_graph_input("edge")
+    src_dst_weight = edges.map_(map_func=lambda edge: (edge.src.weight, edge.dst, edge))
     test = src_dst_weight.reduce_by(
         reduce_key=lambda data: data[1],
         reduce_transform=lambda data: data,
