@@ -1,5 +1,9 @@
 import graphyflow.dataflow_ir as dfir
-from typing import List, Tuple, Set
+from typing import List, Tuple, Set, Dict
+import collections
+from graphyflow.dataflow_ir_utils import _extract_subgraph_from_reduce, refactor_to_memread_fusedop
+from graphyflow.reduce_analysis import MemoryAccessInfo, SubgraphAnalysisResult, ReduceAnalysisResult
+from graphyflow.global_graph import GlobalGraph
 
 
 def delete_placeholder_components_pass(
@@ -68,20 +72,152 @@ def remove_io_comp_pass(comp_col: dfir.ComponentCollection) -> dfir.ComponentCol
     return comp_col
 
 
-def simplify_reduce_comp_pass(
-    comp_col: dfir.ComponentCollection,
-) -> dfir.ComponentCollection:
-    """Make reduce comp satisfy the following conditions:
-    1. All the wrapped data types are extracted to basic types unless
-       they are nodes or edges and is only used to pass as part of result.
-    2. The key & transform is simplified to only 1 memory access component
-       and 1 fused calculation component.
+def _analyze_refactored_cc(
+    refactored_cc: dfir.ComponentCollection,
+) -> Tuple[List[MemoryAccessInfo], SubgraphAnalysisResult]:
     """
-    for comp in comp_col.components:
-        if isinstance(comp, dfir.ReduceComponent):
-            pass
-    # tmp
-    return comp_col
+    Analyzes a ComponentCollection that has already been processed by
+    refactor_to_memread_fusedop to extract all necessary pathing information.
+    This version correctly handles multiple ScatterComponents.
+    """
+    # --- PHASE 1: Find all key components in the refactored graph ---
+    fused_op = next((c for c in refactored_cc.components if isinstance(c, dfir.FusedOpComponent)), None)
+    mem_read_op = next((c for c in refactored_cc.components if isinstance(c, dfir.MemoryReadComponent)), None)
+    # Find all scatter components, not just the first one.
+    scatter_ops = [c for c in refactored_cc.components if isinstance(c, dfir.ScatterComponent)]
+    assert fused_op is not None, "Refactored graph must contain a FusedOpComponent."
+
+    mem_accesses: List[MemoryAccessInfo] = []
+    provenance: Dict[dfir.Port, Union[MemoryAccessInfo, Tuple[int, tuple], str]] = {}
+
+    # Map each scatter component to the index of the subgraph input that feeds it.
+    scatter_to_input_idx_map = {
+        sc: refactored_cc.inputs.index(sc.in_ports[0])
+        for sc in scatter_ops
+        if sc.in_ports[0] in refactored_cc.inputs
+    }
+
+    # --- PHASE 2: Analyze memory accesses by tracing from MemoryRead to Scatter ---
+    if mem_read_op:
+        for in_idx_mem, base_type, mem_path in mem_read_op.access_pattern:
+            p_in_mem = mem_read_op.get_port(f"i_{in_idx_mem}_{base_type}_id")
+
+            scatter_path_to_base = tuple()
+            # The `in_idx` for the MemoryAccessInfo should be the *subgraph's* input index,
+            # not the MemoryReadComponent's relative input index.
+            origin_subgraph_in_idx = -1
+
+            if p_in_mem.connected:
+                upstream_scatter = p_in_mem.connection.parent
+                if isinstance(upstream_scatter, dfir.ScatterComponent):
+                    p_out_scatter = p_in_mem.connection
+                    # The scatter path is the index of the output port on its Scatter component.
+                    scatter_path_to_base = (upstream_scatter.out_ports.index(p_out_scatter),)
+                    # Find the original subgraph input index that feeds this scatter.
+                    origin_subgraph_in_idx = scatter_to_input_idx_map.get(upstream_scatter, -1)
+
+            # Determine output type for this specific access
+            p_out_name = mem_read_op.pattern_to_pname[(in_idx_mem, (base_type, tuple(mem_path)))]
+            output_type = mem_read_op.get_port(p_out_name).data_type
+
+            info = MemoryAccessInfo(
+                in_idx=origin_subgraph_in_idx,
+                base_type=base_type,
+                mem_path=tuple(mem_path),
+                scatter_path_to_base=scatter_path_to_base,
+                output_type=output_type,
+            )
+            mem_accesses.append(info)
+
+    # --- PHASE 3: Determine the provenance of each FusedOp input ---
+    for p_in_fused in fused_op.in_ports:
+        if not p_in_fused.connected:
+            # Case: The FusedOp input is a main input of the refactored graph.
+            in_idx = refactored_cc.inputs.index(p_in_fused)
+            provenance[p_in_fused] = (in_idx, tuple())
+            continue
+
+        upstream_comp = p_in_fused.connection.parent
+
+        if upstream_comp == mem_read_op:
+            # Input comes from memory. Find the matching MemoryAccessInfo object.
+            p_out_mem = p_in_fused.connection
+            pattern_key = next(k for k, v in mem_read_op.pattern_to_pname.items() if v == p_out_mem.name)
+            mem_info = next(info for info in mem_accesses if info.mem_path == tuple(pattern_key[1][1]))
+            provenance[p_in_fused] = mem_info
+
+        elif isinstance(upstream_comp, dfir.ScatterComponent):
+            # Input is a direct passthrough from a scatter.
+            p_out_scatter = p_in_fused.connection
+            in_idx = scatter_to_input_idx_map.get(upstream_comp, -1)
+            scatter_path = (upstream_comp.out_ports.index(p_out_scatter),)
+            provenance[p_in_fused] = (in_idx, scatter_path)
+
+        elif isinstance(upstream_comp, dfir.ConstantComponent):
+            provenance[p_in_fused] = "constant"
+
+        else:
+            raise ValueError(f"Unhandled FusedOp input source: {type(upstream_comp)}")
+
+    analysis = SubgraphAnalysisResult(refactored_fused_op=fused_op, input_provenance=provenance)
+    return mem_accesses, analysis
+
+
+def simplify_reduce_comp_pass(
+    comp_col: dfir.ComponentCollection, g: GlobalGraph
+) -> Dict[str, ReduceAnalysisResult]:
+    """
+    Analyzes all ReduceComponents within a ComponentCollection and produces a
+    detailed refactoring plan for each, without modifying the graph.
+
+    This implementation analyzes the graph *after* it has been refactored
+    to deduce all required pathing and memory access information.
+    """
+    analysis_results: Dict[str, ReduceAnalysisResult] = {}
+    reduce_components = [c for c in comp_col.components if isinstance(c, dfir.ReduceComponent)]
+
+    for reduce_comp in reduce_components:
+        # --- PHASE 1: Refactor each subgraph individually ---
+        key_subgraph_orig = _extract_subgraph_from_reduce(reduce_comp, "key")
+        key_refactored_cc = refactor_to_memread_fusedop(key_subgraph_orig, g)
+
+        transform_subgraph_orig = _extract_subgraph_from_reduce(reduce_comp, "transform")
+        transform_refactored_cc = refactor_to_memread_fusedop(transform_subgraph_orig, g)
+
+        unit_subgraph_orig = _extract_subgraph_from_reduce(reduce_comp, "unit_reduce")
+        unit_refactored_cc = refactor_to_memread_fusedop(unit_subgraph_orig, g)
+        assert not any(isinstance(c, dfir.MemoryReadComponent) for c in unit_refactored_cc.components)
+
+        # --- PHASE 2: Analyze the refactored subgraphs to get paths and provenance ---
+        key_mem_accesses, key_analysis = _analyze_refactored_cc(key_refactored_cc)
+        transform_mem_accesses, transform_analysis = _analyze_refactored_cc(transform_refactored_cc)
+        unit_mem_accesses, unit_analysis = _analyze_refactored_cc(unit_refactored_cc)
+        assert not unit_mem_accesses, "unit_reduce subgraph should not perform memory access."
+
+        # --- PHASE 3: Consolidate results and formulate final plan ---
+        # Create a unique set of all memory accesses required
+        consolidated_mem_access = list({info for info in key_mem_accesses + transform_mem_accesses})
+
+        # The restructuring plan describes what the new, unified input stream should look like
+        restructured_plan = {}
+        for info in consolidated_mem_access:
+            # Key describes the data, value describes its origin
+            plan_key = f"mem_{info.base_type}_{'_'.join(map(str, info.mem_path))}"
+            restructured_plan[plan_key] = info
+
+        # A full implementation would also add passthrough paths to the plan
+        # For now, this is sufficient to verify the memory analysis.
+
+        analysis_results[reduce_comp.readable_id] = ReduceAnalysisResult(
+            key_analysis=key_analysis,
+            transform_analysis=transform_analysis,
+            unit_analysis=unit_analysis,
+            consolidated_mem_access=consolidated_mem_access,
+            restructured_input_plan=restructured_plan,
+        )
+
+    print(f"Reduce analysis complete. Found and analyzed {len(analysis_results)} ReduceComponents.")
+    return analysis_results
 
 
 if __name__ == "__main__":

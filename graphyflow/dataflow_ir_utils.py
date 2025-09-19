@@ -8,7 +8,6 @@ from torch import scatter
 from graphyflow.dataflow_ir_datatype import *
 from graphyflow.dataflow_ir import *
 from graphyflow.global_graph import GlobalGraph
-from graphyflow.passes import delete_placeholder_components_pass
 from graphyflow.visualize_ir import visualize_components
 from dataclasses import dataclass, field
 
@@ -664,6 +663,7 @@ def refactor_to_memread_fusedop(
         outputs=waiting_out_ports,
     )
     # print(f"input ports: {input_ports}")
+    from graphyflow.passes import delete_placeholder_components_pass
 
     fused_comp_col = delete_placeholder_components_pass(fused_comp_col)
 
