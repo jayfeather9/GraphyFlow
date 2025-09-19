@@ -43,9 +43,9 @@ def complex_reduce_graph() -> ComponentCollection:
     # The ReduceBy operation to be tested
     reduced_stream = tuple_stream.reduce_by(
         reduce_key=lambda dist, e: e.src.id,
-        reduce_transform=lambda dist, e: (dist + e.weight),
+        reduce_transform=lambda dist, e: (e.src.distance, dist + e.weight),
         # MODIFICATION: Using lambda_min for a more robust test that maps to a single BinOp
-        reduce_method=lambda_min,
+        reduce_method=lambda x1, x2: (x1[0], lambda_min(lambda_min(x1[0], x2[1] + x1[1]), x2[0])),
     )
 
     # Convert to DFIR and clean it up

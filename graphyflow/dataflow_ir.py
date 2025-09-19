@@ -113,7 +113,9 @@ class ComponentCollection(DfirNode):
                 if not p.connected:
                     assert p in in_and_out, f"Port {p} of component {c} is not connected"
                 else:
-                    assert p.connection.parent in self.components, f"Port {p} of component {c} is connected to an external port"
+                    assert (
+                        p.connection.parent in self.components
+                    ), f"Port {p} of component {c} is connected to an external port"
         assert all(all(p.connected or p in in_and_out for p in c.ports) for c in self.components)
 
     def __repr__(self) -> str:
@@ -708,18 +710,20 @@ class MemoryReadComponent(Component):
         specific_port_types = {}
 
         # Dynamically generate an output port for each item in the access pattern.
-        for base_type, path in self.access_pattern:
+        for in_idx, base_type, path in self.access_pattern:
             # Create a sanitized, unique name for the output port.
             # e.g., ("edge", ["weight_tuple", 1]) -> "o_edge_weight_tuple_1"
             path_str = "_".join(map(str, path))
-            port_name = f"o_{base_type}_{path_str}"
+            port_name = f"o_{in_idx}_{base_type}_{path_str}"
             ports.append(port_name)
-            self.pattern_to_pname[(base_type, tuple(path))] = port_name
-            
+            self.pattern_to_pname[(in_idx, (base_type, tuple(path)))] = port_name
+
             assert base_type in ["node", "edge"], f"Base type must be 'node' or 'edge', got '{base_type}'"
-            if f"i_{base_type}_id" not in ports:
-                ports.append(f"i_{base_type}_id")
-                specific_port_types[f"i_{base_type}_id"] = ArrayType(base_id_type) if parallel else base_id_type
+            if f"i_{in_idx}_{base_type}_id" not in ports:
+                ports.append(f"i_{in_idx}_{base_type}_id")
+                specific_port_types[f"i_{in_idx}_{base_type}_id"] = (
+                    ArrayType(base_id_type) if parallel else base_id_type
+                )
 
             # Check if the user provided a type for this generated port.
             if port_name not in output_types:
@@ -731,9 +735,9 @@ class MemoryReadComponent(Component):
             # Assign the specified type, wrapping in ArrayType if parallel.
             data_type = output_types[port_name]
             # assert if parallel, must be arraytype
-            assert not (parallel and not isinstance(data_type, ArrayType)), (
-                f"Output type for port '{port_name}' must be an ArrayType since 'parallel' is True."
-            )
+            assert not (
+                parallel and not isinstance(data_type, ArrayType)
+            ), f"Output type for port '{port_name}' must be an ArrayType since 'parallel' is True."
             specific_port_types[port_name] = data_type
 
         super().__init__(
@@ -751,12 +755,13 @@ class MemoryReadComponent(Component):
         """
         tree = {}
         print("Building access tree from pattern:", self.access_pattern)
-        for base_type, path in self.access_pattern:
+        for in_idx, base_type, path in self.access_pattern:
             if base_type not in ["node", "edge"]:
                 raise ValueError(
                     f"Base type in access pattern must be 'node' or 'edge', but got '{base_type}'."
                 )
-            current_level = tree.setdefault(base_type, {})
+            current_level = tree.setdefault(in_idx, {})
+            current_level = current_level.setdefault(base_type, {})
             for key in path:
                 current_level = current_level.setdefault(key, {})
         return tree

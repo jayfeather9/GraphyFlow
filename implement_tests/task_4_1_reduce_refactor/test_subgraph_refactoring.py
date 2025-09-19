@@ -68,14 +68,15 @@ def test_subgraph_refactoring_and_consolidation(complex_reduce_graph: GlobalGrap
     print(unified_pattern)
 
     # Convert to a set of tuples for easy comparison
-    pattern_set = {(base, tuple(path)) for base, path in unified_pattern}
+    pattern_set = {(in_idx, base, tuple(path)) for in_idx, base, path in unified_pattern}
 
     # Define the expected memory accesses from the test case
     expected_patterns = {
-        ("edge", ("src", "id")),  # from e.src.id
-        ("edge", ("weight",)),  # from e.weight
+        (0, "edge", ("src", "distance")),
+        (0, "edge", ("src", "id")),
+        (0, "edge", ("weight",)),
     }
-    
+
     print("Expected Patterns:", expected_patterns)
     print("Actual Patterns:", pattern_set)
 
