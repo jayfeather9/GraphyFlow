@@ -240,9 +240,7 @@ class Component(DfirNode):
         self.output_type = output_type
         self.ports = [Port(port, self) for port in ports]
         self.in_ports = [p for p in self.ports if p.port_type == PortType.IN]
-        self.input_port_num = len(self.in_ports)
         self.out_ports = [p for p in self.ports if p.port_type == PortType.OUT]
-        self.output_port_num = len(self.out_ports)
         self.parallel = parallel
         if specific_port_types is not None:
             for port_name, data_type in specific_port_types.items():
@@ -594,6 +592,82 @@ class ReduceComponent(Component):
                 "o_reduce_unit_start_1": accumulated_type,
             },
         )
+        self._port_groups: Dict[str, List[Port]] = {
+            "global": [],
+            "key": [],
+            "transform": [],
+            "unit": [],
+        }
+        # Categorize initial ports
+        for p in self.ports:
+            if p.name in ["i_0", "o_0"]:
+                self._port_groups["global"].append(p)
+            elif "key" in p.name:
+                self._port_groups["key"].append(p)
+            elif "transform" in p.name:
+                self._port_groups["transform"].append(p)
+            elif "unit" in p.name:
+                self._port_groups["unit"].append(p)
+
+    def _add_io_port_pair(self, group: str, name_base: str, data_type: DfirType) -> Tuple[Port, Port]:
+        """
+        Adds a pair of external input and internal output ports to the component.
+        This is a ReduceComponent-specific method for its reconstruction.
+
+        Args:
+            group: The functional group, e.g., 'key', 'transform'.
+            name_base: A descriptive name for the data, e.g., 'passthrough_0'.
+            data_type: The DfirType of the data stream.
+
+        Returns:
+            A tuple of (external_input_port, internal_output_port).
+        """
+        assert group in self._port_groups, f"Invalid port group: {group}"
+
+        # Create the external-facing input port
+        p_in_name = f"i_{group}_{name_base}"
+        p_in = Port(p_in_name, self)
+        p_in.data_type = data_type
+
+        # Create the internal-facing output port
+        p_out_name = f"o_{group}_{name_base}"
+        p_out = Port(p_out_name, self)
+        p_out.data_type = data_type
+
+        # assert no same name ports exist
+        assert all(p.name != p_in_name for p in self.ports), f"Port name {p_in_name} already exists."
+        assert all(p.name != p_out_name for p in self.ports), f"Port name {p_out_name} already exists."
+
+        # Add ports to all internal lists for consistency
+        self.ports.extend([p_in, p_out])
+        self.in_ports.append(p_in)
+        self.out_ports.append(p_out)
+        self._port_groups[group].extend([p_in, p_out])
+
+        return p_in, p_out
+
+    def _remove_port_by_name(self, name: str) -> None:
+        """
+        Removes a port from the component by its name.
+        This is a ReduceComponent-specific method for its reconstruction.
+
+        Args:
+            name: The exact name of the port to remove (e.g., 'i_0').
+        """
+        port_to_remove = self.get_port(name)
+        assert not port_to_remove.connected, f"Cannot remove port '{name}' because it is connected."
+
+        # Remove from primary lists
+        self.ports.remove(port_to_remove)
+        if port_to_remove.port_type == PortType.IN:
+            self.in_ports.remove(port_to_remove)
+        else:
+            self.out_ports.remove(port_to_remove)
+
+        # Remove from any group it might be in
+        for group in self._port_groups.values():
+            if port_to_remove in group:
+                group.remove(port_to_remove)
 
 
 class FusedOpComponent(Component):
