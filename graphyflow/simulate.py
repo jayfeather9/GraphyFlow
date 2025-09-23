@@ -134,6 +134,7 @@ class DfirSimulator:
             A dictionary mapping the target output ports (from to_ports) to their
             computed values.
         """
+        print(f"Starting run_flow with {from_ports_values} to {to_ports}")
         computed_values: Dict[dfir.Port, Any] = from_ports_values.copy()
         target_ports_set = set(to_ports)
         computed_target_ports: Set[dfir.Port] = set()
@@ -181,11 +182,11 @@ class DfirSimulator:
             current_inputs = {}
             if isinstance(component_to_run, dfir.ReduceComponent):
                 # get the "i_0" port and assert it is in computed_values
-                i_0_port = component_to_run.get_port("i_0")
-                assert (
-                    i_0_port in computed_values
-                ), f"Component {component_to_run.uuid} has input port 'i_0' not in {computed_values=}"
-                current_inputs["i_0"] = computed_values[i_0_port]
+                input_ports = component_to_run.get_global_input_ports()
+                assert all(
+                    port in computed_values for port in input_ports
+                ), f"ReduceComponent {component_to_run.uuid} missing global inputs"
+                current_inputs = {port.name: computed_values[port] for port in input_ports}
             else:
                 assert all(
                     in_port in computed_values for in_port in component_to_run.in_ports
@@ -223,12 +224,14 @@ class DfirSimulator:
                 downstream_comp = connected_in_port.parent
 
                 # Check if downstream component is now ready
-                is_ready = all(in_port in computed_values for in_port in downstream_comp.in_ports)
-                if (
-                    isinstance(downstream_comp, dfir.ReduceComponent)
-                    and downstream_comp.get_port("i_0") in computed_values
-                ):
-                    is_ready = True
+                if isinstance(downstream_comp, dfir.ReduceComponent):
+                    # For a ReduceComponent, it's ready if all its global inputs are available.
+                    global_input_ports = downstream_comp.get_global_input_ports()
+                    is_ready = all(p in computed_values for p in global_input_ports)
+                else:
+                    # For all other components, they are ready if all their inputs are available.
+                    is_ready = all(p in computed_values for p in downstream_comp.in_ports)
+
                 if (
                     is_ready
                     and downstream_comp not in ready_queue
@@ -466,64 +469,99 @@ class DfirSimulator:
             return {"o_0": output_list}
 
         if isinstance(comp, dfir.ReduceComponent):
-            input_array = inputs["i_0"]
-            assert isinstance(input_array, list), "ReduceComponent expects 'i_0' to be a list"
+            # This simulation logic is for the NEW, optimized ReduceComponent.
+            # It acts as an orchestrator for its attached FusedOp subgraphs.
 
-            def find_subgraph_entry_port(start_port: dfir.Port) -> dfir.Port:
-                assert start_port.port_type == dfir.PortType.OUT
-                assert start_port.connected
-                return start_port.connection
+            # --- PHASE 1: Prepare inputs for Key and Transform FusedOps ---
+            global_input_ports = comp.get_global_input_ports()
 
-            def find_subgraph_exit_port(end_port: dfir.Port) -> dfir.Port:
-                assert end_port.port_type == dfir.PortType.IN
-                assert end_port.connected
-                return end_port.connection
+            comp_ext_int_map = []
 
-            key_entry = find_subgraph_entry_port(comp.get_port("o_reduce_key_in"))
-            key_exit = find_subgraph_exit_port(comp.get_port("i_reduce_key_out"))
-            transform_entry = find_subgraph_entry_port(comp.get_port("o_reduce_transform_in"))
-            transform_exit = find_subgraph_exit_port(comp.get_port("i_reduce_transform_out"))
-            accum_entry_0 = find_subgraph_entry_port(comp.get_port("o_reduce_unit_start_0"))
-            accum_entry_1 = find_subgraph_entry_port(comp.get_port("o_reduce_unit_start_1"))
-            reduce_exit = find_subgraph_exit_port(comp.get_port("i_reduce_unit_end"))
-            groups = {}
-            for element in input_array:
-                key_result_dict = self.run_flow({key_entry: (element,)}, [key_exit])
-                assert len(key_result_dict[key_exit]) == 1
-                key = key_result_dict[key_exit][0]
-                if key not in groups:
-                    groups[key] = []
-                groups[key].append(element)
+            if len(comp.harness_map) == 0:
+                # not optimized reduce component
+                comp_ext_int_map = [
+                    (comp.get_port("i_0"), comp.get_port("o_reduce_key_in")),
+                    (comp.get_port("i_0"), comp.get_port("o_reduce_transform_in")),
+                ]
+            else:
+                # Sanity check: The harness map must exactly match the global inputs.
+                assert set(comp.harness_map.keys()) == set(
+                    global_input_ports
+                ), f"{set(comp.harness_map.keys())} vs {set(global_input_ports)}"
+                comp_ext_int_map = list(comp.harness_map.items())
+
+            key_fused_op_inputs = {}
+            transform_fused_op_inputs = {}
+
+            for ext_in_port, int_out_port in comp_ext_int_map:
+                assert ext_in_port.name in inputs, f"External input port {ext_in_port} not found in inputs"
+                # Get the corresponding internal port that feeds a FusedOp
+                assert int_out_port.connected, "Internal harness port must be connected to a FusedOp."
+
+                fused_op_in_port = int_out_port.connection
+                data = inputs[ext_in_port.name]
+
+                # Determine if this data is for the key or transform subgraph
+                group_found = False
+                for group_name, port_list in comp._port_groups.items():
+                    if int_out_port in port_list:
+                        if group_name == "key":
+                            key_fused_op_inputs[fused_op_in_port] = data
+                        elif group_name == "transform":
+                            transform_fused_op_inputs[fused_op_in_port] = data
+                        group_found = True
+                        break
+                assert group_found
+
+            # --- PHASE 2: Simulate Key and Transform FusedOps to get results ---
+            key_fused_op_out_port = comp.get_port("i_reduce_key_out").connection
+
+            transform_fused_op_out_port = comp.get_port("i_reduce_transform_out").connection
+
+            key_results_dict = self.run_flow(
+                from_ports_values=key_fused_op_inputs, to_ports=[key_fused_op_out_port]
+            )
+            all_keys = key_results_dict[key_fused_op_out_port]
+
+            transform_results_dict = self.run_flow(
+                from_ports_values=transform_fused_op_inputs, to_ports=[transform_fused_op_out_port]
+            )
+            all_transforms = transform_results_dict[transform_fused_op_out_port]
+
+            # --- PHASE 3: Group transformed values by key ---
+            assert len(all_keys) == len(all_transforms)
+            groups = collections.defaultdict(list)
+            for key, value in zip(all_keys, all_transforms):
+                groups[key].append(value)
+
+            # --- PHASE 4: Accumulate values within each group using the unit subgraph ---
             final_results = []
+
+            accum_entry_0 = comp.get_port("o_reduce_unit_start_0").connection
+            accum_entry_1 = comp.get_port("o_reduce_unit_start_1").connection
+            reduce_exit = comp.get_port("i_reduce_unit_end").connection
+
             for key, elements_in_group in groups.items():
                 if not elements_in_group:
                     continue
-                accumulated_value = None
-                is_first = True
-                for element in elements_in_group:
-                    if is_first:
-                        reduction_result_dict = self.run_flow(
-                            {transform_entry: (element,)},
-                            [transform_exit],
-                        )
-                        assert len(reduction_result_dict[transform_exit]) == 1
-                        accumulated_value = reduction_result_dict[transform_exit][0]
-                        is_first = False
-                    else:
-                        transform_result_dict = self.run_flow(
-                            {transform_entry: (element,)},
-                            [transform_exit],
-                        )
-                        reduction_result_dict = self.run_flow(
-                            {
-                                accum_entry_0: (accumulated_value,),
-                                accum_entry_1: (transform_result_dict[transform_exit][0],),
-                            },
-                            [reduce_exit],
-                        )
-                        assert len(reduction_result_dict[reduce_exit]) == 1
-                        accumulated_value = reduction_result_dict[reduce_exit][0]
+
+                print(f"Reducing group with key {key} and elements {elements_in_group}")
+                accumulated_value = elements_in_group[0]
+
+                for i in range(1, len(elements_in_group)):
+                    current_element = elements_in_group[i]
+
+                    reduction_result_dict = self.run_flow(
+                        from_ports_values={
+                            accum_entry_0: [accumulated_value],
+                            accum_entry_1: [current_element],
+                        },
+                        to_ports=[reduce_exit],
+                    )
+                    accumulated_value = reduction_result_dict[reduce_exit]
+
                 final_results.append(accumulated_value)
+
             return {"o_0": final_results}
         if isinstance(comp, dfir.MemoryReadComponent):
             outputs = {}

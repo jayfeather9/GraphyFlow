@@ -598,6 +598,7 @@ class ReduceComponent(Component):
             "transform": [],
             "unit": [],
         }
+        self.harness_map: Dict[Port, Port] = {}
         # Categorize initial ports
         for p in self.ports:
             if p.name in ["i_0", "o_0"]:
@@ -609,7 +610,9 @@ class ReduceComponent(Component):
             elif "unit" in p.name:
                 self._port_groups["unit"].append(p)
 
-    def _add_io_port_pair(self, group: str, name_base: str, data_type: DfirType) -> Tuple[Port, Port]:
+    def _add_io_port_pair(
+        self, in_group: str, out_group: str, name_base: str, data_type: DfirType
+    ) -> Tuple[Port, Port]:
         """
         Adds a pair of external input and internal output ports to the component.
         This is a ReduceComponent-specific method for its reconstruction.
@@ -622,15 +625,16 @@ class ReduceComponent(Component):
         Returns:
             A tuple of (external_input_port, internal_output_port).
         """
-        assert group in self._port_groups, f"Invalid port group: {group}"
+        assert in_group in self._port_groups, f"Invalid input port group: {in_group}"
+        assert out_group in self._port_groups, f"Invalid output port group: {out_group}"
 
         # Create the external-facing input port
-        p_in_name = f"i_{group}_{name_base}"
+        p_in_name = f"i_{in_group}_{name_base}"
         p_in = Port(p_in_name, self)
         p_in.data_type = data_type
 
         # Create the internal-facing output port
-        p_out_name = f"o_{group}_{name_base}"
+        p_out_name = f"o_{out_group}_{name_base}"
         p_out = Port(p_out_name, self)
         p_out.data_type = data_type
 
@@ -642,7 +646,9 @@ class ReduceComponent(Component):
         self.ports.extend([p_in, p_out])
         self.in_ports.append(p_in)
         self.out_ports.append(p_out)
-        self._port_groups[group].extend([p_in, p_out])
+        self._port_groups[in_group].append(p_in)
+        self._port_groups[out_group].append(p_out)
+        self.harness_map[p_in] = p_out
 
         return p_in, p_out
 
@@ -668,6 +674,15 @@ class ReduceComponent(Component):
         for group in self._port_groups.values():
             if port_to_remove in group:
                 group.remove(port_to_remove)
+
+    def get_global_input_ports(self) -> List[Port]:
+        """
+        Gets all external-facing input ports of the ReduceComponent.
+        This includes the main data input (i_0) for an un-optimized
+        component, or the dynamically added data ports (i_global_data_*)
+        for an optimized one.
+        """
+        return [p for p in self._port_groups["global"] if p.port_type == PortType.IN]
 
 
 class FusedOpComponent(Component):
