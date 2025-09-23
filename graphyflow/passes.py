@@ -1,6 +1,7 @@
 import graphyflow.dataflow_ir as dfir
-from typing import List, Tuple, Set, Dict
+from typing import List, Tuple, Set, Dict, Any, Union
 import collections
+import copy
 from graphyflow.dataflow_ir_utils import _extract_subgraph_from_reduce, refactor_to_memread_fusedop
 from graphyflow.reduce_analysis import MemoryAccessInfo, SubgraphAnalysisResult, ReduceAnalysisResult
 from graphyflow.global_graph import GlobalGraph
@@ -71,6 +72,47 @@ def remove_io_comp_pass(comp_col: dfir.ComponentCollection) -> dfir.ComponentCol
     comp_col.update_ports()
 
     return comp_col
+
+
+def _build_context_for_reduce_analysis(reduce_comp: dfir.ReduceComponent) -> dfir.ComponentCollection:
+    """
+    Constructs a temporary, minimal, and valid ComponentCollection containing
+    a ReduceComponent and its subgraph, suitable for analysis passes.
+    """
+    # Deepcopy to avoid modifying the original component
+    rc_copy = copy.deepcopy(reduce_comp)
+
+    components = [rc_copy]
+    q = collections.deque()
+
+    # Find all connected subgraph components
+    for port_name in [
+        "o_reduce_key_in",
+        "o_reduce_transform_in",
+        "o_reduce_unit_start_0",
+        "o_reduce_unit_start_1",
+    ]:
+        port = rc_copy.get_port(port_name)
+        if port.connected:
+            q.append(port.connection.parent)
+
+    visited_ids = {c.readable_id for c in q}
+    head = 0
+    while head < len(q):
+        comp = q[head]
+        head += 1
+        if comp not in components:
+            components.append(comp)
+        for p_out in comp.out_ports:
+            if p_out.connected and p_out.connection.parent.readable_id not in visited_ids:
+                if not isinstance(p_out.connection.parent, dfir.ReduceComponent):
+                    q.append(p_out.connection.parent)
+                    visited_ids.add(p_out.connection.parent.readable_id)
+
+    # The collection's I/O are the main I/O of the ReduceComponent
+    return dfir.ComponentCollection(
+        components=components, inputs=[rc_copy.get_port("i_0")], outputs=[rc_copy.get_port("o_0")]
+    )
 
 
 def _analyze_refactored_cc(
@@ -166,7 +208,7 @@ def _analyze_refactored_cc(
     return mem_accesses, analysis
 
 
-def analyze_reduce_comp_pass(
+def analyze_reduce_comp(
     comp_col: dfir.ComponentCollection, g: GlobalGraph
 ) -> Dict[str, ReduceAnalysisResult]:
     """
@@ -176,8 +218,9 @@ def analyze_reduce_comp_pass(
     This implementation analyzes the graph *after* it has been refactored
     to deduce all required pathing and memory access information.
     """
+    comp_col_copy = copy.deepcopy(comp_col)
     analysis_results: Dict[str, ReduceAnalysisResult] = {}
-    reduce_components = [c for c in comp_col.components if isinstance(c, dfir.ReduceComponent)]
+    reduce_components = [c for c in comp_col_copy.components if isinstance(c, dfir.ReduceComponent)]
 
     for reduce_comp in reduce_components:
         # --- PHASE 1: Refactor each subgraph individually ---
@@ -234,44 +277,190 @@ def analyze_reduce_comp_pass(
     return analysis_results
 
 
-if __name__ == "__main__":
-    from graphyflow.global_graph import *
-    from graphyflow.visualize_ir import visualize_components
+def optimize_reduce_comp(reduce_comp: dfir.ReduceComponent, g: GlobalGraph) -> dfir.ComponentCollection:
+    """
+    Takes a single ReduceComponent and returns a new, self-contained, and
+    optimized ComponentCollection where memory accesses have been hoisted out.
 
-    g = GlobalGraph(
-        properties={
-            "node": {"weight": dfir.IntType()},
-            "edge": {"e_id": dfir.IntType()},
-        }
+    Args:
+        reduce_comp: The specific ReduceComponent instance to optimize. Its i_0
+                     and o_0 ports must be disconnected.
+        g: The GlobalGraph context for type information.
+
+    Returns:
+        A new, fully-connected ComponentCollection representing the optimized logic.
+    """
+    # --- PHASE 0: Pre-condition check ---
+    assert not reduce_comp.get_port("i_0").connected, "Input `reduce_comp` i_0 port must be disconnected."
+    assert not reduce_comp.get_port("o_0").connected, "Input `reduce_comp` o_0 port must be disconnected."
+
+    # --- PHASE 1: Analyze the ReduceComponent to get an optimization plan ---
+    temp_analysis_context = _build_context_for_reduce_analysis(reduce_comp)
+    analysis_results = analyze_reduce_comp(temp_analysis_context, g)
+    analysis = analysis_results[reduce_comp.readable_id]
+
+    final_components = []
+    provenance_to_ext_port_map: Dict[Any, dfir.Port] = {}
+
+    # --- PHASE 2: Create external MemoryRead and Scatter components ---
+    mem_read_comp = None
+    if analysis.consolidated_mem_access:
+        mem_access_list = analysis.consolidated_mem_access
+        access_pattern = [(info.in_idx, info.base_type, list(info.mem_path)) for info in mem_access_list]
+        output_types = {}
+        for info in mem_access_list:
+            path_str = "_".join(map(str, info.mem_path))
+            port_name = f"o_{info.in_idx}_{info.base_type}_{path_str}"
+            output_types[port_name] = info.output_type
+
+        mem_read_comp = dfir.MemoryReadComponent(
+            access_pattern=access_pattern, output_types=output_types, parallel=True
+        )
+        final_components.append(mem_read_comp)
+
+    scatter_comp = None
+    needs_scatter = any(info.scatter_path_to_base for info in analysis.consolidated_mem_access)
+    all_provenances = list(analysis.key_analysis.input_provenance.values()) + list(
+        analysis.transform_analysis.input_provenance.values()
     )
-    nodes = g.add_graph_input("edge")
-    src_dst_weight = nodes.map_(map_func=lambda edge: (edge.src.weight, edge.dst.weight, edge))
-    # first_reduce = src_dst_weight.reduce_by(
-    #     reduce_key=lambda sw, dw, e: sw,
-    #     reduce_transform=lambda sw, dw, e: (sw, dw, e),
-    #     reduce_method=lambda x, y: (x[0], x[1], x[2]),
-    # )
-    filtered = src_dst_weight.filter(filter_func=lambda sw, dw, e: sw > dw)
-    reduced_result = filtered.reduce_by(
-        reduce_key=lambda sw, dw, e: e.dst,
-        reduce_transform=lambda sw, dw, e: (sw, e.dst),
-        reduce_method=lambda x, y: (x[0] + y[0], x[1]),
-    )
-    result = reduced_result.map_(map_func=lambda w, dst: (w, dst.weight, dst))
+    if not needs_scatter:
+        for prov in all_provenances:
+            if isinstance(prov, tuple) and prov[1]:
+                needs_scatter = True
+                break
 
-    dfirs = g.to_dfir()
-    dfirs[0] = delete_placeholder_components_pass(dfirs[0])
-    dot = visualize_components(str(dfirs[0]))
-    dot.render("component_graph", view=False, format="png")
-    # print(dfirs[0].topo_sort())
-    # import graphyflow.hls_utils as hls
+    if needs_scatter:
+        original_input_type = reduce_comp.get_port("i_0").data_type
+        scatter_comp = dfir.ScatterComponent(original_input_type)
+        final_components.insert(0, scatter_comp)
 
-    # header, source = hls.global_hls_config.generate_hls_code(g, dfirs[0])
-    # import os
+    # --- PHASE 3: Reconstruct the ReduceComponent ---
+    modified_reduce = copy.deepcopy(reduce_comp)
+    final_components.append(modified_reduce)
 
-    # if not os.path.exists("output"):
-    #     os.makedirs("output")
-    # with open("output/graphyflow.h", "w") as f:
-    #     f.write(header)
-    # with open("output/graphyflow.cpp", "w") as f:
-    #     f.write(source)
+    key_fused_op = analysis.key_analysis.refactored_fused_op
+    transform_fused_op = analysis.transform_analysis.refactored_fused_op
+    unit_fused_op = analysis.unit_analysis.refactored_fused_op
+    final_components.extend([key_fused_op, transform_fused_op, unit_fused_op])
+
+    for port_name in [
+        "o_reduce_key_in",
+        "i_reduce_key_out",
+        "o_reduce_transform_in",
+        "i_reduce_transform_out",
+        "o_reduce_unit_start_0",
+        "o_reduce_unit_start_1",
+        "i_reduce_unit_end",
+    ]:
+        port = modified_reduce.get_port(port_name)
+        if port.connected:
+            port.disconnect()
+
+    data_requirements = collections.defaultdict(list)
+    for p_in, prov in analysis.key_analysis.input_provenance.items():
+        if prov != "constant":
+            data_requirements[prov].append(p_in)
+    for p_in, prov in analysis.transform_analysis.input_provenance.items():
+        if prov != "constant":
+            data_requirements[prov].append(p_in)
+
+    for i, (provenance, dest_ports) in enumerate(data_requirements.items()):
+        port_name_base = f"data_{i}"
+        data_type = dest_ports[0].data_type
+
+        ext_in_port, int_out_port = modified_reduce._add_io_port_pair(
+            group="global", name_base=port_name_base, data_type=data_type
+        )
+        provenance_to_ext_port_map[provenance] = ext_in_port
+
+        current_source_port = int_out_port
+        for i_dest, dest_port in enumerate(dest_ports):
+            if dest_port.connected:
+                dest_port.disconnect()
+            if i_dest < len(dest_ports) - 1:
+                copy_comp = dfir.CopyComponent(data_type)
+                final_components.append(copy_comp)
+                current_source_port.connect(copy_comp.get_port("i_0"))
+                copy_comp.get_port("o_0").connect(dest_port)
+                current_source_port = copy_comp.get_port("o_1")
+            else:
+                current_source_port.connect(dest_port)
+
+    unit_inputs = unit_fused_op.in_ports
+    for p_in in unit_inputs:
+        if p_in.connected:
+            p_in.disconnect()
+    assert not modified_reduce.get_port("o_reduce_unit_start_0").connected
+    modified_reduce.get_port("o_reduce_unit_start_0").connect(unit_inputs[0])
+    assert not modified_reduce.get_port("o_reduce_unit_start_1").connected
+    modified_reduce.get_port("o_reduce_unit_start_1").connect(unit_inputs[1])
+    assert not unit_fused_op.get_port("o_0").connected
+    unit_fused_op.get_port("o_0").connect(modified_reduce.get_port("i_reduce_unit_end"))
+
+    modified_reduce._remove_port_by_name("i_0")
+
+    # --- PHASE 4: Final External Wiring ---
+    source_to_consumers_map = collections.defaultdict(list)
+
+    for provenance, reduce_in_port in provenance_to_ext_port_map.items():
+        if isinstance(provenance, MemoryAccessInfo):
+            info = provenance
+            path_str = "_".join(map(str, info.mem_path))
+            port_name = f"o_{info.in_idx}_{info.base_type}_{path_str}"
+            source_port = mem_read_comp.get_port(port_name)
+            source_to_consumers_map[source_port].append(reduce_in_port)
+            print(f"Connecting MemoryRead {port_name} to Reduce {reduce_in_port.name}")
+        elif isinstance(provenance, tuple):
+            in_idx, scatter_path = provenance
+            source_port = scatter_comp.get_port(f"o_{scatter_path[0]}")
+            source_to_consumers_map[source_port].append(reduce_in_port)
+            print(f"Connecting Scatter o_{scatter_path[0]} to Reduce {reduce_in_port.name}")
+
+    if mem_read_comp:
+        for info in analysis.consolidated_mem_access:
+            if info.scatter_path_to_base:
+                scatter_out_port_idx = info.scatter_path_to_base[0]
+                source_port = scatter_comp.get_port(f"o_{scatter_out_port_idx}")
+                dest_port_name = f"i_{info.in_idx}_{info.base_type}_id"
+                dest_port = mem_read_comp.get_port(dest_port_name)
+                if dest_port not in source_to_consumers_map[source_port]:
+                    source_to_consumers_map[source_port].append(dest_port)
+                    print(f"Connecting Scatter o_{scatter_out_port_idx} to MemoryRead {dest_port_name}")
+
+    print("Final wiring plan:")
+    for source_port, consumer_ports in source_to_consumers_map.items():
+        print(f"  Source Port: {source_port} from Component {source_port.parent.__class__.__name__}")
+        for consumer_port in consumer_ports:
+            print(
+                f"    -> Consumer Port: {consumer_port} from Component {consumer_port.parent.__class__.__name__}"
+            )
+
+    for source_port, consumer_ports in source_to_consumers_map.items():
+        current_source = source_port
+        for i, consumer_port in enumerate(consumer_ports):
+            assert not consumer_port.connected, f"Consumer port {consumer_port} already connected."
+            if i < len(consumer_ports) - 1:
+                copy_comp = dfir.CopyComponent(source_port.data_type)
+                final_components.append(copy_comp)
+                assert not current_source.connected
+                current_source.connect(copy_comp.get_port("i_0"))
+                copy_comp.get_port("o_0").connect(consumer_port)
+                current_source = copy_comp.get_port("o_1")
+            else:
+                assert not current_source.connected
+                current_source.connect(consumer_port)
+
+    # --- PHASE 5: Define final Collection I/O and construct it ---
+    final_inputs = []
+    if scatter_comp:
+        final_inputs.append(scatter_comp.get_port("i_0"))
+    elif mem_read_comp:
+        final_inputs.extend(mem_read_comp.in_ports)
+
+    final_outputs = [modified_reduce.get_port("o_0")]
+
+    print(f"final_components: {final_components}")
+    print(f"final_inputs: {final_inputs}")
+    print(f"final_outputs: {final_outputs}")
+
+    return dfir.ComponentCollection(components=final_components, inputs=final_inputs, outputs=final_outputs)

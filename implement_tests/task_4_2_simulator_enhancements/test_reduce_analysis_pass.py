@@ -1,6 +1,6 @@
 import pytest
 from graphyflow.dataflow_ir import ReduceComponent
-from graphyflow.passes import analyze_reduce_comp_pass
+from graphyflow.passes import analyze_reduce_comp
 
 # Reuse the complex graph fixture from a previous test file
 # This requires pytest to find it. Make sure __init__.py files are present.
@@ -20,7 +20,7 @@ def test_simplify_reduce_pass_analysis(complex_reduce_graph):
     g = collection.global_graph_store
 
     # --- 1. Run the analysis pass ---
-    results = analyze_reduce_comp_pass(collection, g)
+    results = analyze_reduce_comp(collection, g)
 
     # log results to file out.txt formatted tab=2
     with open("out.txt", "w") as f:
