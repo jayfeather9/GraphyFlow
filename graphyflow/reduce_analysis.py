@@ -31,6 +31,7 @@ class SubgraphAnalysisResult:
     """Holds the analysis results for a single subgraph (key or transform)."""
 
     refactored_fused_op: dfir.FusedOpComponent
+    full_subgraph: dfir.ComponentCollection
 
     # Maps each input port of the FusedOp to its original data source.
     # The source is either a direct passthrough (described by its scatter path)

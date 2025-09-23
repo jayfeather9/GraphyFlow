@@ -4,6 +4,7 @@ import collections
 from graphyflow.dataflow_ir_utils import _extract_subgraph_from_reduce, refactor_to_memread_fusedop
 from graphyflow.reduce_analysis import MemoryAccessInfo, SubgraphAnalysisResult, ReduceAnalysisResult
 from graphyflow.global_graph import GlobalGraph
+from graphyflow.visualize_ir import visualize_components
 
 
 def delete_placeholder_components_pass(
@@ -159,11 +160,13 @@ def _analyze_refactored_cc(
         else:
             raise ValueError(f"Unhandled FusedOp input source: {type(upstream_comp)}")
 
-    analysis = SubgraphAnalysisResult(refactored_fused_op=fused_op, input_provenance=provenance)
+    analysis = SubgraphAnalysisResult(
+        refactored_fused_op=fused_op, input_provenance=provenance, full_subgraph=refactored_cc
+    )
     return mem_accesses, analysis
 
 
-def simplify_reduce_comp_pass(
+def analyze_reduce_comp_pass(
     comp_col: dfir.ComponentCollection, g: GlobalGraph
 ) -> Dict[str, ReduceAnalysisResult]:
     """
@@ -187,6 +190,17 @@ def simplify_reduce_comp_pass(
         unit_subgraph_orig = _extract_subgraph_from_reduce(reduce_comp, "unit_reduce")
         unit_refactored_cc = refactor_to_memread_fusedop(unit_subgraph_orig, g)
         assert not any(isinstance(c, dfir.MemoryReadComponent) for c in unit_refactored_cc.components)
+
+        for subgraph_type, refactored_cc in [
+            ("key", key_refactored_cc),
+            ("transform", transform_refactored_cc),
+            ("unit_reduce", unit_refactored_cc),
+        ]:
+            print(f"\n--- Refactored '{subgraph_type}' subgraph ---")
+            print(refactored_cc)
+            dot_refactored = visualize_components(str(refactored_cc))
+            dot_refactored.render(f"output/{subgraph_type}_graph", view=False, format="png")
+            print(f"Refactored subgraph visualized to output/{subgraph_type}_graph.png")
 
         # --- PHASE 2: Analyze the refactored subgraphs to get paths and provenance ---
         key_mem_accesses, key_analysis = _analyze_refactored_cc(key_refactored_cc)

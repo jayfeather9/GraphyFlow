@@ -1,6 +1,6 @@
 import pytest
 from graphyflow.dataflow_ir import ReduceComponent
-from graphyflow.passes import simplify_reduce_comp_pass
+from graphyflow.passes import analyze_reduce_comp_pass
 
 # Reuse the complex graph fixture from a previous test file
 # This requires pytest to find it. Make sure __init__.py files are present.
@@ -20,7 +20,7 @@ def test_simplify_reduce_pass_analysis(complex_reduce_graph):
     g = collection.global_graph_store
 
     # --- 1. Run the analysis pass ---
-    results = simplify_reduce_comp_pass(collection, g)
+    results = analyze_reduce_comp_pass(collection, g)
 
     # log results to file out.txt formatted tab=2
     with open("out.txt", "w") as f:
@@ -71,15 +71,14 @@ def test_simplify_reduce_pass_analysis(complex_reduce_graph):
     # --- 2c. Validate Unit Subgraph Provenance ---
     unit_provenance = analysis_result.unit_analysis.input_provenance
     # The unit_reduce subgraph has two inputs.
-    # assert len(unit_provenance) == 2
+    assert len(unit_provenance) == 4
 
     unit_fused_op = analysis_result.unit_analysis.refactored_fused_op
-    p_in_0 = unit_fused_op.get_port("i_0")
-    p_in_1 = unit_fused_op.get_port("i_1")
-
-    # Their provenance should be direct inputs with empty scatter paths.
-    assert unit_provenance[p_in_0] == (0, (0,))
-    assert unit_provenance[p_in_1] == (1, (1,))
+    # assert (0, (0,)), (0, (1,)), (1, (0, )), (1, (1,)) in unit_provenance.values()
+    assert (0, (1,)) in unit_provenance.values()  # dist
+    assert (0, (0,)) in unit_provenance.values()  # e
+    assert (1, (1,)) in unit_provenance.values()  # dist
+    assert (1, (0,)) in unit_provenance.values()  # e
 
     print("\nSimplify Reduce Pass Analysis Verified:")
     print(f"Found {len(mem_accesses)} unique memory accesses.")

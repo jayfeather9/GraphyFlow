@@ -786,7 +786,7 @@ class MemoryReadComponent(Component):
         print("-------------------------------------")
 
     def additional_info(self) -> str:
-        return [f"read_paths: {len(self.access_pattern)}"]
+        return [f"read_paths: {self.access_pattern}"]
 
 
 class PlaceholderComponent(Component):
