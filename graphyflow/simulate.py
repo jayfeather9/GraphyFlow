@@ -558,7 +558,9 @@ class DfirSimulator:
                         },
                         to_ports=[reduce_exit],
                     )
-                    accumulated_value = reduction_result_dict[reduce_exit]
+                    assert len(reduction_result_dict) == 1
+                    assert len(reduction_result_dict[reduce_exit]) == 1
+                    accumulated_value = reduction_result_dict[reduce_exit][0]
 
                 final_results.append(accumulated_value)
 
