@@ -242,9 +242,6 @@ def _simplify_redundant_copies(components: List[Component]) -> List[Component]:
     return components
 
 
-# In: graphyflow/dataflow_ir_utils.py
-
-
 def refactor_to_memread_fusedop(
     original_cc: ComponentCollection, global_graph: GlobalGraph
 ) -> ComponentCollection:
@@ -409,7 +406,6 @@ def refactor_to_memread_fusedop(
                     is_simple_access = True
                     break
             scatter_paths[p_in] = (in_idx, origin.source_port, cur_scatter_path)
-            print(f"    in_idx: {in_idx}, subport idx: {i}")
             print(f"    Scatter Path: {cur_scatter_path}")
             print(f"    Access Path: {cur_access_path}")
             # print(f"    Scatter Path: {cur_scatter_path}")
@@ -424,31 +420,32 @@ def refactor_to_memread_fusedop(
     temp_out_subports = {}
     # print("Analyzing Output Ports:")
     analyze_out_datas = []
-    assert len(original_cc.outputs) == 1, "Only single output is supported now."
-    p_out = original_cc.outputs[0]
-    sub_type = p_out.data_type
-    assert isinstance(sub_type, ArrayType)
-    origin = port_origins.get(p_out.connection) if p_out.connection else port_origins.get(p_out)
-    if type(origin) is not list:
-        sub_type = sub_type.type_
-        for in_idx, ori_in_port in enumerate(original_cc.inputs):
-            if origin.source_port == ori_in_port:
-                analyze_out_datas.append((in_idx, 0, origin, sub_type))
-    else:
-        origins = origin
-        assert isinstance(sub_type.type_, TupleType)
-        sub_type = sub_type.type_.types[i]
-        for i, origin in enumerate(origins):
-            # print(f"Output Port: {p_out}, Origin: {origin}")
-            assert origin is not None, f"Missing origin for output port {p_out}"
+    # assert len(original_cc.outputs) == 1, "Only single output is supported now."
+    for out_idx, p_out in enumerate(original_cc.outputs):
+        sub_type = p_out.data_type
+        assert isinstance(sub_type, ArrayType)
+        origin = port_origins.get(p_out.connection) if p_out.connection else port_origins.get(p_out)
+        if type(origin) is not list:
+            sub_type = sub_type.type_
             for in_idx, ori_in_port in enumerate(original_cc.inputs):
                 if origin.source_port == ori_in_port:
-                    analyze_out_datas.append((in_idx, i, origin, sub_type))
+                    analyze_out_datas.append((out_idx, in_idx, 0, origin, sub_type))
+        else:
+            origins = origin
+            assert isinstance(sub_type.type_, TupleType)
+            sub_type = sub_type.type_.types[i]
+            for i, origin in enumerate(origins):
+                # print(f"Output Port: {p_out}, Origin: {origin}")
+                assert origin is not None, f"Missing origin for output port {p_out}"
+                for in_idx, ori_in_port in enumerate(original_cc.inputs):
+                    if origin.source_port == ori_in_port:
+                        analyze_out_datas.append((out_idx, in_idx, i, origin, sub_type))
 
     for analyze_out_data in analyze_out_datas:
-        in_idx, i, origin, sub_type = analyze_out_data
-        temp_out_subports[i] = Port(f"o_final_out_{i}", p_out.parent)
-        temp_out_subports[i].data_type = sub_type
+        out_idx, in_idx, i, origin, sub_type = analyze_out_data
+        p_out = original_cc.outputs[out_idx]
+        temp_out_subports[(out_idx, i)] = Port(f"o_final_out_{i}", p_out.parent)
+        temp_out_subports[(out_idx, i)].data_type = sub_type
         assert len(origin.access_path) > 0, f"Straight passing through is not allowed now."
         current_type = origin.source_port.data_type
         if isinstance(current_type, ArrayType):
@@ -465,7 +462,7 @@ def refactor_to_memread_fusedop(
             else:
                 is_simple_access = True
                 break
-        scatter_paths[temp_out_subports[i]] = (in_idx, origin.source_port, cur_scatter_path)
+        scatter_paths[temp_out_subports[(out_idx, i)]] = (in_idx, origin.source_port, cur_scatter_path)
         print(f"    in_idx: {in_idx}, subport idx: {i}")
         print(f"    Scatter Path: {cur_scatter_path}")
         print(f"    Access Path: {cur_access_path}")
@@ -476,7 +473,7 @@ def refactor_to_memread_fusedop(
                 break
         if not is_simple_access and access_len_without_g > 0:
             mem_patterns.add((current_type.type_name, tuple(cur_access_path)))
-            mem_paths[temp_out_subports[i]] = (current_type.type_name, tuple(cur_access_path))
+            mem_paths[temp_out_subports[(out_idx, i)]] = (current_type.type_name, tuple(cur_access_path))
             # print(
             #     f"    Memory Access Pattern: Base={current_type.type_name}, Path={tuple(cur_access_path)}"
             # )
@@ -608,42 +605,41 @@ def refactor_to_memread_fusedop(
                 compute_ops.append(copy_comp)
                 scatter_targeting_ports[(in_idx, cur_scatter_path)] = new_in_port
 
-    assert len(original_cc.outputs) == 1
-    out_origins = get_origin(original_cc.outputs[0])
-    if type(out_origins) is list:
-        resorted_origins = [None for _ in out_origins]
-        for origin in out_origins:
-            index = int(origin.access_path[-1][2:])
-            resorted_origins[index] = origin
-        out_origins = resorted_origins
-        gather_types = [
-            ArrayType(trans_spe(g_type)) for g_type in original_cc.outputs[0].data_type.type_.types
-        ]
-        gather_comp = GatherComponent(gather_types)
-        for i, origin in enumerate(out_origins):
-            if origin.source_port in waiting_out_ports:
-                waiting_out_ports.remove(origin.source_port)
+    # assert len(original_cc.outputs) == 1
+    for out_idx, p_out in enumerate(original_cc.outputs):
+        out_origins = get_origin(p_out)
+        if type(out_origins) is list:
+            resorted_origins = [None for _ in out_origins]
+            for origin in out_origins:
+                index = int(origin.access_path[-1][2:])
+                resorted_origins[index] = origin
+            out_origins = resorted_origins
+            gather_types = [
+                ArrayType(trans_spe(g_type)) for g_type in p_out.data_type.type_.types
+            ]
+            gather_comp = GatherComponent(gather_types)
+            for i, origin in enumerate(out_origins):
                 gather_port = gather_comp.get_port(f"i_{i}")
-                origin.source_port.disconnect()
-                origin.source_port.connect(gather_port)
-            else:
-                assert origin.source_port in original_cc.inputs
-                gather_port = gather_comp.get_port(f"i_{i}")
-                manage_paths(temp_out_subports[i], gather_port)
-        assert len(waiting_out_ports) == 0
-        waiting_out_ports.append(gather_comp.get_port("o_0"))
-        compute_ops.append(gather_comp)
-    else:
-        origin = out_origins
-        if origin.source_port not in waiting_out_ports:
-            assert origin.source_port in original_cc.inputs
-            placeholder = PlaceholderComponent(original_cc.outputs[0].data_type)
-            target_port = placeholder.get_port("i_0")
-            manage_paths(temp_out_subports[0], target_port)
-            waiting_out_ports.append(placeholder.get_port("o_0"))
-            compute_ops.append(placeholder)
+                if origin.source_port in waiting_out_ports:
+                    waiting_out_ports.remove(origin.source_port)
+                    origin.source_port.disconnect()
+                    origin.source_port.connect(gather_port)
+                else:
+                    assert origin.source_port in original_cc.inputs
+                    manage_paths(temp_out_subports[(out_idx, i)], gather_port)
+            waiting_out_ports.append(gather_comp.get_port("o_0"))
+            compute_ops.append(gather_comp)
         else:
-            origin.source_port.disconnect()
+            origin = out_origins
+            if origin.source_port not in waiting_out_ports:
+                assert origin.source_port in original_cc.inputs
+                placeholder = PlaceholderComponent(original_cc.outputs[0].data_type)
+                target_port = placeholder.get_port("i_0")
+                manage_paths(temp_out_subports[(out_idx, 0)], target_port)
+                waiting_out_ports.append(placeholder.get_port("o_0"))
+                compute_ops.append(placeholder)
+            else:
+                origin.source_port.disconnect()
 
     # print("Scatter Targeting Ports:")
     # for scatter_path, port in scatter_targeting_ports.items():

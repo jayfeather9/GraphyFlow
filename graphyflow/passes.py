@@ -1,5 +1,6 @@
 import graphyflow.dataflow_ir as dfir
 from typing import List, Tuple, Set, Dict, Any, Union
+from dataclasses import dataclass
 import collections
 import copy
 from graphyflow.dataflow_ir_utils import _extract_subgraph_from_reduce, refactor_to_memread_fusedop
@@ -45,26 +46,6 @@ def delete_placeholder_components_pass(
             if upstream_connected_port is not None and downstream_connected_port is not None:
                 upstream_connected_port.connect(downstream_connected_port)
 
-        else:
-            components_to_keep.append(comp)
-
-    comp_col = dfir.ComponentCollection(components_to_keep, comp_col.inputs, comp_col.outputs)
-    comp_col.update_ports()
-
-    return comp_col
-
-
-def remove_io_comp_pass(comp_col: dfir.ComponentCollection) -> dfir.ComponentCollection:
-    """Remove IOComponents, and make corresponding ports inputs ports of the collection."""
-    components_to_keep: List[dfir.Component] = []
-
-    for comp in comp_col.components:
-        if isinstance(comp, dfir.IOComponent):
-            assert len(comp.in_ports) == 0 or len(comp.out_ports) == 1
-            p_out = comp.out_ports[0]
-            assert p_out not in comp_col.outputs
-            comp_col.inputs.append(p_out.connection)
-            p_out.disconnect()
         else:
             components_to_keep.append(comp)
 
@@ -485,3 +466,371 @@ def optimize_reduce_comp(reduce_comp: dfir.ReduceComponent, g: GlobalGraph) -> d
     print(f"final_components: {final_components}")
 
     return dfir.ComponentCollection(components=final_components, inputs=final_inputs, outputs=final_outputs)
+
+
+def refactor_other_comps(
+    comp_col: dfir.ComponentCollection, g: GlobalGraph
+) -> dfir.ComponentCollection:
+    """
+    Refactors a component collection by partitioning it into "boundary" components
+    (like Reduce, Collect, Conditional) and "compute islands" (pure computation subgraphs).
+
+    It then optimizes each partition individually:
+    - ReduceComponents are optimized to hoist out memory accesses.
+    - Compute islands are refactored into MemoryRead and FusedOp components.
+    Finally, it reassembles the optimized partitions into a new, more efficient graph.
+
+    Args:
+        comp_col: The original ComponentCollection to refactor.
+        g: The GlobalGraph context for type information.
+
+    Returns:
+        A new, fully refactored and optimized ComponentCollection.
+    """
+    # --- PHASE 0: PRE-CHECKS AND DEFINITIONS ---
+    io_components = [c for c in comp_col.components if isinstance(c, dfir.IOComponent)]
+    # We will enforce at most one IO INPUT component in the final graph.
+
+    def is_boundary(c: dfir.Component) -> bool:
+        """Helper to identify components that act as partition boundaries."""
+        return isinstance(
+            c, (dfir.ReduceComponent, dfir.CollectComponent, dfir.ConditionalComponent, dfir.IOComponent)
+        )
+
+    def convert_spe_to_id_type(t: dfir.DfirType) -> dfir.DfirType:
+        """Recursively convert SpecialType(node/edge) to SpecialIdType(node_id/edge_id)."""
+        from graphyflow.dataflow_ir_datatype import ArrayType, TupleType, OptionalType, SpecialType, SpecialIdType
+        if isinstance(t, SpecialType):
+            return SpecialIdType.from_spe(t)
+        if isinstance(t, ArrayType):
+            return ArrayType(convert_spe_to_id_type(t.type_))
+        if isinstance(t, OptionalType):
+            return OptionalType(convert_spe_to_id_type(t.type_))
+        if isinstance(t, TupleType):
+            return TupleType([convert_spe_to_id_type(tt) for tt in t.types])
+        return t
+
+    # --- PHASE 1: GRAPH PARTITIONING ---
+    # Partition the graph into boundary components and compute islands once.
+    boundary_components = {c for c in comp_col.components if is_boundary(c)}
+    compute_components = {c for c in comp_col.components if not is_boundary(c)}
+
+    comp_to_block_map: Dict[int, Union[dfir.Component, int]] = {}
+    for bc in boundary_components:
+        comp_to_block_map[bc.readable_id] = bc
+
+    compute_islands: List[Set[dfir.Component]] = []
+    visited_compute_ids = set()
+
+    for comp in compute_components:
+        if comp.readable_id in visited_compute_ids:
+            continue
+        
+        # Start a new traversal to find a connected island
+        new_island = set()
+        q = collections.deque([comp])
+        visited_compute_ids.add(comp.readable_id)
+
+        while q:
+            current_comp = q.popleft()
+            new_island.add(current_comp)
+            comp_to_block_map[current_comp.readable_id] = len(compute_islands) # Assign island ID
+
+            # Traverse to all connected compute components
+            for port in current_comp.ports:
+                if not port.connected:
+                    continue
+                neighbor = port.connection.parent
+                if neighbor in compute_components and neighbor.readable_id not in visited_compute_ids:
+                    visited_compute_ids.add(neighbor.readable_id)
+                    q.append(neighbor)
+        
+        compute_islands.append(new_island)
+    
+    # --- PHASE 2: RECORD INTER-BLOCK CONNECTIONS ---
+    # Record all connections between the identified blocks (boundaries and islands).
+    @dataclass
+    class Connection:
+        src_block: Union[dfir.Component, int, str]
+        src_port: dfir.Port
+        dst_block: Union[dfir.Component, int, str]
+        dst_port: dfir.Port
+
+    connections: List[Connection] = []
+    GRAPH_INPUT_MARKER = "GRAPH_INPUT"
+    GRAPH_OUTPUT_MARKER = "GRAPH_OUTPUT"
+
+    # Connections originating from graph inputs
+    for p_in in comp_col.inputs:
+        if p_in.connected:
+            dst_comp = p_in.connection.parent
+            dst_block = comp_to_block_map.get(dst_comp.readable_id)
+            if dst_block is not None:
+                connections.append(Connection(
+                    src_block=GRAPH_INPUT_MARKER, src_port=p_in,
+                    dst_block=dst_block, dst_port=p_in.connection
+                ))
+
+    # Connections between internal blocks
+    for comp in comp_col.components:
+        src_block = comp_to_block_map.get(comp.readable_id)
+        if src_block is None: continue
+
+        for p_out in comp.out_ports:
+            if p_out.connected:
+                dst_comp = p_out.connection.parent
+                dst_block = comp_to_block_map.get(dst_comp.readable_id)
+                if dst_block is not None and src_block != dst_block:
+                     connections.append(Connection(
+                        src_block=src_block, src_port=p_out,
+                        dst_block=dst_block, dst_port=p_out.connection
+                    ))
+    
+    # Connections terminating at graph outputs
+    for p_out in comp_col.outputs:
+        if p_out.connected:
+            src_comp = p_out.connection.parent
+            src_block = comp_to_block_map.get(src_comp.readable_id)
+            if src_block is not None:
+                connections.append(Connection(
+                    src_block=src_block, src_port=p_out.connection,
+                    dst_block=GRAPH_OUTPUT_MARKER, dst_port=p_out
+                ))
+
+
+    # --- PHASE 3: OPTIMIZE ALL BLOCKS INDIVIDUALLY ---
+    
+    # Phase 3.1: Optimize ReduceComponents
+    reduce_opt_blocks: Dict[int, dfir.ComponentCollection] = {}
+    reduce_port_map: Dict[int, dfir.Port] = {}
+    
+    for rc in [c for c in boundary_components if isinstance(c, dfir.ReduceComponent)]:
+        # Temporarily disconnect main I/O for optimization call
+        p_in = rc.get_port("i_0"); p_in_conn = p_in.connection
+        p_out = rc.get_port("o_0"); p_out_conn = p_out.connection
+        if p_in.connected: p_in.disconnect()
+        if p_out.connected: p_out.disconnect()
+
+        opt_cc = optimize_reduce_comp(copy.deepcopy(rc), g)
+        reduce_opt_blocks[rc.readable_id] = opt_cc
+
+        # Map original i_0/o_0 ports to new optimized block's I/O
+        if opt_cc.inputs:
+            reduce_port_map[p_in.readable_id] = opt_cc.inputs[0]
+        if opt_cc.outputs:
+            reduce_port_map[p_out.readable_id] = opt_cc.outputs[0]
+        
+        # Reconnect for safety, though original comp_col is discarded
+        if p_in_conn: p_in.connect(p_in_conn)
+        if p_out_conn: p_out.connect(p_out_conn)
+
+    # Phase 3.2: Optimize Compute Islands
+    island_opt_blocks: Dict[int, dfir.ComponentCollection] = {}
+    island_port_map: Dict[int, dfir.Port] = {}
+
+    for i, island_comps in enumerate(compute_islands):
+        # --- Create a robust copy of the island for refactoring ---
+        # 1. Create clean copies of all components, stored in a map.
+        orig_to_copy_map = {c.readable_id: copy.deepcopy(c) for c in island_comps}
+        
+        # 2. Disconnect all ports on the copies to prevent invalid, stale connections from deepcopy.
+        for comp_copy in orig_to_copy_map.values():
+            _disconnect_all_ports(comp_copy)
+
+        temp_inputs, temp_outputs = [], []
+        newly_added_comps = []
+
+        # 3. Re-wire the copies based on the original island's topology.
+        for original_comp in island_comps:
+            comp_copy = orig_to_copy_map[original_comp.readable_id]
+
+            # Re-wire internal connections and create placeholders for external ones.
+            # We only process from the OUT port side to avoid creating connections twice.
+            for p_out in original_comp.out_ports:
+                if not p_out.connected:
+                    continue
+
+                dest_comp_orig = p_out.connection.parent
+                p_in_orig = p_out.connection
+                
+                p_out_copy = comp_copy.get_port(p_out.name)
+
+                if dest_comp_orig.readable_id in orig_to_copy_map:
+                    # INTERNAL connection: Reconnect the copies.
+                    dest_comp_copy = orig_to_copy_map[dest_comp_orig.readable_id]
+                    p_in_copy = dest_comp_copy.get_port(p_in_orig.name)
+                    p_out_copy.connect(p_in_copy)
+                else:
+                    # EXTERNAL connection: This is an island output. Use a placeholder.
+                    ph = dfir.PlaceholderComponent(p_out.data_type)
+                    p_out_copy.connect(ph.get_port("i_0"))
+                    temp_outputs.append(ph.get_port("o_0"))
+                    island_port_map[p_out.readable_id] = ph.get_port("o_0")
+                    newly_added_comps.append(ph)
+
+        # 4. Identify island inputs by finding unconnected input ports on the copies.
+        for original_comp in island_comps:
+            comp_copy = orig_to_copy_map[original_comp.readable_id]
+            for p_in_orig in original_comp.in_ports:
+                p_in_copy = comp_copy.get_port(p_in_orig.name)
+                if not p_in_copy.connected:
+                    # This must be an input from outside the island.
+                    ph = dfir.PlaceholderComponent(p_in_orig.data_type)
+                    ph.get_port("o_0").connect(p_in_copy)
+                    temp_inputs.append(ph.get_port("i_0"))
+                    island_port_map[p_in_orig.readable_id] = ph.get_port("i_0")
+                    newly_added_comps.append(ph)
+
+        # 5. Create the temporary ComponentCollection with a valid, self-contained graph.
+        final_island_components = list(orig_to_copy_map.values()) + newly_added_comps
+        temp_cc = dfir.ComponentCollection(final_island_components, temp_inputs, temp_outputs)
+        
+        refactored_cc = refactor_to_memread_fusedop(temp_cc, g)
+        island_opt_blocks[i] = refactored_cc
+
+        # Update port map to point to the new refactored ports
+        for p_id in list(island_port_map.keys()):
+            placeholder_port = island_port_map[p_id]
+            if placeholder_port in temp_inputs:
+                idx = temp_inputs.index(placeholder_port)
+                if idx < len(refactored_cc.inputs):
+                    island_port_map[p_id] = refactored_cc.inputs[idx]
+            elif placeholder_port in temp_outputs:
+                idx = temp_outputs.index(placeholder_port)
+                if idx < len(refactored_cc.outputs):
+                    island_port_map[p_id] = refactored_cc.outputs[idx]
+
+    # --- PHASE 4: REASSEMBLE THE GRAPH ---
+    final_components: List[dfir.Component] = []
+    final_component_ids = set()
+
+    # Helper to add components without duplicates
+    def add_components_from_cc(cc: dfir.ComponentCollection):
+        for comp in cc.components:
+            if comp.readable_id not in final_component_ids:
+                final_components.append(comp)
+                final_component_ids.add(comp.readable_id)
+
+    # Phase 4.1: Add all new optimized blocks and remaining boundaries
+    for bc in boundary_components:
+        if isinstance(bc, dfir.ReduceComponent):
+            add_components_from_cc(reduce_opt_blocks[bc.readable_id])
+        else:
+            bc_copy = copy.deepcopy(bc) # Use copies to ensure clean state
+            _disconnect_all_ports(bc_copy)
+            comp_to_block_map[bc.readable_id] = bc_copy # Map original ID to the new copy
+            if bc_copy.readable_id not in final_component_ids:
+                final_components.append(bc_copy)
+                final_component_ids.add(bc_copy.readable_id)
+
+    for i, island_cc in island_opt_blocks.items():
+        add_components_from_cc(island_cc)
+    
+    # Phase 4.2: Rewire the graph based on the recorded connections
+    # Group consumers by source port to handle fan-out correctly
+    source_to_consumers_map = collections.defaultdict(list)
+
+    def get_new_port(block, old_port: dfir.Port) -> Optional[dfir.Port]:
+        """Finds the corresponding port in the new, optimized graph."""
+        if isinstance(block, dfir.ReduceComponent):
+            return reduce_port_map.get(old_port.readable_id)
+        elif isinstance(block, int): # Island ID
+            return island_port_map.get(old_port.readable_id)
+        elif isinstance(block, dfir.Component): # Other boundary component (now a copy)
+             return block.get_port(old_port.name)
+        return None
+
+    final_outputs = []
+    pending_inputs = [] # Inputs not connected to another block, likely from IO
+
+    for conn in connections:
+        new_src_port, new_dst_port = None, None
+        
+        # Handle source
+        if conn.src_block == GRAPH_INPUT_MARKER:
+            new_dst_port = get_new_port(conn.dst_block, conn.dst_port)
+            if new_dst_port:
+                pending_inputs.append(new_dst_port)
+            continue
+        else:
+            new_src_port = get_new_port(conn.src_block, conn.src_port)
+
+        # Handle destination
+        if conn.dst_block == GRAPH_OUTPUT_MARKER:
+            if new_src_port:
+                final_outputs.append(new_src_port)
+            continue
+        else:
+            new_dst_port = get_new_port(conn.dst_block, conn.dst_port)
+
+        if new_src_port and new_dst_port:
+            source_to_consumers_map[new_src_port].append(new_dst_port)
+    
+    # Execute connections using fanout for 1-to-many
+    def fanout(source_out: dfir.Port, consumers: List[dfir.Port]):
+        """Helper to fan-out a single source to multiple consumers using CopyComponents."""
+        if not consumers: return
+        current_src = source_out
+        for i, dest in enumerate(consumers):
+            if i < len(consumers) - 1:
+                cp = dfir.CopyComponent(source_out.data_type)
+                if cp.readable_id not in final_component_ids:
+                    final_components.append(cp)
+                    final_component_ids.add(cp.readable_id)
+                current_src.connect(cp.get_port("i_0"))
+                cp.get_port("o_0").connect(dest)
+                current_src = cp.get_port("o_1")
+            else:
+                current_src.connect(dest)
+
+    for src_port, consumers in source_to_consumers_map.items():
+        fanout(src_port, consumers)
+    
+    # --- PHASE 5: FINALIZATION AND CLEANUP ---
+    
+    # Phase 5.1: Handle IO Component
+    io_comp = next((c for c in io_components if c.io_type == dfir.IOComponent.IOType.INPUT), None)
+    if not io_comp and comp_col.inputs:
+        io_comp = dfir.IOComponent(dfir.IOComponent.IOType.INPUT, comp_col.inputs[0].data_type)
+
+    if io_comp:
+        io_copy = copy.deepcopy(io_comp)
+        if io_copy.readable_id not in final_component_ids:
+            final_components.insert(0, io_copy)
+        fanout(io_copy.get_port("o_0"), [p for p in pending_inputs if not p.connected])
+
+    # Phase 5.2: Type Conversion
+    preserve_in_port_ids = {p.readable_id for p in reduce_port_map.values() if p.port_type == dfir.PortType.IN}
+    for comp in final_components:
+        if isinstance(comp, dfir.IOComponent): continue
+        if hasattr(comp, "input_type") and comp.input_type is not None:
+             if not any(p.readable_id in preserve_in_port_ids for p in getattr(comp, "in_ports", [])):
+                comp.input_type = convert_spe_to_id_type(comp.input_type)
+        if hasattr(comp, "output_type") and comp.output_type is not None:
+            comp.output_type = convert_spe_to_id_type(comp.output_type)
+        for p in comp.ports:
+            if not (p.port_type == dfir.PortType.IN and p.readable_id in preserve_in_port_ids):
+                p.data_type = convert_spe_to_id_type(p.data_type)
+
+    # Phase 5.3: Terminate genuinely unused outputs
+    for comp in list(final_components):
+        for p_out in comp.out_ports:
+            if not p_out.connected and p_out not in final_outputs:
+                uem = dfir.UnusedEndMarkerComponent(p_out.data_type)
+                final_components.append(uem)
+                p_out.connect(uem.get_port("i_0"))
+
+    # Phase 5.4: Construct final ComponentCollection
+    final_cc = dfir.ComponentCollection(
+        components=final_components,
+        inputs=[],  # Inputs are now handled by the IOComponent
+        outputs=final_outputs
+    )
+    final_cc.update_ports()
+    return final_cc
+
+# Helper function that was part of the original code, needed by the new implementation
+def _disconnect_all_ports(comp: dfir.Component):
+    for p in list(comp.ports):
+        if p.connected:
+            p.disconnect()
