@@ -203,10 +203,11 @@ class ComponentCollection(DfirNode):
         def check_reduce(comp: Component) -> bool:
             if not isinstance(comp, ReduceComponent):
                 return False
-            return port_solved(comp.get_port("i_0"))
+            return all(port_solved(p) for p in comp.get_global_input_ports())
 
         result = []
-        waitings = copy.deepcopy(self.components)
+        # waitings = copy.deepcopy(self.components)
+        waitings = self.components[:]
         last_waitings_len = len(waitings) + 1
 
         while waitings:

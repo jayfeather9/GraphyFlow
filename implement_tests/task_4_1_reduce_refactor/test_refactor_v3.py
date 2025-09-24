@@ -9,23 +9,9 @@ from graphyflow.dataflow_ir import (
     ScatterComponent,
     UnaryOpComponent,
 )
-from graphyflow.passes import delete_placeholder_components_pass
 from graphyflow.visualize_ir import visualize_components
 from graphyflow.dataflow_ir_utils import refactor_to_memread_fusedop
 from .test_subgraph_extraction import complex_reduce_graph  # Reuse fixture
-
-from pathlib import Path
-from graphyflow.global_graph import GlobalGraph
-from graphyflow.dataflow_ir import (
-    DfirType,
-    MemoryReadComponent,
-    FusedOpComponent,
-    ComponentCollection,
-    UnaryOpComponent,
-)
-from graphyflow.passes import delete_placeholder_components_pass, remove_io_comp_pass
-from graphyflow.visualize_ir import visualize_components
-from graphyflow.dataflow_ir_utils import refactor_to_memread_fusedop
 
 
 @pytest.fixture(scope="module")
@@ -49,7 +35,7 @@ def subgraph_to_refactor() -> tuple[ComponentCollection, GlobalGraph]:
     # map1 = map0.map_(map_func=lambda e: (e, e.weight + 1.0 + e.dst.distance, 1.0))
     # map2 is the target subgraph for our refactoring test.
     map2 = map1.map_(map_func=lambda e, const_w, const_p: (e.src.id, e.weight + const_w + const_p, e))
-    
+
     # map1 = edges.map_(map_func = lambda x: x)
     # map2 = map1.map_(map_func=lambda e: (e, 2.0, 2.0))
 
@@ -61,19 +47,15 @@ def subgraph_to_refactor() -> tuple[ComponentCollection, GlobalGraph]:
     map0_node = g.nodes[map0.cur_node.uuid]
     map0_dfir = map0_node.to_dfir(
         g.nodes[edges.cur_node.uuid].to_dfir(None, (g.node_properties, g.edge_properties)).output_types[0],
-        (g.node_properties, g.edge_properties)
+        (g.node_properties, g.edge_properties),
     )
     map1_input_type = map0_dfir.output_types[0]
     map1_node = g.nodes[map1.cur_node.uuid]
-    map1_dfir = map1_node.to_dfir(
-        map1_input_type, (g.node_properties, g.edge_properties)
-    )
+    map1_dfir = map1_node.to_dfir(map1_input_type, (g.node_properties, g.edge_properties))
     map2_input_type = map1_dfir.output_types[0]
     map2_node = g.nodes[map2.cur_node.uuid]
-    map2_dfir = map2_node.to_dfir(
-        map2_input_type, (g.node_properties, g.edge_properties)
-    )
-    
+    map2_dfir = map2_node.to_dfir(map2_input_type, (g.node_properties, g.edge_properties))
+
     map1_dfir.concat(
         map2_dfir,
         [(map1_dfir.outputs[0], map2_dfir.inputs[0])],
@@ -98,7 +80,7 @@ def test_final_refactor_with_scatter_handling(subgraph_to_refactor):
     print("Original subgraph visualized to output/v3_original_subgraph.png")
 
     # --- Run the new refactoring function ---
-    refactored_cc = refactor_to_memread_fusedop(original_subgraph, g)
+    refactored_cc = refactor_to_memread_fusedop(original_subgraph, g).comp_col
     print(refactored_cc)
 
     print("\n--- Refactored Component Collection (V3 Test) ---")
@@ -106,7 +88,7 @@ def test_final_refactor_with_scatter_handling(subgraph_to_refactor):
     dot_refactored = visualize_components(str(refactored_cc))
     dot_refactored.render(output_dir / "v3_refactored_subgraph", view=False, format="png")
     print("Refactored subgraph visualized to output/v3_refactored_subgraph.png")
-    
+
     # assert False
 
     # --- Assertions ---

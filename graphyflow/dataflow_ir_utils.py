@@ -22,6 +22,14 @@ class DataOrigin:
     access_path: Tuple[Union[str, int], ...] = field(default_factory=tuple)
 
 
+@dataclass
+class RefactorResult:
+    """Holds the result of refactoring a ComponentCollection."""
+
+    comp_col: ComponentCollection
+    output_mapping: Dict[Port, Port]
+
+
 def _extract_subgraph_from_reduce(reduce_comp: ReduceComponent, subgraph_type: str) -> ComponentCollection:
     """
     Extracts a subgraph (key, transform, or unit_reduce) from a ReduceComponent
@@ -125,7 +133,9 @@ def _refactor_and_consolidate_reduce_subgraphs(
         # print(subgraph_cc)
 
         # Refactor the subgraph to separate memory access from computation
-        refactored_cc = refactor_to_memread_fusedop(subgraph_cc, global_graph)
+        refactor_result = refactor_to_memread_fusedop(subgraph_cc, global_graph)
+        refactored_cc = refactor_result.comp_col
+        assert len(refactor_result.output_mapping) == 1
 
         # The refactored graph should contain a MemoryRead and a FusedOp component
         mem_read_comp = next(
@@ -244,7 +254,7 @@ def _simplify_redundant_copies(components: List[Component]) -> List[Component]:
 
 def refactor_to_memread_fusedop(
     original_cc: ComponentCollection, global_graph: GlobalGraph
-) -> ComponentCollection:
+) -> RefactorResult:
     """
     Refactors a ComponentCollection into a MemoryReadComponent and a FusedOpComponent.
     This is the final, robust implementation that handles complex Tuple inputs
@@ -501,8 +511,7 @@ def refactor_to_memread_fusedop(
 
     added_comps = []
     for comp in compute_ops:
-        for p_out in comp.out_ports:
-            waiting_out_ports.extend(comp.out_ports)
+        waiting_out_ports.extend(comp.out_ports)
         if isinstance(comp, ConstantComponent):
             continue
         for p_in in comp.in_ports:
@@ -605,8 +614,10 @@ def refactor_to_memread_fusedop(
                 compute_ops.append(copy_comp)
                 scatter_targeting_ports[(in_idx, cur_scatter_path)] = new_in_port
 
+    output_port_map = {}
     # assert len(original_cc.outputs) == 1
     for out_idx, p_out in enumerate(original_cc.outputs):
+        # print(f"Getting origin for output port {p_out}")
         out_origins = get_origin(p_out)
         if type(out_origins) is list:
             resorted_origins = [None for _ in out_origins]
@@ -614,9 +625,7 @@ def refactor_to_memread_fusedop(
                 index = int(origin.access_path[-1][2:])
                 resorted_origins[index] = origin
             out_origins = resorted_origins
-            gather_types = [
-                ArrayType(trans_spe(g_type)) for g_type in p_out.data_type.type_.types
-            ]
+            gather_types = [ArrayType(trans_spe(g_type)) for g_type in p_out.data_type.type_.types]
             gather_comp = GatherComponent(gather_types)
             for i, origin in enumerate(out_origins):
                 gather_port = gather_comp.get_port(f"i_{i}")
@@ -628,6 +637,7 @@ def refactor_to_memread_fusedop(
                     assert origin.source_port in original_cc.inputs
                     manage_paths(temp_out_subports[(out_idx, i)], gather_port)
             waiting_out_ports.append(gather_comp.get_port("o_0"))
+            output_port_map[p_out] = gather_comp.get_port("o_0")
             compute_ops.append(gather_comp)
         else:
             origin = out_origins
@@ -638,8 +648,12 @@ def refactor_to_memread_fusedop(
                 manage_paths(temp_out_subports[(out_idx, 0)], target_port)
                 waiting_out_ports.append(placeholder.get_port("o_0"))
                 compute_ops.append(placeholder)
-            else:
+                output_port_map[p_out] = placeholder.get_port("o_0")
+            elif origin.source_port != p_out:
                 origin.source_port.disconnect()
+                output_port_map[p_out] = origin.source_port
+            else:
+                output_port_map[p_out] = p_out
 
     # print("Scatter Targeting Ports:")
     # for scatter_path, port in scatter_targeting_ports.items():
@@ -673,6 +687,11 @@ def refactor_to_memread_fusedop(
     # print("Generated graph for FusedOpComponent as fused_comp_col.png.")
 
     fused_comp = FusedOpComponent("fused_op", fused_comp_col)
+
+    # update the actual output port map
+    for orig_out_port in output_port_map:
+        fused_out_port = output_port_map[orig_out_port]
+        output_port_map[orig_out_port] = fused_comp.port_mapping[fused_out_port.readable_id]
 
     # extract "_g" from mem_paths
     port_to_gather_paths = {}
@@ -770,7 +789,6 @@ def refactor_to_memread_fusedop(
             assert all(
                 base_type == p[0] for p in mem_targeting_ports.keys()
             ), "All memory access patterns should share the same base type for empty scatter path."
-            base_id_port = mem_read_comp.get_port(f"i_{base_type}_id")
     else:
         # assert all scatter paths depth=1
         assert all(len(p[1]) == 1 for p in scatter_paths), "Currently only support depth=1 scatter paths."
@@ -830,14 +848,15 @@ def refactor_to_memread_fusedop(
         # no memory access, remove the mem_read_comp
         components.remove(mem_read_comp)
 
-    out_ports = [fused_comp.get_port("o_0")]
+    out_ports = fused_comp.out_ports
 
     components, in_ports = _dead_code_elimination(components, out_ports)
     components = _simplify_redundant_copies(components)
-    # print(components, in_ports, out_ports)
+    print(components, in_ports, out_ports)
 
-    return ComponentCollection(
+    final_cc = ComponentCollection(
         components=components,
         inputs=in_ports,
         outputs=out_ports,
     )
+    return RefactorResult(comp_col=final_cc, output_mapping=output_port_map)
