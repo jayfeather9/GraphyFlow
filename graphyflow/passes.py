@@ -1,5 +1,5 @@
 import graphyflow.dataflow_ir as dfir
-from typing import List, Tuple, Set, Dict, Any, Union
+from typing import List, Tuple, Set, Dict, Any, Union, Optional
 from dataclasses import dataclass
 import collections
 import copy
@@ -505,8 +505,44 @@ def refactor_other_comps(comp_col: dfir.ComponentCollection, g: GlobalGraph) -> 
     Returns:
         A new, fully refactored and optimized ComponentCollection.
     """
+    global_block_cnt = 0
+
+    @dataclass
+    class Block:
+        """A block is either a boundary component or a compute island."""
+
+        is_island: bool
+        comps: List[dfir.Component]
+        is_input: bool = False
+        is_output: bool = False
+        input_ports: List[int] = None
+        output_ports: List[int] = None
+
+        def __post_init__(self):
+            nonlocal global_block_cnt
+            self.id = global_block_cnt
+            global_block_cnt += 1
+
+        def __hash__(self):
+            return hash(self.id)
+
+        def __repr__(self):
+            type_str = "Island" if self.is_island else "Boundary"
+            comp_ids = [f"[{c.readable_id}]{c.__class__.__name__}" for c in self.comps]
+            return f"<{type_str} Block id={self.id}, is_input={self.is_input}, is_output={self.is_output}, comps={comp_ids}>"
+
+    @dataclass
+    class Connection:
+        out: bool
+        other: Block
+        src_p: dfir.Port
+        dst_p: dfir.Port
+
     # --- PHASE 0: PRE-CHECKS AND DEFINITIONS ---
-    io_components = [c for c in comp_col.components if isinstance(c, dfir.IOComponent)]
+    # io_components = [c for c in comp_col.components if isinstance(c, dfir.IOComponent)]
+    assert all(
+        not p.connected for p in comp_col.inputs + comp_col.outputs
+    ), "All graph I/O ports must be disconnected."
     # We will enforce at most one IO INPUT component in the final graph.
 
     def is_boundary(c: dfir.Component) -> bool:
@@ -540,12 +576,28 @@ def refactor_other_comps(comp_col: dfir.ComponentCollection, g: GlobalGraph) -> 
     boundary_components = {c for c in comp_col.components if is_boundary(c)}
     compute_components = {c for c in comp_col.components if not is_boundary(c)}
 
-    comp_to_block_map: Dict[int, Union[dfir.Component, int]] = {}
-    for bc in boundary_components:
-        comp_to_block_map[bc.readable_id] = bc
-
     compute_islands: List[Set[dfir.Component]] = []
     visited_compute_ids = set()
+
+    reduce_comps = [c for c in boundary_components if isinstance(c, dfir.ReduceComponent)]
+    number_of_reduce = len(reduce_comps)
+    number_of_re_subg = {name: number_of_reduce for name in ["key", "transform", "unit_reduce"]}
+    victim_ports = []
+    reduce_sub_out_names = {
+        "o_reduce_key_in": "key",
+        "o_reduce_transform_in": "transform",
+        "o_reduce_unit_start_0": "unit_reduce",
+        "o_reduce_unit_start_1": "unit_reduce",
+    }
+    ignored_reduce_sub_comps = []
+
+    for reduce_comp in reduce_comps:
+        for port_name, subgraph_name in reduce_sub_out_names.items():
+            port = reduce_comp.get_port(port_name)
+            assert (
+                port.connected
+            ), f"ReduceComponent {reduce_comp.readable_id} port {port_name} must be connected."
+            victim_ports.append((port.connection, subgraph_name))
 
     for comp in compute_components:
         if comp.readable_id in visited_compute_ids:
@@ -559,7 +611,6 @@ def refactor_other_comps(comp_col: dfir.ComponentCollection, g: GlobalGraph) -> 
         while q:
             current_comp = q.popleft()
             new_island.add(current_comp)
-            comp_to_block_map[current_comp.readable_id] = len(compute_islands)  # Assign island ID
 
             # Traverse to all connected compute components
             for port in current_comp.ports:
@@ -570,74 +621,123 @@ def refactor_other_comps(comp_col: dfir.ComponentCollection, g: GlobalGraph) -> 
                     visited_compute_ids.add(neighbor.readable_id)
                     q.append(neighbor)
 
-        compute_islands.append(new_island)
+        # detect if any of the victim ports is in the island
+        found_subgraph_name = None
+        for vp, subgraph_name in victim_ports:
+            if vp.parent in new_island:
+                assert found_subgraph_name is None or found_subgraph_name == subgraph_name
+                found_subgraph_name = subgraph_name
+        if found_subgraph_name is not None:
+            # This island is connected to a ReduceComponent subgraph
+            # Mark it as part of that ReduceComponent's subgraph
+            number_of_re_subg[found_subgraph_name] -= 1
+            ignored_reduce_sub_comps.extend(new_island)
+            if number_of_re_subg[found_subgraph_name] < 0:
+                raise ValueError(
+                    f"More than one ReduceComponent connected to the same {found_subgraph_name} subgraph."
+                )
+        else:
+            compute_islands.append(new_island)
+
+    print(
+        f"Identified {len(boundary_components)} boundary components and {len(compute_islands)} compute islands."
+    )
+    # print("compute_islands:")
+    # for i, island in enumerate(compute_islands):
+    #     print(f"  Island {i}: {'\n'.join(str(c) for c in island)}\n\n")
 
     # --- PHASE 2: RECORD INTER-BLOCK CONNECTIONS ---
     # Record all connections between the identified blocks (boundaries and islands).
-    @dataclass
-    class Connection:
-        src_block: Union[dfir.Component, int, str]
-        src_port: dfir.Port
-        dst_block: Union[dfir.Component, int, str]
-        dst_port: dfir.Port
 
-    connections: List[Connection] = []
-    GRAPH_INPUT_MARKER = "GRAPH_INPUT"
-    GRAPH_OUTPUT_MARKER = "GRAPH_OUTPUT"
+    boundary_blocks = [Block(is_island=False, comps=[bc]) for bc in boundary_components]
+    island_blocks = [Block(is_island=True, comps=list(island)) for island in compute_islands]
+    boundary_parent_block = {bc.readable_id: blk for blk in boundary_blocks for bc in blk.comps}
+    island_parent_block = {comp.readable_id: blk for blk in island_blocks for comp in blk.comps}
+    parent_block = {**boundary_parent_block, **island_parent_block}
+    all_blocks = boundary_blocks + island_blocks
+    connections = {blk: [] for blk in all_blocks}
+    input_blocks = []
+    output_blocks = []
 
-    # Connections originating from graph inputs
-    for p_in in comp_col.inputs:
-        if p_in.connected:
-            dst_comp = p_in.connection.parent
-            dst_block = comp_to_block_map.get(dst_comp.readable_id)
-            if dst_block is not None:
-                connections.append(
-                    Connection(
-                        src_block=GRAPH_INPUT_MARKER,
-                        src_port=p_in,
-                        dst_block=dst_block,
-                        dst_port=p_in.connection,
-                    )
-                )
-
-    # Connections between internal blocks
-    for comp in comp_col.components:
-        src_block = comp_to_block_map.get(comp.readable_id)
-        if src_block is None:
-            continue
-
-        for p_out in comp.out_ports:
-            if p_out.connected:
-                dst_comp = p_out.connection.parent
-                dst_block = comp_to_block_map.get(dst_comp.readable_id)
-                if dst_block is not None and src_block != dst_block:
-                    connections.append(
-                        Connection(
-                            src_block=src_block,
-                            src_port=p_out,
-                            dst_block=dst_block,
-                            dst_port=p_out.connection,
-                        )
-                    )
+    have_io = any(isinstance(c, dfir.IOComponent) for c in comp_col.components)
+    assert (
+        have_io or len(comp_col.inputs) == 1
+    ), "Graphs without IOComponents must have exactly one input port."
+    if have_io:
+        assert len(comp_col.inputs) == 0
+        # IO blk is input
+        for blk in all_blocks:
+            for c in blk.comps:
+                if isinstance(c, dfir.IOComponent):
+                    assert (
+                        c.io_type == dfir.IOComponent.IOType.INPUT
+                    ), "Only one IO INPUT component allowed in the graph."
+                    blk.is_input = True
+                    if blk.input_ports is None:
+                        blk.input_ports = []
+                    input_blocks.append(blk)
+                    break
+    else:
+        # Connections originating from graph inputs
+        for p_in in comp_col.inputs:
+            found_target = False
+            for blk in all_blocks:
+                if p_in.parent in blk.comps:
+                    assert not found_target, "Input port connected to multiple blocks, invalid graph."
+                    blk.is_input = True
+                    if blk.input_ports is None:
+                        blk.input_ports = []
+                    blk.input_ports.append(p_in.readable_id)
+                    input_blocks.append(blk)
+                    found_target = True
 
     # Connections terminating at graph outputs
     for p_out in comp_col.outputs:
-        if p_out.connected:
-            src_comp = p_out.connection.parent
-            src_block = comp_to_block_map.get(src_comp.readable_id)
-            if src_block is not None:
-                connections.append(
-                    Connection(
-                        src_block=src_block,
-                        src_port=p_out.connection,
-                        dst_block=GRAPH_OUTPUT_MARKER,
-                        dst_port=p_out,
+        found_target = False
+        for blk in all_blocks:
+            if p_out.parent in blk.comps:
+                assert not found_target, "Output port connected to multiple blocks, invalid graph."
+                blk.is_output = True
+                if blk.output_ports is None:
+                    blk.output_ports = []
+                blk.output_ports.append(p_out.readable_id)
+                output_blocks.append(blk)
+                found_target = True
+
+    # Connections between internal blocks
+    for comp in comp_col.components:
+        if comp in ignored_reduce_sub_comps:
+            continue
+        print(f"Analyzing connections for component {comp.readable_id} ({comp.__class__.__name__})")
+        src_block = parent_block.get(comp.readable_id)
+        assert src_block is not None, "Component not assigned to any block."
+        for p_out in comp.out_ports:
+            assert p_out.connected or p_out in comp_col.outputs, "All non-output ports must be connected."
+            if p_out.connected:
+                dst_comp = p_out.connection.parent
+                if dst_comp in ignored_reduce_sub_comps:
+                    continue
+                dst_block = parent_block.get(dst_comp.readable_id)
+                assert dst_block is not None, "Destination component not assigned to any block."
+                if src_block != dst_block:
+                    connections[src_block].append(
+                        Connection(out=True, other=dst_block, src_p=p_out, dst_p=p_out.connection)
                     )
-                )
+                    connections[dst_block].append(
+                        Connection(out=False, other=src_block, src_p=p_out, dst_p=p_out.connection)
+                    )
+
+    print("Block connections:")
+    for blk, conns in connections.items():
+        print(f"  Block {blk}:")
+        for conn in conns:
+            direction = "->" if conn.out else "<-"
+            print(f"    {direction} Block {conn.other} via {conn.src_p} to {conn.dst_p}")
 
     # --- PHASE 3: OPTIMIZE ALL BLOCKS INDIVIDUALLY ---
 
     # Phase 3.1: Optimize ReduceComponents
+    print("Optimizing ReduceComponents...")
     reduce_opt_blocks: Dict[int, dfir.ComponentCollection] = {}
     reduce_port_map: Dict[int, dfir.Port] = {}
 
@@ -654,6 +754,8 @@ def refactor_other_comps(comp_col: dfir.ComponentCollection, g: GlobalGraph) -> 
 
         opt_cc = optimize_reduce_comp(copy.deepcopy(rc), g)
         reduce_opt_blocks[rc.readable_id] = opt_cc
+        assert len(opt_cc.inputs) == 1, "Optimized ReduceComponent must have at most one input."
+        assert len(opt_cc.outputs) == 1, "Optimized ReduceComponent must have at most one output."
 
         # Map original i_0/o_0 ports to new optimized block's I/O
         if opt_cc.inputs:
@@ -667,14 +769,18 @@ def refactor_other_comps(comp_col: dfir.ComponentCollection, g: GlobalGraph) -> 
         if p_out_conn:
             p_out.connect(p_out_conn)
 
+    print("Optimizing Compute Islands...")
     # Phase 3.2: Optimize Compute Islands
     island_opt_blocks: Dict[int, dfir.ComponentCollection] = {}
     island_port_map: Dict[int, dfir.Port] = {}
 
-    for i, island_comps in enumerate(compute_islands):
+    for i, island_blk in enumerate(island_blocks):
+        island_comps = island_blk.comps
+        print(f"Optimizing Island Block {i}")
         # --- Create a robust copy of the island for refactoring ---
         # 1. Create clean copies of all components, stored in a map.
-        orig_to_copy_map = {c.readable_id: copy.deepcopy(c) for c in island_comps}
+        copied_island_comps = copy.deepcopy(island_comps)
+        orig_to_copy_map = {c.readable_id: c for c in copied_island_comps}
 
         # 2. Disconnect all ports on the copies to prevent invalid, stale connections from deepcopy.
         for comp_copy in orig_to_copy_map.values():
@@ -723,25 +829,76 @@ def refactor_other_comps(comp_col: dfir.ComponentCollection, g: GlobalGraph) -> 
                     temp_inputs.append(ph.get_port("i_0"))
                     island_port_map[p_in_orig.readable_id] = ph.get_port("i_0")
                     newly_added_comps.append(ph)
+                    if p_in_orig.connected:
+                        # assert an incoming block connection is recorded
+                        assert any(
+                            (not conn.out and conn.dst_p == p_in_orig)
+                            for conn in connections[parent_block[original_comp.readable_id]]
+                        ), f"Island input port {p_in_orig} must have a recorded incoming connection."
+                    else:
+                        assert island_blk.is_input, "Unconnected input port must belong to an input block."
+                        assert p_in_orig in comp_col.inputs, "Unconnected input port must be a graph input."
 
-        # 5. Create the temporary ComponentCollection with a valid, self-contained graph.
+        # 5. Identify the output ports that are not connected internally.
+        for original_comp in island_comps:
+            comp_copy = orig_to_copy_map[original_comp.readable_id]
+            for p_out_orig in original_comp.out_ports:
+                p_out_copy = comp_copy.get_port(p_out_orig.name)
+                if not p_out_copy.connected:
+                    # This must be an output to outside the island.
+                    ph = dfir.PlaceholderComponent(p_out_orig.data_type)
+                    p_out_copy.connect(ph.get_port("i_0"))
+                    temp_outputs.append(ph.get_port("o_0"))
+                    island_port_map[p_out_orig.readable_id] = ph.get_port("o_0")
+                    newly_added_comps.append(ph)
+                    if p_out_orig.connected:
+                        # assert an outgoing block connection is recorded
+                        assert any(
+                            (conn.out and conn.src_p == p_out_orig)
+                            for conn in connections[parent_block[original_comp.readable_id]]
+                        ), f"Island output port {p_out_orig} must have a recorded outgoing connection."
+                    else:
+                        assert island_blk.is_output, "Unconnected output port must belong to an output block."
+                        assert (
+                            p_out_orig in comp_col.outputs
+                        ), "Unconnected output port must be a graph output."
+
+        # 6. Create the temporary ComponentCollection with a valid, self-contained graph.
         final_island_components = list(orig_to_copy_map.values()) + newly_added_comps
+        print(f"Creating cc with {final_island_components}, inputs={temp_inputs}, outputs={temp_outputs}")
         temp_cc = dfir.ComponentCollection(final_island_components, temp_inputs, temp_outputs)
+        # print(f"Temporary island ComponentCollection:\n{temp_cc}")
+        from graphyflow.visualize_ir import visualize_components
 
-        refactored_cc = refactor_to_memread_fusedop(temp_cc, g).comp_col
+        dot_temp = visualize_components(str(temp_cc))
+        dot_temp.render(f"output/island_{i}_temp_graph", view=False, format="png")
+        print(f"Temporary island graph visualized to output/island_{i}_temp_graph.png")
+
+        # Call the updated refactoring function which returns a result object
+        refactor_result = refactor_to_memread_fusedop(temp_cc, g)
+        refactored_cc = refactor_result.comp_col
+        refactored_mapping = refactor_result.output_mapping
+        print(f"{temp_inputs=}, {refactored_cc.inputs=}")
+        print(f"{refactored_cc=}")
+        assert (
+            len(temp_inputs) == 1 and len(refactored_cc.inputs) == 1
+        ), "Islands must have exactly one input."
+        refactored_mapping[temp_inputs[0]] = refactored_cc.inputs[0]
         island_opt_blocks[i] = refactored_cc
 
-        # Update port map to point to the new refactored ports
-        for p_id in list(island_port_map.keys()):
-            placeholder_port = island_port_map[p_id]
-            if placeholder_port in temp_inputs:
-                idx = temp_inputs.index(placeholder_port)
-                if idx < len(refactored_cc.inputs):
-                    island_port_map[p_id] = refactored_cc.inputs[idx]
-            elif placeholder_port in temp_outputs:
-                idx = temp_outputs.index(placeholder_port)
-                if idx < len(refactored_cc.outputs):
-                    island_port_map[p_id] = refactored_cc.outputs[idx]
+        island_port_ids = [p.readable_id for p in island_port_map.values()]
+        for old_port, new_port in refactored_mapping.items():
+            print(f"Mapping old port ID {old_port} to new port {new_port}")
+            old_port_id = old_port.readable_id
+            assert old_port_id in island_port_ids, "Mapped port must be from the island ports."
+            found_one = False
+            for k, v in island_port_map.items():
+                if v.readable_id == old_port_id:
+                    assert not found_one, "Each old port ID should map to exactly one new port."
+                    island_port_map[k] = new_port
+                    print(f"Mapped old port ID {k} to new port {new_port} through {old_port_id}")
+                    found_one = True
+            assert found_one, "Old port ID must be found in island_port_map."
 
     # --- PHASE 4: REASSEMBLE THE GRAPH ---
     final_components: List[dfir.Component] = []
@@ -753,6 +910,10 @@ def refactor_other_comps(comp_col: dfir.ComponentCollection, g: GlobalGraph) -> 
             if comp.readable_id not in final_component_ids:
                 final_components.append(comp)
                 final_component_ids.add(comp.readable_id)
+            else:
+                print(f"Skipping duplicate component {comp} during reassembly.")
+
+    other_bc_port_map: Dict[int, dfir.Port] = {}
 
     # Phase 4.1: Add all new optimized blocks and remaining boundaries
     for bc in boundary_components:
@@ -761,10 +922,11 @@ def refactor_other_comps(comp_col: dfir.ComponentCollection, g: GlobalGraph) -> 
         else:
             bc_copy = copy.deepcopy(bc)  # Use copies to ensure clean state
             _disconnect_all_ports(bc_copy)
-            comp_to_block_map[bc.readable_id] = bc_copy  # Map original ID to the new copy
-            if bc_copy.readable_id not in final_component_ids:
-                final_components.append(bc_copy)
-                final_component_ids.add(bc_copy.readable_id)
+            assert bc_copy.readable_id not in final_component_ids, "Component IDs must be unique."
+            final_components.append(bc_copy)
+            final_component_ids.add(bc_copy.readable_id)
+            for p in bc_copy.ports:
+                other_bc_port_map[p.readable_id] = p
 
     for i, island_cc in island_opt_blocks.items():
         add_components_from_cc(island_cc)
@@ -773,41 +935,41 @@ def refactor_other_comps(comp_col: dfir.ComponentCollection, g: GlobalGraph) -> 
     # Group consumers by source port to handle fan-out correctly
     source_to_consumers_map = collections.defaultdict(list)
 
-    def get_new_port(block, old_port: dfir.Port) -> Optional[dfir.Port]:
-        """Finds the corresponding port in the new, optimized graph."""
-        if isinstance(block, dfir.ReduceComponent):
-            return reduce_port_map.get(old_port.readable_id)
-        elif isinstance(block, int):  # Island ID
-            return island_port_map.get(old_port.readable_id)
-        elif isinstance(block, dfir.Component):  # Other boundary component (now a copy)
-            return block.get_port(old_port.name)
-        return None
-
     final_outputs = []
     pending_inputs = []  # Inputs not connected to another block, likely from IO
 
-    for conn in connections:
-        new_src_port, new_dst_port = None, None
-
-        # Handle source
-        if conn.src_block == GRAPH_INPUT_MARKER:
-            new_dst_port = get_new_port(conn.dst_block, conn.dst_port)
-            if new_dst_port:
-                pending_inputs.append(new_dst_port)
-            continue
+    def get_block_port(block: Block, port_id: int) -> dfir.Port:
+        """Helper to get the corresponding port in the refactored graph."""
+        if block.is_island:
+            assert port_id in island_port_map, "Island port must be mapped."
+            return island_port_map[port_id]
         else:
-            new_src_port = get_new_port(conn.src_block, conn.src_port)
+            if isinstance(block.comps[0], dfir.ReduceComponent):
+                assert port_id in reduce_port_map
+                return reduce_port_map[port_id]
+            else:
+                # For other boundary components, ports remain unchanged
+                assert port_id in other_bc_port_map, "Boundary component port must be mapped."
+                return other_bc_port_map[port_id]
 
-        # Handle destination
-        if conn.dst_block == GRAPH_OUTPUT_MARKER:
-            if new_src_port:
-                final_outputs.append(new_src_port)
-            continue
-        else:
-            new_dst_port = get_new_port(conn.dst_block, conn.dst_port)
+    for block, conns in connections.items():
+        for conn in conns:
+            if conn.out:
+                # Outgoing connection from this block to another
+                src_port = get_block_port(block, conn.src_p.readable_id)
+                dst_port = get_block_port(conn.other, conn.dst_p.readable_id)
+                print(f"Connecting {src_port} to {dst_port}")
+                source_to_consumers_map[src_port].append(dst_port)
 
-        if new_src_port and new_dst_port:
-            source_to_consumers_map[new_src_port].append(new_dst_port)
+        if block.is_input:
+            # This block has inputs from outside the graph
+            for p_in_id in block.input_ports:
+                pending_inputs.append(get_block_port(block, p_in_id))
+
+        if block.is_output:
+            # This block has outputs to outside the graph
+            for p_out_id in block.output_ports:
+                final_outputs.append(get_block_port(block, p_out_id))
 
     # Execute connections using fanout for 1-to-many
     def fanout(source_out: dfir.Port, consumers: List[dfir.Port]):
@@ -833,44 +995,47 @@ def refactor_other_comps(comp_col: dfir.ComponentCollection, g: GlobalGraph) -> 
     # --- PHASE 5: FINALIZATION AND CLEANUP ---
 
     # Phase 5.1: Handle IO Component
-    io_comp = next((c for c in io_components if c.io_type == dfir.IOComponent.IOType.INPUT), None)
-    if not io_comp and comp_col.inputs:
+    io_comps = [c for c in comp_col.components if isinstance(c, dfir.IOComponent)]
+    assert len(io_comps) <= 1, "At most one IOComponent allowed in the original graph."
+    io_comp = io_comps[0] if io_comps else None
+    if io_comp is None:
+        assert len(comp_col.inputs) == 1, "Graph must have exactly one input if no IOComponent is present."
         io_comp = dfir.IOComponent(dfir.IOComponent.IOType.INPUT, comp_col.inputs[0].data_type)
-
-    if io_comp:
-        io_copy = copy.deepcopy(io_comp)
-        if io_copy.readable_id not in final_component_ids:
-            final_components.insert(0, io_copy)
-        fanout(io_copy.get_port("o_0"), [p for p in pending_inputs if not p.connected])
+        final_components.insert(0, io_comp)
+        assert len(pending_inputs) == 1, "There must be exactly one pending input to connect to IOComponent."
+        fanout(io_comp.get_port("o_0"), pending_inputs)
+    else:
+        assert len(pending_inputs) == 0, "All inputs must be connected if IOComponent is present."
 
     # Phase 5.2: Type Conversion
-    preserve_in_port_ids = {
-        p.readable_id for p in reduce_port_map.values() if p.port_type == dfir.PortType.IN
-    }
     for comp in final_components:
-        if isinstance(comp, dfir.IOComponent):
-            continue
-        if hasattr(comp, "input_type") and comp.input_type is not None:
-            if not any(p.readable_id in preserve_in_port_ids for p in getattr(comp, "in_ports", [])):
-                comp.input_type = convert_spe_to_id_type(comp.input_type)
-        if hasattr(comp, "output_type") and comp.output_type is not None:
-            comp.output_type = convert_spe_to_id_type(comp.output_type)
         for p in comp.ports:
-            if not (p.port_type == dfir.PortType.IN and p.readable_id in preserve_in_port_ids):
-                p.data_type = convert_spe_to_id_type(p.data_type)
+            p.data_type = convert_spe_to_id_type(p.data_type)
 
     # Phase 5.3: Terminate genuinely unused outputs
     for comp in list(final_components):
         for p_out in comp.out_ports:
             if not p_out.connected and p_out not in final_outputs:
-                uem = dfir.UnusedEndMarkerComponent(p_out.data_type)
-                final_components.append(uem)
-                p_out.connect(uem.get_port("i_0"))
+                raise ValueError(f"Output port {p_out} of component {comp} is unused and not a graph output.")
+                # uem = dfir.UnusedEndMarkerComponent(p_out.data_type)
+                # final_components.append(uem)
+                # p_out.connect(uem.get_port("i_0"))
 
-    # Phase 5.4: Construct final ComponentCollection
+    print(f"\n\nfinal_components: {final_components}")
+
+    # Phase 5.4: Validate if all port connections' type is matched
+    for comp in final_components:
+        for p in comp.ports:
+            if p.connected:
+                assert p.data_type == p.connection.data_type, (
+                    f"Type mismatch on connection from {p.connection} to {p}: "
+                    f"{p.connection.data_type} -> {p.data_type}"
+                )
+
+    # Phase 5.5: Construct final ComponentCollection
     final_cc = dfir.ComponentCollection(
         components=final_components,
-        inputs=[],  # Inputs are now handled by the IOComponent
+        inputs=[],  # Inputs are handled by the IOComponent
         outputs=final_outputs,
     )
     final_cc.update_ports()

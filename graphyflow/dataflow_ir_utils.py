@@ -662,6 +662,32 @@ def refactor_to_memread_fusedop(
     # for mem_path, port in mem_targeting_ports.items():
     #     print(f"  Memory Path: {mem_path}, Port: {port}")
 
+    # extract "_g" from mem_paths
+    port_to_gather_paths = {}
+    new_mem_targeting_ports = {}
+    new_mem_targeting_scatter_paths = {}
+    for fused_access_pattern, port in mem_targeting_ports.items():
+        base_type, path = fused_access_pattern[1]
+        in_idx = fused_access_pattern[0]
+        gather_path = ()
+        old_scatter_path = mem_targeting_scatter_paths[fused_access_pattern]
+        # everything after "_g" is useless for memory accesss
+        for i, p in enumerate(path):
+            if isinstance(p, str) and p.startswith("_g"):
+                gather_path = path[i:]
+                path = path[:i]
+                break
+        if (in_idx, (base_type, path)) in new_mem_targeting_ports:
+            copy_comp, new_in_port = copy_in_port(port, new_mem_targeting_ports[(in_idx, (base_type, path))])
+            compute_ops.append(copy_comp)
+            new_mem_targeting_ports[(in_idx, (base_type, path))] = new_in_port
+        else:
+            new_mem_targeting_ports[(in_idx, (base_type, path))] = port
+        new_mem_targeting_scatter_paths[(in_idx, (base_type, path))] = old_scatter_path
+        port_to_gather_paths[port] = gather_path
+    mem_targeting_ports = new_mem_targeting_ports
+    mem_targeting_scatter_paths = new_mem_targeting_scatter_paths
+
     compute_ops, input_ports = _dead_code_elimination(compute_ops, waiting_out_ports)
     compute_ops = _simplify_redundant_copies(compute_ops)
 
@@ -679,12 +705,12 @@ def refactor_to_memread_fusedop(
 
     assert compute_ops, "No compute operations remain after dead code elimination."
 
-    # from pathlib import Path
+    from pathlib import Path
 
-    # output_dir = Path("output")
-    # dot_orig = visualize_components(str(fused_comp_col))
-    # dot_orig.render(output_dir / "fused_comp_col", view=False, format="png")
-    # print("Generated graph for FusedOpComponent as fused_comp_col.png.")
+    output_dir = Path("output")
+    dot_orig = visualize_components(str(fused_comp_col))
+    dot_orig.render(output_dir / "fused_comp_col", view=False, format="png")
+    print("Generated graph for FusedOpComponent as fused_comp_col.png.")
 
     fused_comp = FusedOpComponent("fused_op", fused_comp_col)
 
@@ -692,27 +718,6 @@ def refactor_to_memread_fusedop(
     for orig_out_port in output_port_map:
         fused_out_port = output_port_map[orig_out_port]
         output_port_map[orig_out_port] = fused_comp.port_mapping[fused_out_port.readable_id]
-
-    # extract "_g" from mem_paths
-    port_to_gather_paths = {}
-    new_mem_targeting_ports = {}
-    new_mem_targeting_scatter_paths = {}
-    for fused_access_pattern, port in mem_targeting_ports.items():
-        base_type, path = fused_access_pattern[1]
-        in_idx = fused_access_pattern[0]
-        gather_path = ()
-        old_scatter_path = mem_targeting_scatter_paths[fused_access_pattern]
-        # everything after "_g" is useless for memory accesss
-        for i, p in enumerate(path):
-            if isinstance(p, str) and p.startswith("_g"):
-                gather_path = path[i:]
-                path = path[:i]
-                break
-        new_mem_targeting_ports[(in_idx, (base_type, path))] = port
-        new_mem_targeting_scatter_paths[(in_idx, (base_type, path))] = old_scatter_path
-        port_to_gather_paths[port] = gather_path
-    mem_targeting_ports = new_mem_targeting_ports
-    mem_targeting_scatter_paths = new_mem_targeting_scatter_paths
 
     # update port to fused outer ports
     for fused_access_pattern, ori_port in mem_targeting_ports.items():

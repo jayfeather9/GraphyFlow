@@ -777,7 +777,6 @@ class MemoryReadComponent(Component):
         self,
         access_pattern: List[Tuple[str, List[Union[str, int]]]],
         output_types: Dict[str, DfirType],
-        base_id_type: DfirType = IntType(),
         parallel: bool = False,
     ) -> None:
         """
@@ -813,6 +812,7 @@ class MemoryReadComponent(Component):
             assert base_type in ["node", "edge"], f"Base type must be 'node' or 'edge', got '{base_type}'"
             if f"i_{in_idx}_{base_type}_id" not in ports:
                 ports.append(f"i_{in_idx}_{base_type}_id")
+                base_id_type = SpecialIdType(f"{base_type}_id")
                 specific_port_types[f"i_{in_idx}_{base_type}_id"] = (
                     ArrayType(base_id_type) if parallel else base_id_type
                 )
