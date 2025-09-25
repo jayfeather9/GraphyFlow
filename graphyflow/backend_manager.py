@@ -31,7 +31,8 @@ from graphyflow.backend_defines import (
 )
 from graphyflow.backend_utils import generate_demux, generate_omega_network, generate_stream_zipper
 
-REDUCE_MODE = 'little_pipeline'
+
+
 
 class BackendManager:
     """Manages the entire HLS code generation process from a ComponentCollection."""
@@ -67,15 +68,23 @@ class BackendManager:
         self.stream_to_mem_func: Optional[HLSFunction] = None
         self.dataflow_core_func: Optional[HLSFunction] = None
 
+        # reduce_mode
+        self.REDUCE_MODE = "big_pipeline"
+
+
     def generate_backend(
         self, comp_col: dfir.ComponentCollection, global_graph: Any, top_func_name: str
     ) -> Tuple[str, str]:
         """
         Main entry point to generate HLS header and source files.
         """
+
         self.global_graph_store = global_graph
         self.comp_col_store = comp_col
-        header_name = f"{top_func_name}.h"
+        if self.REDUCE_MODE == "big_pipeline":
+            header_name = f"{top_func_name}_big.h"
+        else:
+            header_name = f"{top_func_name}_little.h"
 
         # 1. Discover top-level I/O ports
         top_level_inputs = []
@@ -140,17 +149,17 @@ class BackendManager:
         output_host_type = self._get_host_output_type()
 
         # --- Generate Header Declarations ---
-        host_buffer_decls.append(
-            f"// These now use the POD versions of the structs defined in common.h\n    "
-            f"std::vector<{input_batch_type.name}, aligned_allocator<{input_batch_type.name}>> h_{input_var_name};"
-        )
-        device_buffer_decls.append(f"cl::Buffer d_{input_var_name};")
-        host_buffer_decls.append(
-            f"std::vector<{output_host_type.name}, aligned_allocator<{output_host_type.name}>> h_{output_var_name};"
-        )
-        device_buffer_decls.append(f"cl::Buffer d_{output_var_name};")
-        host_buffer_decls.append("std::vector<int, aligned_allocator<int>> h_stop_flag;")
-        device_buffer_decls.append("cl::Buffer d_stop_flag;")
+        # host_buffer_decls.append(
+        #     f"// These now use the POD versions of the structs defined in common.h\n    "
+        #     f"std::vector<{input_batch_type.name}, aligned_allocator<{input_batch_type.name}>> h_{input_var_name};"
+        # )
+        # device_buffer_decls.append(f"cl::Buffer d_{input_var_name};")
+        # host_buffer_decls.append(
+        #     f"std::vector<{output_host_type.name}, aligned_allocator<{output_host_type.name}>> h_{output_var_name};"
+        # )
+        # device_buffer_decls.append(f"cl::Buffer d_{output_var_name};")
+        # host_buffer_decls.append("std::vector<int, aligned_allocator<int>> h_stop_flag;")
+        # device_buffer_decls.append("cl::Buffer d_stop_flag;")
 
         # --- Generate CPP Implementation Strings ---
         helper_func = """
@@ -159,86 +168,7 @@ static int32_t ap_fixed_to_int32(const ap_fixed<32, 16>& val) {
     return *reinterpret_cast<const int32_t*>(&val);
 }
 """
-        setup_buffers_impl = f"""
-void AlgorithmHost::setup_buffers(const GraphCSR &graph, int start_node) {{
-    m_num_vertices = graph.num_vertices;
-    cl_int err;
-    
-    h_distances.assign(m_num_vertices, INFINITY_DIST);
-    if (start_node < m_num_vertices) {{ h_distances[start_node] = 0; }}
 
-    h_{input_var_name}.clear();
-    {input_batch_type.name} current_batch;
-    int edges_in_batch = 0;
-
-    for (int u = 0; u < graph.num_vertices; ++u) {{
-        for (int i = graph.offsets[u]; i < graph.offsets[u + 1]; ++i) {{
-            int v = graph.columns[i];
-            int w = graph.weights[i];
-
-            edge_t edge; // This is now the POD version of edge_t
-            edge.src.id = u;
-            edge.src.distance = ap_fixed_to_int32(h_distances[u]);
-            edge.dst.id = v;
-            edge.dst.distance = ap_fixed_to_int32(h_distances[v]);
-            edge.weight = ap_fixed_to_int32(ap_fixed<32, 16>(w));
-
-            current_batch.data[edges_in_batch] = edge;
-            edges_in_batch++;
-
-            if (edges_in_batch == PE_NUM) {{
-                current_batch.end_pos = PE_NUM;
-                current_batch.end_flag = false;
-                h_{input_var_name}.push_back(current_batch);
-                edges_in_batch = 0;
-            }}
-        }}
-    }}
-
-    if (edges_in_batch > 0) {{
-        current_batch.end_pos = edges_in_batch;
-        current_batch.end_flag = false;
-        h_{input_var_name}.push_back(current_batch);
-    }}
-    
-    if (!h_{input_var_name}.empty()) {{
-        h_{input_var_name}.back().end_flag = true;
-    }}
-
-    m_num_batches = h_{input_var_name}.size();
-    h_{output_var_name}.resize(m_num_batches);
-    h_stop_flag.resize(1);
-
-    OCL_CHECK(err, d_{input_var_name} = cl::Buffer(m_context, CL_MEM_USE_HOST_PTR | CL_MEM_READ_ONLY, h_{input_var_name}.size() * sizeof({input_batch_type.name}), h_{input_var_name}.data(), &err));
-    OCL_CHECK(err, d_{output_var_name} = cl::Buffer(m_context, CL_MEM_USE_HOST_PTR | CL_MEM_WRITE_ONLY, h_{output_var_name}.size() * sizeof({output_host_type.name}), h_{output_var_name}.data(), &err));
-    OCL_CHECK(err, d_stop_flag = cl::Buffer(m_context, CL_MEM_USE_HOST_PTR | CL_MEM_READ_WRITE, sizeof(int), h_stop_flag.data(), &err));
-}}
-"""
-        transfer_to_fpga_impl = f"""
-void AlgorithmHost::transfer_data_to_fpga() {{
-    cl_int err;
-    h_stop_flag[0] = 0; // Reset stop flag before each iteration
-    OCL_CHECK(err, err = m_q.enqueueMigrateMemObjects({{d_{input_var_name}, d_stop_flag}}, 0));
-}}
-"""
-        execute_kernel_impl = f"""
-void AlgorithmHost::execute_kernel_iteration(cl::Event &event) {{
-    cl_int err;
-    int arg_idx = 0;
-    OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, d_{input_var_name}));
-    OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, d_{output_var_name}));
-    OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, d_stop_flag));
-    OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, (uint16_t)m_num_batches));
-    OCL_CHECK(err, err = m_q.enqueueTask(m_kernel, nullptr, &event));
-}}
-"""
-        transfer_from_fpga_impl = f"""
-void AlgorithmHost::transfer_data_from_fpga() {{
-    cl_int err;
-    OCL_CHECK(err, err = m_q.enqueueMigrateMemObjects({{d_{output_var_name}, d_stop_flag}}, CL_MIGRATE_MEM_OBJECT_HOST));
-    m_q.finish(); // Ensure data is synced back to host
-}}
-"""
         convergence_impl = f"""
 bool AlgorithmHost::check_convergence_and_update() {{
     bool changed = false;
@@ -291,10 +221,7 @@ const std::vector<int> &AlgorithmHost::get_results() const {{
         # --- Replace Placeholders in Templates ---
         cpp_final = cpp_template
         cpp_final = cpp_final.replace("// {{GRAPHYFLOW_HELPER_FUNCTIONS}}", helper_func)
-        cpp_final = cpp_final.replace("// {{GRAPHYFLOW_SETUP_BUFFERS_IMPL}}", setup_buffers_impl)
-        cpp_final = cpp_final.replace("// {{GRAPHYFLOW_TRANSFER_TO_FPGA_IMPL}}", transfer_to_fpga_impl)
-        cpp_final = cpp_final.replace("// {{GRAPHYFLOW_EXECUTE_KERNEL_IMPL}}", execute_kernel_impl)
-        cpp_final = cpp_final.replace("// {{GRAPHYFLOW_TRANSFER_FROM_FPGA_IMPL}}", transfer_from_fpga_impl)
+
 
         start_str = "bool AlgorithmHost::check_convergence_and_update() {"
         end_str = "return final_distances;\n}"
@@ -305,17 +232,20 @@ const std::vector<int> &AlgorithmHost::get_results() const {{
             cpp_final = cpp_final[:cpp_final_start] + convergence_impl + cpp_final[cpp_final_end:]
 
         h_final = h_template
-        h_final = h_final.replace(
-            "// {{GRAPHYFLOW_HOST_BUFFER_DECLARATIONS}}", "\n    ".join(host_buffer_decls)
-        )
-        h_final = h_final.replace(
-            "// {{GRAPHYFLOW_DEVICE_BUFFER_DECLARATIONS}}", "\n    ".join(device_buffer_decls)
-        )
+        # h_final = h_final.replace(
+        #     "// {{GRAPHYFLOW_HOST_BUFFER_DECLARATIONS}}", "\n    ".join(host_buffer_decls)
+        # )
+        # h_final = h_final.replace(
+        #     "// {{GRAPHYFLOW_DEVICE_BUFFER_DECLARATIONS}}", "\n    ".join(device_buffer_decls)
+        # )
         h_final = h_final.replace(
             "// {{GRAPHYFLOW_HOST_STATE_DECLARATIONS}}",
             "// This can remain as ap_fixed since it's only used for host-side logic.\n    "
             "std::vector<ap_fixed<32, 16>> h_distances;",
         )
+
+
+
 
         return h_final, cpp_final.strip()
 
@@ -381,7 +311,7 @@ DATASET="./graph.txt"
 """
         (files["run.sh"])  # Make it executable - this is a comment, actual chmod happens in project_generator
 
-        # system.cfg
+        # 修改：system.cfg 支持多核
         files[
             "system.cfg"
         ] = f"""
@@ -544,6 +474,13 @@ emconfig:
         code += "    std::vector<int> weights;\n"
         code += "};\n\n"
 
+
+        code += f"#define KERNEL_OUTPUT_BATCH_TYPE {self._get_host_output_type().name}\n"
+        code += f"#define BATCH_TYPE {self.batch_type_map[self.type_map[self.axi_input_ports[0].data_type]].name}\n"
+        code += f"#define EDGE_TYPE edge_t\n"
+        code += f"#define NODE_TYPE node_t\n\n"
+
+
         code += "#include <ap_fixed.h>\n#include <stdint.h>\n\n"
         code += f"#define PE_NUM {self.PE_NUM}\n\n"
 
@@ -569,7 +506,7 @@ emconfig:
 
         for comp in comp_col.components:
             if isinstance(comp, dfir.ReduceComponent):
-                if REDUCE_MODE == "little_pipeline":
+                if self.REDUCE_MODE == "little_pipeline":
                     pre_process_func = HLSFunction(name=f"{comp.name}_pre_process", comp=comp)
                     unit_reduce_func = HLSFunction(name=f"{comp.name}_unit_reduce", comp=comp)
 
@@ -579,7 +516,9 @@ emconfig:
 
                     pre_process_func.params = [
                         HLSVar("i_0", HLSType(HLSBasicType.STREAM, [self.batch_type_map[in_type]])),
-                        HLSVar("intermediate_key", HLSType(HLSBasicType.STREAM, [self.batch_type_map[key_type]])),
+                        HLSVar(
+                            "intermediate_key", HLSType(HLSBasicType.STREAM, [self.batch_type_map[key_type]])
+                        ),
                         HLSVar(
                             "intermediate_transform",
                             HLSType(HLSBasicType.STREAM, [self.batch_type_map[transform_type]]),
@@ -587,11 +526,11 @@ emconfig:
                     ]
 
                     kt_pair_type = HLSType(
-                            HLSBasicType.STRUCT,
-                            [key_type, transform_type],
-                            struct_name=f"kt_pair_{comp.readable_id}_t",
-                            struct_prop_names=["key", "transform"],
-                        )
+                        HLSBasicType.STRUCT,
+                        [key_type, transform_type],
+                        struct_name=f"kt_pair_{comp.readable_id}_t",
+                        struct_prop_names=["key", "transform"],
+                    )
 
                     net_wrapper_type = HLSType(
                         HLSBasicType.STRUCT,
@@ -604,7 +543,9 @@ emconfig:
                     key_batch_type = self.batch_type_map[key_type]
                     transform_batch_type = self.batch_type_map[transform_type]
                     kt_pair_batch_type = self._get_batch_type(kt_pair_type)
-                    zipper_func = generate_stream_zipper(key_batch_type, transform_batch_type, kt_pair_batch_type)
+                    zipper_func = generate_stream_zipper(
+                        key_batch_type, transform_batch_type, kt_pair_batch_type
+                    )
 
                     out_dfir_type = comp.get_port("o_0").data_type
                     base_out_batch_type = self._get_batch_type(self.type_map[out_dfir_type])
@@ -638,7 +579,7 @@ emconfig:
                         "intermediate_key": pre_process_func.params[1],
                         "intermediate_transform": pre_process_func.params[2],
                     }
-                elif REDUCE_MODE == "big_pipeline":
+                elif self.REDUCE_MODE == "big_pipeline":
                     pre_process_func = HLSFunction(name=f"{comp.name}_pre_process", comp=comp)
                     unit_reduce_func = HLSFunction(name=f"{comp.name}_unit_reduce", comp=comp)
                     in_type = self.type_map[comp.get_port("i_0").data_type]
@@ -646,7 +587,9 @@ emconfig:
                     transform_type = self.type_map[comp.get_port("i_reduce_transform_out").data_type]
                     pre_process_func.params = [
                         HLSVar("i_0", HLSType(HLSBasicType.STREAM, [self.batch_type_map[in_type]])),
-                        HLSVar("intermediate_key", HLSType(HLSBasicType.STREAM, [self.batch_type_map[key_type]])),
+                        HLSVar(
+                            "intermediate_key", HLSType(HLSBasicType.STREAM, [self.batch_type_map[key_type]])
+                        ),
                         HLSVar(
                             "intermediate_transform",
                             HLSType(HLSBasicType.STREAM, [self.batch_type_map[transform_type]]),
@@ -684,9 +627,13 @@ emconfig:
                     key_batch_type = self.batch_type_map[key_type]
                     transform_batch_type = self.batch_type_map[transform_type]
                     kt_pair_batch_type = self._get_batch_type(kt_pair_type)
-                    zipper_func = generate_stream_zipper(key_batch_type, transform_batch_type, kt_pair_batch_type)
+                    zipper_func = generate_stream_zipper(
+                        key_batch_type, transform_batch_type, kt_pair_batch_type
+                    )
                     demux_func = generate_demux(self.PE_NUM, kt_pair_batch_type, net_wrapper_type)
-                    omega_funcs = generate_omega_network(self.PE_NUM, net_wrapper_type, routing_key_member="key")
+                    omega_funcs = generate_omega_network(
+                        self.PE_NUM, net_wrapper_type, routing_key_member="key"
+                    )
                     omega_func = next(f for f in omega_funcs if "omega_switch" in f.name)
                     self.utility_functions.extend([zipper_func, demux_func] + omega_funcs)
                     helpers = {
@@ -705,7 +652,9 @@ emconfig:
                         "demux_to_omega": HLSVar(
                             f"reduce_{comp.readable_id}_d2o_pair", demux_func.params[1].type
                         ),
-                        "omega_to_unit": HLSVar(f"reduce_{comp.readable_id}_o2u_pair", omega_func.params[1].type),
+                        "omega_to_unit": HLSVar(
+                            f"reduce_{comp.readable_id}_o2u_pair", omega_func.params[1].type
+                        ),
                         # 从 pre_process_func.params 直接获取正确的 HLSVar 对象
                         "intermediate_key": pre_process_func.params[1],
                         "intermediate_transform": pre_process_func.params[2],
@@ -1014,11 +963,18 @@ emconfig:
         params_str_list.append("uint16_t input_length_in_batches")
         param_vars.append(HLSVar("input_length_in_batches", HLSType(HLSBasicType.UINT16)))
 
-        top_func_sig = (
-            f'extern "C" void {top_func_name}(\n{INDENT_UNIT}'
-            + f",\n{INDENT_UNIT}".join(params_str_list)
-            + "\n)"
-        )
+        if self.REDUCE_MODE == "big_pipeline":
+            top_func_sig = (
+                f'extern "C" void {top_func_name}_big(\n{INDENT_UNIT}'
+                + f",\n{INDENT_UNIT}".join(params_str_list)
+                + "\n)"
+            )
+        else:
+            top_func_sig = (
+                f'extern "C" void {top_func_name}_little(\n{INDENT_UNIT}'
+                + f",\n{INDENT_UNIT}".join(params_str_list)
+                + "\n)"
+            )
 
         # 2. Prepare Pragmas and Body
         pragmas = []
@@ -1869,12 +1825,12 @@ emconfig:
         return body
 
     def _translate_reduce_unit_reduce(self, hls_func: HLSFunction) -> List[HLSCodeLine]:
-        if REDUCE_MODE == 'little_pipeline':
+        if self.REDUCE_MODE == "little_pipeline":
             return self._translate_reduce_unit_reduce_little(hls_func)
         else:
             return self._translate_reduce_unit_reduce_big(hls_func)
-        
-    def _translate_reduce_unit_reduce_big(self, hls_func: HLSFunction) -> List[HLSCodeLine]: ## modified
+
+    def _translate_reduce_unit_reduce_big(self, hls_func: HLSFunction) -> List[HLSCodeLine]:  ## modified
         """
         Generates the body for the second stage of Reduce (stateful accumulation).
         This version is updated to use a more performant circular buffer for draining.
@@ -2250,7 +2206,7 @@ emconfig:
         body.extend(final_pack_logic)
 
         return body
-    
+
     def _translate_reduce_unit_reduce_little(self, hls_func: HLSFunction) -> List[HLSCodeLine]:
         """
         Generates the body for the second stage of Reduce (stateful accumulation).
@@ -2344,7 +2300,9 @@ emconfig:
                         ),
                     ],
                 ),
-                self._translate_reduce_unit_inner_loop_little(comp, bram_elem_type, "i", pe_key_var, pe_val_var),
+                self._translate_reduce_unit_inner_loop_little(
+                    comp, bram_elem_type, "i", pe_key_var, pe_val_var
+                ),
             ),
         ]
         pe_processing_loop = CodeFor(
@@ -2508,139 +2466,139 @@ emconfig:
         return body
 
     def _translate_reduce_unit_inner_loop_big(
-       self,
-       comp: dfir.ReduceComponent,
-       bram_elem_type: HLSType,
-       pe_idx: str,
-       key_var,
-       val_var,
+        self,
+        comp: dfir.ReduceComponent,
+        bram_elem_type: HLSType,
+        pe_idx: str,
+        key_var,
+        val_var,
     ) -> List[HLSCodeLine]:
-       """
-       Helper to generate the complex logic inside unit_reduce's PE_NUM loop.
-       *** MODIFIED to accept a PE index ***
-       """
-       key_type = self.type_map[comp.get_port("i_reduce_key_out").data_type]
-       accum_type = self.type_map[comp.get_port("i_reduce_transform_out").data_type]
-       bool_type = HLSType(HLSBasicType.BOOL)
+        """
+        Helper to generate the complex logic inside unit_reduce's PE_NUM loop.
+        *** MODIFIED to accept a PE index ***
+        """
+        key_type = self.type_map[comp.get_port("i_reduce_key_out").data_type]
+        accum_type = self.type_map[comp.get_port("i_reduce_transform_out").data_type]
+        bool_type = HLSType(HLSBasicType.BOOL)
 
-       # # 1. Get current key and value from the batch using the PE index
-       # key_var = HLSVar("current_key", key_type)
-       # val_var = HLSVar("current_val", accum_type)
-       # logic = [
-       #     CodeVarDecl(key_var.name, key_var.type),
-       #     CodeVarDecl(val_var.name, val_var.type),
-       #     CodeAssign(
-       #         key_var, HLSExpr(HLSExprT.VAR, HLSVar(f"in_key_batch.data[{pe_idx}]", key_type))
-       #     ),
-       #     CodeAssign(
-       #         val_var,
-       #         HLSExpr(HLSExprT.VAR, HLSVar(f"in_transform_batch.data[{pe_idx}]", accum_type)),
-       #     ),
-       # ]
-       logic = []
+        # # 1. Get current key and value from the batch using the PE index
+        # key_var = HLSVar("current_key", key_type)
+        # val_var = HLSVar("current_val", accum_type)
+        # logic = [
+        #     CodeVarDecl(key_var.name, key_var.type),
+        #     CodeVarDecl(val_var.name, val_var.type),
+        #     CodeAssign(
+        #         key_var, HLSExpr(HLSExprT.VAR, HLSVar(f"in_key_batch.data[{pe_idx}]", key_type))
+        #     ),
+        #     CodeAssign(
+        #         val_var,
+        #         HLSExpr(HLSExprT.VAR, HLSVar(f"in_transform_batch.data[{pe_idx}]", accum_type)),
+        #     ),
+        # ]
+        logic = []
 
-       # *** 关键修改: 所有对内存的访问都使用 pe_idx 作为第一维度 ***
-       # 2. Read old element from this PE's BRAM & buffer
-       old_ele_var = HLSVar("old_ele", bram_elem_type)
-       logic.append(CodeVarDecl(old_ele_var.name, old_ele_var.type))
-       logic.append(
-           CodeAssign(
-               old_ele_var,
-               HLSExpr(HLSExprT.VAR, HLSVar(f"key_mem[{pe_idx}][{key_var.name}]", bram_elem_type)),
-           )
-       )
+        # *** 关键修改: 所有对内存的访问都使用 pe_idx 作为第一维度 ***
+        # 2. Read old element from this PE's BRAM & buffer
+        old_ele_var = HLSVar("old_ele", bram_elem_type)
+        logic.append(CodeVarDecl(old_ele_var.name, old_ele_var.type))
+        logic.append(
+            CodeAssign(
+                old_ele_var,
+                HLSExpr(HLSExprT.VAR, HLSVar(f"key_mem[{pe_idx}][{key_var.name}]", bram_elem_type)),
+            )
+        )
 
-       # 3. Buffer management for this PE
-       buffer_elem_expr = HLSExpr(
-           HLSExprT.VAR, HLSVar(f"i_buffer[{pe_idx}][i_search]", HLSType(HLSBasicType.UINT))
-       )
-       if_condition = HLSExpr(HLSExprT.BINOP, BinOp.EQ, [HLSExpr(HLSExprT.VAR, key_var), buffer_elem_expr])
-       value_to_assign = HLSExpr(HLSExprT.VAR, HLSVar(f"key_buffer[{pe_idx}][i_search]", bram_elem_type))
-       search_loop = CodeFor(
-           [
-               CodePragma("UNROLL"),
-               CodeIf(if_condition, [CodeAssign(old_ele_var, value_to_assign)]),
-           ],
-           "L + 1",
-           iter_name="i_search",
-       )
-       logic.append(search_loop)
+        # 3. Buffer management for this PE
+        buffer_elem_expr = HLSExpr(
+            HLSExprT.VAR, HLSVar(f"i_buffer[{pe_idx}][i_search]", HLSType(HLSBasicType.UINT))
+        )
+        if_condition = HLSExpr(HLSExprT.BINOP, BinOp.EQ, [HLSExpr(HLSExprT.VAR, key_var), buffer_elem_expr])
+        value_to_assign = HLSExpr(HLSExprT.VAR, HLSVar(f"key_buffer[{pe_idx}][i_search]", bram_elem_type))
+        search_loop = CodeFor(
+            [
+                CodePragma("UNROLL"),
+                CodeIf(if_condition, [CodeAssign(old_ele_var, value_to_assign)]),
+            ],
+            "L + 1",
+            iter_name="i_search",
+        )
+        logic.append(search_loop)
 
-       i_buffer_dest = HLSVar(f"i_buffer[{pe_idx}][i_move]", HLSType(HLSBasicType.UINT))
-       i_buffer_src = HLSExpr(
-           HLSExprT.VAR, HLSVar(f"i_buffer[{pe_idx}][i_move + 1]", HLSType(HLSBasicType.UINT))
-       )
-       key_buffer_dest = HLSVar(f"key_buffer[{pe_idx}][i_move]", bram_elem_type)
-       key_buffer_src = HLSExpr(HLSExprT.VAR, HLSVar(f"key_buffer[{pe_idx}][i_move + 1]", bram_elem_type))
-       shift_loop = CodeFor(
-           [
-               CodePragma("UNROLL"),
-               CodeBlock(
-                   [
-                       CodeAssign(i_buffer_dest, i_buffer_src),
-                       CodeAssign(key_buffer_dest, key_buffer_src),
-                   ]
-               ),
-           ],
-           "L",
-           iter_name="i_move",
-       )
-       logic.append(shift_loop)
+        i_buffer_dest = HLSVar(f"i_buffer[{pe_idx}][i_move]", HLSType(HLSBasicType.UINT))
+        i_buffer_src = HLSExpr(
+            HLSExprT.VAR, HLSVar(f"i_buffer[{pe_idx}][i_move + 1]", HLSType(HLSBasicType.UINT))
+        )
+        key_buffer_dest = HLSVar(f"key_buffer[{pe_idx}][i_move]", bram_elem_type)
+        key_buffer_src = HLSExpr(HLSExprT.VAR, HLSVar(f"key_buffer[{pe_idx}][i_move + 1]", bram_elem_type))
+        shift_loop = CodeFor(
+            [
+                CodePragma("UNROLL"),
+                CodeBlock(
+                    [
+                        CodeAssign(i_buffer_dest, i_buffer_src),
+                        CodeAssign(key_buffer_dest, key_buffer_src),
+                    ]
+                ),
+            ],
+            "L",
+            iter_name="i_move",
+        )
+        logic.append(shift_loop)
 
-       # 4. If/Else logic for aggregation (logic itself is unchanged)
-       new_ele_var = HLSVar("new_ele", bram_elem_type)
-       logic.append(CodeVarDecl(new_ele_var.name, new_ele_var.type))
-       is_valid_expr = HLSExpr(
-           HLSExprT.UOP, (UnaryOp.GET_ATTR, "ele_1"), [HLSExpr(HLSExprT.VAR, old_ele_var)]
-       )
-       if_codes = [
-           CodeAssign(HLSVar(f"{new_ele_var.name}.ele_1", bool_type), HLSExpr(HLSExprT.CONST, True)),
-           CodeAssign(HLSVar(f"{new_ele_var.name}.ele_0", accum_type), HLSExpr(HLSExprT.VAR, val_var)),
-       ]
-       old_data_var = HLSVar("old_data", accum_type)
-       unit_res_var = HLSVar(f"{new_ele_var.name}.ele_0", accum_type)
-       unit_starts = [
-           comp.get_port("o_reduce_unit_start_0"),
-           comp.get_port("o_reduce_unit_start_1"),
-       ]
-       unit_end = comp.get_port("i_reduce_unit_end")
-       io_map = {unit_starts[0]: old_data_var, unit_starts[1]: val_var, unit_end: unit_res_var}
-       else_codes = [
-           CodeVarDecl(old_data_var.name, old_data_var.type),
-           CodeAssign(
-               old_data_var,
-               HLSExpr(
-                   HLSExprT.UOP,
-                   (UnaryOp.GET_ATTR, "ele_0"),
-                   [HLSExpr(HLSExprT.VAR, old_ele_var)],
-               ),
-           ),
-           *self._inline_sub_graph_logic(unit_starts, unit_end, io_map),
-           CodeAssign(HLSVar(f"{new_ele_var.name}.ele_1", bool_type), HLSExpr(HLSExprT.CONST, True)),
-       ]
-       logic.append(CodeIf(is_valid_expr, if_codes=else_codes, else_codes=if_codes))
+        # 4. If/Else logic for aggregation (logic itself is unchanged)
+        new_ele_var = HLSVar("new_ele", bram_elem_type)
+        logic.append(CodeVarDecl(new_ele_var.name, new_ele_var.type))
+        is_valid_expr = HLSExpr(
+            HLSExprT.UOP, (UnaryOp.GET_ATTR, "ele_1"), [HLSExpr(HLSExprT.VAR, old_ele_var)]
+        )
+        if_codes = [
+            CodeAssign(HLSVar(f"{new_ele_var.name}.ele_1", bool_type), HLSExpr(HLSExprT.CONST, True)),
+            CodeAssign(HLSVar(f"{new_ele_var.name}.ele_0", accum_type), HLSExpr(HLSExprT.VAR, val_var)),
+        ]
+        old_data_var = HLSVar("old_data", accum_type)
+        unit_res_var = HLSVar(f"{new_ele_var.name}.ele_0", accum_type)
+        unit_starts = [
+            comp.get_port("o_reduce_unit_start_0"),
+            comp.get_port("o_reduce_unit_start_1"),
+        ]
+        unit_end = comp.get_port("i_reduce_unit_end")
+        io_map = {unit_starts[0]: old_data_var, unit_starts[1]: val_var, unit_end: unit_res_var}
+        else_codes = [
+            CodeVarDecl(old_data_var.name, old_data_var.type),
+            CodeAssign(
+                old_data_var,
+                HLSExpr(
+                    HLSExprT.UOP,
+                    (UnaryOp.GET_ATTR, "ele_0"),
+                    [HLSExpr(HLSExprT.VAR, old_ele_var)],
+                ),
+            ),
+            *self._inline_sub_graph_logic(unit_starts, unit_end, io_map),
+            CodeAssign(HLSVar(f"{new_ele_var.name}.ele_1", bool_type), HLSExpr(HLSExprT.CONST, True)),
+        ]
+        logic.append(CodeIf(is_valid_expr, if_codes=else_codes, else_codes=if_codes))
 
-       # 5. Write back to this PE's BRAM and buffer
-       logic.append(
-           CodeAssign(
-               HLSVar(f"key_mem[{pe_idx}][{key_var.name}]", bram_elem_type),
-               HLSExpr(HLSExprT.VAR, new_ele_var),
-           )
-       )
-       logic.append(
-           CodeAssign(
-               HLSVar(f"key_buffer[{pe_idx}][L]", bram_elem_type),
-               HLSExpr(HLSExprT.VAR, new_ele_var),
-           )
-       )
-       logic.append(
-           CodeAssign(
-               HLSVar(f"i_buffer[{pe_idx}][L]", HLSType(HLSBasicType.UINT)),
-               HLSExpr(HLSExprT.VAR, key_var),
-           )
-       )
+        # 5. Write back to this PE's BRAM and buffer
+        logic.append(
+            CodeAssign(
+                HLSVar(f"key_mem[{pe_idx}][{key_var.name}]", bram_elem_type),
+                HLSExpr(HLSExprT.VAR, new_ele_var),
+            )
+        )
+        logic.append(
+            CodeAssign(
+                HLSVar(f"key_buffer[{pe_idx}][L]", bram_elem_type),
+                HLSExpr(HLSExprT.VAR, new_ele_var),
+            )
+        )
+        logic.append(
+            CodeAssign(
+                HLSVar(f"i_buffer[{pe_idx}][L]", HLSType(HLSBasicType.UINT)),
+                HLSExpr(HLSExprT.VAR, key_var),
+            )
+        )
 
-       return logic
+        return logic
 
     def _translate_reduce_unit_inner_loop_little(
         self,
@@ -2863,14 +2821,13 @@ emconfig:
         code += "// --- Function Prototypes ---\n"
         for func in self.hls_functions.values():
             params_str = ", ".join([p.type.get_upper_param(p.name, True) for p in func.params])
-            code += f"void {func.name}({params_str});\n"
+            code += f"static void {func.name}({params_str});\n"
 
         code += f"\n// --- Top-Level Function Prototype ---\n"
         code += f"{top_func_sig};\n\n"
 
         code += f"#endif // {header_guard}\n"
         return code
-
 
     def _generate_top_level_function_body(self) -> List[HLSCodeLine]:
         """Generates the implementation of the dataflow core function body,
@@ -2987,9 +2944,8 @@ emconfig:
                 ]
                 body.append(CodeCall(func, pre_process_call_params))
 
-
                 # HERE
-                if REDUCE_MODE == 'little_pipeline':
+                if self.REDUCE_MODE == "little_pipeline":
                     body.append(
                         CodeCall(
                             helpers["zipper"],
@@ -3011,11 +2967,13 @@ emconfig:
                     )
 
                     # unit_reduce now takes the zipped stream directly.
-                    body.append(CodeCall(unit_reduce_func, [streams["zipper_to_unit_reduce"], out_stream_var]))
+                    body.append(
+                        CodeCall(unit_reduce_func, [streams["zipper_to_unit_reduce"], out_stream_var])
+                    )
 
                     body.append(CodeComment(f"--- End of Reduce Super-Block for {comp.name} ---"))
                     handled_unit_reduce_ids.add(comp_id)
-                elif REDUCE_MODE == 'big_pipeline':
+                elif self.REDUCE_MODE == "big_pipeline":
                     body.append(
                         CodeCall(
                             helpers["zipper"],
@@ -3029,8 +2987,10 @@ emconfig:
                     body.append(
                         CodeCall(helpers["demux"], [streams["zipper_to_demux"], streams["demux_to_omega"]])
                     )
-                    body.append(CodeCall(helpers["omega"], [streams["demux_to_omega"], streams["omega_to_unit"]]))
-                    
+                    body.append(
+                        CodeCall(helpers["omega"], [streams["demux_to_omega"], streams["omega_to_unit"]])
+                    )
+
                     out_port = unit_reduce_func.dfir_comp.get_port("o_0")
                     out_stream_var = (
                         top_io_map[out_port.readable_id]
@@ -3040,8 +3000,6 @@ emconfig:
                     body.append(CodeCall(unit_reduce_func, [streams["omega_to_unit"], out_stream_var]))
                     body.append(CodeComment(f"--- End of Reduce Super-Block for {comp.name} ---"))
                     handled_unit_reduce_ids.add(comp_id)
-
-                
 
             elif not isinstance(comp, dfir.ReduceComponent):  # This part is unchanged
                 call_params: List[HLSVar] = []
@@ -3065,7 +3023,9 @@ emconfig:
 
     def _generate_source_file(self, header_name: str, axi_wrapper_func_str: str) -> str:
         """Generates the full content of the .cpp source file with correct function order."""
+
         code = f'#include "{header_name}"\n\n'
+
 
         # --- *** 关键修正：调整函数定义顺序 *** ---
         # 顺序: 辅助网络 -> DFIR组件 -> AXI数据搬运 -> AXI顶层封装
@@ -3077,7 +3037,7 @@ emconfig:
                 params_str = ", ".join(
                     [p.type.get_upper_param(p.name, p.type.type != HLSBasicType.INT) for p in func.params]
                 )
-                code += f"void {func.name}({params_str}) " + "{\n"
+                code += f"static void {func.name}({params_str}) " + "{\n"
                 code += "".join([line.gen_code(1) for line in func.codes])
                 code += "}\n\n"
 
@@ -3085,7 +3045,7 @@ emconfig:
         code += "// --- DFIR Component Functions ---\n"
         for func in self.hls_functions.values():
             params_str = ", ".join([p.type.get_upper_param(p.name, True) for p in func.params])
-            code += f"void {func.name}({params_str}) " + "{\n"
+            code += f"static void {func.name}({params_str}) " + "{\n"
             code += "".join([line.gen_code(1) for line in func.codes])
             code += "}\n\n"
 

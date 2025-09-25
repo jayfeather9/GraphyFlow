@@ -71,21 +71,35 @@ def generate_project(
     # 5. 实例化后端并生成所有动态代码
     print("[4/6] Generating Dynamic Source Code via BackendManager...")
     bkd_mng = BackendManager()
-    kernel_h, kernel_cpp = bkd_mng.generate_backend(comp_col, global_graph, kernel_name)
+    bkd_mng.REDUCE_MODE = "big_pipeline"
+    kernel_h_big, kernel_cpp_big = bkd_mng.generate_backend(comp_col, global_graph, kernel_name,)
+    bkd_mng.REDUCE_MODE = "little_pipeline"
+    kernel_h_little, kernel_cpp_little = bkd_mng.generate_backend(comp_col, global_graph, kernel_name)
+
+
     common_h = bkd_mng.generate_common_header(kernel_name)
+
     host_h, host_cpp = bkd_mng.generate_host_codes(kernel_name, template_dir / "scripts" / "host")
 
+    
     # 6. 部署所有动态生成的文件
     print(f"[5/6] Deploying Generated Files to '{output_dir}'")
-    with open(kernel_script_dir / f"{kernel_name}.h", "w") as f:
-        f.write(kernel_h)
-    with open(kernel_script_dir / f"{kernel_name}.cpp", "w") as f:
-        f.write(kernel_cpp)
+    with open(kernel_script_dir / f"{kernel_name}_big.h", "w") as f:
+        f.write(kernel_h_big)
+    with open(kernel_script_dir / f"{kernel_name}_big.cpp", "w") as f:
+        f.write(kernel_cpp_big)
+
+    with open(kernel_script_dir / f"{kernel_name}_little.h", "w") as f:
+        f.write(kernel_h_little)
+    with open(kernel_script_dir / f"{kernel_name}_little.cpp", "w") as f:
+        f.write(kernel_cpp_little)
+
     with open(host_script_dir / "common.h", "w") as f:
         f.write(common_h)
     with open(host_script_dir / "generated_host.h", "w") as f:
         f.write(host_h)
     with open(host_script_dir / "generated_host.cpp", "w") as f:
         f.write(host_cpp)
+
 
     print("[6/6] Project Generation Complete!")

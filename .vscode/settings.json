@@ -66,6 +66,8 @@
         "thread": "cpp",
         "cfenv": "cpp",
         "typeinfo": "cpp",
-        "__nullptr": "cpp"
+        "__nullptr": "cpp",
+        "acc_setup": "cpp",
+        "*.template": "cpp"
     }
 }
