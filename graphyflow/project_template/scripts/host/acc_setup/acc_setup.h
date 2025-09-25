@@ -24,13 +24,13 @@ struct AccDescriptor {
     cl::Context context;
 
     //新增
-    std::vector<int> big_kernel_hbm_input_id;
-    std::vector<int> big_kernel_hbm_output_id;
-    std::vector<int> big_kernel_hbm_stop_flag_id;
+    std::vector<int> big_kernel_hbm_input_id  =    BIG_KERNEL_HBM_INPUT_ID;
+    std::vector<int> big_kernel_hbm_output_id =    BIG_KERNEL_HBM_OUTPUT_ID;
 
-    std::vector<int> little_kernel_hbm_input_id;
-    std::vector<int> little_kernel_hbm_output_id;
-    std::vector<int> little_kernel_hbm_stop_flag_id;
+
+    std::vector<int> little_kernel_hbm_input_id =  LITTLE_KERNEL_HBM_INPUT_ID;
+    std::vector<int> little_kernel_hbm_output_id = LITTLE_KERNEL_HBM_OUTPUT_ID;
+
     
 } acc_descriptor_dt;
 

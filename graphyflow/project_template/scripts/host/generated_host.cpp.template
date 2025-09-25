@@ -9,11 +9,7 @@ AlgorithmHost::AlgorithmHost(acc_descriptor_dt& acc)
     : acc{acc}{}
 
 // --- DYNAMICALLY GENERATED SECTIONS ---
-// {GRAPHYFLOW_HELPER_FUNCTIONS}
-// Helper function to convert ap_fixed to int32_t by reinterpreting its bits
-static int32_t ap_fixed_to_int32(const ap_fixed<32, 16>& val) {
-    return *reinterpret_cast<const int32_t*>(&val);
-}
+// {{GRAPHYFLOW_HELPER_FUNCTIONS}}
 
 // example 示例：
 /**
@@ -52,10 +48,9 @@ void AlgorithmHost::setup_buffers(const partition_container_dt& container, int s
 
         // b. 准备输出和停止标志的主机端内存
         big_kernel_host_outputs[i].resize(host_input_batches.size());
-        //big_kernel_host_stop_flags[i].assign(1, 0);
 
         // c. 在指定的HBM bank上创建缓冲区
-        cl_mem_ext_ptr_t hbm_ext_in, hbm_ext_out, hbm_ext_stop;
+        cl_mem_ext_ptr_t hbm_ext_in, hbm_ext_out; // <-- 修改点: 移除了 hbm_ext_stop
 
         hbm_ext_in.flags = XCL_MEM_TOPOLOGY | acc.big_kernel_hbm_input_id[i];
         hbm_ext_in.obj = nullptr;
@@ -65,14 +60,22 @@ void AlgorithmHost::setup_buffers(const partition_container_dt& container, int s
         hbm_ext_out.obj = nullptr;
         hbm_ext_out.param = 0;
 
-        hbm_ext_stop.flags = XCL_MEM_TOPOLOGY | acc.big_kernel_hbm_stop_flag_id[i];
-        hbm_ext_stop.obj = nullptr;
-        hbm_ext_stop.param = 0;
+        // --- *** 仅修改 stop_flag 相关的部分 开始 *** ---
+
+        // hbm_ext_stop 的设置已被移除
         
         cl::Buffer in_buf, out_buf, stop_buf;
         OCL_CHECK(err, in_buf = cl::Buffer(acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX , host_input_batches.size() * sizeof(BATCH_TYPE), &hbm_ext_in, &err));
         OCL_CHECK(err, out_buf = cl::Buffer(acc.context, CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX , big_kernel_host_outputs[i].size() * sizeof(KERNEL_OUTPUT_BATCH_TYPE), &hbm_ext_out, &err));
-        OCL_CHECK(err, stop_buf = cl::Buffer(acc.context, CL_MEM_READ_WRITE | CL_MEM_EXT_PTR_XILINX , sizeof(int), &hbm_ext_stop, &err));
+        
+        // 修改 stop_buf 的创建方式：不使用 HBM 扩展指针，而是直接关联主机内存
+        OCL_CHECK(err, stop_buf = cl::Buffer(acc.context, 
+                                             CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, 
+                                             sizeof(int), 
+                                             &this->big_kernel_stop_flags[i], // 直接传递主机指针
+                                             &err));
+
+        // --- *** 仅修改 stop_flag 相关的部分 结束 *** ---
 
         // d. 将新创建的缓冲区句柄添加到向量中
         big_kernel_input_bufs.push_back(in_buf);
@@ -90,10 +93,9 @@ void AlgorithmHost::setup_buffers(const partition_container_dt& container, int s
 
         // b. 准备输出和停止标志的主机端内存
         little_kernel_host_outputs[i].resize(host_input_batches.size());
-        //little_kernel_host_stop_flags[i].assign(1, 0);
 
         // c. 在指定的HBM bank上创建缓冲区
-        cl_mem_ext_ptr_t hbm_ext_in, hbm_ext_out, hbm_ext_stop;
+        cl_mem_ext_ptr_t hbm_ext_in, hbm_ext_out; // <-- 修改点: 移除了 hbm_ext_stop
 
         hbm_ext_in.flags = XCL_MEM_TOPOLOGY | acc.little_kernel_hbm_input_id[i];
         hbm_ext_in.obj = nullptr;
@@ -102,15 +104,24 @@ void AlgorithmHost::setup_buffers(const partition_container_dt& container, int s
         hbm_ext_out.flags = XCL_MEM_TOPOLOGY | acc.little_kernel_hbm_output_id[i];
         hbm_ext_out.obj = nullptr;
         hbm_ext_out.param = 0;
+        
+        // --- *** 仅修改 stop_flag 相关的部分 开始 *** ---
 
-        hbm_ext_stop.flags = XCL_MEM_TOPOLOGY | acc.little_kernel_hbm_stop_flag_id[i];
-        hbm_ext_stop.obj = nullptr;
-        hbm_ext_stop.param = 0;
+        // hbm_ext_stop 的设置已被移除
 
         cl::Buffer in_buf, out_buf, stop_buf;
         OCL_CHECK(err, in_buf = cl::Buffer(acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX , host_input_batches.size() * sizeof(BATCH_TYPE), &hbm_ext_in, &err));
         OCL_CHECK(err, out_buf = cl::Buffer(acc.context, CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX , little_kernel_host_outputs[i].size() * sizeof(KERNEL_OUTPUT_BATCH_TYPE), &hbm_ext_out, &err));
-        OCL_CHECK(err, stop_buf = cl::Buffer(acc.context, CL_MEM_READ_WRITE | CL_MEM_EXT_PTR_XILINX , sizeof(int), &hbm_ext_stop, &err));
+
+        // 修改 stop_buf 的创建方式：不使用 HBM 扩展指针，而是直接关联主机内存
+        OCL_CHECK(err, stop_buf = cl::Buffer(acc.context, 
+                                             CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, 
+                                             sizeof(int), 
+                                             &this->little_kernel_stop_flags[i], // 直接传递主机指针
+                                             &err));
+        
+        // --- *** 仅修改 stop_flag 相关的部分 结束 *** ---
+
 
         // d. 将新创建的缓冲区句柄添加到向量中
         little_kernel_input_bufs.push_back(in_buf);
@@ -150,25 +161,33 @@ void AlgorithmHost::transfer_data_to_fpga(
         // 获取第i个大核专属的命令队列
         cl::CommandQueue &queue = acc.big_gs_queue[i];
         
-        // --- 新增的 C++ 风格调试打印代码 开始 ---
-        std::cout << "\n--- [DEBUG] Data for Big Kernel ID: " << i << " ---" << std::endl;
-        std::cout << "Total batches to transfer: " << source_data.size() << std::endl;
-        for (size_t j = 0; j < source_data.size(); ++j) {
-            const auto& batch = source_data[j];
-            std::cout << "  Batch [" << j << "]: "
-                      << "end_pos = " << std::left << std::setw(2) << static_cast<unsigned int>(batch.end_pos) << ", "
-                      << "end_flag = " << (batch.end_flag ? "true" : "false")
-                      << std::endl;
-            
-            for (uint8_t k = 0; k < batch.end_pos; ++k) {
-                const auto& edge = batch.data[k];
-                std::cout << "    Edge " << static_cast<unsigned int>(k) << ": "
-                          << "(src={id:"   << std::left << std::setw(4) << edge.src.id      << ", "
-                          << "dist:"       << std::setw(5) << edge.src.distance  << "}, "
-                          << "dst={id:"   << std::setw(4) << edge.dst.id      << ", "
-                          << "dist:"       << std::setw(5) << edge.dst.distance  << "}, "
-                          << "w:"          << std::setw(4) << edge.weight      << ")"
-                          << std::endl;
+// --- 新增的 C++ 风格调试打印代码 开始 ---
+std::cout << "\n--- [DEBUG] Data for Big Kernel ID: " << i << " ---" << std::endl;
+std::cout << "Total batches to transfer: " << source_data.size() << std::endl;
+for (size_t j = 0; j < source_data.size(); ++j) {
+    const auto& batch = source_data[j];
+    std::cout << "  Batch [" << j << "]: "
+              << "end_pos = " << std::left << std::setw(2) << static_cast<unsigned int>(batch.end_pos) << ", "
+              << "end_flag = " << (batch.end_flag ? "true" : "false")
+              << std::endl;
+    
+    for (uint8_t k = 0; k < batch.end_pos; ++k) {
+        const auto& edge = batch.data[k];
+
+        // --- *** 核心修正点：将二进制模式转回 ap_fixed 值再打印 *** ---
+        // 使用 const ap_fixed<32, 16>* 来安全地进行只读转换
+        ap_fixed<32, 16> src_dist_val = *reinterpret_cast<const ap_fixed<32, 16>*>(&edge.src.distance);
+        ap_fixed<32, 16> dst_dist_val = *reinterpret_cast<const ap_fixed<32, 16>*>(&edge.dst.distance);
+        ap_fixed<32, 16> weight_val   = *reinterpret_cast<const ap_fixed<32, 16>*>(&edge.weight);
+        
+        std::cout << "    Edge " << static_cast<unsigned int>(k) << ": "
+                  << "(src={id:"   << std::left << std::setw(4) << edge.src.id    << ", "
+                  << "dist:"       << std::setw(8) << src_dist_val   << "}, " // 打印转换后的值
+                  << "dst={id:"   << std::setw(4) << edge.dst.id    << ", "
+                  << "dist:"       << std::setw(8) << dst_dist_val   << "}, " // 打印转换后的值
+                  << "w:"          << std::setw(4) << weight_val     << ")"   // 打印转换后的值
+                  << std::endl;
+        // --- *** 修正结束 *** ---
             }
         }
         std::cout << "--- [DEBUG] End of data for Big Kernel ID: " << i << " ---\n" << std::endl;
@@ -209,7 +228,7 @@ void AlgorithmHost::transfer_data_to_fpga(
         cl::CommandQueue &queue = acc.little_gs_queue[i];
 
 
-                // --- 新增的 C++ 风格调试打印代码 开始 ---
+             // --- 新增的 C++ 风格调试打印代码 开始 ---
         std::cout << "\n--- [DEBUG] Data for Little Kernel ID: " << i << " ---" << std::endl;
         std::cout << "Total batches to transfer: " << source_data.size() << std::endl;
         for (size_t j = 0; j < source_data.size(); ++j) {
@@ -221,13 +240,20 @@ void AlgorithmHost::transfer_data_to_fpga(
 
             for (uint8_t k = 0; k < batch.end_pos; ++k) {
                 const auto& edge = batch.data[k];
+
+                // --- *** 核心修正点：将二进制模式转回 ap_fixed 值再打印 *** ---
+                ap_fixed<32, 16> src_dist_val = *reinterpret_cast<const ap_fixed<32, 16>*>(&edge.src.distance);
+                ap_fixed<32, 16> dst_dist_val = *reinterpret_cast<const ap_fixed<32, 16>*>(&edge.dst.distance);
+                ap_fixed<32, 16> weight_val   = *reinterpret_cast<const ap_fixed<32, 16>*>(&edge.weight);
+                
                 std::cout << "    Edge " << static_cast<unsigned int>(k) << ": "
-                          << "(src={id:"   << std::left << std::setw(4) << edge.src.id      << ", "
-                          << "dist:"       << std::setw(5) << edge.src.distance  << "}, "
-                          << "dst={id:"   << std::setw(4) << edge.dst.id      << ", "
-                          << "dist:"       << std::setw(5) << edge.dst.distance  << "}, "
-                          << "w:"          << std::setw(4) << edge.weight      << ")"
+                          << "(src={id:"   << std::left << std::setw(4) << edge.src.id    << ", "
+                          << "dist:"       << std::setw(8) << src_dist_val   << "}, " // 打印转换后的值
+                          << "dst={id:"   << std::setw(4) << edge.dst.id    << ", "
+                          << "dist:"       << std::setw(8) << dst_dist_val   << "}, " // 打印转换后的值
+                          << "w:"          << std::setw(4) << weight_val     << ")"   // 打印转换后的值
                           << std::endl;
+                // --- *** 修正结束 *** ---
             }
         }
         std::cout << "--- [DEBUG] End of data for Little Kernel ID: " << i << " ---\n" << std::endl;

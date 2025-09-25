@@ -12,13 +12,13 @@ acc_descriptor_dt initAccelerator(const std::string xclbin_path) {
     cl::Program::Binaries bins{{fileBuf.data(), fileBuf.size()}};
 
     //设置使用的HBM BANK：
-    acc.big_kernel_hbm_input_id = {0};
-    acc.big_kernel_hbm_output_id = {1};
-    acc. big_kernel_hbm_stop_flag_id = {2};
+    //acc.big_kernel_hbm_input_id = {0};
+    //acc.big_kernel_hbm_output_id = {1};
+    //acc. big_kernel_hbm_stop_flag_id = {2};
 
-    acc.little_kernel_hbm_input_id = {4,8};
-    acc.little_kernel_hbm_output_id = {5,9};
-    acc.little_kernel_hbm_stop_flag_id = {6,10};
+    //acc.little_kernel_hbm_input_id = {4,8};
+    //acc.little_kernel_hbm_output_id = {5,9};
+    //acc.little_kernel_hbm_stop_flag_id = {6,10};
     // 为选定的设备创建上下文和主命令队列
     OCL_CHECK(err, acc.context = cl::Context(device, nullptr, nullptr, nullptr, &err));
     OCL_CHECK(err, acc.q = cl::CommandQueue(acc.context, device, CL_QUEUE_PROFILING_ENABLE, &err));

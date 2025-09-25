@@ -40,9 +40,9 @@ class AlgorithmHost {
     std::vector<cl::Buffer> little_kernel_stop_flag_bufs;
 
     std::vector<std::vector<KERNEL_OUTPUT_BATCH_TYPE> > big_kernel_host_outputs;//暂时用来存放结果
-    std::vector<int> big_kernel_stop_flags;
+    std::vector<int, aligned_allocator<int>> big_kernel_stop_flags;
     std::vector<std::vector<KERNEL_OUTPUT_BATCH_TYPE> > little_kernel_host_outputs;//暂时用来存放结果
-    std::vector<int> little_kernel_stop_flags;
+    std::vector<int, aligned_allocator<int>> little_kernel_stop_flags;
 };
 
 #endif // __GENERATED_HOST_H__

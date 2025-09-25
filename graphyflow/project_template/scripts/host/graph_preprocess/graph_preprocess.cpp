@@ -100,6 +100,7 @@ partition_container_dt partitionGraph (const GraphCSR* graph) {
 
     // --- 2: 将 COO vector 分割成多个部分 ---
 
+    /*
     //方案一：均分
     const int num_partitions = LITTLE_KERNEL_NUM + BIG_KERNEL_NUM;
     size_t total_edges = all_edges.size();
@@ -114,23 +115,43 @@ partition_container_dt partitionGraph (const GraphCSR* graph) {
         coo_parts[i].assign(current_iter, end_iter);
         current_iter = end_iter;
     }
-    
+    */
+   // --- 2: 按顶点划分，并将所有入边(ingoing-edges)分配到对应分区 ---
 
-    /*
-    // --- 2: [DEBUG] 修改分区逻辑：将所有边放入第一个分区 ---
-    const int num_partitions = LITTLE_KERNEL_NUM + BIG_KERNEL_NUM; // 仍然是 3
-    
-    // 创建一个包含 num_partitions 个空 vector 的 vector
+    const int num_partitions = LITTLE_KERNEL_NUM + BIG_KERNEL_NUM;
+    const int num_vertices = graph->num_vertices;
+
+    // 2a. 首先，将所有顶点尽量平均地分配到每个分区
+    // 创建一个映射，记录每个顶点ID属于哪个分区ID
+    std::vector<int> vertex_to_partition_map(num_vertices);
+    int base_verts_per_part = num_vertices / num_partitions;
+    int remainder_verts = num_vertices % num_partitions;
+    int current_vertex_id = 0;
+    for (int part_id = 0; part_id < num_partitions; ++part_id) {
+        int verts_in_this_part = base_verts_per_part + (part_id < remainder_verts ? 1 : 0);
+        for (int i = 0; i < verts_in_this_part; ++i) {
+            if (current_vertex_id < num_vertices) {
+                vertex_to_partition_map[current_vertex_id] = part_id;
+                current_vertex_id++;
+            }
+        }
+    }
+
+    // 2b. 然后，遍历所有边，根据其目标顶点(dst)的归属，将边放入对应的分区
     std::vector<std::vector<edge_t>> coo_parts(num_partitions);
-
-    // 检查确保至少有一个分区存在，然后将所有边复制到第一个分区
-    if (num_partitions > 0) {
-        coo_parts[0] = all_edges; 
+    for (const auto& edge : all_edges) {
+        int dst_id = edge.dst.id;
+        
+        // 确保目标顶点ID有效
+        if (dst_id < num_vertices) {
+            // 查找目标顶点属于哪个分区
+            int target_partition_id = vertex_to_partition_map[dst_id];
+            
+            // 将这条边添加到那个分区的边列表中
+            coo_parts[target_partition_id].push_back(edge);
+        }
     }
     
-    // 其他分区 (coo_parts[1], coo_parts[2], ...) 自动保持为空。
-
-    */
 
 
     // --- 3: 创建并填充 partition_container_dt ---
