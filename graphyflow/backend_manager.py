@@ -461,14 +461,9 @@ emconfig:
         q = []
         for comp in comp_col.components:
             if isinstance(comp, dfir.ReduceComponent):
-                for port_name in [
-                    "o_reduce_key_in",
-                    "o_reduce_transform_in",
-                    "o_reduce_unit_start_0",
-                    "o_reduce_unit_start_1",
-                ]:
-                    if comp.get_port(port_name).connected:
-                        q.append(comp.get_port(port_name).connection.parent)
+                for subg_port in comp.subg_input_ports:
+                    assert subg_port.connected
+                    q.append(subg_port.connection.parent)
 
         visited = set()
         while q:
@@ -480,7 +475,7 @@ emconfig:
             if isinstance(comp, dfir.ReduceComponent):
                 continue
 
-            self.unstreamed_funcs.add(f"{comp.__class__.__name__[:5]}_{comp.readable_id}")
+            self.unstreamed_funcs.add(comp.name)
             for port in comp.out_ports:
                 if port.connected:
                     q.append(port.connection.parent)
@@ -571,22 +566,31 @@ emconfig:
                 pre_process_func = HLSFunction(name=f"{comp.name}_pre_process", comp=comp)
                 unit_reduce_func = HLSFunction(name=f"{comp.name}_unit_reduce", comp=comp)
 
-                in_type = self.type_map[comp.get_port("i_0").data_type]
-                key_type = self.type_map[comp.get_port("i_reduce_key_out").data_type]
-                transform_type = self.type_map[comp.get_port("i_reduce_transform_out").data_type]
+                # in_type = self.type_map[comp.get_port("i_0").data_type]
+                # key_type = self.type_map[comp.get_port("i_reduce_key_out").data_type]
+                # transform_type = self.type_map[comp.get_port("i_reduce_transform_out").data_type]
+                global_in_ports = comp.get_port_group("global", "in")
+                key_out_type = self.type_map[comp.get_port("i_reduce_key_out").data_type]
+                transform_out_type = self.type_map[comp.get_port("i_reduce_transform_out").data_type]
+                inter_key_var = HLSVar("intermediate_key", HLSType(HLSBasicType.STREAM, [self.batch_type_map[key_out_type]]))
+                inter_transform_var = HLSVar("intermediate_transform", HLSType(HLSBasicType.STREAM, [self.batch_type_map[transform_out_type]]))
 
+                # pre_process_func.params = [
+                #     HLSVar("i_0", HLSType(HLSBasicType.STREAM, [self.batch_type_map[in_type]])),
+                #     HLSVar("intermediate_key", HLSType(HLSBasicType.STREAM, [self.batch_type_map[key_type]])),
+                #     HLSVar(
+                #         "intermediate_transform",
+                #         HLSType(HLSBasicType.STREAM, [self.batch_type_map[transform_type]]),
+                #     ),
+                # ]
                 pre_process_func.params = [
-                    HLSVar("i_0", HLSType(HLSBasicType.STREAM, [self.batch_type_map[in_type]])),
-                    HLSVar("intermediate_key", HLSType(HLSBasicType.STREAM, [self.batch_type_map[key_type]])),
-                    HLSVar(
-                        "intermediate_transform",
-                        HLSType(HLSBasicType.STREAM, [self.batch_type_map[transform_type]]),
-                    ),
-                ]
+                    HLSVar(port.name, HLSType(HLSBasicType.STREAM, [self.batch_type_map[self.type_map[port.data_type]]]))
+                    for port in global_in_ports
+                ] + [inter_key_var, inter_transform_var]
 
                 kt_pair_type = HLSType(
                     HLSBasicType.STRUCT,
-                    [key_type, transform_type],
+                    [key_out_type, transform_out_type],
                     struct_name=f"kt_pair_{comp.readable_id}_t",
                     struct_prop_names=["key", "transform"],
                 )
@@ -616,8 +620,8 @@ emconfig:
                 self.hls_functions[pre_process_func.readable_id] = pre_process_func
                 self.hls_functions[unit_reduce_func.readable_id] = unit_reduce_func
 
-                key_batch_type = self.batch_type_map[key_type]
-                transform_batch_type = self.batch_type_map[transform_type]
+                key_batch_type = self.batch_type_map[key_out_type]
+                transform_batch_type = self.batch_type_map[transform_out_type]
                 kt_pair_batch_type = self._get_batch_type(kt_pair_type)
                 zipper_func = generate_stream_zipper(key_batch_type, transform_batch_type, kt_pair_batch_type)
                 demux_func = generate_demux(self.PE_NUM, kt_pair_batch_type, net_wrapper_type)
@@ -633,7 +637,6 @@ emconfig:
                     "omega": omega_func,
                 }
 
-                # --- *** 关键修正：移除多余的 internal_streams 逻辑，只保留 streams_to_declare *** ---
                 streams_to_declare = {
                     "zipper_to_demux": HLSVar(
                         f"reduce_{comp.readable_id}_z2d_pair",
@@ -643,13 +646,12 @@ emconfig:
                         f"reduce_{comp.readable_id}_d2o_pair", demux_func.params[1].type
                     ),
                     "omega_to_unit": HLSVar(f"reduce_{comp.readable_id}_o2u_pair", omega_func.params[1].type),
-                    # 从 pre_process_func.params 直接获取正确的 HLSVar 对象
-                    "intermediate_key": pre_process_func.params[1],
-                    "intermediate_transform": pre_process_func.params[2],
+                    "intermediate_key": inter_key_var,
+                    "intermediate_transform": inter_transform_var,
                 }
 
+                # Declare these streams at the top-level function scope
                 for stream_var in streams_to_declare.values():
-                    # 为顶层函数声明这些流
                     decl = CodeVarDecl(stream_var.name, stream_var.type)
                     pragma = CodePragma(f"STREAM variable={stream_var.name} depth={self.STREAM_DEPTH}")
                     self.top_level_stream_decls.append((decl, pragma))
@@ -657,13 +659,8 @@ emconfig:
                 helpers["streams"] = streams_to_declare
                 self.reduce_helpers[comp.readable_id] = helpers
 
-                # 标记子图组件为已处理 (逻辑不变)
-                for port_name in [
-                    "o_reduce_key_in",
-                    "o_reduce_transform_in",
-                    "o_reduce_unit_start_0",
-                    "o_reduce_unit_start_1",
-                ]:
+                # Mark the sub-graph components as processed
+                for port_name in comp.subg_input_ports:
                     if comp.get_port(port_name).connected:
                         q = [comp.get_port(port_name).connection.parent]
                         visited_sub = set()
@@ -677,7 +674,7 @@ emconfig:
                                 if p.connected and not isinstance(p.connection.parent, dfir.ReduceComponent):
                                     q.append(p.connection.parent)
 
-        # 处理普通组件 (逻辑不变)
+        # Manage regular components
         for comp in comp_col.components:
             if comp.readable_id in processed_sub_comp_ids or isinstance(
                 comp,
@@ -691,6 +688,7 @@ emconfig:
                 continue
             hls_func = HLSFunction(name=comp.name, comp=comp)
             for port in comp.ports:
+                # Skip the ports connected to Constant or UnusedEndMarker
                 if port.connection and isinstance(
                     port.connection.parent, (dfir.UnusedEndMarkerComponent, dfir.ConstantComponent)
                 ):
@@ -704,7 +702,7 @@ emconfig:
                 hls_func.params.append(HLSVar(var_name=port.name, var_type=param_type))
             self.hls_functions[comp.readable_id] = hls_func
 
-        # 声明中间流 (逻辑不变)
+        # Declare intermediate streams for the top-level function
         all_stream_comp_ids = {f.dfir_comp.readable_id for f in self.hls_functions.values()}
         visited_ports = set()
         for port in comp_col.all_connected_ports:
@@ -727,6 +725,7 @@ emconfig:
                 decl = CodeVarDecl(stream_name, stream_type)
                 pragma = CodePragma(f"STREAM variable={stream_name} depth={self.STREAM_DEPTH}")
                 self.top_level_stream_decls.append((decl, pragma))
+            # else, it is connect to/from Constant/UnusedEndMarker/SubGraph
             visited_ports.add(port.readable_id)
             visited_ports.add(conn.readable_id)
 
@@ -1098,6 +1097,8 @@ emconfig:
             hls_type = HLSType(HLSBasicType.STRUCT, prop_types, struct_name, prop_names)
             if hls_type.name not in self.struct_definitions:
                 self.struct_definitions[hls_type.name] = (hls_type, prop_names)
+        elif isinstance(dfir_type, dftype.SpecialIdType):
+            hls_type = HLSType(HLSBasicType.NODE_ID if dfir_type.type_name == "node_id" else HLSBasicType.EDGE_ID)
         else:
             raise NotImplementedError(f"DFIR type conversion not implemented for {type(dfir_type)}")
 
@@ -1674,11 +1675,13 @@ emconfig:
         """
         Generates the inner-loop logic for ReduceComponent's pre_process stage.
         """
-        in_type = self.type_map[comp.get_port("i_0").data_type]
+        # in_type = self.type_map[comp.get_port("i_0").data_type]
+        in_types = [self.type_map[p.data_type] for p in comp.get_port_group("global", "in")]
+        in_names = [f"in_batch_{p.name}" for p in comp.get_port_group("global", "in")]
         key_out_type = self.type_map[comp.get_port("i_reduce_key_out").data_type]
         transform_out_type = self.type_map[comp.get_port("i_reduce_transform_out").data_type]
 
-        in_elem_var = HLSVar(f"in_batch_i_0.data[{iterator}]", in_type)
+        in_elem_vars = [HLSVar(f"{in_n}.data[{iterator}]", in_t) for in_t, in_n in zip(in_types, in_names)]
         key_out_elem_var = HLSVar("key_out_elem", key_out_type)
         transform_out_elem_var = HLSVar("transform_out_elem", transform_out_type)
         code_lines = [
@@ -1686,20 +1689,19 @@ emconfig:
             CodeVarDecl(transform_out_elem_var.name, transform_out_elem_var.type),
         ]
 
-        key_sub_graph_start = comp.get_port("o_reduce_key_in")
+        key_sub_graph_starts = comp.get_port_group("key", "out")
         key_sub_graph_end = comp.get_port("i_reduce_key_out")
-        key_io_map = {key_sub_graph_start: in_elem_var, key_sub_graph_end: key_out_elem_var}
-        code_lines.extend(self._inline_sub_graph_logic([key_sub_graph_start], key_sub_graph_end, key_io_map))
+        key_io_map = {p: v for p, v in zip(key_sub_graph_starts, in_elem_vars)}
+        key_io_map[key_sub_graph_end] = key_out_elem_var
+        code_lines.extend(self._inline_sub_graph_logic(key_sub_graph_starts, key_sub_graph_end, key_io_map))
 
-        transform_sub_graph_start = comp.get_port("o_reduce_transform_in")
+        transform_sub_graph_starts = comp.get_port_group("transform", "out")
         transform_sub_graph_end = comp.get_port("i_reduce_transform_out")
-        transform_io_map = {
-            transform_sub_graph_start: in_elem_var,
-            transform_sub_graph_end: transform_out_elem_var,
-        }
+        transform_io_map = {p: v for p, v in zip(transform_sub_graph_starts, in_elem_vars)}
+        transform_io_map[transform_sub_graph_end] = transform_out_elem_var
         code_lines.extend(
             self._inline_sub_graph_logic(
-                [transform_sub_graph_start], transform_sub_graph_end, transform_io_map
+                transform_sub_graph_starts, transform_sub_graph_end, transform_io_map
             )
         )
 
@@ -1723,18 +1725,22 @@ emconfig:
         comp = hls_func.dfir_comp
 
         # 1. Get HLSVar for each parameter from the function signature
-        in_stream, key_stream, transform_stream = hls_func.params
+        input_streams = hls_func.params[:-2]  # All but last two params
+        key_out_stream = hls_func.params[-2]  # Second last param
+        transform_out_stream = hls_func.params[-1]  # Last param
 
         # 2. Declare local batch variables for I/O
-        in_batch_var = HLSVar("in_batch_i_0", in_stream.type.sub_types[0])
-        key_out_batch_var = HLSVar("out_batch_intermediate_key", key_stream.type.sub_types[0])
+        # in_batch_var = HLSVar("in_batch_i_0", in_stream.type.sub_types[0])
+        in_batch_vars = [HLSVar(f"in_batch_{s.name}", s.type.sub_types[0]) for s in input_streams]
+        key_out_batch_var = HLSVar("out_batch_intermediate_key", key_out_stream.type.sub_types[0])
         transform_out_batch_var = HLSVar(
-            "out_batch_intermediate_transform", transform_stream.type.sub_types[0]
+            "out_batch_intermediate_transform", transform_out_stream.type.sub_types[0]
         )
 
         body.extend(
             [
-                CodeVarDecl(in_batch_var.name, in_batch_var.type),
+                CodeVarDecl(in_batch_var.name, in_batch_var.type) for in_batch_var in in_batch_vars
+            ] + [
                 CodeVarDecl(key_out_batch_var.name, key_out_batch_var.type),
                 CodeVarDecl(transform_out_batch_var.name, transform_out_batch_var.type),
             ]
@@ -1747,11 +1753,11 @@ emconfig:
         while_loop_body: List[HLSCodeLine] = [CodePragma("PIPELINE")]
 
         # 4. Read input batch
-        while_loop_body.append(
+        while_loop_body.extend(
             CodeAssign(
                 in_batch_var,
                 HLSExpr(HLSExprT.STREAM_READ, None, [HLSExpr(HLSExprT.VAR, in_stream)]),
-            )
+            ) for in_batch_var, in_stream in zip(in_batch_vars, input_streams)
         )
 
         # 5. Build the inner for-loop with the core logic
@@ -1760,9 +1766,10 @@ emconfig:
         while_loop_body.append(for_loop)
 
         # 6. Copy metadata (end_flag, end_pos) from input batch to both output batches
+        # There're multiple input streams, so we take metadata from the first one
         ga_op = UnaryOp.GET_ATTR
-        end_flag_expr = HLSExpr(HLSExprT.UOP, (ga_op, "end_flag"), [HLSExpr(HLSExprT.VAR, in_batch_var)])
-        end_pos_expr = HLSExpr(HLSExprT.UOP, (ga_op, "end_pos"), [HLSExpr(HLSExprT.VAR, in_batch_var)])
+        end_flag_expr = HLSExpr(HLSExprT.UOP, (ga_op, "end_flag"), [HLSExpr(HLSExprT.VAR, in_batch_vars[0])])
+        end_pos_expr = HLSExpr(HLSExprT.UOP, (ga_op, "end_pos"), [HLSExpr(HLSExprT.VAR, in_batch_vars[0])])
 
         # Assign metadata to key_out_batch
         while_loop_body.append(
@@ -1793,8 +1800,8 @@ emconfig:
         )
 
         # 7. Write both output batches to their streams
-        while_loop_body.append(CodeWriteStream(key_stream, key_out_batch_var))
-        while_loop_body.append(CodeWriteStream(transform_stream, transform_out_batch_var))
+        while_loop_body.append(CodeWriteStream(key_out_stream, key_out_batch_var))
+        while_loop_body.append(CodeWriteStream(transform_out_stream, transform_out_batch_var))
 
         # 8. Check for break condition
         while_loop_body.append(CodeAssign(end_flag_var, end_flag_expr))

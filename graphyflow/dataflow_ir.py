@@ -203,7 +203,7 @@ class ComponentCollection(DfirNode):
         def check_reduce(comp: Component) -> bool:
             if not isinstance(comp, ReduceComponent):
                 return False
-            return all(port_solved(p) for p in comp.get_global_input_ports())
+            return all(port_solved(p) for p in comp.get_port_group("global", "in"))
 
         result = []
         # waitings = copy.deepcopy(self.components)
@@ -610,6 +610,36 @@ class ReduceComponent(Component):
                 self._port_groups["transform"].append(p)
             elif "unit" in p.name:
                 self._port_groups["unit"].append(p)
+    
+    @property
+    def subg_input_ports(self) -> List[Port]:
+        """
+        Get all out ports that connect to internal components.
+        """
+        sub_graph_ports = self._port_groups["key"] + self._port_groups["transform"] + self._port_groups["unit"]
+        sub_graph_out_ports = [p for p in sub_graph_ports if p.port_type == PortType.OUT]
+        return sub_graph_out_ports
+    
+    def get_port_group(self, group: str, io_type: Optional[str] = None) -> List[Port]:
+        """
+        Get all ports in a specific functional group.
+        This is a ReduceComponent-specific method for its reconstruction.
+
+        Args:
+            group: The functional group, e.g., 'key', 'transform', 'unit', 'global'.
+            io_type: Optional; 'in' for input ports, 'out' for output ports, None for all ports.
+        Returns:
+            A list of ports in the specified group and type.
+        """
+        assert group in self._port_groups, f"Invalid port group: {group}"
+        if io_type is None:
+            return self._port_groups[group]
+        elif io_type == "in":
+            return [p for p in self._port_groups[group] if p.port_type == PortType.IN]
+        elif io_type == "out":
+            return [p for p in self._port_groups[group] if p.port_type == PortType.OUT]
+        else:
+            raise ValueError(f"Invalid io_type: {io_type}. Must be 'in', 'out', or None.")
 
     def _add_io_port_pair(
         self, in_group: str, out_group: str, name_base: str, data_type: DfirType
@@ -675,15 +705,6 @@ class ReduceComponent(Component):
         for group in self._port_groups.values():
             if port_to_remove in group:
                 group.remove(port_to_remove)
-
-    def get_global_input_ports(self) -> List[Port]:
-        """
-        Gets all external-facing input ports of the ReduceComponent.
-        This includes the main data input (i_0) for an un-optimized
-        component, or the dynamically added data ports (i_global_data_*)
-        for an optimized one.
-        """
-        return [p for p in self._port_groups["global"] if p.port_type == PortType.IN]
 
 
 class FusedOpComponent(Component):

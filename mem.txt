@@ -1,1 +1,1 @@
-现在先不测试reduce优化后的后端生成，先假设reduce里没有访存，这样把前半部分的memread和fusedop实现一下
+修改了preprocess函数处理的逻辑，还需要加上fusedop和memread的处理，未完成

@@ -182,7 +182,7 @@ class DfirSimulator:
             current_inputs = {}
             if isinstance(component_to_run, dfir.ReduceComponent):
                 # get the "i_0" port and assert it is in computed_values
-                input_ports = component_to_run.get_global_input_ports()
+                input_ports = component_to_run.get_port_group("global", "in")
                 assert all(
                     port in computed_values for port in input_ports
                 ), f"ReduceComponent {component_to_run.uuid} missing global inputs"
@@ -226,7 +226,7 @@ class DfirSimulator:
                 # Check if downstream component is now ready
                 if isinstance(downstream_comp, dfir.ReduceComponent):
                     # For a ReduceComponent, it's ready if all its global inputs are available.
-                    global_input_ports = downstream_comp.get_global_input_ports()
+                    global_input_ports = downstream_comp.get_port_group("global", "in")
                     is_ready = all(p in computed_values for p in global_input_ports)
                 else:
                     # For all other components, they are ready if all their inputs are available.
@@ -473,7 +473,7 @@ class DfirSimulator:
             # It acts as an orchestrator for its attached FusedOp subgraphs.
 
             # --- PHASE 1: Prepare inputs for Key and Transform FusedOps ---
-            global_input_ports = comp.get_global_input_ports()
+            global_input_ports = comp.get_port_group("global", "in")
 
             comp_ext_int_map = []
 
