@@ -3,7 +3,7 @@ from pathlib import Path
 from graphyflow.global_graph import GlobalGraph
 import graphyflow.dataflow_ir as dfir
 from graphyflow.lambda_func import lambda_min
-from graphyflow.passes import delete_placeholder_components_pass
+from graphyflow.passes import delete_placeholder_components_pass, refactor_extract_all_comps
 from graphyflow.visualize_ir import visualize_components
 
 # 导入我们最终的生成器 API
@@ -37,6 +37,7 @@ updated_nodes = min_dist.map_(map_func=lambda dist, node: (lambda_min(dist, node
 print("\n--- Frontend Processing ---")
 dfirs = g.to_dfir()
 comp_col = delete_placeholder_components_pass(dfirs[0])
+comp_col = refactor_extract_all_comps(comp_col, g)
 dot = visualize_components(str(comp_col))
 dot.render("output/new_dist_ori", view=False, format="png")
 print("DFG-IR generated and optimized.")

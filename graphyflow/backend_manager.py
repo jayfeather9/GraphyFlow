@@ -660,7 +660,8 @@ emconfig:
                 self.reduce_helpers[comp.readable_id] = helpers
 
                 # Mark the sub-graph components as processed
-                for port_name in comp.subg_input_ports:
+                for port in comp.subg_input_ports:
+                    port_name = port.name
                     if comp.get_port(port_name).connected:
                         q = [comp.get_port(port_name).connection.parent]
                         visited_sub = set()
@@ -1125,7 +1126,11 @@ emconfig:
         elif isinstance(comp, dfir.GatherComponent):
             inner_logic = self._translate_gather_op(comp, "i")
         elif isinstance(comp, dfir.ScatterComponent):
-            inner_logic = self._translate_scatter_op(comp, "i")
+            inner_logic = self._translate_scatter_op(comp, "i")        
+        elif isinstance(comp, dfir.FusedOpComponent):
+            inner_logic = self._translate_fused_op(comp, "i")
+        elif isinstance(comp, dfir.MemoryReadComponent):
+            inner_logic = self._translate_memory_read_op(comp, "i")
         elif isinstance(comp, dfir.ConditionalComponent):
             inner_logic = self._translate_conditional_op(comp, "i")
         elif isinstance(comp, dfir.CollectComponent):
@@ -1276,8 +1281,6 @@ emconfig:
 
     # --- Component-Specific Translators for Inner Loop Logic ---
 
-    # In graphyflow/backend_manager.py, replace the existing _translate_binop_op function
-
     def _translate_binop_op(self, comp: dfir.BinOpComponent, iterator: str) -> List[HLSCodeLine]:
         """
         Generates the core logic for a BinOpComponent.
@@ -1393,6 +1396,12 @@ emconfig:
             assignments.append(CodeAssign(target_var, in_member_expr))
 
         return assignments
+    
+    def _translate_fused_op(self, comp: dfir.FusedOpComponent, iterator: str) -> List[HLSCodeLine]:
+        return []
+    
+    def _translate_memory_read_op(self, comp: dfir.MemoryReadComponent, iterator: str) -> List[HLSCodeLine]:
+        return []
 
     def _translate_conditional_op(self, comp: dfir.ConditionalComponent, iterator: str) -> List[HLSCodeLine]:
         """Generates the core logic for a ConditionalComponent."""
@@ -2425,6 +2434,11 @@ emconfig:
         code += f"#define PE_NUM {self.PE_NUM}\n"
         code += f"#define MAX_NUM {self.MAX_NUM}\n"
         code += f"#define L {self.L}\n\n"
+        
+        # define edge_id_t & node_id_t
+        code += "// --- Graph Type Definitions ---\n"
+        code += "typedef uint16_t edge_id_t;\n"
+        code += "typedef uint16_t node_id_t;\n\n"
 
         code += "// --- Struct Type Definitions ---\n"
         sorted_defs = self._topologically_sort_structs()
@@ -2491,10 +2505,11 @@ emconfig:
 
         for func in stream_funcs:
             if isinstance(func.dfir_comp, dfir.ReduceComponent) and "pre_process" in func.name:
-                in_port = func.dfir_comp.get_port("i_0")
-                if in_port.connected and in_port.connection.parent in comp_to_func:
-                    adj[comp_to_func[in_port.connection.parent].readable_id].append(func.readable_id)
-                    in_degree[func.readable_id] += 1
+                in_ports = func.dfir_comp.get_port_group("global", "in")
+                for in_port in in_ports:
+                    if in_port.connected and in_port.connection.parent in comp_to_func:
+                        adj[comp_to_func[in_port.connection.parent].readable_id].append(func.readable_id)
+                        in_degree[func.readable_id] += 1
                 reduce_comp_to_pre[func.dfir_comp] = func
 
         for func in stream_funcs:
@@ -2543,16 +2558,18 @@ emconfig:
 
                 body.append(CodeComment(f"--- Start of Reduce Super-Block for {comp.name} ---"))
 
-                in_port = comp.get_port("i_0")
-                pred_port = in_port.connection
-                in_stream_var = (
-                    top_io_map[in_port.readable_id]
-                    if isinstance(pred_port.parent, dfir.IOComponent)
-                    else stream_map[f"stream_{pred_port.unique_name}"]
-                )
+                in_ports = comp.get_port_group("global", "in")
+                in_stream_vars = []
+                for in_port in in_ports:
+                    pred_port = in_port.connection
+                    in_stream_var = (
+                        top_io_map[in_port.readable_id]
+                        if isinstance(pred_port.parent, dfir.IOComponent)
+                        else stream_map[f"stream_{pred_port.unique_name}"]
+                    )
+                    in_stream_vars.append(in_stream_var)
 
-                pre_process_call_params = [
-                    in_stream_var,
+                pre_process_call_params = in_stream_vars + [
                     streams["intermediate_key"],
                     streams["intermediate_transform"],
                 ]

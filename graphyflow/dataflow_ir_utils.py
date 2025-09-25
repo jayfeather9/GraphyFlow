@@ -416,8 +416,8 @@ def refactor_to_memread_fusedop(
                     is_simple_access = True
                     break
             scatter_paths[p_in] = (in_idx, origin.source_port, cur_scatter_path)
-            print(f"    Scatter Path: {cur_scatter_path}")
-            print(f"    Access Path: {cur_access_path}")
+            # print(f"    Scatter Path: {cur_scatter_path}")
+            # print(f"    Access Path: {cur_access_path}")
             # print(f"    Scatter Path: {cur_scatter_path}")
             if not is_simple_access and len(cur_access_path) > 0:
                 mem_patterns.add((current_type.type_name, tuple(cur_access_path)))
@@ -473,9 +473,9 @@ def refactor_to_memread_fusedop(
                 is_simple_access = True
                 break
         scatter_paths[temp_out_subports[(out_idx, i)]] = (in_idx, origin.source_port, cur_scatter_path)
-        print(f"    in_idx: {in_idx}, subport idx: {i}")
-        print(f"    Scatter Path: {cur_scatter_path}")
-        print(f"    Access Path: {cur_access_path}")
+        # print(f"    in_idx: {in_idx}, subport idx: {i}")
+        # print(f"    Scatter Path: {cur_scatter_path}")
+        # print(f"    Access Path: {cur_access_path}")
         access_len_without_g = len(cur_access_path)
         for path_idx, p in enumerate(cur_access_path):
             if isinstance(p, str) and p.startswith("_g"):
@@ -857,7 +857,7 @@ def refactor_to_memread_fusedop(
 
     components, in_ports = _dead_code_elimination(components, out_ports)
     components = _simplify_redundant_copies(components)
-    print(components, in_ports, out_ports)
+    # print(components, in_ports, out_ports)
 
     final_cc = ComponentCollection(
         components=components,

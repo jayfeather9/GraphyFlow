@@ -241,7 +241,7 @@ def analyze_reduce_comp(
             ("unit_reduce", unit_refactored_cc),
         ]:
             print(f"\n--- Refactored '{subgraph_type}' subgraph ---")
-            print(refactored_cc)
+            # print(refactored_cc)
             dot_refactored = visualize_components(str(refactored_cc))
             dot_refactored.render(f"output/{subgraph_type}_graph", view=False, format="png")
             print(f"Refactored subgraph visualized to output/{subgraph_type}_graph.png")
@@ -449,13 +449,13 @@ def optimize_reduce_comp(reduce_comp: dfir.ReduceComponent, g: GlobalGraph) -> d
                 if dest_port not in source_to_consumers_map[source_port]:
                     source_to_consumers_map[source_port].append(dest_port)
 
-    print("Final wiring plan:")
-    for source_port, consumer_ports in source_to_consumers_map.items():
-        print(f"  Source Port: {source_port} from Component {source_port.parent.__class__.__name__}")
-        for consumer_port in consumer_ports:
-            print(
-                f"    -> Consumer Port: {consumer_port} from Component {consumer_port.parent.__class__.__name__}"
-            )
+    # print("Final wiring plan:")
+    # for source_port, consumer_ports in source_to_consumers_map.items():
+    #     print(f"  Source Port: {source_port} from Component {source_port.parent.__class__.__name__}")
+    #     for consumer_port in consumer_ports:
+    #         print(
+    #             f"    -> Consumer Port: {consumer_port} from Component {consumer_port.parent.__class__.__name__}"
+    #         )
 
     for source_port, consumer_ports in source_to_consumers_map.items():
         current_source = source_port
@@ -481,14 +481,14 @@ def optimize_reduce_comp(reduce_comp: dfir.ReduceComponent, g: GlobalGraph) -> d
 
     final_outputs = [modified_reduce.get_port("o_0")]
 
-    print(f"final_inputs: {final_inputs}")
-    print(f"final_outputs: {final_outputs}")
-    print(f"final_components: {final_components}")
+    # print(f"final_inputs: {final_inputs}")
+    # print(f"final_outputs: {final_outputs}")
+    # print(f"final_components: {final_components}")
 
     return dfir.ComponentCollection(components=final_components, inputs=final_inputs, outputs=final_outputs)
 
 
-def refactor_other_comps(comp_col: dfir.ComponentCollection, g: GlobalGraph) -> dfir.ComponentCollection:
+def refactor_extract_all_comps(comp_col: dfir.ComponentCollection, g: GlobalGraph) -> dfir.ComponentCollection:
     """
     Refactors a component collection by partitioning it into "boundary" components
     (like Reduce, Collect, Conditional) and "compute islands" (pure computation subgraphs).
@@ -708,7 +708,7 @@ def refactor_other_comps(comp_col: dfir.ComponentCollection, g: GlobalGraph) -> 
     for comp in comp_col.components:
         if comp in ignored_reduce_sub_comps:
             continue
-        print(f"Analyzing connections for component {comp.readable_id} ({comp.__class__.__name__})")
+        # print(f"Analyzing connections for component {comp.readable_id} ({comp.__class__.__name__})")
         src_block = parent_block.get(comp.readable_id)
         assert src_block is not None, "Component not assigned to any block."
         for p_out in comp.out_ports:
@@ -727,12 +727,12 @@ def refactor_other_comps(comp_col: dfir.ComponentCollection, g: GlobalGraph) -> 
                         Connection(out=False, other=src_block, src_p=p_out, dst_p=p_out.connection)
                     )
 
-    print("Block connections:")
-    for blk, conns in connections.items():
-        print(f"  Block {blk}:")
-        for conn in conns:
-            direction = "->" if conn.out else "<-"
-            print(f"    {direction} Block {conn.other} via {conn.src_p} to {conn.dst_p}")
+    # print("Block connections:")
+    # for blk, conns in connections.items():
+    #     print(f"  Block {blk}:")
+    #     for conn in conns:
+    #         direction = "->" if conn.out else "<-"
+    #         print(f"    {direction} Block {conn.other} via {conn.src_p} to {conn.dst_p}")
 
     # --- PHASE 3: OPTIMIZE ALL BLOCKS INDIVIDUALLY ---
 
@@ -865,7 +865,7 @@ def refactor_other_comps(comp_col: dfir.ComponentCollection, g: GlobalGraph) -> 
 
         # 6. Create the temporary ComponentCollection with a valid, self-contained graph.
         final_island_components = list(orig_to_copy_map.values()) + newly_added_comps
-        print(f"Creating cc with {final_island_components}, inputs={temp_inputs}, outputs={temp_outputs}")
+        # print(f"Creating cc with {final_island_components}, inputs={temp_inputs}, outputs={temp_outputs}")
         temp_cc = dfir.ComponentCollection(final_island_components, temp_inputs, temp_outputs)
         # print(f"Temporary island ComponentCollection:\n{temp_cc}")
         from graphyflow.visualize_ir import visualize_components
@@ -878,8 +878,8 @@ def refactor_other_comps(comp_col: dfir.ComponentCollection, g: GlobalGraph) -> 
         refactor_result = refactor_to_memread_fusedop(temp_cc, g)
         refactored_cc = refactor_result.comp_col
         refactored_mapping = refactor_result.output_mapping
-        print(f"{temp_inputs=}, {refactored_cc.inputs=}")
-        print(f"{refactored_cc=}")
+        # print(f"{temp_inputs=}, {refactored_cc.inputs=}")
+        # print(f"{refactored_cc=}")
         assert (
             len(temp_inputs) == 1 and len(refactored_cc.inputs) == 1
         ), "Islands must have exactly one input."
@@ -888,7 +888,7 @@ def refactor_other_comps(comp_col: dfir.ComponentCollection, g: GlobalGraph) -> 
 
         island_port_ids = [p.readable_id for p in island_port_map.values()]
         for old_port, new_port in refactored_mapping.items():
-            print(f"Mapping old port ID {old_port} to new port {new_port}")
+            # print(f"Mapping old port ID {old_port} to new port {new_port}")
             old_port_id = old_port.readable_id
             assert old_port_id in island_port_ids, "Mapped port must be from the island ports."
             found_one = False
@@ -896,7 +896,7 @@ def refactor_other_comps(comp_col: dfir.ComponentCollection, g: GlobalGraph) -> 
                 if v.readable_id == old_port_id:
                     assert not found_one, "Each old port ID should map to exactly one new port."
                     island_port_map[k] = new_port
-                    print(f"Mapped old port ID {k} to new port {new_port} through {old_port_id}")
+                    # print(f"Mapped old port ID {k} to new port {new_port} through {old_port_id}")
                     found_one = True
             assert found_one, "Old port ID must be found in island_port_map."
 
@@ -958,7 +958,7 @@ def refactor_other_comps(comp_col: dfir.ComponentCollection, g: GlobalGraph) -> 
                 # Outgoing connection from this block to another
                 src_port = get_block_port(block, conn.src_p.readable_id)
                 dst_port = get_block_port(conn.other, conn.dst_p.readable_id)
-                print(f"Connecting {src_port} to {dst_port}")
+                # print(f"Connecting {src_port} to {dst_port}")
                 source_to_consumers_map[src_port].append(dst_port)
 
         if block.is_input:
@@ -1021,7 +1021,7 @@ def refactor_other_comps(comp_col: dfir.ComponentCollection, g: GlobalGraph) -> 
                 # final_components.append(uem)
                 # p_out.connect(uem.get_port("i_0"))
 
-    print(f"\n\nfinal_components: {final_components}")
+    # print(f"\n\nfinal_components: {final_components}")
 
     # Phase 5.4: Validate if all port connections' type is matched
     for comp in final_components:

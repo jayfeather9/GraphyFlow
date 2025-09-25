@@ -4,7 +4,7 @@ from pathlib import Path
 import graphyflow.dataflow_ir as dfir
 from graphyflow.global_graph import GlobalGraph
 from graphyflow.lambda_func import lambda_min
-from graphyflow.passes import delete_placeholder_components_pass, refactor_other_comps, remove_io_comp_pass
+from graphyflow.passes import delete_placeholder_components_pass, refactor_extract_all_comps, remove_io_comp_pass
 from graphyflow.simulate import DfirSimulator
 from graphyflow.visualize_ir import visualize_components
 
@@ -138,7 +138,7 @@ if __name__ == "__main__":
 
     # 5. Apply the refactoring/optimization pass
     print("\n--- Refactoring DFIR (partition + memread/fused islands) ---")
-    refactored = refactor_other_comps(comp_col, g)
+    refactored = refactor_extract_all_comps(comp_col, g)
     refactored = remove_io_comp_pass(refactored)
     save_graph_png(refactored, "new_dist_refactored")
     print("Saved refactored DFIR graph to output/new_dist_refactored.png")

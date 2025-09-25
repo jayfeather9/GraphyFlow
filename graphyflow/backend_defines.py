@@ -104,7 +104,7 @@ class HLSType:
 
         HLSType._all_full_names.add(self.full_name)
 
-        # --- *** 关键修正：仅对非简单类型进行名称冲突检查 *** ---
+        # Only check for name collisions for non-simple types
         if not self.type.is_simple:
             if self.name in HLSType._all_names:
                 if struct_name is not None:
