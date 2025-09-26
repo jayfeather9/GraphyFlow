@@ -740,10 +740,13 @@ emconfig:
 
     def _translate_functions(self):
         """Phase 3 Entry Point: Populates the .codes for all HLSFunctions."""
-        # --- MODIFIED: Handle ReduceComponent first ---
-        reduce_comps = [
-            f.dfir_comp for f in self.hls_functions.values() if isinstance(f.dfir_comp, dfir.ReduceComponent)
-        ]
+        visited_reduce_ids = set()
+        reduce_comps = []
+        for func in self.hls_functions.values():
+            if isinstance(func.dfir_comp, dfir.ReduceComponent):
+                if func.dfir_comp.readable_id not in visited_reduce_ids:
+                    reduce_comps.append(func.dfir_comp)
+                    visited_reduce_ids.add(func.dfir_comp.readable_id)
         for comp in reduce_comps:
             pre_process_func = next(
                 f for f in self.hls_functions.values() if f.name == f"{comp.name}_pre_process"
@@ -1797,6 +1800,47 @@ emconfig:
                 expr = HLSExpr(HLSExprT.UOP, (ga_op, sub_name), [HLSExpr(HLSExprT.VAR, in_var)])
                 code_lines.append(CodeAssign(p2var_map[out_port], expr))
 
+        elif isinstance(comp, dfir.FusedOpComponent):
+            # Handle nested FusedOpComponent by recursively calling the inliner.
+            code_lines.append(CodeComment(f" -- Begin Nested Inline for FusedOp {comp.name} -- "))
+
+            # 1. Prepare the I/O variable map for the recursive call.
+            nested_io_var_map: Dict[dfir.Port, HLSVar] = {}
+
+            # 2. Map the inner subgraph's inputs to the current scope's variables.
+            # We use the same placeholder technique as in `_translate_fused_op`.
+            for sub_in_port in comp.sub_graph.inputs:
+                placeholder = dfir.PlaceholderComponent(sub_in_port.data_type)
+                sub_in_port.connect(placeholder.get_port("o_0"))
+
+                # Find the corresponding external port on the FusedOp itself.
+                fused_op_port = comp.port_mapping.get(sub_in_port.readable_id)
+
+                # The variable for this input is already in the current p2var_map,
+                # indexed by the port connected to the FusedOp's input.
+                input_var = p2var_map[fused_op_port.connection]
+                nested_io_var_map[placeholder.get_port("o_0")] = input_var
+
+            # 3. Map the inner subgraph's outputs to the variables already created for them.
+            for sub_out_port in comp.sub_graph.outputs:
+                fused_op_port = comp.port_mapping.get(sub_out_port.readable_id)
+
+                # The variable for this output was created before we started processing this comp.
+                output_var = p2var_map[fused_op_port]
+                nested_io_var_map[sub_out_port] = output_var
+
+            # 4. Recursively call the inliner for the nested subgraph.
+            try:
+                inlined_fused_code = self._inline_stateless_sub_graph(comp.sub_graph, nested_io_var_map)
+                code_lines.extend(inlined_fused_code)
+            finally:
+                # 5. IMPORTANT: Clean up the temporary connections to restore graph state.
+                for sub_in_port in comp.sub_graph.inputs:
+                    if sub_in_port.connected:
+                        sub_in_port.disconnect()
+
+            code_lines.append(CodeComment(f" -- End Nested Inline for FusedOp {comp.name} -- "))
+
         elif isinstance(comp, dfir.ConditionalComponent):
             data_expr = HLSExpr.check_const(
                 HLSExpr(HLSExprT.VAR, p2var_map[comp.get_port("i_data").connection]),
@@ -1825,9 +1869,14 @@ emconfig:
             if_block = CodeIf(cond_expr, [CodeAssign(out_var, assign_expr)])
             code_lines.append(if_block)
 
-        elif isinstance(
-            comp, (dfir.UnusedEndMarkerComponent, dfir.ConstantComponent, dfir.PlaceholderComponent)
-        ):
+        elif isinstance(comp, dfir.PlaceholderComponent):
+            in_var_expr = HLSExpr.check_const(
+                HLSExpr(HLSExprT.VAR, p2var_map[comp.get_port("i_0").connection]), comp.get_port("i_0")
+            )
+            target_var = p2var_map[comp.get_port("o_0")]
+            code_lines.append(CodeAssign(target_var, in_var_expr))
+
+        elif isinstance(comp, (dfir.UnusedEndMarkerComponent, dfir.ConstantComponent)):
             # These components generate no executable code in this context.
             pass
 
@@ -1869,8 +1918,6 @@ emconfig:
 
         return code_lines
 
-    # Replace the existing _inline_sub_graph_logic with this refactored version.
-
     def _inline_sub_graph_logic(
         self,
         start_ports: List[dfir.Port],
@@ -1885,8 +1932,14 @@ emconfig:
         p2var_map = io_var_map.copy()
         code_lines.append(CodeComment(" -- Inline sub graph --"))
 
-        q = [p.connection.parent for p in start_ports if p.connected]
-        visited_ids = set([c.readable_id for c in q])
+        q = []
+        visited_ids = set()
+        for p in start_ports:
+            assert p.connected
+            comp = p.connection.parent
+            if comp.readable_id not in visited_ids:
+                q.append(comp)
+                visited_ids.add(comp.readable_id)
         head = 0
         while head < len(q):
             comp = q[head]
