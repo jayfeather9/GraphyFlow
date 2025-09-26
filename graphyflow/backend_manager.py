@@ -572,8 +572,13 @@ emconfig:
                 global_in_ports = comp.get_port_group("global", "in")
                 key_out_type = self.type_map[comp.get_port("i_reduce_key_out").data_type]
                 transform_out_type = self.type_map[comp.get_port("i_reduce_transform_out").data_type]
-                inter_key_var = HLSVar("intermediate_key", HLSType(HLSBasicType.STREAM, [self.batch_type_map[key_out_type]]))
-                inter_transform_var = HLSVar("intermediate_transform", HLSType(HLSBasicType.STREAM, [self.batch_type_map[transform_out_type]]))
+                inter_key_var = HLSVar(
+                    "intermediate_key", HLSType(HLSBasicType.STREAM, [self.batch_type_map[key_out_type]])
+                )
+                inter_transform_var = HLSVar(
+                    "intermediate_transform",
+                    HLSType(HLSBasicType.STREAM, [self.batch_type_map[transform_out_type]]),
+                )
 
                 # pre_process_func.params = [
                 #     HLSVar("i_0", HLSType(HLSBasicType.STREAM, [self.batch_type_map[in_type]])),
@@ -584,7 +589,10 @@ emconfig:
                 #     ),
                 # ]
                 pre_process_func.params = [
-                    HLSVar(port.name, HLSType(HLSBasicType.STREAM, [self.batch_type_map[self.type_map[port.data_type]]]))
+                    HLSVar(
+                        port.name,
+                        HLSType(HLSBasicType.STREAM, [self.batch_type_map[self.type_map[port.data_type]]]),
+                    )
                     for port in global_in_ports
                 ] + [inter_key_var, inter_transform_var]
 
@@ -1099,7 +1107,9 @@ emconfig:
             if hls_type.name not in self.struct_definitions:
                 self.struct_definitions[hls_type.name] = (hls_type, prop_names)
         elif isinstance(dfir_type, dftype.SpecialIdType):
-            hls_type = HLSType(HLSBasicType.NODE_ID if dfir_type.type_name == "node_id" else HLSBasicType.EDGE_ID)
+            hls_type = HLSType(
+                HLSBasicType.NODE_ID if dfir_type.type_name == "node_id" else HLSBasicType.EDGE_ID
+            )
         else:
             raise NotImplementedError(f"DFIR type conversion not implemented for {type(dfir_type)}")
 
@@ -1126,7 +1136,7 @@ emconfig:
         elif isinstance(comp, dfir.GatherComponent):
             inner_logic = self._translate_gather_op(comp, "i")
         elif isinstance(comp, dfir.ScatterComponent):
-            inner_logic = self._translate_scatter_op(comp, "i")        
+            inner_logic = self._translate_scatter_op(comp, "i")
         elif isinstance(comp, dfir.FusedOpComponent):
             inner_logic = self._translate_fused_op(comp, "i")
         elif isinstance(comp, dfir.MemoryReadComponent):
@@ -1396,10 +1406,187 @@ emconfig:
             assignments.append(CodeAssign(target_var, in_member_expr))
 
         return assignments
-    
+
+    def _inline_stateless_sub_graph(
+        self, sub_graph: dfir.ComponentCollection, io_var_map: Dict[dfir.Port, HLSVar]
+    ) -> List[HLSCodeLine]:
+        """
+        Traverses a stateless sub-graph (from a FusedOpComponent) and generates inlined HLS logic.
+
+        This function is designed for pure computational graphs. It relies on a pre-computed
+        topological sort of the components and uses a provided map for the subgraph's
+        main inputs and outputs.
+
+        Args:
+            sub_graph: The ComponentCollection representing the subgraph to inline.
+            io_var_map: A dictionary mapping the subgraph's I/O ports (or placeholders for inputs)
+                        to their corresponding HLSVar representations in the parent scope.
+
+        Returns:
+            A list of HLSCodeLine objects representing the inlined C++ code.
+        """
+        code_lines: List[HLSCodeLine] = []
+        # This map will track the HLSVar for every port within the subgraph.
+        p2var_map = io_var_map.copy()
+
+        # --- Perform topological sort to process components in order ---
+        try:
+            sorted_components = sub_graph.topo_sort()
+        except (RuntimeError, ConnectionError) as e:
+            raise RuntimeError(f"Failed to topologically sort FusedOpComponent subgraph: {e}")
+
+        # --- Iterate through sorted components and generate code ---
+        for comp in sorted_components:
+            # print(f"Processing component: {comp.name}\n{comp}\n")
+            code_lines.append(CodeComment(f"Starting for comp {comp.name}"))
+            # --- PHASE 1 (REVISED): Proactively define output variables ---
+            # For each output of the current component, decide if it's an intermediate
+            # value or a final output, and declare a variable accordingly.
+            for out_port in comp.out_ports:
+                if out_port in p2var_map:
+                    # This is a final output of the subgraph, its HLSVar is already in the map.
+                    continue
+                else:
+                    # This is an intermediate value that needs a temporary variable.
+                    temp_var = HLSVar(
+                        f"fused_temp_{out_port.parent.name}_{out_port.name}",
+                        self.type_map[out_port.data_type],
+                    )
+                    code_lines.append(CodeVarDecl(temp_var.name, temp_var.type))
+                    p2var_map[out_port] = temp_var
+
+            # --- PHASE 2: Generate logic for the current component ---
+            if isinstance(comp, dfir.BinOpComponent):
+                op1_expr = HLSExpr.check_const(
+                    HLSExpr(HLSExprT.VAR, p2var_map[comp.get_port("i_0").connection]), comp.get_port("i_0")
+                )
+                op2_expr = HLSExpr.check_const(
+                    HLSExpr(HLSExprT.VAR, p2var_map[comp.get_port("i_1").connection]), comp.get_port("i_1")
+                )
+                target_var = p2var_map[comp.get_port("o_0")]
+
+                # Handle floating point casting
+                if op1_expr.val.type.type == HLSBasicType.AP_FIXED_POD:
+                    is_comparison = comp.op in [BinOp.EQ, BinOp.NE, BinOp.LT, BinOp.GT, BinOp.LE, BinOp.GE]
+                    final_op1 = self._add_pod_to_float_cast(op1_expr, code_lines, f"lhs_{comp.readable_id}")
+                    final_op2 = self._add_pod_to_float_cast(op2_expr, code_lines, f"rhs_{comp.readable_id}")
+                    op_expr = HLSExpr(HLSExprT.BINOP, comp.op, [final_op1, final_op2])
+
+                    if is_comparison:
+                        code_lines.append(CodeAssign(target_var, op_expr))
+                    else:
+                        result_var = HLSVar(f"temp_{comp.name}_ap_result", HLSType(HLSBasicType.FLOAT))
+                        code_lines.append(CodeVarDecl(result_var.name, result_var.type))
+                        code_lines.append(CodeAssign(result_var, op_expr))
+                        self._add_float_to_pod_cast(result_var, code_lines, target_var)
+                else:
+                    expr = HLSExpr(HLSExprT.BINOP, comp.op, [op1_expr, op2_expr])
+                    code_lines.append(CodeAssign(target_var, expr))
+
+            elif isinstance(comp, dfir.UnaryOpComponent):
+                op1 = HLSExpr.check_const(
+                    HLSExpr(HLSExprT.VAR, p2var_map[comp.get_port("i_0").connection]), comp.get_port("i_0")
+                )
+                # Note: FusedOp validation prevents disallowed UnaryOps like GET_ATTR
+                expr = HLSExpr(HLSExprT.UOP, comp.op, [op1])
+                code_lines.append(CodeAssign(p2var_map[comp.get_port("o_0")], expr))
+
+            elif isinstance(comp, dfir.CopyComponent):
+                in_expr = HLSExpr.check_const(
+                    HLSExpr(HLSExprT.VAR, p2var_map[comp.get_port("i_0").connection]), comp.get_port("i_0")
+                )
+                code_lines.append(CodeAssign(p2var_map[comp.get_port("o_0")], in_expr))
+                code_lines.append(CodeAssign(p2var_map[comp.get_port("o_1")], in_expr))
+
+            elif isinstance(comp, dfir.GatherComponent):
+                target_var = p2var_map[comp.get_port("o_0")]
+                for i, in_port in enumerate(comp.in_ports):
+                    in_expr = HLSExpr.check_const(
+                        HLSExpr(HLSExprT.VAR, p2var_map[in_port.connection]), in_port
+                    )
+                    member_var = HLSVar(f"{target_var.name}.ele_{i}", in_expr.val.type)
+                    code_lines.append(CodeAssign(member_var, in_expr))
+
+            elif isinstance(comp, dfir.ScatterComponent):
+                in_var = p2var_map[comp.get_port("i_0").connection]
+                for i, out_port in enumerate(comp.out_ports):
+                    if isinstance(out_port.connection.parent, dfir.UnusedEndMarkerComponent):
+                        continue
+                    ga_op = UnaryOp.GET_ATTR
+                    sub_name = in_var.type.get_nth_subname(i)
+                    expr = HLSExpr(HLSExprT.UOP, (ga_op, sub_name), [HLSExpr(HLSExprT.VAR, in_var)])
+                    code_lines.append(CodeAssign(p2var_map[out_port], expr))
+
+            elif isinstance(
+                comp, (dfir.UnusedEndMarkerComponent, dfir.ConstantComponent, dfir.PlaceholderComponent)
+            ):
+                code_lines.append(CodeComment(f"Skipping {comp.name} of type {type(comp).__name__}"))
+                continue
+
+            else:
+                raise NotImplementedError(
+                    f"FusedOpComponent subgraph translation not implemented for {type(comp)}"
+                )
+
+        return code_lines
+
     def _translate_fused_op(self, comp: dfir.FusedOpComponent, iterator: str) -> List[HLSCodeLine]:
-        return []
-    
+        """
+        Generates the core logic for a FusedOpComponent by inlining its subgraph.
+        """
+        code_lines: List[HLSCodeLine] = []
+        io_var_map: Dict[dfir.Port, HLSVar] = {}
+
+        # --- PHASE 1: Map subgraph I/O ports to parent-scope HLS variables ---
+        code_lines.append(CodeComment(f" -- Inlining FusedOp {comp.name} -- "))
+
+        # (REVISED) For each subgraph input, create a temporary placeholder component.
+        # This provides a valid `.connection` for downstream components to look up.
+        for sub_in_port in comp.sub_graph.inputs:
+            # Create a placeholder with the correct data type.
+            placeholder = dfir.PlaceholderComponent(sub_in_port.data_type)
+            # Connect the placeholder's output to the subgraph's input port.
+            sub_in_port.connect(placeholder.get_port("o_0"))
+
+            # Find the corresponding external port on the FusedOpComponent itself
+            fused_op_port = comp.port_mapping.get(sub_in_port.readable_id)
+            assert fused_op_port, f"Subgraph input port {sub_in_port.readable_id} not in port_mapping"
+
+            hls_type = self.type_map[sub_in_port.data_type]
+
+            # The HLSVar points to the element in the input batch array, e.g., `in_batch_i_0.data[i]`
+            parent_scope_var = HLSVar(f"in_batch_{fused_op_port.name}.data[{iterator}]", hls_type)
+
+            # The map key is now the placeholder's *output port*, which is what downstream
+            # components see as their connection.
+            io_var_map[placeholder.get_port("o_0")] = parent_scope_var
+
+        # Map subgraph outputs to the outgoing batch data elements (logic unchanged)
+        for sub_out_port in comp.sub_graph.outputs:
+            fused_op_port = comp.port_mapping.get(sub_out_port.readable_id)
+            assert fused_op_port, f"Subgraph output port {sub_out_port.readable_id} not in port_mapping"
+
+            hls_type = self.type_map[sub_out_port.data_type]
+
+            # The HLSVar points to the element in the output batch array, e.g., `out_batch_o_0.data[i]`
+            parent_scope_var = HLSVar(f"out_batch_{fused_op_port.name}.data[{iterator}]", hls_type)
+
+            # The map key is the *output* port of the subgraph component
+            io_var_map[sub_out_port] = parent_scope_var
+
+        # --- PHASE 2: Call the helper to generate the inlined logic ---
+        inlined_code = self._inline_stateless_sub_graph(comp.sub_graph, io_var_map)
+        code_lines.extend(inlined_code)
+        code_lines.append(CodeComment(f" -- End Inlining FusedOp {comp.name} -- "))
+
+        # --- PHASE 3: Clean up temporary connections ---
+        # Disconnect the placeholders to leave the graph in its original state.
+        for sub_in_port in comp.sub_graph.inputs:
+            if sub_in_port.connected:
+                sub_in_port.disconnect()
+
+        return code_lines
+
     def _translate_memory_read_op(self, comp: dfir.MemoryReadComponent, iterator: str) -> List[HLSCodeLine]:
         return []
 
@@ -1747,9 +1934,8 @@ emconfig:
         )
 
         body.extend(
-            [
-                CodeVarDecl(in_batch_var.name, in_batch_var.type) for in_batch_var in in_batch_vars
-            ] + [
+            [CodeVarDecl(in_batch_var.name, in_batch_var.type) for in_batch_var in in_batch_vars]
+            + [
                 CodeVarDecl(key_out_batch_var.name, key_out_batch_var.type),
                 CodeVarDecl(transform_out_batch_var.name, transform_out_batch_var.type),
             ]
@@ -1766,7 +1952,8 @@ emconfig:
             CodeAssign(
                 in_batch_var,
                 HLSExpr(HLSExprT.STREAM_READ, None, [HLSExpr(HLSExprT.VAR, in_stream)]),
-            ) for in_batch_var, in_stream in zip(in_batch_vars, input_streams)
+            )
+            for in_batch_var, in_stream in zip(in_batch_vars, input_streams)
         )
 
         # 5. Build the inner for-loop with the core logic
@@ -2434,7 +2621,7 @@ emconfig:
         code += f"#define PE_NUM {self.PE_NUM}\n"
         code += f"#define MAX_NUM {self.MAX_NUM}\n"
         code += f"#define L {self.L}\n\n"
-        
+
         # define edge_id_t & node_id_t
         code += "// --- Graph Type Definitions ---\n"
         code += "typedef uint16_t edge_id_t;\n"
