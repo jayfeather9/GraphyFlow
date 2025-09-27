@@ -12,12 +12,12 @@ NUM_BIG_KERNELS = 2
 NUM_LITTLE_KERNELS = 3
 
 # Big Kernels
-big_kernel_hbm_input_id = [0, 2]
-big_kernel_hbm_output_id = [1, 3]
+big_kernel_hbm_input_id = [1, 3]
+big_kernel_hbm_output_id = [2, 4]
 
 # Little Kernels
-little_kernel_hbm_input_id = [4, 6, 8]
-little_kernel_hbm_output_id = [5, 7, 9]
+little_kernel_hbm_input_id = [5, 7, 9]
+little_kernel_hbm_output_id = [6, 8, 10]
 
 
 def _copy_and_template(src: Path, dest: Path, replacements: Dict[str, str]):

@@ -29,6 +29,10 @@ typedef struct AccDescriptor {
     std::vector<int> little_kernel_hbm_input_id = LITTLE_KERNEL_HBM_INPUT_ID;
     std::vector<int> little_kernel_hbm_output_id = LITTLE_KERNEL_HBM_OUTPUT_ID;
 
+    // 
+    std::vector<int> big_kernel_hbm_stop_flag_id = BIG_KERNEL_HBM_STOP_FLAG_ID;
+    std::vector<int> little_kernel_hbm_stop_flag_id = LITTLE_KERNEL_HBM_STOP_FLAG_ID;
+
 } acc_descriptor_dt;
 
 acc_descriptor_dt initAccelerator(std::string xcl_file);
