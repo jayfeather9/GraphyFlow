@@ -8,7 +8,8 @@
 // ... (fpga_executor.cpp 的其余内容保持不变) ...
 std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
                                  const GraphCSR &graph, int start_node,
-                                 double &total_kernel_time_sec) {
+                                 double &total_kernel_time_sec,
+                                 int &iter_count) {
     cl_int err;
     auto devices = xcl::get_xil_devices();
     auto device = devices[0];
@@ -52,9 +53,12 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
         if (algo_host.check_convergence_and_update()) {
             std::cout << "FPGA computation converged after " << iter + 1
                       << " iteration(s)." << std::endl;
+            iter_count = iter + 1;
             break;
         }
     }
+
+    iter_count = iter + 1;
 
     const std::vector<int> &final_results_ref = algo_host.get_results();
     std::vector<int> final_results = final_results_ref;

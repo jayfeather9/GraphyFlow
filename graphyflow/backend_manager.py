@@ -1591,7 +1591,11 @@ emconfig:
         return code_lines
 
     def _translate_memory_read_op(self, comp: dfir.MemoryReadComponent, iterator: str) -> List[HLSCodeLine]:
-        return []
+        code_lines: List[HLSCodeLine] = []
+        # for now, just insert a comment for each memory path
+        for mem_path in comp.access_pattern:
+            code_lines.append(CodeComment(f"Memory read from path: {mem_path}"))
+        return code_lines
 
     def _translate_conditional_op(self, comp: dfir.ConditionalComponent, iterator: str) -> List[HLSCodeLine]:
         """Generates the core logic for a ConditionalComponent."""

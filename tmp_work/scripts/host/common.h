@@ -13,12 +13,12 @@
 const int INFINITY_DIST = 16384;
 
 // Structure to hold the graph in Compressed Sparse Row (CSR) format
-struct __attribute__((packed)) GraphCSR {
+struct GraphCSR {
     int num_vertices;
     int num_edges;
-    std::vector<int> offsets; // Row pointers (size = num_vertices + 1)
-    std::vector<int> columns; // Column indices (size = num_edges)
-    std::vector<int> weights; // Edge weights (size = num_edges)
+    std::vector<int> offsets;
+    std::vector<int> columns;
+    std::vector<int> weights;
 };
 
 #include <ap_fixed.h>
@@ -26,34 +26,38 @@ struct __attribute__((packed)) GraphCSR {
 
 #define PE_NUM 8
 
-// --- struct Type Definitions (Moved from graphyflow.h) ---
-struct __attribute__((packed)) node_t {
-    ap_fixed<32, 16> distance;
-    int32_t id;
-};
-
-struct __attribute__((packed)) edge_t {
-    ap_fixed<32, 16> weight;
-    node_t src;
-    node_t dst;
-};
-
-// Input batch structure
-struct __attribute__((packed)) struct_ebu_7_t {
-    edge_t data[PE_NUM];
+// --- Struct Type Definitions ---
+struct __attribute__((packed)) struct_ebu_4_t {
+    edge_id_t data[PE_NUM];
     bool end_flag;
     uint8_t end_pos;
 };
 
-// Intermediate structure (ele_0: dist, ele_1: node)
-struct __attribute__((packed)) struct_an_20_t {
-    ap_fixed<32, 16> ele_0;
-    node_t ele_1;
+struct __attribute__((packed)) struct_ini_7_t {
+    int32_t ele_0;
+    node_id_t ele_1;
+    int32_t ele_2;
 };
 
-// Output batch structure
-struct __attribute__((packed)) struct_sbu_22_t {
-    struct_an_20_t data[PE_NUM];
+struct __attribute__((packed)) struct_ibu_14_t {
+    int32_t data[PE_NUM];
+    bool end_flag;
+    uint8_t end_pos;
+};
+
+struct __attribute__((packed)) struct_nbu_16_t {
+    node_id_t data[PE_NUM];
+    bool end_flag;
+    uint8_t end_pos;
+};
+
+struct __attribute__((packed)) struct_in_17_t {
+    int32_t ele_0;
+    node_id_t ele_1;
+};
+
+struct __attribute__((packed)) struct_bbu_21_t {
+    bool data[PE_NUM];
     bool end_flag;
     uint8_t end_pos;
 };
@@ -63,8 +67,52 @@ struct __attribute__((packed)) KernelOutputData {
     int32_t id;
 };
 
+struct __attribute__((packed)) opt_struct_ini_7_t_t {
+    struct_ini_7_t data;
+    bool valid;
+};
+
+struct __attribute__((packed)) struct_sbu_12_t {
+    struct_ini_7_t data[PE_NUM];
+    bool end_flag;
+    uint8_t end_pos;
+};
+
+struct __attribute__((packed)) struct_sbu_19_t {
+    struct_in_17_t data[PE_NUM];
+    bool end_flag;
+    uint8_t end_pos;
+};
+
+struct __attribute__((packed)) kt_pair_141_t {
+    int32_t key;
+    struct_in_17_t transform;
+};
+
+struct __attribute__((packed)) struct_sb_38_t {
+    struct_in_17_t ele_0;
+    bool ele_1;
+};
+
 struct __attribute__((packed)) KernelOutputBatch {
     KernelOutputData data[PE_NUM];
+    bool end_flag;
+    uint8_t end_pos;
+};
+
+struct __attribute__((packed)) struct_obu_10_t {
+    opt_struct_ini_7_t_t data[PE_NUM];
+    bool end_flag;
+    uint8_t end_pos;
+};
+
+struct __attribute__((packed)) net_wrapper_kt_pair_141_t_t {
+    kt_pair_141_t data;
+    bool end_flag;
+};
+
+struct __attribute__((packed)) struct_kbu_30_t {
+    kt_pair_141_t data[PE_NUM];
     bool end_flag;
     uint8_t end_pos;
 };
