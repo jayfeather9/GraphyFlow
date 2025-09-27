@@ -494,26 +494,29 @@ void Scatt_270(hls::stream<struct_sbu_12_t> &i_0,
 
 void Memor_267(hls::stream<struct_ibu_14_t> &o_0_node_id,
                hls::stream<struct_nbu_16_t> &i_0_node_id) {
-    struct_nbu_16_t in_batch_i_0_node_id;
-    struct_ibu_14_t out_batch_o_0_node_id;
+    /**
+     * @brief Pass-through module that casts node_id_t batches to int32_t
+     * batches. In the new design, this module no longer accesses memory. It
+     * simply performs a data type conversion as required by the downstream
+     * reduce component.
+     */
     bool end_flag;
-    uint8_t end_pos;
-    while (true) {
+    do {
 #pragma HLS PIPELINE
-        in_batch_i_0_node_id = i_0_node_id.read();
+        struct_nbu_16_t in_batch = i_0_node_id.read();
+        struct_ibu_14_t out_batch;
+
+        out_batch.end_pos = in_batch.end_pos;
+        out_batch.end_flag = in_batch.end_flag;
+        end_flag = in_batch.end_flag;
+
         for (uint32_t i = 0; i < PE_NUM; i++) {
 #pragma HLS UNROLL
-            // Memory read from path: (0, 'node', ['id'])
+            // Cast node_id_t (uint16_t) to int32_t
+            out_batch.data[i] = static_cast<int32_t>(in_batch.data[i]);
         }
-        end_flag = in_batch_i_0_node_id.end_flag;
-        end_pos = in_batch_i_0_node_id.end_pos;
-        out_batch_o_0_node_id.end_flag = end_flag;
-        out_batch_o_0_node_id.end_pos = end_pos;
-        o_0_node_id.write(out_batch_o_0_node_id);
-        if (end_flag) {
-            break;
-        }
-    }
+        o_0_node_id.write(out_batch);
+    } while (!end_flag);
 }
 
 void CopyC_283(hls::stream<struct_nbu_16_t> &i_0,
@@ -627,39 +630,52 @@ void fused_op_312(hls::stream<struct_ibu_14_t> &i_0,
 }
 
 void Memor_318(hls::stream<struct_ibu_14_t> &o_0_edge_weight,
-               hls::stream<struct_ebu_4_t> &i_0_edge_id,
                hls::stream<struct_ibu_14_t> &o_0_edge_src_distance,
-               hls::stream<struct_nbu_16_t> &o_0_edge_dst) {
-    struct_ebu_4_t in_batch_i_0_edge_id;
-    struct_ibu_14_t out_batch_o_0_edge_weight;
-    struct_ibu_14_t out_batch_o_0_edge_src_distance;
-    struct_nbu_16_t out_batch_o_0_edge_dst;
-    bool end_flag;
-    uint8_t end_pos;
-    while (true) {
+               hls::stream<struct_nbu_16_t> &o_0_edge_dst,
+               hls::stream<bool> &request_to_umc,
+               hls::stream<edge_batch_t> &response_from_umc) {
+    /**
+     * @brief Initiates edge data fetching and unpacks the results.
+     * This module now drives the edge processing pipeline. It sends a
+     * continuous stream of requests to the UMC and receives fully prepared edge
+     * data batches. It then unpacks these batches into separate streams for
+     * consumption by downstream logic.
+     */
+    bool done = false;
+    request_to_umc.write(true); // Send the first request to start the pipeline
+
+    do {
 #pragma HLS PIPELINE
-        in_batch_i_0_edge_id = i_0_edge_id.read();
-        for (uint32_t i = 0; i < PE_NUM; i++) {
+        edge_batch_t in_batch = response_from_umc.read();
+
+        done = in_batch.end_flag;
+        if (!done) {
+            request_to_umc.write(true); // Request the next batch
+        }
+
+        struct_ibu_14_t weight_batch;
+        struct_ibu_14_t src_dist_batch;
+        struct_nbu_16_t dst_id_batch;
+
+        weight_batch.end_pos = in_batch.end_pos;
+        src_dist_batch.end_pos = in_batch.end_pos;
+        dst_id_batch.end_pos = in_batch.end_pos;
+
+        weight_batch.end_flag = done;
+        src_dist_batch.end_flag = done;
+        dst_id_batch.end_flag = done;
+
+        for (int i = 0; i < PE_NUM; ++i) {
 #pragma HLS UNROLL
-            // Memory read from path: (0, 'edge', ('weight',))
-            // Memory read from path: (0, 'edge', ('src', 'distance'))
-            // Memory read from path: (0, 'edge', ('dst',))
+            weight_batch.data[i] = in_batch.weights[i];
+            src_dist_batch.data[i] = in_batch.src_distances[i];
+            dst_id_batch.data[i] = in_batch.dst_ids[i];
         }
-        end_flag = in_batch_i_0_edge_id.end_flag;
-        end_pos = in_batch_i_0_edge_id.end_pos;
-        out_batch_o_0_edge_weight.end_flag = end_flag;
-        out_batch_o_0_edge_weight.end_pos = end_pos;
-        o_0_edge_weight.write(out_batch_o_0_edge_weight);
-        out_batch_o_0_edge_src_distance.end_flag = end_flag;
-        out_batch_o_0_edge_src_distance.end_pos = end_pos;
-        o_0_edge_src_distance.write(out_batch_o_0_edge_src_distance);
-        out_batch_o_0_edge_dst.end_flag = end_flag;
-        out_batch_o_0_edge_dst.end_pos = end_pos;
-        o_0_edge_dst.write(out_batch_o_0_edge_dst);
-        if (end_flag) {
-            break;
-        }
-    }
+
+        o_0_edge_weight.write(weight_batch);
+        o_0_edge_src_distance.write(src_dist_batch);
+        o_0_edge_dst.write(dst_id_batch);
+    } while (!done);
 }
 
 void CopyC_350(hls::stream<struct_nbu_16_t> &i_0,
@@ -693,27 +709,33 @@ void CopyC_350(hls::stream<struct_nbu_16_t> &i_0,
 }
 
 void Memor_343(hls::stream<struct_ibu_14_t> &o_0_node_distance,
-               hls::stream<struct_nbu_16_t> &i_0_node_id) {
-    struct_nbu_16_t in_batch_i_0_node_id;
-    struct_ibu_14_t out_batch_o_0_node_distance;
+               hls::stream<struct_nbu_16_t> &i_0_node_id,
+               hls::stream<struct_nbu_16_t> &request_to_umc,
+               hls::stream<struct_ibu_14_t> &response_from_umc) {
+    /**
+     * @brief Forwards node distance requests to UMC and relays responses.
+     * This module acts as a simple proxy. It receives requests for node
+     * distances from upstream dataflow, forwards them to the UMC's
+     * node_property_responder, and then passes the UMC's response to the
+     * downstream modules.
+     */
     bool end_flag;
-    uint8_t end_pos;
-    while (true) {
+    do {
 #pragma HLS PIPELINE
-        in_batch_i_0_node_id = i_0_node_id.read();
-        for (uint32_t i = 0; i < PE_NUM; i++) {
-#pragma HLS UNROLL
-            // Memory read from path: (0, 'node', ('distance',))
-        }
-        end_flag = in_batch_i_0_node_id.end_flag;
-        end_pos = in_batch_i_0_node_id.end_pos;
-        out_batch_o_0_node_distance.end_flag = end_flag;
-        out_batch_o_0_node_distance.end_pos = end_pos;
-        o_0_node_distance.write(out_batch_o_0_node_distance);
-        if (end_flag) {
-            break;
-        }
-    }
+        // 1. Receive a request from the upstream module.
+        struct_nbu_16_t id_req_batch = i_0_node_id.read();
+        end_flag = id_req_batch.end_flag;
+
+        // 2. Forward the request to the UMC.
+        request_to_umc.write(id_req_batch);
+
+        // 3. Receive the corresponding response from the UMC.
+        struct_ibu_14_t dist_resp_batch = response_from_umc.read();
+
+        // 4. Forward the response to the downstream module.
+        o_0_node_distance.write(dist_resp_batch);
+
+    } while (!end_flag);
 }
 
 void fused_op_338(hls::stream<struct_ibu_14_t> &i_0,
@@ -791,15 +813,245 @@ void Scatt_346(hls::stream<struct_sbu_19_t> &i_0,
     }
 }
 
+// --- PHASE 2.1: UMC Sub-module: Node Property Loader ---
+
+/**
+ * @brief Loads all node distances from DDR into a URAM cache.
+ * It reads data in wide AXI bus bursts for efficiency.
+ *
+ * @param node_distances_ddr  DDR pointer for node distances.
+ * @param node_distance_cache On-chip URAM cache for node distances
+ * (write-only).
+ * @param num_nodes           Total number of nodes.
+ * @param load_finished_signal Stream to signal completion to the edge loader.
+ */
+static void node_property_loader(const int *node_distances_ddr,
+                                 int32_t node_distance_cache[MAX_NUM],
+                                 int num_nodes,
+                                 hls::stream<bool> &load_finished_signal) {
+    // Use ap_uint for wide bus access
+    const ap_uint<AXI_BUS_WIDTH> *wide_bus_ptr =
+        reinterpret_cast<const ap_uint<AXI_BUS_WIDTH> *>(node_distances_ddr);
+    const int num_wide_reads =
+        (num_nodes + NUM_WORDS_PER_BUS - 1) / NUM_WORDS_PER_BUS;
+
+LOAD_NODES_LOOP:
+    for (int i = 0; i < num_wide_reads; ++i) {
+#pragma HLS PIPELINE II = 1
+        ap_uint<AXI_BUS_WIDTH> wide_word = wide_bus_ptr[i];
+    UNPACK_NODES_LOOP:
+        for (int j = 0; j < NUM_WORDS_PER_BUS; ++j) {
+#pragma HLS UNROLL
+            int node_idx = i * NUM_WORDS_PER_BUS + j;
+            if (node_idx < num_nodes) {
+                node_distance_cache[node_idx] = wide_word.range(
+                    (j + 1) * DATA_TYPE_WIDTH - 1, j * DATA_TYPE_WIDTH);
+            }
+        }
+    }
+
+    load_finished_signal.write(true);
+}
+
+// --- PHASE 2.2: UMC Sub-module: Edge Loader and Dispatcher ---
+
+/**
+ * @brief Reads CSR graph data, fetches corresponding source node distances from
+ * the URAM cache, and serves batches of processed edges to downstream modules.
+ *
+ * @param src_offsets_ddr     DDR pointer for CSR offsets.
+ * @param edge_descriptors_ddr DDR pointer for edge data.
+ * @param node_distance_cache On-chip URAM cache for node distances (read-only).
+ * @param num_nodes           Total number of nodes.
+ * @param load_finished_signal Stream to wait for node loading completion.
+ * @param request_stream      Stream to receive requests for edge batches.
+ * @param response_stream     Stream to send processed edge batches.
+ */
+static void edge_property_loader_and_dispatcher(
+    const int *src_offsets_ddr, const edge_descriptor_t *edge_descriptors_ddr,
+    const int32_t node_distance_cache[MAX_NUM], int num_nodes,
+    hls::stream<bool> &load_finished_signal, hls::stream<bool> &request_stream,
+    hls::stream<edge_batch_t> &response_stream) {
+    // --- PHASE A: Wait for node properties to be cached ---
+
+    // --- PHASE B: Cache src_offsets on-chip ---
+    int src_offsets_cache[MAX_NUM + 1];
+#pragma HLS BIND_STORAGE variable = src_offsets_cache type = RAM_1P impl = BRAM
+    // The number of edges is the last entry in the offsets array
+    const int num_edges = src_offsets_ddr[num_nodes];
+
+    // Read all offsets. This read can also be widened if MAX_NUM is large.
+CACHE_OFFSETS_LOOP:
+    for (int i = 0; i <= MAX_NUM; i += (PE_NUM << 2)) {
+#pragma HLS PIPELINE II = 1
+        for (int j = 0; j < (PE_NUM << 2); ++j) {
+#pragma HLS UNROLL
+            int idx = i + j;
+            if (idx <= num_nodes) {
+                src_offsets_cache[idx] = src_offsets_ddr[idx];
+            }
+        }
+    }
+
+    // --- PHASE C: Process and dispatch edges ---
+    edge_batch_t current_batches[1 << 2];
+#pragma HLS ARRAY_PARTITION variable = current_batches complete dim = 0
+    // Initialize batch end flag
+    for (int i = 0; i < (1 << 2); ++i) {
+#pragma HLS UNROLL
+        current_batches[i].end_pos = 0;
+        current_batches[i].end_flag = false;
+    }
+
+    load_finished_signal.read(); // Wait for signal
+    request_stream.read();       // Initial request
+
+    int lst_node = 0;
+    for (int e_idx = 0; e_idx < num_edges; e_idx += (PE_NUM << 2)) {
+#pragma HLS PIPELINE II = 1
+    PROCESS_EDGES_LOOP:
+        for (int j = 0; j < (PE_NUM << 2); ++j) {
+#pragma HLS UNROLL
+            int idx = e_idx + j;
+            if (idx >= num_edges) {
+                break;
+            }
+            // search from lst_node to find the src node
+            int u = lst_node;
+            while (!(src_offsets_cache[u] <= idx &&
+                     idx < src_offsets_cache[u + 1])) {
+                u++;
+            }
+            edge_descriptor_t edge = edge_descriptors_ddr[idx];
+            int batch_idx = j / PE_NUM;
+            int pos_in_batch = j % PE_NUM;
+            current_batches[batch_idx].weights[pos_in_batch] = edge.weight;
+            current_batches[batch_idx].src_distances[pos_in_batch] =
+                node_distance_cache[u];
+            current_batches[batch_idx].dst_ids[pos_in_batch] = edge.dst_id;
+            current_batches[batch_idx].end_pos++;
+            if (pos_in_batch == PE_NUM - 1 || idx == num_edges - 1) {
+                response_stream.write(current_batches[batch_idx]);
+                current_batches[batch_idx].end_pos = 0;
+                request_stream.read(); // Wait for next request
+            }
+        }
+    }
+
+    // PROCESS_NODES_LOOP:
+    //     for (int u = 0; u < num_nodes; ++u) {
+    //         int32_t src_dist = node_distance_cache[u];
+    //         int start_edge_idx = src_offsets_cache[u];
+    //         int end_edge_idx = src_offsets_cache[u + 1];
+
+    //     PROCESS_EDGES_LOOP:
+    //         for (int e_idx = start_edge_idx; e_idx < end_edge_idx; ++e_idx) {
+    //         #pragma HLS PIPELINE II=1
+    //             edge_descriptor_t edge = edge_descriptors_ddr[e_idx];
+
+    //             int batch_idx = current_batch.end_pos;
+    //             current_batch.weights[batch_idx] = edge.weight;
+    //             current_batch.src_distances[batch_idx] = src_dist;
+    //             current_batch.dst_ids[batch_idx] = edge.dst_id;
+    //             current_batch.end_pos++;
+
+    //             if (current_batch.end_pos == PE_NUM) {
+    //                 if(request) {
+    //                     response_stream.write(current_batch);
+    //                     request = request_stream.read();
+    //                 }
+    //                 current_batch.end_pos = 0;
+    //             }
+    //         }
+    //     }
+
+    // --- PHASE D: Send the final, potentially partial, batch ---
+    current_batches[0].end_flag = true;
+    current_batches[0].end_pos = 0;
+    response_stream.write(current_batches[0]);
+}
+
+// --- PHASE 2.3: UMC Sub-module: Node Property Responder ---
+
+/**
+ * @brief Responds to requests for node distances from the URAM cache.
+ *
+ * @param node_distance_cache On-chip URAM cache (read-only).
+ * @param request_stream      Stream of batched node ID requests.
+ * @param response_stream     Stream of batched node distance responses.
+ */
 static void
-mem_to_stream_func(const struct_ebu_4_t *in_i_0_edge_id_320,
-                   hls::stream<struct_ebu_4_t> &out_i_0_edge_id_320_stream,
-                   uint16_t num_batches) {
-    for (uint32_t i = 0; i < num_batches; i++) {
-#pragma HLS PIPELINE
-        out_i_0_edge_id_320_stream.write(in_i_0_edge_id_320[i]);
+node_property_responder(const int32_t node_distance_cache[MAX_NUM],
+                        hls::stream<struct_nbu_16_t> &request_stream,
+                        hls::stream<struct_ibu_14_t> &response_stream) {
+    while (true) {
+#pragma HLS PIPELINE II = 1
+        struct_nbu_16_t id_batch = request_stream.read();
+        struct_ibu_14_t dist_batch;
+
+        dist_batch.end_flag = id_batch.end_flag;
+        dist_batch.end_pos = id_batch.end_pos;
+
+    RESPOND_LOOP:
+        for (int i = 0; i < PE_NUM; i++) {
+#pragma HLS UNROLL
+            if (i < id_batch.end_pos) {
+                node_id_t node_id = id_batch.data[i];
+                dist_batch.data[i] = node_distance_cache[node_id];
+            }
+        }
+        response_stream.write(dist_batch);
+
+        if (id_batch.end_flag) {
+            break;
+        }
     }
 }
+
+// --- PHASE 2.4: UMC Top-Level Dataflow Function ---
+
+/**
+ * This function instantiates and connects all UMC sub-modules.
+ */
+void UnifiedMemoryController(const int *src_offsets,
+                             const edge_descriptor_t *edge_descriptors,
+                             const int *node_distances, int num_nodes,
+                             hls::stream<bool> &request_from_318,
+                             hls::stream<edge_batch_t> &response_to_318,
+                             hls::stream<struct_nbu_16_t> &request_from_343,
+                             hls::stream<struct_ibu_14_t> &response_to_343) {
+#pragma HLS DATAFLOW
+
+    // --- On-chip Caches ---
+    static int32_t node_distance_cache[MAX_NUM];
+#pragma HLS BIND_STORAGE variable = node_distance_cache type = RAM_T2P impl =  \
+    URAM
+
+    // --- Internal Signal Streams ---
+    static hls::stream<bool> node_loader_finished;
+#pragma HLS STREAM variable = node_loader_finished depth = 2
+
+    // --- Instantiate and Connect Sub-modules ---
+    node_property_loader(node_distances, node_distance_cache, num_nodes,
+                         node_loader_finished);
+
+    edge_property_loader_and_dispatcher(
+        src_offsets, edge_descriptors, node_distance_cache, num_nodes,
+        node_loader_finished, request_from_318, response_to_318);
+
+    node_property_responder(node_distance_cache, request_from_343,
+                            response_to_343);
+}
+
+// static void
+// mem_to_stream_func(const struct_ebu_4_t *in_i_0_edge_id_320,
+//                    hls::stream<struct_ebu_4_t> &out_i_0_edge_id_320_stream,
+//                    uint16_t num_batches) {
+//     for (uint32_t i = 0; i < num_batches; i++) {
+// #pragma HLS PIPELINE
+//         out_i_0_edge_id_320_stream.write(in_i_0_edge_id_320[i]);
+//     }
+// }
 
 static void stream_to_mem_func(hls::stream<struct_sbu_19_t> &in_o_0_342_stream,
                                KernelOutputBatch *out_o_0_342) {
@@ -815,7 +1067,7 @@ static void stream_to_mem_func(hls::stream<struct_sbu_19_t> &in_o_0_342_stream,
             final_dist_fp = *reinterpret_cast<ap_fixed<32, 16> *>(
                 &internal_batch.data[k].ele_0);
             output_batch.data[k].distance = (float)final_dist_fp;
-            output_batch.data[k].id = internal_batch.data[k].ele_1.id;
+            output_batch.data[k].id = internal_batch.data[k].ele_1;
         }
         output_batch.end_flag = internal_batch.end_flag;
         output_batch.end_pos = internal_batch.end_pos;
@@ -827,10 +1079,36 @@ static void stream_to_mem_func(hls::stream<struct_sbu_19_t> &in_o_0_342_stream,
     }
 }
 
-static void
-graphyflow_dataflow(hls::stream<struct_ebu_4_t> &i_0_edge_id_320_stream,
-                    hls::stream<struct_sbu_19_t> &o_0_342_stream) {
+static void graphyflow_dataflow(
+    // UMC inputs from DDR
+    const int *src_offsets, const edge_descriptor_t *edge_descriptors,
+    const int *node_distances, int num_nodes,
+    // Final output stream
+    hls::stream<struct_sbu_19_t> &o_0_342_stream) {
 #pragma HLS DATAFLOW
+
+    // --- PHASE 1: Streams for UMC Communication ---
+    // Streams for edge data requests (Memor_318 <-> UMC)
+    static hls::stream<bool> umc_edge_req_stream;
+#pragma HLS STREAM variable = umc_edge_req_stream depth = 4
+    static hls::stream<edge_batch_t> umc_edge_resp_stream;
+#pragma HLS STREAM variable = umc_edge_resp_stream depth = 4
+
+    // Streams for node data requests (Memor_343 <-> UMC)
+    static hls::stream<struct_nbu_16_t> umc_node_req_stream;
+#pragma HLS STREAM variable = umc_node_req_stream depth = 4
+    static hls::stream<struct_ibu_14_t> umc_node_resp_stream;
+#pragma HLS STREAM variable = umc_node_resp_stream depth = 4
+
+    // --- PHASE 2: Instantiate the Unified Memory Controller ---
+    UnifiedMemoryController(src_offsets, edge_descriptors, node_distances,
+                            num_nodes, umc_edge_req_stream,
+                            umc_edge_resp_stream, umc_node_req_stream,
+                            umc_node_resp_stream);
+
+    // --- PHASE 3: Instantiate the original DFIR dataflow graph ---
+    // Note: The original stream declarations are preserved, but the ones
+    // related to the old memory inputs are no longer fed by a memory reader.
     hls::stream<struct_kbu_30_t> reduce_141_z2d_pair;
 #pragma HLS STREAM variable = reduce_141_z2d_pair depth = 4
     hls::stream<net_wrapper_kt_pair_141_t_t> reduce_141_d2o_pair[8];
@@ -879,17 +1157,25 @@ graphyflow_dataflow(hls::stream<struct_ebu_4_t> &i_0_edge_id_320_stream,
 #pragma HLS STREAM variable = stream_o_0_node_distance_344 depth = 4
     hls::stream<struct_ibu_14_t> stream_o_0_348;
 #pragma HLS STREAM variable = stream_o_0_348 depth = 4
-    // --- Function Calls (in topological order) ---
-    Memor_318(stream_o_0_edge_weight_319, i_0_edge_id_320_stream,
-              stream_o_0_edge_src_distance_321, stream_o_0_edge_dst_322);
+
+    // --- PHASE 4: Connect all components in topological order ---
+
+    // Memor_318 now initiates the pipeline by communicating with the UMC
+    Memor_318(stream_o_0_edge_weight_319, stream_o_0_edge_src_distance_321,
+              stream_o_0_edge_dst_322, umc_edge_req_stream,
+              umc_edge_resp_stream);
+
+    // The rest of the original dataflow graph connects as before
     fused_op_312(stream_o_0_edge_src_distance_321, stream_o_0_edge_dst_322,
                  stream_o_0_edge_weight_319, stream_o_0_316, stream_o_1_317);
     Condi_61(stream_o_1_317, stream_o_0_316, stream_o_0_64);
     Colle_65(stream_o_0_64, stream_o_0_67);
     Scatt_270(stream_o_0_67, stream_o_0_272, stream_o_1_273, stream_o_2_274);
     CopyC_283(stream_o_1_273, stream_o_0_285, stream_o_1_286);
+
+    // Memor_267 is now a simple pass-through/type-caster
     Memor_267(stream_o_0_node_id_268, stream_o_1_286);
-    // --- Start of Reduce Super-Block for Reduc_141 ---
+
     Reduc_141_pre_process(stream_o_0_node_id_268, stream_o_0_285,
                           stream_o_0_272, stream_o_2_274, intermediate_key,
                           intermediate_transform);
@@ -898,33 +1184,63 @@ graphyflow_dataflow(hls::stream<struct_ebu_4_t> &i_0_edge_id_320_stream,
     demux_1(reduce_141_z2d_pair, reduce_141_d2o_pair);
     omega_switch_2(reduce_141_d2o_pair, reduce_141_o2u_pair);
     Reduc_141_unit_reduce(reduce_141_o2u_pair, stream_o_0_143);
-    // --- End of Reduce Super-Block for Reduc_141 ---
+
     Scatt_346(stream_o_0_143, stream_o_0_348, stream_o_1_349);
     CopyC_350(stream_o_1_349, stream_o_0_352, stream_o_1_353);
-    Memor_343(stream_o_0_node_distance_344, stream_o_1_353);
+
+    // Memor_343 now acts as a proxy to the UMC
+    Memor_343(stream_o_0_node_distance_344, stream_o_1_353, umc_node_req_stream,
+              umc_node_resp_stream);
+
+    // The final operation which writes to the output stream
     fused_op_338(stream_o_0_348, stream_o_0_node_distance_344, stream_o_0_352,
                  o_0_342_stream);
 }
 
-extern "C" void graphyflow(const struct_ebu_4_t *i_0_edge_id_320,
-                           KernelOutputBatch *o_0_342, int *stop_flag,
-                           uint16_t input_length_in_batches) {
-#pragma HLS INTERFACE m_axi port = i_0_edge_id_320 offset = slave bundle = gmem0
-#pragma HLS INTERFACE m_axi port = o_0_342 offset = slave bundle = gmem1
-#pragma HLS INTERFACE m_axi port = stop_flag offset = slave bundle = gmem2
-#pragma HLS INTERFACE s_axilite port = i_0_edge_id_320
+/**
+ * @brief Top-level kernel function for the graph processing accelerator.
+ * * This function orchestrates the dataflow between global memory and the
+ * processing elements. It now uses a CSR graph representation.
+ * * @param src_offsets       Pointer to the CSR offsets array for source nodes.
+ * @param edge_descriptors  Pointer to the array of edge data (destination and
+ * weight).
+ * @param node_distances    Pointer to the array of node distances (readable and
+ * writable).
+ * @param num_nodes         The total number of nodes in the graph.
+ */
+extern "C" void graphyflow(
+    const int *src_offsets, const edge_descriptor_t *edge_descriptors,
+    int *node_distances, int num_nodes,
+    // Note: The original output 'o_0_342' is still needed for the final
+    // results, but its role inside the kernel logic needs clarification.
+    // Assuming it is an output for a different data path, we will leave it for
+    // now. Let's assume the Bellman-Ford output is now written back via the
+    // 'node_distances' pointer by the host. The kernel's output stream
+    // 'o_0_342' will produce the results as per the dataflow logic.
+    KernelOutputBatch *o_0_342) {
+#pragma HLS INTERFACE m_axi port = src_offsets offset = slave bundle = gmem0
+#pragma HLS INTERFACE m_axi port = edge_descriptors offset = slave bundle =    \
+    gmem1
+#pragma HLS INTERFACE m_axi port = node_distances offset = slave bundle = gmem2
+#pragma HLS INTERFACE m_axi port = o_0_342 offset = slave bundle = gmem3
+
+#pragma HLS INTERFACE s_axilite port = src_offsets
+#pragma HLS INTERFACE s_axilite port = edge_descriptors
+#pragma HLS INTERFACE s_axilite port = node_distances
+#pragma HLS INTERFACE s_axilite port = num_nodes
 #pragma HLS INTERFACE s_axilite port = o_0_342
-#pragma HLS INTERFACE s_axilite port = stop_flag
-#pragma HLS INTERFACE s_axilite port = input_length_in_batches
 #pragma HLS INTERFACE s_axilite port = return
-    static hls::stream<struct_ebu_4_t> i_0_edge_id_320_internal_stream;
-#pragma HLS STREAM variable = i_0_edge_id_320_internal_stream depth = 4
+
+    // This stream connects the dataflow output to the memory writer.
     static hls::stream<struct_sbu_19_t> o_0_342_internal_stream;
 #pragma HLS STREAM variable = o_0_342_internal_stream depth = 4
+
 #pragma HLS DATAFLOW
-    mem_to_stream_func(i_0_edge_id_320, i_0_edge_id_320_internal_stream,
-                       input_length_in_batches);
-    graphyflow_dataflow(i_0_edge_id_320_internal_stream,
-                        o_0_342_internal_stream);
+
+    // The main dataflow function, now driven by the new CSR inputs.
+    graphyflow_dataflow(src_offsets, edge_descriptors, node_distances,
+                        num_nodes, o_0_342_internal_stream);
+
+    // Writes the final result from the dataflow to global memory.
     stream_to_mem_func(o_0_342_internal_stream, o_0_342);
 }

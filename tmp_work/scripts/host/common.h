@@ -12,6 +12,15 @@
 // A constant representing infinity for distance initialization
 const int INFINITY_DIST = 16384;
 
+typedef uint16_t node_id_t;
+typedef uint16_t edge_id_t;
+
+// Describes a single edge in CSR format for the host and kernel
+struct __attribute__((packed)) edge_descriptor_t {
+    node_id_t dst_id;
+    int32_t weight;
+};
+
 // Structure to hold the graph in Compressed Sparse Row (CSR) format
 struct GraphCSR {
     int num_vertices;

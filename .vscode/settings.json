@@ -67,6 +67,7 @@
         "cfenv": "cpp",
         "typeinfo": "cpp",
         "__nullptr": "cpp",
-        "filesystem": "cpp"
+        "filesystem": "cpp",
+        "__tuple": "cpp"
     }
 }

@@ -11,9 +11,31 @@
 #define MAX_NUM 32768
 #define L 4
 
+#define AXI_BUS_WIDTH 512
+#define DATA_TYPE_WIDTH 32
+#define NUM_WORDS_PER_BUS (AXI_BUS_WIDTH / DATA_TYPE_WIDTH)
+
 // --- Graph Type Definitions ---
 typedef uint16_t edge_id_t;
 typedef uint16_t node_id_t;
+
+/**
+ * @brief A structure to hold a batch of edge properties ready for processing.
+ * This is the data packet sent from the UMC to the downstream modules.
+ */
+struct __attribute__((packed)) edge_batch_t {
+    int32_t weights[PE_NUM];
+    int32_t src_distances[PE_NUM];
+    node_id_t dst_ids[PE_NUM];
+    bool end_flag;
+    uint8_t end_pos;
+};
+
+// Describes a single edge in CSR format for the host and kernel
+struct __attribute__((packed)) edge_descriptor_t {
+    node_id_t dst_id;
+    int32_t weight;
+};
 
 // --- Struct Type Definitions ---
 struct __attribute__((packed)) struct_ebu_4_t {
@@ -136,15 +158,31 @@ void fused_op_312(hls::stream<struct_ibu_14_t> &i_0,
                   hls::stream<struct_ibu_14_t> &i_2,
                   hls::stream<struct_bbu_21_t> &o_0,
                   hls::stream<struct_sbu_12_t> &o_1);
+/**
+ * @brief Acts as a client to the UMC to fetch edge data.
+ * It initiates the edge processing pipeline by sending requests to the UMC
+ * and unpacks the received edge batches for downstream modules.
+ *
+ * @param o_0_edge_weight         Output stream for edge weights.
+ * @param o_0_edge_src_distance   Output stream for source node distances.
+ * @param o_0_edge_dst            Output stream for destination node IDs.
+ * @param request_to_umc          Stream to send requests for edge batches to
+ * the UMC.
+ * @param response_from_umc       Stream to receive processed edge batches from
+ * the UMC.
+ */
 void Memor_318(hls::stream<struct_ibu_14_t> &o_0_edge_weight,
-               hls::stream<struct_ebu_4_t> &i_0_edge_id,
                hls::stream<struct_ibu_14_t> &o_0_edge_src_distance,
-               hls::stream<struct_nbu_16_t> &o_0_edge_dst);
+               hls::stream<struct_nbu_16_t> &o_0_edge_dst,
+               hls::stream<bool> &request_to_umc,
+               hls::stream<edge_batch_t> &response_from_umc);
 void CopyC_350(hls::stream<struct_nbu_16_t> &i_0,
                hls::stream<struct_nbu_16_t> &o_0,
                hls::stream<struct_nbu_16_t> &o_1);
 void Memor_343(hls::stream<struct_ibu_14_t> &o_0_node_distance,
-               hls::stream<struct_nbu_16_t> &i_0_node_id);
+               hls::stream<struct_nbu_16_t> &i_0_node_id,
+               hls::stream<struct_nbu_16_t> &request_to_umc,
+               hls::stream<struct_ibu_14_t> &response_from_umc);
 void fused_op_338(hls::stream<struct_ibu_14_t> &i_0,
                   hls::stream<struct_ibu_14_t> &i_1,
                   hls::stream<struct_nbu_16_t> &i_2,
@@ -153,9 +191,48 @@ void Scatt_346(hls::stream<struct_sbu_19_t> &i_0,
                hls::stream<struct_ibu_14_t> &o_0,
                hls::stream<struct_nbu_16_t> &o_1);
 
+/**
+ * @brief Unified Memory Controller (UMC) top-level dataflow function.
+ * Orchestrates loading graph data from DDR into on-chip memory and serves
+ * requests from other processing modules.
+ *
+ * @param src_offsets       DDR pointer to CSR source offsets.
+ * @param edge_descriptors  DDR pointer to edge data.
+ * @param node_distances    DDR pointer to node distances.
+ * @param num_nodes         Total number of nodes.
+ * @param request_from_318  Stream to receive requests for edge batches.
+ * @param response_to_318   Stream to send processed edge batches.
+ * @param request_from_343  Stream to receive requests for node distances.
+ * @param response_to_343   Stream to send node distances.
+ */
+void UnifiedMemoryController(const int *src_offsets,
+                             const edge_descriptor_t *edge_descriptors,
+                             const int *node_distances, int num_nodes,
+                             hls::stream<bool> &request_from_318,
+                             hls::stream<edge_batch_t> &response_to_318,
+                             hls::stream<struct_nbu_16_t> &request_from_343,
+                             hls::stream<struct_ibu_14_t> &response_to_343);
+
+static void graphyflow_dataflow(
+    // UMC inputs
+    const int *src_offsets, const edge_descriptor_t *edge_descriptors,
+    const int *node_distances, int num_nodes,
+    // Final output stream
+    hls::stream<struct_sbu_19_t> &o_0_342_stream);
+
 // --- Top-Level Function Prototype ---
-extern "C" void graphyflow(const struct_ebu_4_t *i_0_edge_id_320,
-                           KernelOutputBatch *o_0_342, int *stop_flag,
-                           uint16_t input_length_in_batches);
+/**
+ * @brief Top-level kernel function for the graph processing accelerator.
+ * @param src_offsets       Pointer to the CSR offsets array for source nodes.
+ * @param edge_descriptors  Pointer to the array of edge data (destination and
+ * weight).
+ * @param node_distances    Pointer to the array of node distances (readable and
+ * writable).
+ * @param num_nodes         The total number of nodes in the graph.
+ */
+extern "C" void graphyflow(const int *src_offsets,
+                           const edge_descriptor_t *edge_descriptors,
+                           int *node_distances, int num_nodes,
+                           KernelOutputBatch *o_0_342);
 
 #endif // __GRAPHYFLOW_GRAPHYFLOW_H__

@@ -24,23 +24,22 @@ class AlgorithmHost {
 
     // Algorithm state
     int m_num_vertices;
-    size_t m_num_batches;
 
-    // Host-side memory buffers (aligned for efficient DMA)
-    // These now use the POD versions of the structs defined in common.h
-    std::vector<struct_ebu_4_t, aligned_allocator<struct_ebu_4_t>>
-        h_i_0_edge_id_320;
+    // Host-side memory buffers for CSR graph representation (aligned for DMA)
+    std::vector<int, aligned_allocator<int>> h_src_offsets;
+    std::vector<edge_descriptor_t, aligned_allocator<edge_descriptor_t>>
+        h_edge_descriptors;
+    std::vector<int, aligned_allocator<int>> h_node_distances;
+
+    // Host-side buffer for kernel output
     std::vector<KernelOutputBatch, aligned_allocator<KernelOutputBatch>>
         h_o_0_342;
-    std::vector<int, aligned_allocator<int>> h_stop_flag;
-
-    // Host-side state for iterative algorithm (Bellman-Ford)
-    std::vector<ap_fixed<32, 16>> h_distances;
 
     // Device-side OpenCL buffer handles
-    cl::Buffer d_i_0_edge_id_320;
+    cl::Buffer d_src_offsets;
+    cl::Buffer d_edge_descriptors;
+    cl::Buffer d_node_distances;
     cl::Buffer d_o_0_342;
-    cl::Buffer d_stop_flag;
 };
 
 #endif // __GENERATED_HOST_H__
