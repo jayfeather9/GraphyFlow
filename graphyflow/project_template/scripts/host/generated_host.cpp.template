@@ -24,6 +24,12 @@ void AlgorithmHost::setup_buffers(const partition_container_dt& container, int s
     // 1. 初始化状态和主机端容器
     m_num_vertices = container.num_graph_vertices;
 
+    h_distances.resize(m_num_vertices);
+    h_distances.assign(m_num_vertices, 16384);
+    if (start_node < m_num_vertices) {
+        h_distances[start_node] = 0;
+    }
+
     // 清空所有旧的OpenCL缓冲区句柄
     big_kernel_input_bufs.clear();
     big_kernel_output_bufs.clear();
@@ -69,11 +75,19 @@ void AlgorithmHost::setup_buffers(const partition_container_dt& container, int s
         OCL_CHECK(err, out_buf = cl::Buffer(acc.context, CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX , big_kernel_host_outputs[i].size() * sizeof(KERNEL_OUTPUT_BATCH_TYPE), &hbm_ext_out, &err));
         
         // 修改 stop_buf 的创建方式：不使用 HBM 扩展指针，而是直接关联主机内存
+        //OCL_CHECK(err, stop_buf = cl::Buffer(acc.context, 
+        //                                     CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, 
+        //                                     sizeof(int), 
+        //                                     &this->big_kernel_stop_flags[i], // 直接传递主机指针
+        //                                     &err));
+        this->big_kernel_stop_flags[i].resize(1);
+
         OCL_CHECK(err, stop_buf = cl::Buffer(acc.context, 
-                                             CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, 
-                                             sizeof(int), 
-                                             &this->big_kernel_stop_flags[i], // 直接传递主机指针
-                                             &err));
+                                     CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, 
+                                     sizeof(int), 
+                                     this->big_kernel_stop_flags[i].data(), // <-- 使用 .data() 获取对齐指针
+                                     &err));
+
 
         // --- *** 仅修改 stop_flag 相关的部分 结束 *** ---
 
@@ -114,11 +128,18 @@ void AlgorithmHost::setup_buffers(const partition_container_dt& container, int s
         OCL_CHECK(err, out_buf = cl::Buffer(acc.context, CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX , little_kernel_host_outputs[i].size() * sizeof(KERNEL_OUTPUT_BATCH_TYPE), &hbm_ext_out, &err));
 
         // 修改 stop_buf 的创建方式：不使用 HBM 扩展指针，而是直接关联主机内存
+        //OCL_CHECK(err, stop_buf = cl::Buffer(acc.context, 
+        //                                     CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, 
+        //                                     sizeof(int), 
+        //                                     &this->little_kernel_stop_flags[i], // 直接传递主机指针
+        //                                     &err));
+        this->little_kernel_stop_flags[i].resize(1);
+
         OCL_CHECK(err, stop_buf = cl::Buffer(acc.context, 
-                                             CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, 
-                                             sizeof(int), 
-                                             &this->little_kernel_stop_flags[i], // 直接传递主机指针
-                                             &err));
+                                     CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, 
+                                     sizeof(int), 
+                                     this->little_kernel_stop_flags[i].data(), // <-- 使用 .data() 获取对齐指针
+                                     &err));
         
         // --- *** 仅修改 stop_flag 相关的部分 结束 *** ---
 
@@ -161,7 +182,7 @@ void AlgorithmHost::transfer_data_to_fpga(
         // 获取第i个大核专属的命令队列
         cl::CommandQueue &queue = acc.big_gs_queue[i];
         
-// --- 新增的 C++ 风格调试打印代码 开始 ---
+#ifdef DEBUG
 std::cout << "\n--- [DEBUG] Data for Big Kernel ID: " << i << " ---" << std::endl;
 std::cout << "Total batches to transfer: " << source_data.size() << std::endl;
 for (size_t j = 0; j < source_data.size(); ++j) {
@@ -191,7 +212,7 @@ for (size_t j = 0; j < source_data.size(); ++j) {
             }
         }
         std::cout << "--- [DEBUG] End of data for Big Kernel ID: " << i << " ---\n" << std::endl;
-        // --- 新增的 C++ 风格调试打印代码 结束 ---
+#endif
 
 
         // 执行从主机RAM到HBM的物理拷贝
@@ -204,13 +225,13 @@ for (size_t j = 0; j < source_data.size(); ++j) {
                                  nullptr, nullptr));
 
         // 初始化该内核的stop_flag
-        big_kernel_stop_flags[i] = 0;
+        this->big_kernel_stop_flags[i][0] = stop_flag_init;
         OCL_CHECK(err, err = queue.enqueueWriteBuffer(
                                  this->big_kernel_stop_flag_bufs[i], 
                                  CL_FALSE, 
                                  0, 
                                  sizeof(int), 
-                                 &big_kernel_stop_flags[i], 
+                                 this->big_kernel_stop_flags[i].data(), 
                                  nullptr, nullptr));
     }
 
@@ -228,7 +249,7 @@ for (size_t j = 0; j < source_data.size(); ++j) {
         cl::CommandQueue &queue = acc.little_gs_queue[i];
 
 
-             // --- 新增的 C++ 风格调试打印代码 开始 ---
+#ifdef DEBUG
         std::cout << "\n--- [DEBUG] Data for Little Kernel ID: " << i << " ---" << std::endl;
         std::cout << "Total batches to transfer: " << source_data.size() << std::endl;
         for (size_t j = 0; j < source_data.size(); ++j) {
@@ -257,7 +278,7 @@ for (size_t j = 0; j < source_data.size(); ++j) {
             }
         }
         std::cout << "--- [DEBUG] End of data for Little Kernel ID: " << i << " ---\n" << std::endl;
-        // --- 新增的 C++ 风格调试打印代码 结束 ---
+#endif
 
         // 执行从主机RAM到HBM的物理拷贝
         OCL_CHECK(err, err = queue.enqueueWriteBuffer(
@@ -269,13 +290,13 @@ for (size_t j = 0; j < source_data.size(); ++j) {
                                  nullptr, nullptr));
 
         // 初始化该内核的stop_flag
-        little_kernel_stop_flags[i]= 0;
+        this->little_kernel_stop_flags[i][0] = stop_flag_init;
         OCL_CHECK(err, err = queue.enqueueWriteBuffer(
                                  this->little_kernel_stop_flag_bufs[i], 
                                  CL_FALSE,
                                  0, 
                                  sizeof(int), 
-                                 &little_kernel_stop_flags[i], 
+                                 this->little_kernel_stop_flags[i].data(),
                                  nullptr, nullptr));
     }
 
@@ -410,7 +431,7 @@ void AlgorithmHost::transfer_data_from_fpga(
                                  CL_FALSE,
                                  0, 
                                  sizeof(int), 
-                                 &big_kernel_stop_flags[i],
+                                 this->big_kernel_stop_flags[i].data(),
                                  nullptr, nullptr));
     }
 
@@ -444,7 +465,7 @@ void AlgorithmHost::transfer_data_from_fpga(
                                  CL_FALSE,
                                   0, 
                                   sizeof(int), 
-                                 &little_kernel_stop_flags[i], // 存入局部变量
+                                 this->little_kernel_stop_flags[i].data(),
                                  nullptr, nullptr));
     }
 
@@ -458,8 +479,7 @@ void AlgorithmHost::transfer_data_from_fpga(
     }
     std::cout << "--- All results successfully transferred from HBM to host ---" << std::endl;
 
-    // ==================== 新增的调试代码块 ====================
-    // ==========================================================
+#ifdef DEBUG
     // --- 打印 "big" 内核的返回结果 ---
     for (int i = 0; i < acc.num_big_krnl; ++i) {
         const auto& result_data = this->big_kernel_host_outputs[i];
@@ -509,36 +529,94 @@ void AlgorithmHost::transfer_data_from_fpga(
         }
         std::cout << "--- [DEBUG] End of results for Little Kernel ID: " << i << " ---\n" << std::endl;
     }
-    // ==========================================================
-    // ==================== 调试代码块结束 ======================
+#endif
 }
 
-// --- LOGIC FOR RESULT PROCESSING (GENERIC FOR ITERATIVE ALGORITHMS) ---
 
-/*
-bool AlgorithmHost::check_convergence_and_update() {
+
+bool AlgorithmHost::check_convergence_and_update(partition_container_dt& container) {
     bool changed = false;
-
-    // This logic is generic for algorithms that output node distances/values.
-    // It collects the minimum distances produced by the kernel in one iteration.
+    
+    // --- 步骤 1: 收集所有内核返回的、最新的、最优的距离值 ---
+    // 使用 map 来确保对于同一个节点，我们只保留最小的距离值
     std::map<int, ap_fixed<32, 16>> min_distances;
 
-    // {{GRAPHYFLOW_COLLECT_RESULTS_IMPL}}
+    // 1a. 收集 Big Kernels 的结果
+    for (const auto& kernel_output : this->big_kernel_host_outputs) {
+        for (const auto& batch : kernel_output) {
+            for (uint8_t k = 0; k < batch.end_pos; ++k) {
+                const auto& output_data = batch.data[k];
+                int node_id = output_data.id;
+                ap_fixed<32, 16> new_dist(output_data.distance);
 
-    // Update host-side distances and check for any changes
-    for (auto const &[node_id, new_dist] : min_distances) {
-        if (new_dist < h_distances[node_id]) {
-            h_distances[node_id] = new_dist;
+                if (min_distances.find(node_id) == min_distances.end() || new_dist < min_distances[node_id]) {
+                    min_distances[node_id] = new_dist;
+                }
+            }
+            if (batch.end_flag) break;
+        }
+    }
+
+    // 1b. 收集 Little Kernels 的结果
+    for (const auto& kernel_output : this->little_kernel_host_outputs) {
+        for (const auto& batch : kernel_output) {
+            for (uint8_t k = 0; k < batch.end_pos; ++k) {
+                const auto& output_data = batch.data[k];
+                int node_id = output_data.id;
+                ap_fixed<32, 16> new_dist(output_data.distance);
+
+                if (min_distances.find(node_id) == min_distances.end() || new_dist < min_distances[node_id]) {
+                    min_distances[node_id] = new_dist;
+                }
+            }
+            if (batch.end_flag) break;
+        }
+    }
+
+    // --- 步骤 2: 检查收敛性，并用新结果更新主机端的主距离向量 h_distances ---
+    for (auto const& [node_id, new_dist] : min_distances) {
+        if (node_id < m_num_vertices && new_dist < this->h_distances[node_id]) {
+            this->h_distances[node_id] = new_dist;
             changed = true;
         }
     }
 
-    // If distances changed, the input buffers need to be repacked with the new distance values for the next iteration.
+    // --- 步骤 3: 如果距离发生了变化，则更新 partition_container 为下一次迭代做准备 ---
     if (changed) {
-        // {{GRAPHYFLOW_REPACK_INPUTS_IMPL}}
+        // 3a. 更新 SP (大核/稀疏分区) 的数据
+        for (auto& partition : container.SP) {
+            for (auto& batch : partition.batch_array_host) {
+                for (uint8_t k = 0; k < batch.end_pos; ++k) {
+                    auto& edge = batch.data[k];
+                    
+                    ap_fixed<32, 16> src_dist_fp = this->h_distances[edge.src.id];
+                    ap_fixed<32, 16> dst_dist_fp = this->h_distances[edge.dst.id];
+
+                    // 将更新后的距离值，转换为内核期望的二进制模式
+                    edge.src.distance = *reinterpret_cast<int32_t*>(&src_dist_fp);
+                    edge.dst.distance = *reinterpret_cast<int32_t*>(&dst_dist_fp);
+                }
+            }
+        }
+
+        // 3b. 更新 DP (小核/密集分区) 的数据
+        for (auto& partition : container.DP) {
+            for (auto& batch : partition.batch_array_host) {
+                for (uint8_t k = 0; k < batch.end_pos; ++k) {
+                    auto& edge = batch.data[k];
+
+                    ap_fixed<32, 16> src_dist_fp = this->h_distances[edge.src.id];
+                    ap_fixed<32, 16> dst_dist_fp = this->h_distances[edge.dst.id];
+                    
+                    edge.src.distance = *reinterpret_cast<int32_t*>(&src_dist_fp);
+                    edge.dst.distance = *reinterpret_cast<int32_t*>(&dst_dist_fp);
+                }
+            }
+        }
     }
 
-    return !changed; // Return true if converged (no changes)
+    // 如果没有发生任何变化 (changed == false)，则算法收敛，返回 true
+    return !changed;
 }
 
 const std::vector<int> &AlgorithmHost::get_results() const {
@@ -555,4 +633,3 @@ const std::vector<int> &AlgorithmHost::get_results() const {
     }
     return final_distances;
 }
-*/

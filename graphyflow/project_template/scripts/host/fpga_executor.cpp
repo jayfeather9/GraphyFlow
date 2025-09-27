@@ -1,7 +1,7 @@
 
 #include "fpga_executor.h"
-#include "generated_host.h"
 #include "acc_setup/acc_setup.h"
+#include "generated_host.h"
 #include "graph_preprocess/graph_preprocess.h"
 #include <iostream>
 
@@ -26,33 +26,40 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
     int iter = 0;
     std::cout << "\nStarting FPGA execution..." << std::endl;
 
-    // 对于流式内核, 这个循环只会执行一次 (因为 get_stop_flag 返回 1)
-    // 测试：只执行单次迭代
+    for (iter = 0; iter < max_iterations; ++iter) {
 
-    algo_host.transfer_data_to_fpga(partition_container,acc);
+        algo_host.transfer_data_to_fpga(partition_container, acc);
+        cl::Event event;
+        algo_host.execute_kernel_iteration(event);
+        event.wait();
+        algo_host.transfer_data_from_fpga(partition_container, acc);
 
-    cl::Event event;
-    algo_host.execute_kernel_iteration(event);
-    event.wait();
-    algo_host.transfer_data_from_fpga(partition_container,acc);
+        // iv. 性能统计
+        unsigned long start = 0, end = 0;
+        event.getProfilingInfo(CL_PROFILING_COMMAND_START, &start);
+        event.getProfilingInfo(CL_PROFILING_COMMAND_END, &end);
+        double iteration_time_ns = end - start;
+        total_kernel_time_sec += iteration_time_ns * 1.0e-9;
+        double mteps =
+            (double)graph.num_edges / (iteration_time_ns * 1.0e-9) / 1.0e6;
 
-    
-    unsigned long start = 0, end = 0;
-    event.getProfilingInfo(CL_PROFILING_COMMAND_START, &start);
-    event.getProfilingInfo(CL_PROFILING_COMMAND_END, &end);
-    double iteration_time_ns = end - start;
-    total_kernel_time_sec += iteration_time_ns * 1.0e-9;
-    double mteps =
-        (double)graph.num_edges / (iteration_time_ns * 1.0e-9) / 1.0e6;
-    std::cout << "Time = " << (iteration_time_ns * 1.0e-6) << " ms, ";
+        std::cout << "FPGA Iteration " << iter << ": "
+                  << "Time = " << (iteration_time_ns * 1.0e-6) << " ms, "
+                  << "Throughput = " << mteps << " MTEPS" << std::endl;
 
-    /*
+        // v. 检查是否收敛。如果未收敛，此函数会更新 partition_container
+        // 为下次迭代做准备
+        if (algo_host.check_convergence_and_update(partition_container)) {
+            std::cout << "FPGA computation converged after " << iter + 1
+                      << " iteration(s)." << std::endl;
+            break;
+        }
+    }
+
     iter_count = iter + 1;
 
     const std::vector<int> &final_results_ref = algo_host.get_results();
     std::vector<int> final_results = final_results_ref;
 
     return final_results;
-    */
-   return std::vector<int>{1,2,3};
 }

@@ -68,6 +68,7 @@
         "typeinfo": "cpp",
         "__nullptr": "cpp",
         "acc_setup": "cpp",
-        "*.template": "cpp"
+        "*.template": "cpp",
+        "cinttypes": "cpp"
     }
 }

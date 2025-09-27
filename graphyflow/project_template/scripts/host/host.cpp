@@ -31,13 +31,10 @@ int main(int argc, char **argv) {
     std::vector<int> fpga_distances = run_fpga_kernel(
         xclbin_file, graph, start_node, total_kernel_time_sec, iter_count);
 
-
-    /*
     // 3. 在 Host CPU 上验证 (不变, 按你的要求保留)
     std::cout << "\n--- Step 3: Verifying on Host CPU ---" << std::endl;
     std::vector<int> host_distances = verify_on_host(graph, start_node);
 
-    
     // 4. 比较结果 (不变)
     std::cout << "\n--- Step 4: Comparing Results ---" << std::endl;
     int error_count = 0;
@@ -69,6 +66,6 @@ int main(int argc, char **argv) {
               << " MTEPS" << std::endl;
 
     return (error_count == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
-    */
-   std::cout<<" finish\n";
+
+    std::cout << " finish\n";
 }

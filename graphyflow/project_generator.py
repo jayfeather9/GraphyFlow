@@ -9,15 +9,16 @@ from .backend_manager import BackendManager
 
 # --- 在这里配置内核数量 ---
 NUM_BIG_KERNELS = 2
-NUM_LITTLE_KERNELS = 2
+NUM_LITTLE_KERNELS = 3
 
-# Big Kernels 
-big_kernel_hbm_input_id      = [0,2]
-big_kernel_hbm_output_id     = [1,3]
+# Big Kernels
+big_kernel_hbm_input_id = [0, 2]
+big_kernel_hbm_output_id = [1, 3]
 
-# Little Kernels 
-little_kernel_hbm_input_id     = [4, 6]
-little_kernel_hbm_output_id    = [5, 7]
+# Little Kernels
+little_kernel_hbm_input_id = [4, 6, 8]
+little_kernel_hbm_output_id = [5, 7, 9]
+
 
 def _copy_and_template(src: Path, dest: Path, replacements: Dict[str, str]):
     """Reads a file, replaces placeholders, and writes to a new location."""
@@ -25,6 +26,7 @@ def _copy_and_template(src: Path, dest: Path, replacements: Dict[str, str]):
     for placeholder, value in replacements.items():
         content = content.replace(placeholder, value)
     dest.write_text(content)
+
 
 def _create_cfg(dest: Path, kernel_name: str):
 
@@ -41,11 +43,11 @@ def _create_cfg(dest: Path, kernel_name: str):
     if NUM_BIG_KERNELS > 0:
         content.append(f"# 创建 {NUM_BIG_KERNELS} 个 big 内核实例")
         content.append(f"nk={big_kernel_base_name}:{NUM_BIG_KERNELS}:{'.'.join(big_instance_names)}")
-    
+
     if NUM_LITTLE_KERNELS > 0:
         content.append(f"# 创建 {NUM_LITTLE_KERNELS} 个 little 内核实例")
         content.append(f"nk={little_kernel_base_name}:{NUM_LITTLE_KERNELS}:{'.'.join(little_instance_names)}")
-    
+
     content.append("")
 
     content.append("# --- 2. HBM 通道映射 ---")
@@ -69,10 +71,11 @@ def _create_cfg(dest: Path, kernel_name: str):
     output_file = dest / "system.cfg"
     dest.mkdir(parents=True, exist_ok=True)
     file_content = "\n".join(content)
-    
+
     with open(output_file, "w") as f:
         f.write(file_content)
-        
+
+
 def fill_host_config(file_to_modify: Path):
     """
     读取指定文件，将其中的占位符替换为全局列表的内容，
@@ -91,21 +94,19 @@ def fill_host_config(file_to_modify: Path):
         replacements = {
             "{{BIG_KERNEL_NUM}}": NUM_BIG_KERNELS,
             "{{LITTLE_KERNEL_NUM}}": NUM_LITTLE_KERNELS,
-            
             "{{BIG_KERNEL_HBM_INPUT_ID}}": big_kernel_hbm_input_id,
             "{{BIG_KERNEL_HBM_OUTPUT_ID}}": big_kernel_hbm_output_id,
-
             "{{LITTLE_KERNEL_HBM_INPUT_ID}}": little_kernel_hbm_input_id,
             "{{LITTLE_KERNEL_HBM_OUTPUT_ID}}": little_kernel_hbm_output_id,
         }
 
         # 1. 读取文件的全部内容
-        original_content = file_to_modify.read_text(encoding='utf-8')
+        original_content = file_to_modify.read_text(encoding="utf-8")
         modified_content = original_content
 
         # 2. 遍历所有需要替换的占位符
         for placeholder, value in replacements.items():
-            
+
             replacement_string = ""
             if isinstance(value, list):
                 # 列表 -> "{item1, item2}"
@@ -113,13 +114,12 @@ def fill_host_config(file_to_modify: Path):
             elif isinstance(value, int):
                 # 整数 -> "1"
                 replacement_string = str(value)
-            
+
             if replacement_string:
                 modified_content = modified_content.replace(placeholder, replacement_string)
 
         # 3. 将替换后的内容写回到同一个文件
-        file_to_modify.write_text(modified_content, encoding='utf-8')
-        
+        file_to_modify.write_text(modified_content, encoding="utf-8")
 
     except Exception as e:
         print(f"在处理文件 '{file_to_modify}' 时发生错误: {e}")
@@ -170,16 +170,17 @@ def generate_project(
         template_dir, output_dir, dirs_exist_ok=True, ignore=shutil.ignore_patterns(*static_files_to_ignore)
     )
 
-    # 3.1 
+    # 3.1
     fill_host_config(host_script_dir / "host_config.h")
 
     # 4. 动态生成需要模板化的脚本文件
     print("[3/6] Generating Templated Scripts...")
-    replacements = {"{{KERNEL_NAME_little}}": kernel_name + "_little", 
-                    "{{KERNEL_NAME_big}}": kernel_name + "_big", 
-                    "{{KERNEL_NAME_big}}": kernel_name,
-                    "{{EXECUTABLE_NAME}}": executable_name}
-
+    replacements = {
+        "{{KERNEL_NAME_little}}": kernel_name + "_little",
+        "{{KERNEL_NAME_big}}": kernel_name + "_big",
+        "{{KERNEL_NAME_big}}": kernel_name,
+        "{{EXECUTABLE_NAME}}": executable_name,
+    }
 
     _copy_and_template(template_dir / "Makefile", output_dir / "Makefile", replacements)
     _copy_and_template(template_dir / "run.sh", output_dir / "run.sh", replacements)
@@ -187,24 +188,26 @@ def generate_project(
     # _copy_and_template(template_dir / "system.cfg", output_dir / "system.cfg", replacements)
     _create_cfg(output_dir, kernel_name)
 
-    _copy_and_template(template_dir / "scripts/kernel/kernel.mk", output_dir / "scripts/kernel/kernel.mk", replacements)
-    
-
+    _copy_and_template(
+        template_dir / "scripts/kernel/kernel.mk", output_dir / "scripts/kernel/kernel.mk", replacements
+    )
 
     # 5. 实例化后端并生成所有动态代码
     print("[4/6] Generating Dynamic Source Code via BackendManager...")
     bkd_mng = BackendManager()
     bkd_mng.REDUCE_MODE = "big_pipeline"
-    kernel_h_big, kernel_cpp_big = bkd_mng.generate_backend(comp_col, global_graph, kernel_name,)
+    kernel_h_big, kernel_cpp_big = bkd_mng.generate_backend(
+        comp_col,
+        global_graph,
+        kernel_name,
+    )
     bkd_mng.REDUCE_MODE = "little_pipeline"
     kernel_h_little, kernel_cpp_little = bkd_mng.generate_backend(comp_col, global_graph, kernel_name)
-
 
     common_h = bkd_mng.generate_common_header(kernel_name)
 
     host_h, host_cpp = bkd_mng.generate_host_codes(kernel_name, template_dir / "scripts" / "host")
 
-    
     # 6. 部署所有动态生成的文件
     print(f"[5/6] Deploying Generated Files to '{output_dir}'")
     with open(kernel_script_dir / f"{kernel_name}_big.h", "w") as f:

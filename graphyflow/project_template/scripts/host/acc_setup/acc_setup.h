@@ -1,14 +1,13 @@
 #ifndef __ACC_SETUP_H__
 #define __ACC_SETUP_H__
 
-#include "xcl2.h"
 #include "common.h"
 #include "host_config.h"
+#include "xcl2.h"
 
-typedef 
-struct AccDescriptor {
+typedef struct AccDescriptor {
     cl::CommandQueue q;
-    
+
     std::vector<cl::CommandQueue> big_gs_queue;
     std::vector<cl::CommandQueue> little_gs_queue;
 
@@ -23,15 +22,13 @@ struct AccDescriptor {
 
     cl::Context context;
 
-    //新增
-    std::vector<int> big_kernel_hbm_input_id  =    BIG_KERNEL_HBM_INPUT_ID;
-    std::vector<int> big_kernel_hbm_output_id =    BIG_KERNEL_HBM_OUTPUT_ID;
+    // 新增
+    std::vector<int> big_kernel_hbm_input_id = BIG_KERNEL_HBM_INPUT_ID;
+    std::vector<int> big_kernel_hbm_output_id = BIG_KERNEL_HBM_OUTPUT_ID;
 
-
-    std::vector<int> little_kernel_hbm_input_id =  LITTLE_KERNEL_HBM_INPUT_ID;
+    std::vector<int> little_kernel_hbm_input_id = LITTLE_KERNEL_HBM_INPUT_ID;
     std::vector<int> little_kernel_hbm_output_id = LITTLE_KERNEL_HBM_OUTPUT_ID;
 
-    
 } acc_descriptor_dt;
 
 acc_descriptor_dt initAccelerator(std::string xcl_file);
