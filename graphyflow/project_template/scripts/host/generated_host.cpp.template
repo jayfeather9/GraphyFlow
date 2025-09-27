@@ -75,21 +75,24 @@ void AlgorithmHost::setup_buffers(const partition_container_dt& container, int s
         OCL_CHECK(err, out_buf = cl::Buffer(acc.context, CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX , big_kernel_host_outputs[i].size() * sizeof(KERNEL_OUTPUT_BATCH_TYPE), &hbm_ext_out, &err));
         
         // 修改 stop_buf 的创建方式：不使用 HBM 扩展指针，而是直接关联主机内存
+        //this->big_kernel_stop_flags[i].resize(1);
         //OCL_CHECK(err, stop_buf = cl::Buffer(acc.context, 
-        //                                     CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, 
-        //                                     sizeof(int), 
-        //                                     &this->big_kernel_stop_flags[i], // 直接传递主机指针
-        //                                     &err));
-        this->big_kernel_stop_flags[i].resize(1);
+        //                             CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, 
+        //                             sizeof(int), 
+        //                             this->big_kernel_stop_flags[i].data(), // <-- 使用 .data() 获取对齐指针
+        //                             &err));
+        cl_mem_ext_ptr_t hbm_ext_stop; // 新增 stop_flag 的 HBM 扩展指针
+        hbm_ext_stop.flags = XCL_MEM_TOPOLOGY | acc.big_kernel_hbm_output_id[i]; // 使用新配置的 HBM ID
+        hbm_ext_stop.obj = nullptr;
+        hbm_ext_stop.param = 0;
 
+        this->big_kernel_stop_flags[i].resize(1); // 尺寸调整仍然需要
         OCL_CHECK(err, stop_buf = cl::Buffer(acc.context, 
-                                     CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, 
+                                     CL_MEM_READ_WRITE | CL_MEM_EXT_PTR_XILINX, // 修改为使用 Xilinx 扩展
                                      sizeof(int), 
-                                     this->big_kernel_stop_flags[i].data(), // <-- 使用 .data() 获取对齐指针
+                                     &hbm_ext_stop, // 传递 HBM 扩展指针
                                      &err));
-
-
-        // --- *** 仅修改 stop_flag 相关的部分 结束 *** ---
+        
 
         // d. 将新创建的缓冲区句柄添加到向量中
         big_kernel_input_bufs.push_back(in_buf);
@@ -119,29 +122,31 @@ void AlgorithmHost::setup_buffers(const partition_container_dt& container, int s
         hbm_ext_out.obj = nullptr;
         hbm_ext_out.param = 0;
         
-        // --- *** 仅修改 stop_flag 相关的部分 开始 *** ---
-
-        // hbm_ext_stop 的设置已被移除
+   
 
         cl::Buffer in_buf, out_buf, stop_buf;
         OCL_CHECK(err, in_buf = cl::Buffer(acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX , host_input_batches.size() * sizeof(BATCH_TYPE), &hbm_ext_in, &err));
         OCL_CHECK(err, out_buf = cl::Buffer(acc.context, CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX , little_kernel_host_outputs[i].size() * sizeof(KERNEL_OUTPUT_BATCH_TYPE), &hbm_ext_out, &err));
 
         // 修改 stop_buf 的创建方式：不使用 HBM 扩展指针，而是直接关联主机内存
+        //this->little_kernel_stop_flags[i].resize(1);
         //OCL_CHECK(err, stop_buf = cl::Buffer(acc.context, 
-        //                                     CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, 
-        //                                     sizeof(int), 
-        //                                     &this->little_kernel_stop_flags[i], // 直接传递主机指针
-        //                                     &err));
-        this->little_kernel_stop_flags[i].resize(1);
-
-        OCL_CHECK(err, stop_buf = cl::Buffer(acc.context, 
-                                     CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, 
-                                     sizeof(int), 
-                                     this->little_kernel_stop_flags[i].data(), // <-- 使用 .data() 获取对齐指针
-                                     &err));
+        //                             CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, 
+        //                             sizeof(int), 
+        //                             this->little_kernel_stop_flags[i].data(), // <-- 使用 .data() 获取对齐指针
+        //                             &err));
         
-        // --- *** 仅修改 stop_flag 相关的部分 结束 *** ---
+        cl_mem_ext_ptr_t hbm_ext_stop; // 新增 stop_flag 的 HBM 扩展指针
+        hbm_ext_stop.flags = XCL_MEM_TOPOLOGY | acc.little_kernel_hbm_output_id[i]; // 使用新配置的 HBM ID
+        hbm_ext_stop.obj = nullptr;
+        hbm_ext_stop.param = 0;
+
+        this->little_kernel_stop_flags[i].resize(1); // 尺寸调整仍然需要
+        OCL_CHECK(err, stop_buf = cl::Buffer(acc.context, 
+                                     CL_MEM_READ_WRITE | CL_MEM_EXT_PTR_XILINX, // 修改为使用 Xilinx 扩展
+                                     sizeof(int), 
+                                     &hbm_ext_stop, // 传递 HBM 扩展指针
+                                     &err));
 
 
         // d. 将新创建的缓冲区句柄添加到向量中

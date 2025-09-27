@@ -58,6 +58,7 @@ def _create_cfg(dest: Path, kernel_name: str):
         # gmem0 是输入, gmem1 是输出
         content.append(f"sp={instance_name}.m_axi_gmem0:HBM[{big_kernel_hbm_input_id[i]}]")
         content.append(f"sp={instance_name}.m_axi_gmem1:HBM[{big_kernel_hbm_output_id[i]}]")
+        content.append(f"sp={instance_name}.m_axi_gmem2:HBM[{big_kernel_hbm_output_id[i]}]")
         content.append("")
 
     # 遍历所有 Little Kernel 实例
@@ -66,7 +67,10 @@ def _create_cfg(dest: Path, kernel_name: str):
         # gmem0 是输入, gmem1 是输出
         content.append(f"sp={instance_name}.m_axi_gmem0:HBM[{little_kernel_hbm_input_id[i]}]")
         content.append(f"sp={instance_name}.m_axi_gmem1:HBM[{little_kernel_hbm_output_id[i]}]")
+        content.append(f"sp={instance_name}.m_axi_gmem2:HBM[{little_kernel_hbm_output_id[i]}]")
         content.append("")
+
+    
 
     output_file = dest / "system.cfg"
     dest.mkdir(parents=True, exist_ok=True)
