@@ -599,7 +599,7 @@ class ReduceComponent(Component):
             "transform": [],
             "unit": [],
         }
-        self.harness_map: Dict[Port, Port] = {}
+        self.harness_map: Dict[int, Port] = {}
         # Categorize initial ports
         for p in self.ports:
             if p.name in ["i_0", "o_0"]:
@@ -610,16 +610,18 @@ class ReduceComponent(Component):
                 self._port_groups["transform"].append(p)
             elif "unit" in p.name:
                 self._port_groups["unit"].append(p)
-    
+
     @property
     def subg_input_ports(self) -> List[Port]:
         """
         Get all out ports that connect to internal components.
         """
-        sub_graph_ports = self._port_groups["key"] + self._port_groups["transform"] + self._port_groups["unit"]
+        sub_graph_ports = (
+            self._port_groups["key"] + self._port_groups["transform"] + self._port_groups["unit"]
+        )
         sub_graph_out_ports = [p for p in sub_graph_ports if p.port_type == PortType.OUT]
         return sub_graph_out_ports
-    
+
     def get_port_group(self, group: str, io_type: Optional[str] = None) -> List[Port]:
         """
         Get all ports in a specific functional group.
@@ -679,9 +681,21 @@ class ReduceComponent(Component):
         self.out_ports.append(p_out)
         self._port_groups[in_group].append(p_in)
         self._port_groups[out_group].append(p_out)
-        self.harness_map[p_in] = p_out
+        self.harness_map[p_in.readable_id] = p_out
 
         return p_in, p_out
+
+    def glb_grp(self, port: Port) -> str:
+        """Get the functional group of a global port."""
+        assert port in self._port_groups["global"], f"Port {port.name} is not in global group"
+        assert port.readable_id in self.harness_map, f"Port {port.name} is not in harness_map"
+        harness_port = self.harness_map[port.readable_id]
+        if harness_port in self._port_groups["key"]:
+            return "key"
+        elif harness_port in self._port_groups["transform"]:
+            return "transform"
+        else:
+            raise ValueError(f"Port {harness_port.name} is not in key or transform group")
 
     def _remove_port_by_name(self, name: str) -> None:
         """

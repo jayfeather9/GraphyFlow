@@ -4,7 +4,7 @@
 #include <ap_fixed.h>
 #include <hls_stream.h>
 #include <stdint.h>
-
+#include <stdio.h>
 #include <string.h>
 
 #define PE_NUM 8
@@ -18,6 +18,7 @@
 // --- Graph Type Definitions ---
 typedef uint16_t edge_id_t;
 typedef uint16_t node_id_t;
+typedef uint32_t ap_fixed_pod_t;
 
 /**
  * @brief A structure to hold a batch of edge properties ready for processing.
@@ -174,15 +175,13 @@ void fused_op_312(hls::stream<struct_ibu_14_t> &i_0,
 void Memor_318(hls::stream<struct_ibu_14_t> &o_0_edge_weight,
                hls::stream<struct_ibu_14_t> &o_0_edge_src_distance,
                hls::stream<struct_nbu_16_t> &o_0_edge_dst,
-               hls::stream<bool> &request_to_umc,
                hls::stream<edge_batch_t> &response_from_umc);
 void CopyC_350(hls::stream<struct_nbu_16_t> &i_0,
                hls::stream<struct_nbu_16_t> &o_0,
                hls::stream<struct_nbu_16_t> &o_1);
 void Memor_343(hls::stream<struct_ibu_14_t> &o_0_node_distance,
                hls::stream<struct_nbu_16_t> &i_0_node_id,
-               hls::stream<struct_nbu_16_t> &request_to_umc,
-               hls::stream<struct_ibu_14_t> &response_from_umc);
+               hls::stream<struct_ibu_14_t> &all_node_distances_from_umc);
 void fused_op_338(hls::stream<struct_ibu_14_t> &i_0,
                   hls::stream<struct_ibu_14_t> &i_1,
                   hls::stream<struct_nbu_16_t> &i_2,
@@ -200,18 +199,14 @@ void Scatt_346(hls::stream<struct_sbu_19_t> &i_0,
  * @param edge_descriptors  DDR pointer to edge data.
  * @param node_distances    DDR pointer to node distances.
  * @param num_nodes         Total number of nodes.
- * @param request_from_318  Stream to receive requests for edge batches.
  * @param response_to_318   Stream to send processed edge batches.
- * @param request_from_343  Stream to receive requests for node distances.
  * @param response_to_343   Stream to send node distances.
  */
-void UnifiedMemoryController(const int *src_offsets,
-                             const edge_descriptor_t *edge_descriptors,
-                             const int *node_distances, int num_nodes,
-                             hls::stream<bool> &request_from_318,
-                             hls::stream<edge_batch_t> &response_to_318,
-                             hls::stream<struct_nbu_16_t> &request_from_343,
-                             hls::stream<struct_ibu_14_t> &response_to_343);
+void UnifiedMemoryController(
+    const int *src_offsets, const edge_descriptor_t *edge_descriptors,
+    const int *node_distances, int num_nodes,
+    hls::stream<edge_batch_t> &response_to_318,
+    hls::stream<struct_ibu_14_t> &all_node_distances_to_343);
 
 static void graphyflow_dataflow(
     // UMC inputs

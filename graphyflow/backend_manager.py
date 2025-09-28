@@ -1747,6 +1747,7 @@ emconfig:
                 HLSExpr(HLSExprT.VAR, p2var_map[comp.get_port("i_1").connection]), comp.get_port("i_1")
             )
             target_var = p2var_map[comp.get_port("o_0")]
+            # code_lines.append(CodeComment(f"Translating BinOp {comp.name} data type {op1_expr.val.type.type}"))
 
             if op1_expr.val.type.type == HLSBasicType.AP_FIXED_POD:
                 is_comparison = comp.op in [BinOp.EQ, BinOp.NE, BinOp.LT, BinOp.GT, BinOp.LE, BinOp.GE]
@@ -2148,7 +2149,17 @@ emconfig:
         key_out_type = self.type_map[comp.get_port("i_reduce_key_out").data_type]
         transform_out_type = self.type_map[comp.get_port("i_reduce_transform_out").data_type]
 
-        in_elem_vars = [HLSVar(f"{in_n}.data[{iterator}]", in_t) for in_t, in_n in zip(in_types, in_names)]
+        in_vars = [HLSVar(f"{in_n}.data[{iterator}]", in_t) for in_t, in_n in zip(in_types, in_names)]
+        key_in_vars = [
+            var
+            for var, in_p in zip(in_vars, comp.get_port_group("global", "in"))
+            if comp.glb_grp(in_p) == "key"
+        ]
+        transform_in_vars = [
+            var
+            for var, in_p in zip(in_vars, comp.get_port_group("global", "in"))
+            if comp.glb_grp(in_p) == "transform"
+        ]
         key_out_elem_var = HLSVar("key_out_elem", key_out_type)
         transform_out_elem_var = HLSVar("transform_out_elem", transform_out_type)
         code_lines = [
@@ -2158,13 +2169,13 @@ emconfig:
 
         key_sub_graph_starts = comp.get_port_group("key", "out")
         key_sub_graph_end = comp.get_port("i_reduce_key_out")
-        key_io_map = {p: v for p, v in zip(key_sub_graph_starts, in_elem_vars)}
+        key_io_map = {p: v for p, v in zip(key_sub_graph_starts, key_in_vars)}
         key_io_map[key_sub_graph_end] = key_out_elem_var
         code_lines.extend(self._inline_sub_graph_logic(key_sub_graph_starts, key_sub_graph_end, key_io_map))
 
         transform_sub_graph_starts = comp.get_port_group("transform", "out")
         transform_sub_graph_end = comp.get_port("i_reduce_transform_out")
-        transform_io_map = {p: v for p, v in zip(transform_sub_graph_starts, in_elem_vars)}
+        transform_io_map = {p: v for p, v in zip(transform_sub_graph_starts, transform_in_vars)}
         transform_io_map[transform_sub_graph_end] = transform_out_elem_var
         code_lines.extend(
             self._inline_sub_graph_logic(
@@ -2896,7 +2907,8 @@ emconfig:
         # define edge_id_t & node_id_t
         code += "// --- Graph Type Definitions ---\n"
         code += "typedef uint16_t edge_id_t;\n"
-        code += "typedef uint16_t node_id_t;\n\n"
+        code += "typedef uint16_t node_id_t;\n"
+        code += "typedef uint32_t ap_fixed_pod_t;\n\n"
 
         code += "// --- Struct Type Definitions ---\n"
         sorted_defs = self._topologically_sort_structs()

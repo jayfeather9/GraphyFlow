@@ -480,20 +480,28 @@ class DfirSimulator:
             if len(comp.harness_map) == 0:
                 # not optimized reduce component
                 comp_ext_int_map = [
-                    (comp.get_port("i_0"), comp.get_port("o_reduce_key_in")),
-                    (comp.get_port("i_0"), comp.get_port("o_reduce_transform_in")),
+                    (comp.get_port("i_0").readable_id, comp.get_port("o_reduce_key_in")),
+                    (comp.get_port("i_0").readable_id, comp.get_port("o_reduce_transform_in")),
                 ]
             else:
                 # Sanity check: The harness map must exactly match the global inputs.
                 assert set(comp.harness_map.keys()) == set(
-                    global_input_ports
+                    p.readable_id for p in global_input_ports
                 ), f"{set(comp.harness_map.keys())} vs {set(global_input_ports)}"
                 comp_ext_int_map = list(comp.harness_map.items())
 
             key_fused_op_inputs = {}
             transform_fused_op_inputs = {}
 
-            for ext_in_port, int_out_port in comp_ext_int_map:
+            for ext_in_port_id, int_out_port in comp_ext_int_map:
+                ext_in_port = None
+                for p in comp.ports:
+                    if p.readable_id == ext_in_port_id:
+                        ext_in_port = p
+                        break
+                assert (
+                    ext_in_port is not None
+                ), f"External input port ID {ext_in_port_id} not found in component ports"
                 assert ext_in_port.name in inputs, f"External input port {ext_in_port} not found in inputs"
                 # Get the corresponding internal port that feeds a FusedOp
                 assert int_out_port.connected, "Internal harness port must be connected to a FusedOp."

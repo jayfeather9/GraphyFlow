@@ -12,13 +12,13 @@ AlgorithmHost::AlgorithmHost(cl::Context &context, cl::Kernel &kernel,
 
 // Helper function to convert float to int32_t by reinterpreting its bits
 // This aligns with ap_fixed<32,16> representation in the kernel.
-static int32_t float_to_int32_bits(float val) {
+static int32_t float_to_int32_bits(ap_fixed<32, 16> val) {
     return *reinterpret_cast<int32_t *>(&val);
 }
 
 // Helper function to convert int32_t bits back to float
-static float int32_bits_to_float(int32_t val) {
-    return *reinterpret_cast<float *>(&val);
+static ap_fixed<32, 16> int32_bits_to_float(int32_t val) {
+    return *reinterpret_cast<ap_fixed<32, 16> *>(&val);
 }
 
 void AlgorithmHost::setup_buffers(const GraphCSR &graph, int start_node) {
@@ -36,13 +36,15 @@ void AlgorithmHost::setup_buffers(const GraphCSR &graph, int start_node) {
         h_edge_descriptors[i].dst_id = graph.columns[i];
         // The kernel expects ap_fixed<32,16> stored as int32_t.
         // We can treat host-side weights as floats for this conversion.
-        float weight_fp = static_cast<float>(graph.weights[i]);
+        ap_fixed<32, 16> weight_fp =
+            static_cast<ap_fixed<32, 16>>(graph.weights[i]);
         h_edge_descriptors[i].weight = float_to_int32_bits(weight_fp);
     }
 
     // 1.3 Node Distances (initial state for Bellman-Ford)
     h_node_distances.assign(
-        m_num_vertices, float_to_int32_bits(static_cast<float>(INFINITY_DIST)));
+        m_num_vertices,
+        float_to_int32_bits(static_cast<ap_fixed<32, 16>>(INFINITY_DIST)));
     if (start_node < m_num_vertices) {
         h_node_distances[start_node] = float_to_int32_bits(0.0f);
     }

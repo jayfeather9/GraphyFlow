@@ -248,9 +248,24 @@ void Reduc_141_pre_process(
             // Inlining fused_op_221
             // -- Begin Nested Inline for FusedOp fused_op_221 --
             // Inlining BinOp_104
-            int32_t fused_temp_BinOp_104_o_0;
-            fused_temp_BinOp_104_o_0 = (in_batch_i_global_data_1.data[i] +
-                                        in_batch_i_global_data_2.data[i]);
+            // ap_fixed<32, 16> data_1_fp =
+            //     *reinterpret_cast<ap_fixed<32, 16> *>(
+            //         &in_batch_i_global_data_1.data[i]);
+            // ap_fixed<32, 16> data_2_fp =
+            //     *reinterpret_cast<ap_fixed<32, 16> *>(
+            //         &in_batch_i_global_data_2.data[i]);
+            // printf("PreProcessor input value1: %.2f, value2: %.2f\n",
+            //        (float)data_1_fp,
+            //        (float)data_2_fp);
+            ap_fixed_pod_t fused_temp_BinOp_104_o_0;
+            ap_fixed<32, 16> lhs_104 = *reinterpret_cast<ap_fixed<32, 16> *>(
+                &in_batch_i_global_data_2.data[i]);
+            ap_fixed<32, 16> rhs_104 = *reinterpret_cast<ap_fixed<32, 16> *>(
+                &in_batch_i_global_data_3.data[i]);
+            ap_fixed<32, 16> temp_BinOp_104_o_0_ap_result;
+            temp_BinOp_104_o_0_ap_result = (lhs_104 + rhs_104);
+            fused_temp_BinOp_104_o_0 =
+                *reinterpret_cast<int32_t *>(&temp_BinOp_104_o_0_ap_result);
             // Inlining Gathe_215
             transform_out_elem.ele_0 = fused_temp_BinOp_104_o_0;
             transform_out_elem.ele_1 = in_batch_i_global_data_0.data[i];
@@ -258,6 +273,14 @@ void Reduc_141_pre_process(
             // -- Inline sub graph end --
             out_batch_intermediate_key.data[i] = key_out_elem;
             out_batch_intermediate_transform.data[i] = transform_out_elem;
+
+            // ap_fixed<32, 16> dist_fp =
+            //     *reinterpret_cast<ap_fixed<32, 16> *>(
+            //         &transform_out_elem.ele_0);
+            // printf("PreProcessor output key: %d, value: %.2f, node: %d\n",
+            //        key_out_elem,
+            //        (float)dist_fp,
+            //        transform_out_elem.ele_1);
         }
         out_batch_intermediate_key.end_flag = in_batch_i_global_data_0.end_flag;
         out_batch_intermediate_key.end_pos = in_batch_i_global_data_0.end_pos;
@@ -316,6 +339,14 @@ void Reduc_141_unit_reduce(
                 } else {
                     key_elem = kt_elem.data.key;
                     transform_elem = kt_elem.data.transform;
+                    // ap_fixed<32, 16> dist_fp =
+                    //     *reinterpret_cast<ap_fixed<32, 16> *>(
+                    //         &transform_elem.ele_0);
+                    // printf("Reducer input key: %d, value: %.2f, node: %d\n",
+                    //        key_elem,
+                    //        (float)dist_fp,
+                    //        transform_elem.ele_1);
+                    // -- Begin Reduction Logic --
                     struct_sb_38_t old_ele;
                     old_ele = key_mem[i][key_elem];
                     for (uint32_t i_search = 0; i_search < L + 1; i_search++) {
@@ -403,6 +434,13 @@ void Reduc_141_unit_reduce(
             if (key_mem[pe][(k + pe)].ele_1) {
                 data_to_write[(start_pos % ((PE_NUM << 1)))] =
                     key_mem[pe][(k + pe)].ele_0;
+                // ap_fixed<32, 16> dist_fp =
+                //     *reinterpret_cast<ap_fixed<32, 16> *>(
+                //         &key_mem[pe][(k + pe)].ele_0.ele_0);
+                // printf("Reducer output key: %d, value: %.2f, node: %d\n",
+                //        (k + pe),
+                //        (float)dist_fp,
+                //        key_mem[pe][(k + pe)].ele_0.ele_1);
                 data_cnt = (data_cnt + 1);
                 start_pos = (start_pos + 1);
             }
@@ -632,26 +670,16 @@ void fused_op_312(hls::stream<struct_ibu_14_t> &i_0,
 void Memor_318(hls::stream<struct_ibu_14_t> &o_0_edge_weight,
                hls::stream<struct_ibu_14_t> &o_0_edge_src_distance,
                hls::stream<struct_nbu_16_t> &o_0_edge_dst,
-               hls::stream<bool> &request_to_umc,
                hls::stream<edge_batch_t> &response_from_umc) {
     /**
-     * @brief Initiates edge data fetching and unpacks the results.
-     * This module now drives the edge processing pipeline. It sends a
-     * continuous stream of requests to the UMC and receives fully prepared edge
-     * data batches. It then unpacks these batches into separate streams for
-     * consumption by downstream logic.
+     * @brief Unpacks edge data batches from the UMC.
+     * In this version, it's a pure consumer with no backpressure mechanism.
      */
     bool done = false;
-    request_to_umc.write(true); // Send the first request to start the pipeline
-
     do {
 #pragma HLS PIPELINE
         edge_batch_t in_batch = response_from_umc.read();
-
         done = in_batch.end_flag;
-        if (!done) {
-            request_to_umc.write(true); // Request the next batch
-        }
 
         struct_ibu_14_t weight_batch;
         struct_ibu_14_t src_dist_batch;
@@ -710,32 +738,80 @@ void CopyC_350(hls::stream<struct_nbu_16_t> &i_0,
 
 void Memor_343(hls::stream<struct_ibu_14_t> &o_0_node_distance,
                hls::stream<struct_nbu_16_t> &i_0_node_id,
-               hls::stream<struct_nbu_16_t> &request_to_umc,
-               hls::stream<struct_ibu_14_t> &response_from_umc) {
+               hls::stream<struct_ibu_14_t> &all_node_distances_from_umc) {
     /**
-     * @brief Forwards node distance requests to UMC and relays responses.
-     * This module acts as a simple proxy. It receives requests for node
-     * distances from upstream dataflow, forwards them to the UMC's
-     * node_property_responder, and then passes the UMC's response to the
-     * downstream modules.
+     * @brief Efficiently filters a stream of all node distances against a
+     * stream of requested node IDs.
+     * Assumes both input streams are sorted by node ID.
      */
-    bool end_flag;
-    do {
-#pragma HLS PIPELINE
-        // 1. Receive a request from the upstream module.
-        struct_nbu_16_t id_req_batch = i_0_node_id.read();
-        end_flag = id_req_batch.end_flag;
 
-        // 2. Forward the request to the UMC.
-        request_to_umc.write(id_req_batch);
+    // Read the first batch of requests to start the process
+    struct_nbu_16_t req_batch = i_0_node_id.read();
+    int req_idx = 0;
+    node_id_t current_req_id = req_batch.data[req_idx];
 
-        // 3. Receive the corresponding response from the UMC.
-        struct_ibu_14_t dist_resp_batch = response_from_umc.read();
+    // Prepare the output batch
+    struct_ibu_14_t out_dist_batch;
+    out_dist_batch.end_pos = 0;
 
-        // 4. Forward the response to the downstream module.
-        o_0_node_distance.write(dist_resp_batch);
+    int processed_props_in_batch = 0;
+    struct_ibu_14_t prop_batch = all_node_distances_from_umc.read();
+    int implicit_prop_id_base = 0;
 
-    } while (!end_flag);
+FILTER_LOOP:
+    while (!req_batch.end_flag || req_idx < req_batch.end_pos) {
+#pragma HLS PIPELINE II = 1
+
+        node_id_t current_prop_id =
+            implicit_prop_id_base + processed_props_in_batch;
+        int32_t current_prop_dist = prop_batch.data[processed_props_in_batch];
+
+        if (current_prop_id < current_req_id) {
+            // This property is not requested, discard it and advance property
+            // stream
+            processed_props_in_batch++;
+        } else if (current_prop_id == current_req_id) {
+            // Match found! Add to output and advance both streams
+            out_dist_batch.data[out_dist_batch.end_pos] = current_prop_dist;
+            out_dist_batch.end_pos++;
+
+            processed_props_in_batch++;
+            req_idx++;
+        } else { // current_prop_id > current_req_id
+            // We've passed the requested ID. This implies the requested node
+            // has no corresponding property, which shouldn't happen in this
+            // design. We advance the request stream to the next ID.
+            req_idx++;
+        }
+
+        // Send output batch if it's full
+        if (out_dist_batch.end_pos == PE_NUM) {
+            out_dist_batch.end_flag = false;
+            o_0_node_distance.write(out_dist_batch);
+            out_dist_batch.end_pos = 0;
+        }
+
+        // Manage request batch roll-over
+        if (req_idx >= req_batch.end_pos && !req_batch.end_flag) {
+            req_batch = i_0_node_id.read();
+            req_idx = 0;
+            current_req_id = req_batch.data[req_idx];
+        } else if (req_idx < req_batch.end_pos) {
+            current_req_id = req_batch.data[req_idx];
+        }
+
+        // Manage property batch roll-over
+        if (processed_props_in_batch >= prop_batch.end_pos &&
+            !prop_batch.end_flag) {
+            implicit_prop_id_base += prop_batch.end_pos;
+            prop_batch = all_node_distances_from_umc.read();
+            processed_props_in_batch = 0;
+        }
+    }
+
+    // Send the final output batch
+    out_dist_batch.end_flag = true;
+    o_0_node_distance.write(out_dist_batch);
 }
 
 void fused_op_338(hls::stream<struct_ibu_14_t> &i_0,
@@ -765,6 +841,9 @@ void fused_op_338(hls::stream<struct_ibu_14_t> &i_0,
             ap_fixed<32, 16> temp_BinOp_164_o_0_ap_result;
             temp_BinOp_164_o_0_ap_result =
                 (((lhs_164) < (rhs_164) ? lhs_164 : rhs_164));
+            // printf("DEBUG: lhs_164=%.2f, rhs_164=%.2f, min=%.2f\n",
+            // (float)lhs_164, (float)rhs_164,
+            // (float)temp_BinOp_164_o_0_ap_result);
             fused_temp_BinOp_164_o_0 =
                 *reinterpret_cast<int32_t *>(&temp_BinOp_164_o_0_ap_result);
             // Inlining Gathe_332
@@ -825,10 +904,11 @@ void Scatt_346(hls::stream<struct_sbu_19_t> &i_0,
  * @param num_nodes           Total number of nodes.
  * @param load_finished_signal Stream to signal completion to the edge loader.
  */
-static void node_property_loader(const int *node_distances_ddr,
-                                 int32_t node_distance_cache[MAX_NUM],
-                                 int num_nodes,
-                                 hls::stream<bool> &load_finished_signal) {
+static void
+node_property_loader(const int *node_distances_ddr,
+                     int32_t node_distance_cache_for_edge_loader[MAX_NUM],
+                     int32_t node_distance_cache_for_responder[MAX_NUM],
+                     int num_nodes, hls::stream<bool> &load_finished_signal) {
     // Use ap_uint for wide bus access
     const ap_uint<AXI_BUS_WIDTH> *wide_bus_ptr =
         reinterpret_cast<const ap_uint<AXI_BUS_WIDTH> *>(node_distances_ddr);
@@ -844,7 +924,9 @@ LOAD_NODES_LOOP:
 #pragma HLS UNROLL
             int node_idx = i * NUM_WORDS_PER_BUS + j;
             if (node_idx < num_nodes) {
-                node_distance_cache[node_idx] = wide_word.range(
+                node_distance_cache_for_edge_loader[node_idx] = wide_word.range(
+                    (j + 1) * DATA_TYPE_WIDTH - 1, j * DATA_TYPE_WIDTH);
+                node_distance_cache_for_responder[node_idx] = wide_word.range(
                     (j + 1) * DATA_TYPE_WIDTH - 1, j * DATA_TYPE_WIDTH);
             }
         }
@@ -864,111 +946,67 @@ LOAD_NODES_LOOP:
  * @param node_distance_cache On-chip URAM cache for node distances (read-only).
  * @param num_nodes           Total number of nodes.
  * @param load_finished_signal Stream to wait for node loading completion.
- * @param request_stream      Stream to receive requests for edge batches.
  * @param response_stream     Stream to send processed edge batches.
  */
 static void edge_property_loader_and_dispatcher(
     const int *src_offsets_ddr, const edge_descriptor_t *edge_descriptors_ddr,
     const int32_t node_distance_cache[MAX_NUM], int num_nodes,
-    hls::stream<bool> &load_finished_signal, hls::stream<bool> &request_stream,
+    hls::stream<bool> &load_finished_signal,
     hls::stream<edge_batch_t> &response_stream) {
-    // --- PHASE A: Wait for node properties to be cached ---
+    // --- PHASE A: Wait for node properties to be fully cached on-chip ---
+    (void)load_finished_signal.read();
 
-    // --- PHASE B: Cache src_offsets on-chip ---
+    // --- PHASE B: Cache src_offsets on-chip for fast access ---
     int src_offsets_cache[MAX_NUM + 1];
 #pragma HLS BIND_STORAGE variable = src_offsets_cache type = RAM_1P impl = BRAM
-    // The number of edges is the last entry in the offsets array
     const int num_edges = src_offsets_ddr[num_nodes];
 
-    // Read all offsets. This read can also be widened if MAX_NUM is large.
 CACHE_OFFSETS_LOOP:
-    for (int i = 0; i <= MAX_NUM; i += (PE_NUM << 2)) {
+    for (int i = 0; i <= num_nodes; ++i) {
 #pragma HLS PIPELINE II = 1
-        for (int j = 0; j < (PE_NUM << 2); ++j) {
-#pragma HLS UNROLL
-            int idx = i + j;
-            if (idx <= num_nodes) {
-                src_offsets_cache[idx] = src_offsets_ddr[idx];
-            }
-        }
+        src_offsets_cache[i] = src_offsets_ddr[i];
     }
 
-    // --- PHASE C: Process and dispatch edges ---
-    edge_batch_t current_batches[1 << 2];
-#pragma HLS ARRAY_PARTITION variable = current_batches complete dim = 0
-    // Initialize batch end flag
-    for (int i = 0; i < (1 << 2); ++i) {
-#pragma HLS UNROLL
-        current_batches[i].end_pos = 0;
-        current_batches[i].end_flag = false;
-    }
+    // --- PHASE C: Process and dispatch all edges unconditionally ---
+    edge_batch_t current_batch;
+    current_batch.end_pos = 0;
+    current_batch.end_flag = false;
 
-    load_finished_signal.read(); // Wait for signal
-    request_stream.read();       // Initial request
+PROCESS_NODES_LOOP:
+    for (int u = 0; u < num_nodes; ++u) {
+        int32_t src_dist = node_distance_cache[u];
+        int start_edge_idx = src_offsets_cache[u];
+        int end_edge_idx = src_offsets_cache[u + 1];
 
-    int lst_node = 0;
-    for (int e_idx = 0; e_idx < num_edges; e_idx += (PE_NUM << 2)) {
-#pragma HLS PIPELINE II = 1
     PROCESS_EDGES_LOOP:
-        for (int j = 0; j < (PE_NUM << 2); ++j) {
-#pragma HLS UNROLL
-            int idx = e_idx + j;
-            if (idx >= num_edges) {
-                break;
-            }
-            // search from lst_node to find the src node
-            int u = lst_node;
-            while (!(src_offsets_cache[u] <= idx &&
-                     idx < src_offsets_cache[u + 1])) {
-                u++;
-            }
-            edge_descriptor_t edge = edge_descriptors_ddr[idx];
-            int batch_idx = j / PE_NUM;
-            int pos_in_batch = j % PE_NUM;
-            current_batches[batch_idx].weights[pos_in_batch] = edge.weight;
-            current_batches[batch_idx].src_distances[pos_in_batch] =
-                node_distance_cache[u];
-            current_batches[batch_idx].dst_ids[pos_in_batch] = edge.dst_id;
-            current_batches[batch_idx].end_pos++;
-            if (pos_in_batch == PE_NUM - 1 || idx == num_edges - 1) {
-                response_stream.write(current_batches[batch_idx]);
-                current_batches[batch_idx].end_pos = 0;
-                request_stream.read(); // Wait for next request
+        for (int e_idx = start_edge_idx; e_idx < end_edge_idx; ++e_idx) {
+#pragma HLS PIPELINE II = 1
+            edge_descriptor_t edge = edge_descriptors_ddr[e_idx];
+
+            int batch_idx = current_batch.end_pos;
+            current_batch.weights[batch_idx] = edge.weight;
+            current_batch.src_distances[batch_idx] = src_dist;
+            current_batch.dst_ids[batch_idx] = edge.dst_id;
+            current_batch.end_pos++;
+
+            // ap_fixed<32, 16> src_dist_fp = *reinterpret_cast<ap_fixed<32, 16>
+            // *>(&src_dist); ap_fixed<32, 16> weight_fp =
+            // *reinterpret_cast<ap_fixed<32, 16> *>(&edge.weight);
+
+            // printf("DEBUG: Edge (src=%d, dst=%d, weight=%.2f) with
+            // src_dist=%.2f\n",
+            //        u, edge.dst_id, (float)weight_fp, (float)src_dist_fp);
+
+            if (current_batch.end_pos == PE_NUM) {
+                response_stream.write(current_batch);
+                current_batch.end_pos = 0;
             }
         }
     }
 
-    // PROCESS_NODES_LOOP:
-    //     for (int u = 0; u < num_nodes; ++u) {
-    //         int32_t src_dist = node_distance_cache[u];
-    //         int start_edge_idx = src_offsets_cache[u];
-    //         int end_edge_idx = src_offsets_cache[u + 1];
-
-    //     PROCESS_EDGES_LOOP:
-    //         for (int e_idx = start_edge_idx; e_idx < end_edge_idx; ++e_idx) {
-    //         #pragma HLS PIPELINE II=1
-    //             edge_descriptor_t edge = edge_descriptors_ddr[e_idx];
-
-    //             int batch_idx = current_batch.end_pos;
-    //             current_batch.weights[batch_idx] = edge.weight;
-    //             current_batch.src_distances[batch_idx] = src_dist;
-    //             current_batch.dst_ids[batch_idx] = edge.dst_id;
-    //             current_batch.end_pos++;
-
-    //             if (current_batch.end_pos == PE_NUM) {
-    //                 if(request) {
-    //                     response_stream.write(current_batch);
-    //                     request = request_stream.read();
-    //                 }
-    //                 current_batch.end_pos = 0;
-    //             }
-    //         }
-    //     }
-
-    // --- PHASE D: Send the final, potentially partial, batch ---
-    current_batches[0].end_flag = true;
-    current_batches[0].end_pos = 0;
-    response_stream.write(current_batches[0]);
+    // --- PHASE D: Send the final batch (can be partial) with end flag ---
+    current_batch.end_flag = true;
+    response_stream.write(current_batch);
 }
 
 // --- PHASE 2.3: UMC Sub-module: Node Property Responder ---
@@ -977,70 +1015,68 @@ CACHE_OFFSETS_LOOP:
  * @brief Responds to requests for node distances from the URAM cache.
  *
  * @param node_distance_cache On-chip URAM cache (read-only).
- * @param request_stream      Stream of batched node ID requests.
+ * @param num_nodes           Total number of nodes.
  * @param response_stream     Stream of batched node distance responses.
  */
 static void
 node_property_responder(const int32_t node_distance_cache[MAX_NUM],
-                        hls::stream<struct_nbu_16_t> &request_stream,
-                        hls::stream<struct_ibu_14_t> &response_stream) {
-    while (true) {
+                        int num_nodes,
+                        hls::stream<struct_ibu_14_t> &all_distances_stream) {
+    /**
+     * @brief Proactively broadcasts all node distances in ascending order of
+     * node ID.
+     */
+    struct_ibu_14_t dist_batch;
+    dist_batch.end_pos = 0;
+    dist_batch.end_flag = false;
+
+BROADCAST_LOOP:
+    for (int i = 0; i < num_nodes; i++) {
 #pragma HLS PIPELINE II = 1
-        struct_nbu_16_t id_batch = request_stream.read();
-        struct_ibu_14_t dist_batch;
-
-        dist_batch.end_flag = id_batch.end_flag;
-        dist_batch.end_pos = id_batch.end_pos;
-
-    RESPOND_LOOP:
-        for (int i = 0; i < PE_NUM; i++) {
-#pragma HLS UNROLL
-            if (i < id_batch.end_pos) {
-                node_id_t node_id = id_batch.data[i];
-                dist_batch.data[i] = node_distance_cache[node_id];
-            }
-        }
-        response_stream.write(dist_batch);
-
-        if (id_batch.end_flag) {
-            break;
+        dist_batch.data[dist_batch.end_pos] = node_distance_cache[i];
+        dist_batch.end_pos++;
+        if (dist_batch.end_pos == PE_NUM) {
+            all_distances_stream.write(dist_batch);
+            dist_batch.end_pos = 0;
         }
     }
+
+    // Send the final batch (can be partial) with the end flag set.
+    dist_batch.end_flag = true;
+    all_distances_stream.write(dist_batch);
 }
 
 // --- PHASE 2.4: UMC Top-Level Dataflow Function ---
 
-/**
- * This function instantiates and connects all UMC sub-modules.
- */
-void UnifiedMemoryController(const int *src_offsets,
-                             const edge_descriptor_t *edge_descriptors,
-                             const int *node_distances, int num_nodes,
-                             hls::stream<bool> &request_from_318,
-                             hls::stream<edge_batch_t> &response_to_318,
-                             hls::stream<struct_nbu_16_t> &request_from_343,
-                             hls::stream<struct_ibu_14_t> &response_to_343) {
+void UnifiedMemoryController(
+    const int *src_offsets, const edge_descriptor_t *edge_descriptors,
+    const int *node_distances, int num_nodes,
+    hls::stream<edge_batch_t> &response_to_318,
+    hls::stream<struct_ibu_14_t> &all_node_distances_to_343) {
 #pragma HLS DATAFLOW
 
-    // --- On-chip Caches ---
-    static int32_t node_distance_cache[MAX_NUM];
-#pragma HLS BIND_STORAGE variable = node_distance_cache type = RAM_T2P impl =  \
-    URAM
+    // On-chip caches
+    static int32_t node_distance_cache_for_edge_loader[MAX_NUM];
+#pragma HLS BIND_STORAGE variable = node_distance_cache_for_edge_loader type = \
+    RAM_T2P impl = URAM
+    static int32_t node_distance_cache_for_responder[MAX_NUM];
+#pragma HLS BIND_STORAGE variable = node_distance_cache_for_responder type =   \
+    RAM_T2P impl = URAM
 
-    // --- Internal Signal Streams ---
+    // Internal Signal Stream
     static hls::stream<bool> node_loader_finished;
 #pragma HLS STREAM variable = node_loader_finished depth = 2
 
-    // --- Instantiate and Connect Sub-modules ---
-    node_property_loader(node_distances, node_distance_cache, num_nodes,
+    node_property_loader(node_distances, node_distance_cache_for_edge_loader,
+                         node_distance_cache_for_responder, num_nodes,
                          node_loader_finished);
 
     edge_property_loader_and_dispatcher(
-        src_offsets, edge_descriptors, node_distance_cache, num_nodes,
-        node_loader_finished, request_from_318, response_to_318);
+        src_offsets, edge_descriptors, node_distance_cache_for_edge_loader,
+        num_nodes, node_loader_finished, response_to_318);
 
-    node_property_responder(node_distance_cache, request_from_343,
-                            response_to_343);
+    node_property_responder(node_distance_cache_for_responder, num_nodes,
+                            all_node_distances_to_343);
 }
 
 // static void
@@ -1089,22 +1125,15 @@ static void graphyflow_dataflow(
 
     // --- PHASE 1: Streams for UMC Communication ---
     // Streams for edge data requests (Memor_318 <-> UMC)
-    static hls::stream<bool> umc_edge_req_stream;
-#pragma HLS STREAM variable = umc_edge_req_stream depth = 4
     static hls::stream<edge_batch_t> umc_edge_resp_stream;
 #pragma HLS STREAM variable = umc_edge_resp_stream depth = 4
-
-    // Streams for node data requests (Memor_343 <-> UMC)
-    static hls::stream<struct_nbu_16_t> umc_node_req_stream;
-#pragma HLS STREAM variable = umc_node_req_stream depth = 4
-    static hls::stream<struct_ibu_14_t> umc_node_resp_stream;
-#pragma HLS STREAM variable = umc_node_resp_stream depth = 4
+    static hls::stream<struct_ibu_14_t> umc_all_node_distances_stream;
+#pragma HLS STREAM variable = umc_all_node_distances_stream depth = 4
 
     // --- PHASE 2: Instantiate the Unified Memory Controller ---
     UnifiedMemoryController(src_offsets, edge_descriptors, node_distances,
-                            num_nodes, umc_edge_req_stream,
-                            umc_edge_resp_stream, umc_node_req_stream,
-                            umc_node_resp_stream);
+                            num_nodes, umc_edge_resp_stream,
+                            umc_all_node_distances_stream);
 
     // --- PHASE 3: Instantiate the original DFIR dataflow graph ---
     // Note: The original stream declarations are preserved, but the ones
@@ -1162,8 +1191,7 @@ static void graphyflow_dataflow(
 
     // Memor_318 now initiates the pipeline by communicating with the UMC
     Memor_318(stream_o_0_edge_weight_319, stream_o_0_edge_src_distance_321,
-              stream_o_0_edge_dst_322, umc_edge_req_stream,
-              umc_edge_resp_stream);
+              stream_o_0_edge_dst_322, umc_edge_resp_stream);
 
     // The rest of the original dataflow graph connects as before
     fused_op_312(stream_o_0_edge_src_distance_321, stream_o_0_edge_dst_322,
@@ -1189,8 +1217,8 @@ static void graphyflow_dataflow(
     CopyC_350(stream_o_1_349, stream_o_0_352, stream_o_1_353);
 
     // Memor_343 now acts as a proxy to the UMC
-    Memor_343(stream_o_0_node_distance_344, stream_o_1_353, umc_node_req_stream,
-              umc_node_resp_stream);
+    Memor_343(stream_o_0_node_distance_344, stream_o_1_353,
+              umc_all_node_distances_stream);
 
     // The final operation which writes to the output stream
     fused_op_338(stream_o_0_348, stream_o_0_node_distance_344, stream_o_0_352,

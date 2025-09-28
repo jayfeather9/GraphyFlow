@@ -18,7 +18,7 @@ class HLSBasicType(Enum):
     FLOAT = "ap_fixed<32, 16>"
     NODE_ID = "node_id_t"
     EDGE_ID = "edge_id_t"
-    AP_FIXED_POD = "int32_t"
+    AP_FIXED_POD = "ap_fixed_pod_t"
     REAL_FLOAT = "float"
     BOOL = "bool"
     STRUCT = "struct"
@@ -207,7 +207,7 @@ class HLSVar:
         self.type = var_type
 
     def __repr__(self) -> str:
-        return f"HLSVar({self.name}, {self.type})"
+        return f"HLSVar({self.name}, {self.type}({self.type.type}))"
 
 
 class HLSCodeLine:

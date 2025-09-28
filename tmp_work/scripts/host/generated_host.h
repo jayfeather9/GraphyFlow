@@ -3,6 +3,7 @@
 
 #include "common.h"
 #include "xcl2.h"
+#include <ap_fixed.h>
 #include <vector>
 
 class AlgorithmHost {
