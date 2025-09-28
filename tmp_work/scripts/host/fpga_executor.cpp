@@ -8,11 +8,16 @@
 // ... (fpga_executor.cpp 的其余内容保持不变) ...
 std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
                                  const GraphCSR &graph, int start_node,
-                                 double &total_kernel_time_sec,
-                                 int &iter_count) {
+                                 double &total_kernel_time_sec, int &iter_count,
+                                 int device_no) {
     cl_int err;
     auto devices = xcl::get_xil_devices();
-    auto device = devices[0];
+    if (device_no >= devices.size()) {
+        std::cerr << "Error: Invalid device number " << device_no << ". Only "
+                  << devices.size() << " device(s) available." << std::endl;
+        exit(EXIT_FAILURE);
+    }
+    auto device = devices[device_no];
     OCL_CHECK(err, cl::Context context(device, NULL, NULL, NULL, &err));
     OCL_CHECK(err, cl::CommandQueue q(context, device,
                                       CL_QUEUE_PROFILING_ENABLE, &err));

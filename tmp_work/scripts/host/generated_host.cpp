@@ -55,23 +55,50 @@ void AlgorithmHost::setup_buffers(const GraphCSR &graph, int start_node) {
     size_t max_output_batches = (m_num_vertices + PE_NUM - 1) / PE_NUM;
     h_o_0_342.resize(max_output_batches);
 
+    cl_mem_ext_ptr_t h_src_offsets_ext;
+    h_src_offsets_ext.obj = h_src_offsets.data();
+    h_src_offsets_ext.param = 0;
+    h_src_offsets_ext.flags = (0 | XCL_MEM_TOPOLOGY);
+
+    cl_mem_ext_ptr_t h_edge_descriptors_ext;
+    h_edge_descriptors_ext.obj = h_edge_descriptors.data();
+    h_edge_descriptors_ext.param = 0;
+    h_edge_descriptors_ext.flags = (0 | XCL_MEM_TOPOLOGY);
+
+    cl_mem_ext_ptr_t h_node_distances_ext;
+    h_node_distances_ext.obj = h_node_distances.data();
+    h_node_distances_ext.param = 0;
+    h_node_distances_ext.flags = (0 | XCL_MEM_TOPOLOGY);
+
+    cl_mem_ext_ptr_t h_o_0_342_ext;
+    h_o_0_342_ext.obj = h_o_0_342.data();
+    h_o_0_342_ext.param = 0;
+    h_o_0_342_ext.flags = (0 | XCL_MEM_TOPOLOGY);
+
     // --- PHASE 2: Create OpenCL device buffers ---
-    OCL_CHECK(err, d_src_offsets = cl::Buffer(
-                       m_context, CL_MEM_USE_HOST_PTR | CL_MEM_READ_ONLY,
-                       h_src_offsets.size() * sizeof(int), h_src_offsets.data(),
-                       &err));
-    OCL_CHECK(err, d_edge_descriptors = cl::Buffer(
-                       m_context, CL_MEM_USE_HOST_PTR | CL_MEM_READ_ONLY,
-                       h_edge_descriptors.size() * sizeof(edge_descriptor_t),
-                       h_edge_descriptors.data(), &err));
-    OCL_CHECK(err, d_node_distances = cl::Buffer(
-                       m_context, CL_MEM_USE_HOST_PTR | CL_MEM_READ_WRITE,
-                       h_node_distances.size() * sizeof(int),
-                       h_node_distances.data(), &err));
-    OCL_CHECK(err, d_o_0_342 = cl::Buffer(
-                       m_context, CL_MEM_USE_HOST_PTR | CL_MEM_WRITE_ONLY,
-                       h_o_0_342.size() * sizeof(KernelOutputBatch),
-                       h_o_0_342.data(), &err));
+    OCL_CHECK(
+        err, d_src_offsets = cl::Buffer(
+                 m_context,
+                 CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_USE_HOST_PTR,
+                 h_src_offsets.size() * sizeof(int), &h_src_offsets_ext, &err));
+    OCL_CHECK(
+        err, d_edge_descriptors = cl::Buffer(
+                 m_context,
+                 CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_USE_HOST_PTR,
+                 h_edge_descriptors.size() * sizeof(edge_descriptor_t),
+                 &h_edge_descriptors_ext, &err));
+    OCL_CHECK(err, d_node_distances =
+                       cl::Buffer(m_context,
+                                  CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX |
+                                      CL_MEM_USE_HOST_PTR,
+                                  h_node_distances.size() * sizeof(int),
+                                  &h_node_distances_ext, &err));
+    OCL_CHECK(err, d_o_0_342 =
+                       cl::Buffer(m_context,
+                                  CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX |
+                                      CL_MEM_USE_HOST_PTR,
+                                  h_o_0_342.size() * sizeof(KernelOutputBatch),
+                                  &h_o_0_342_ext, &err));
 }
 
 void AlgorithmHost::transfer_data_to_fpga() {

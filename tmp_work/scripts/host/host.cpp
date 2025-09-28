@@ -7,14 +7,16 @@
 #include <vector>
 
 int main(int argc, char **argv) {
-    if (argc != 3) {
-        std::cout << "Usage: " << argv[0] << " <xclbin_file> <graph_data_file>"
+    if (argc != 4) {
+        std::cout << "Usage: " << argv[0]
+                  << " <xclbin_file> <graph_data_file> <device_no>"
                   << std::endl;
         return EXIT_FAILURE;
     }
 
     std::string xclbin_file = argv[1];
     std::string graph_file = argv[2];
+    int device_no = std::stoi(argv[3]);
     int start_node = 0;
 
     // 1. 加载图数据 (不变)
@@ -28,8 +30,9 @@ int main(int argc, char **argv) {
     std::cout << "\n--- Step 2: Running on FPGA ---" << std::endl;
     double total_kernel_time_sec = 0;
     int iter_count = 0;
-    std::vector<int> fpga_distances = run_fpga_kernel(
-        xclbin_file, graph, start_node, total_kernel_time_sec, iter_count);
+    std::vector<int> fpga_distances =
+        run_fpga_kernel(xclbin_file, graph, start_node, total_kernel_time_sec,
+                        iter_count, device_no);
 
     // 3. 在 Host CPU 上验证 (不变, 按你的要求保留)
     std::cout << "\n--- Step 3: Verifying on Host CPU ---" << std::endl;

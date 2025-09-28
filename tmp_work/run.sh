@@ -3,6 +3,7 @@
 
 # --- *** 关键修正：使其能够处理不同的目标 *** ---
 TARGET=$1
+DEVICE_NO=${2:-0}  # 默认为设备 0
 EXECUTABLE="graphyflow_host"
 KERNEL="graphyflow"
 
@@ -38,4 +39,4 @@ fi
 
 # 3. 运行 host 程序
 DATASET="./graph.txt"
-./${EXECUTABLE} ${XCLBIN_FILE} $DATASET
+./${EXECUTABLE} ${XCLBIN_FILE} $DATASET $DEVICE_NO
