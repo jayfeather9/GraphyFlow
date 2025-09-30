@@ -8,6 +8,7 @@
 #include <string.h>
 
 #define PE_NUM 8
+#define LOG_PE_NUM 3
 #define MAX_NUM 32768
 #define L 4
 

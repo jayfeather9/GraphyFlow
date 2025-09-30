@@ -2316,6 +2316,7 @@ emconfig:
             HLSBasicType.ARRAY, sub_types=[bram_elem_type], array_dims=["PE_NUM", "MAX_NUM"]
         )
         body.append(CodeVarDecl("key_mem", key_mem_type))
+        body.append(CodePragma("dependence variable=key_mem inter false"))
         body.append(CodePragma("BIND_STORAGE variable=key_mem type=RAM_2P impl=URAM"))
         body.append(CodePragma("ARRAY_PARTITION variable=key_mem complete dim=1"))
 

@@ -310,7 +310,7 @@ void Reduc_141_unit_reduce(
     hls::stream<net_wrapper_kt_pair_141_t_t> (&kt_wrap_item)[PE_NUM],
     hls::stream<struct_sbu_19_t> &o_0) {
     // 1. Stateful memories for PE_NUM parallel reduction units
-    struct_sb_38_t key_mem[PE_NUM][MAX_NUM >> LOG_PE_NUM];
+    struct_sb_38_t key_mem[PE_NUM][MAX_NUM];
 #pragma HLS dependence variable = key_mem inter false
 #pragma HLS BIND_STORAGE variable = key_mem type = RAM_2P impl = URAM
 #pragma HLS ARRAY_PARTITION variable = key_mem complete dim = 1
@@ -362,7 +362,7 @@ LOOP_REDUC_UNIT_AGGREGATE_377:
                     //        transform_elem.ele_1);
                     // -- Begin Reduction Logic --
                     struct_sb_38_t old_ele;
-                    old_ele = key_mem[i][key_elem >> LOG_PE_NUM];
+                    old_ele = key_mem[i][key_elem];
                 LOOP_REDUC_UNIT_SEARCH_BUFFER_401:
                     for (uint32_t i_search = 0; i_search < L + 1; i_search++) {
 #pragma HLS UNROLL
@@ -417,7 +417,7 @@ LOOP_REDUC_UNIT_AGGREGATE_377:
                         new_ele.ele_1 = true;
                         new_ele.ele_0 = transform_elem;
                     }
-                    key_mem[i][key_elem >> LOG_PE_NUM] = new_ele;
+                    key_mem[i][key_elem] = new_ele;
                     key_buffer[i][L] = new_ele;
                     i_buffer[i][L] = key_elem;
                 }
@@ -433,85 +433,168 @@ LOOP_REDUC_UNIT_AGGREGATE_377:
             break;
         }
     }
-    // printf("Reduction finished\n");
-
     // 4. Final output loop to drain all PE memories with swapped loops
-    struct_sbu_19_t data_pack;
-#pragma HLS ARRAY_PARTITION variable = data_pack.data complete dim = 0
-#pragma HLS dependence variable = data_pack inter false direction = WAW
-    struct_sbu_19_t tmp_data;
-#pragma HLS ARRAY_PARTITION variable = tmp_data.data complete dim = 0
-#pragma HLS dependence variable = tmp_data inter false direction = WAW
-    bool tmp_data_valid[PE_NUM];
-#pragma HLS ARRAY_PARTITION variable = tmp_data_valid complete dim = 0
-#pragma HLS dependence variable = tmp_data_valid inter false direction = WAW
-    data_pack.end_flag = false;
-    uint32_t k = 0;
-LOOP_REDUC_UNIT_FINAL_DRAIN_481:
-    while ((k < (MAX_NUM >> LOG_PE_NUM))) {
-#pragma HLS PIPELINE II = 1
+    //    This section is optimized with a two-pass approach:
+    //    1. A preprocessing pass to build validity bitmaps.
+    //    2. A two-stage draining process for bulk and sparse data.
+
+    // -- Preprocessing Pass: Analyze data validity and build bitmaps --
+
+    // Define the size of the bitmap arrays. Each bit represents one chunk of
+    // PE_NUM elements.
+    const int BITMAP_CHUNKS = MAX_NUM << LOG_PE_NUM;
+    const int BITMAP_SIZE = (BITMAP_CHUNKS + 31) / 32;
+
+    // Bitmaps to store chunk validity information.
+    uint32_t all_valid_bitmap[BITMAP_SIZE];
+#pragma HLS BIND_STORAGE variable = all_valid_bitmap type = RAM_1P impl = BRAM
+    uint32_t any_valid_bitmap[BITMAP_SIZE];
+#pragma HLS BIND_STORAGE variable = any_valid_bitmap type = RAM_1P impl = BRAM
+
+    // Initialize bitmaps to all zeros.
+    memset(all_valid_bitmap, 0, sizeof(all_valid_bitmap));
+    memset(any_valid_bitmap, 0, sizeof(any_valid_bitmap));
+
+    // Tracks the last chunk index (from 0) that is part of a consecutive
+    // run of fully valid chunks starting from the beginning.
+    int32_t last_consecutive_full_chunk = -1;
+    int32_t last_valid_chunk = 0;
+    bool in_consecutive_run = true;
+
+// Preprocessing loop to populate the bitmaps.
+LOOP_REDUC_UNIT_PREPROCESS_VALIDITY:
+    for (uint32_t k = 0; k < MAX_NUM; k += PE_NUM) {
+#pragma HLS PIPELINE
+        bool all_valid_for_chunk = true;
+        bool any_valid_for_chunk = false;
+
+        // Check validity for all PEs in the current chunk.
         for (uint32_t pe = 0; pe < PE_NUM; pe++) {
 #pragma HLS UNROLL
-            tmp_data.data[pe] = key_mem[pe][k].ele_0;
-            tmp_data_valid[pe] = key_mem[pe][k].ele_1;
+            bool is_valid = key_mem[pe][k + pe].ele_1;
+            all_valid_for_chunk &= is_valid;
+            any_valid_for_chunk |= is_valid;
         }
-        uint32_t data_cnt = 0;
-        for (uint32_t pe = 0; pe < PE_NUM; pe++) {
-#pragma HLS UNROLL
-            if (tmp_data_valid[pe]) {
-                data_pack.data[data_cnt] = tmp_data.data[pe];
-                data_cnt = (data_cnt + 1);
-                // printf("Reducer output key: %d, value: %.2f, node: %d\n",
-                //        key_mem[pe][(k + pe)].ele_0.ele_1,
-                //        (float)(*reinterpret_cast<ap_fixed<32, 16> *>(
-                //            &key_mem[pe][(k + pe)].ele_0.ele_0)),
-                //        key_mem[pe][(k + pe)].ele_0.ele_1);
+
+        // Calculate the position in the bitmap.
+        uint32_t chunk_idx = k >> LOG_PE_NUM;
+        uint32_t word_idx = chunk_idx / 32;
+        uint32_t bit_pos = chunk_idx % 32;
+
+        // Set the corresponding bits in the bitmaps.
+        if (all_valid_for_chunk) {
+            all_valid_bitmap[word_idx] |= (1U << bit_pos);
+        }
+        if (any_valid_for_chunk) {
+            any_valid_bitmap[word_idx] |= (1U << bit_pos);
+        }
+
+        // Update the tracker for the consecutive full chunk section.
+        if (in_consecutive_run) {
+            if (all_valid_for_chunk) {
+                last_consecutive_full_chunk = chunk_idx;
+            } else {
+                in_consecutive_run = false; // The consecutive run is broken.
             }
         }
-        if (data_cnt == 0) {
-            k = (k + 1);
-            continue;
+        if (any_valid_for_chunk) {
+            last_valid_chunk = chunk_idx;
         }
-        data_pack.end_pos = data_cnt;
-        o_0.write(data_pack);
-        k = (k + 1);
     }
-    // printf("Final drain finished\n");
-    //     while ((k < MAX_NUM)) {
-    // #pragma HLS PIPELINE
-    //         for (uint32_t pe = 0; pe < PE_NUM; pe++) {
-    // #pragma HLS UNROLL
-    //             if (key_mem[pe][(k + pe)].ele_1) {
-    //                 data_to_write[(start_pos % ((PE_NUM << 1)))] =
-    //                 key_mem[pe][(k + pe)].ele_0; data_cnt = (data_cnt + 1);
-    //                 start_pos = (start_pos + 1);
-    //             }
-    //         }
-    //         if ((data_cnt >= PE_NUM)) {
-    //             data_pack.end_pos = PE_NUM;
-    //             for (uint32_t i = 0; i < PE_NUM; i++) {
-    // #pragma HLS UNROLL
-    //                 data_pack.data[i] = data_to_write[(((start_pos -
-    //                 data_cnt) + i) % (PE_NUM << 1))];
-    //             }
-    //             o_0.write(data_pack);
-    //             data_cnt = (data_cnt - PE_NUM);
-    //         }
-    //         k = (k + PE_NUM);
-    //     }
+
+    // -- Data Draining Pass: Use bitmaps to process data efficiently --
+
+    // Initialize variables for data packing.
+    struct_sbu_19_t data_pack;
+    data_pack.end_flag = false;
+    struct_in_17_t data_to_write[((PE_NUM << 1))];
+#pragma HLS ARRAY_PARTITION variable = data_to_write complete dim = 0
+
+    // Calculate the boundary for the bulk processing loop.
+    uint32_t bulk_end_k = (last_consecutive_full_chunk + 1) * PE_NUM;
+
+// Stage 1: Bulk Processing Loop
+// This loop processes the section where all chunks are known to be fully valid.
+// It can achieve a higher throughput (lower II) by removing conditional checks.
+LOOP_REDUC_UNIT_DRAIN_BULK:
+    for (uint32_t k = 0; k < bulk_end_k; k += PE_NUM) {
+#pragma HLS PIPELINE
+        // Since all_valid is true, we can read from all PEs unconditionally.
+        for (uint32_t pe = 0; pe < PE_NUM; pe++) {
+#pragma HLS UNROLL
+            data_to_write[pe % (PE_NUM << 1)] = key_mem[pe][k + pe].ele_0;
+        }
+
+        // With PE_NUM items added, a full pack can be sent.
+        data_pack.end_pos = PE_NUM;
+        for (uint32_t i = 0; i < PE_NUM; i++) {
+#pragma HLS UNROLL
+            data_pack.data[i] = data_to_write[i % (PE_NUM << 1)];
+        }
+        o_0.write(data_pack);
+        printf("Reducer output full pack from bulk: keys %d to %d\n", k,
+               k + PE_NUM - 1);
+    }
+
+    uint32_t data_cnt = 0;
+    uint32_t start_pos = 0;
+
+// Stage 2: Sparse Processing Loop
+// This loop processes the remaining data, where chunks may be partially filled.
+// It uses the 'any_valid_bitmap' to skip empty chunks entirely.
+LOOP_REDUC_UNIT_DRAIN_SPARSE:
+    for (uint32_t k = bulk_end_k; k < MAX_NUM; k += PE_NUM) {
+#pragma HLS PIPELINE
+        // Check if there is any data in the current chunk to avoid unnecessary
+        // work.
+        uint32_t chunk_idx = k / PE_NUM;
+        uint32_t word_idx = chunk_idx / 32;
+        uint32_t bit_pos = chunk_idx % 32;
+        bool chunk_has_data = (any_valid_bitmap[word_idx] >> bit_pos) & 1U;
+
+        if (chunk_has_data) {
+            // Original logic with conditional checks for each PE.
+            for (uint32_t pe = 0; pe < PE_NUM; pe++) {
+#pragma HLS UNROLL
+                if (key_mem[pe][k + pe].ele_1) {
+                    data_to_write[start_pos % (PE_NUM << 1)] =
+                        key_mem[pe][k + pe].ele_0;
+                    data_cnt++;
+                    start_pos++;
+                }
+            }
+
+            // If enough data has been collected, pack and send it.
+            if (data_cnt >= PE_NUM) {
+                data_pack.end_pos = PE_NUM;
+                for (uint32_t i = 0; i < PE_NUM; i++) {
+#pragma HLS UNROLL
+                    data_pack.data[i] =
+                        data_to_write[((start_pos - data_cnt) + i) %
+                                      (PE_NUM << 1)];
+                }
+                o_0.write(data_pack);
+                data_cnt -= PE_NUM;
+            }
+        }
+        printf("Reducer processed chunk index: %d\n", chunk_idx);
+        if (chunk_idx == last_valid_chunk) {
+            break; // Exit if we've processed all valid chunks.
+        }
+    }
 
     // 5. Drain any remaining data and send final batch with end_flag
     // This part remains the same as the original logic.
     data_pack.end_flag = true;
-    data_pack.end_pos = 0;
-    // LOOP_REDUC_UNIT_FINAL_PACK_492:
-    // for (uint32_t i = 0; i < PE_NUM; i++) {
-    // #pragma HLS UNROLL
-    //     if (i < data_cnt) {
-    //         data_pack.data[i] = data_to_write[((start_pos - data_cnt) + i) %
-    //         (PE_NUM << 1)];
-    //     }
-    // }
+    data_pack.end_pos = data_cnt;
+LOOP_REDUC_UNIT_FINAL_PACK_492:
+    for (uint32_t i = 0; i < PE_NUM; i++) {
+#pragma HLS UNROLL
+        if (i < data_cnt) {
+            data_pack.data[i] =
+                data_to_write[((start_pos - data_cnt) + i) % (PE_NUM << 1)];
+        }
+    }
     o_0.write(data_pack);
 }
 
@@ -519,8 +602,7 @@ void Colle_65(hls::stream<struct_obu_10_t> &i_0,
               hls::stream<struct_sbu_12_t> &o_0) {
     struct_obu_10_t in_batch_i_0;
     struct_sbu_12_t out_batch_o_0;
-#pragma HLS dependence variable = out_batch_o_0 inter false direction = WAW
-#pragma HLS ARRAY_PARTITION variable = out_batch_o_0.data complete dim = 0
+#pragma HLS dependence variable = out_batch_o_0.data inter false
 LOOP_COLLECT_500:
     while (true) {
 #pragma HLS PIPELINE
@@ -541,7 +623,6 @@ LOOP_COLLECT_500:
             break;
         }
     }
-    // printf("Collect finished\n");
 }
 
 void Scatt_270(hls::stream<struct_sbu_12_t> &i_0,
@@ -863,9 +944,6 @@ LOOP_MEMORY_343_FILTER_715:
             current_req_id = req_batch.data[req_idx];
         } else if (req_idx < req_batch.end_pos) {
             current_req_id = req_batch.data[req_idx];
-        } else {
-            // No more requests to process
-            break;
         }
 
         // Manage property batch roll-over
@@ -895,22 +973,12 @@ void fused_op_338(hls::stream<struct_ibu_14_t> &i_0,
 LOOP_FUSED_OP_338_771:
     while (true) {
 #pragma HLS PIPELINE
-        // printf("DEBUG: Reading new batch\n");
-        // fflush(stdout);
         in_batch_i_0 = i_0.read();
-        // printf("DEBUG: Read batch with end_flag=%d, end_pos=%d\n",
-        //        in_batch_i_0.end_flag, in_batch_i_0.end_pos);
         in_batch_i_1 = i_1.read();
-        // printf("DEBUG: Read batch with end_flag=%d, end_pos=%d\n",
-        //        in_batch_i_1.end_flag, in_batch_i_1.end_pos);
         in_batch_i_2 = i_2.read();
-        // printf("DEBUG: Read batch with end_flag=%d, end_pos=%d\n",
-        //        in_batch_i_2.end_flag, in_batch_i_2.end_pos);
-        // fflush(stdout);
     LOOP_FUSED_OP_338_UNROLL_777:
         for (uint32_t i = 0; i < PE_NUM; i++) {
 #pragma HLS UNROLL
-
             // -- Inlining FusedOp fused_op_338 --
             // Inlining BinOp_164
             int32_t fused_temp_BinOp_164_o_0;
@@ -924,7 +992,6 @@ LOOP_FUSED_OP_338_771:
             // printf("DEBUG: lhs_164=%.2f, rhs_164=%.2f, min=%.2f\n",
             // (float)lhs_164, (float)rhs_164,
             // (float)temp_BinOp_164_o_0_ap_result);
-            // fflush(stdout);
             fused_temp_BinOp_164_o_0 =
                 *reinterpret_cast<int32_t *>(&temp_BinOp_164_o_0_ap_result);
             // Inlining Gathe_332
@@ -936,9 +1003,6 @@ LOOP_FUSED_OP_338_771:
         end_pos = in_batch_i_0.end_pos;
         out_batch_o_0.end_flag = end_flag;
         out_batch_o_0.end_pos = end_pos;
-        // printf("DEBUG: Writing batch with end_flag=%d, end_pos=%d\n",
-        //        out_batch_o_0.end_flag, out_batch_o_0.end_pos);
-        // fflush(stdout);
         o_0.write(out_batch_o_0);
         if (end_flag) {
             break;
@@ -1311,19 +1375,13 @@ static void graphyflow_dataflow(
     Scatt_346(stream_o_0_143, stream_o_0_348, stream_o_1_349);
     CopyC_350(stream_o_1_349, stream_o_0_352, stream_o_1_353);
 
-    // printf("DEBUG: Entering Memor_343 as UMC proxy...\n");
-    // fflush(stdout);
     // Memor_343 now acts as a proxy to the UMC
     Memor_343(stream_o_0_node_distance_344, stream_o_1_353,
               umc_all_node_distances_stream);
 
-    // printf("DEBUG: Exited Memor_343 UMC proxy.\n");
-    // fflush(stdout);
     // The final operation which writes to the output stream
     fused_op_338(stream_o_0_348, stream_o_0_node_distance_344, stream_o_0_352,
                  o_0_342_stream);
-    // printf("DEBUG: Exited fused_op_338.\n");
-    // fflush(stdout);
 }
 
 /**
