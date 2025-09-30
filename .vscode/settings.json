@@ -68,6 +68,7 @@
         "typeinfo": "cpp",
         "__nullptr": "cpp",
         "filesystem": "cpp",
-        "__tuple": "cpp"
+        "__tuple": "cpp",
+        "__node_handle": "cpp"
     }
 }

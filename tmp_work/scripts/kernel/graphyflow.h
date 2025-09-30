@@ -39,6 +39,11 @@ struct __attribute__((packed)) edge_descriptor_t {
     int32_t weight;
 };
 
+struct __attribute__((packed)) edge_descriptor_batch_t {
+    edge_descriptor_t edges[PE_NUM];
+    uint8_t end_pos;
+};
+
 // --- Struct Type Definitions ---
 struct __attribute__((packed)) struct_ebu_4_t {
     edge_id_t data[PE_NUM];
@@ -205,14 +210,14 @@ void Scatt_346(hls::stream<struct_sbu_19_t> &i_0,
  */
 void UnifiedMemoryController(
     const int *src_offsets, const edge_descriptor_t *edge_descriptors,
-    const int *node_distances, int num_nodes,
+    const int *node_distances, int num_nodes, int num_edges,
     hls::stream<edge_batch_t> &response_to_318,
     hls::stream<struct_ibu_14_t> &all_node_distances_to_343);
 
 static void graphyflow_dataflow(
     // UMC inputs
     const int *src_offsets, const edge_descriptor_t *edge_descriptors,
-    const int *node_distances, int num_nodes,
+    const int *node_distances, int num_nodes, int num_edges,
     // Final output stream
     hls::stream<struct_sbu_19_t> &o_0_342_stream);
 
@@ -228,7 +233,7 @@ static void graphyflow_dataflow(
  */
 extern "C" void graphyflow(const int *src_offsets,
                            const edge_descriptor_t *edge_descriptors,
-                           int *node_distances, int num_nodes,
+                           int *node_distances, int num_nodes, int num_edges,
                            KernelOutputBatch *o_0_342);
 
 #endif // __GRAPHYFLOW_GRAPHYFLOW_H__

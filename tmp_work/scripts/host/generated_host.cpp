@@ -23,6 +23,7 @@ static ap_fixed<32, 16> int32_bits_to_float(int32_t val) {
 
 void AlgorithmHost::setup_buffers(const GraphCSR &graph, int start_node) {
     m_num_vertices = graph.num_vertices;
+    m_num_edges = graph.num_edges;
     cl_int err;
 
     // --- PHASE 1: Prepare host-side CSR buffers ---
@@ -120,6 +121,7 @@ void AlgorithmHost::execute_kernel_iteration(cl::Event &event) {
     OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, d_edge_descriptors));
     OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, d_node_distances));
     OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, m_num_vertices));
+    OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, m_num_edges));
     OCL_CHECK(err,
               err = m_kernel.setArg(arg_idx++, d_o_0_342)); // Output buffer
 

@@ -25,6 +25,7 @@ class AlgorithmHost {
 
     // Algorithm state
     int m_num_vertices;
+    int m_num_edges;
 
     // Host-side memory buffers for CSR graph representation (aligned for DMA)
     std::vector<int, aligned_allocator<int>> h_src_offsets;
