@@ -15,6 +15,8 @@
 #define AXI_BUS_WIDTH 512
 #define DATA_TYPE_WIDTH 32
 #define NUM_WORDS_PER_BUS (AXI_BUS_WIDTH / DATA_TYPE_WIDTH)
+// NEED TO ASSERT NUM_WORDS_PER_BUS % PE_NUM == 0 IN PYTHON SCRIPT
+// AND AXI_BUS_WIDTH % DATA_TYPE_WIDTH == 0
 
 // --- Graph Type Definitions ---
 typedef uint16_t edge_id_t;
@@ -41,6 +43,10 @@ struct __attribute__((packed)) edge_descriptor_t {
 
 struct __attribute__((packed)) edge_des_burst_t {
     edge_descriptor_t edges[PE_NUM];
+};
+
+struct __attribute__((packed)) node_distance_burst_t {
+    int32_t data[PE_NUM];
 };
 
 struct __attribute__((packed)) edge_descriptor_batch_t {

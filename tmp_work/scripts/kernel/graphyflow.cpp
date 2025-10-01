@@ -1022,8 +1022,8 @@ LOOP_SCATTER_346_810:
  */
 static void
 node_property_loader(const int *node_distances_ddr,
-                     int32_t node_distance_cache_for_edge_loader[MAX_NUM],
-                     int32_t node_distance_cache_for_responder[MAX_NUM],
+                     hls::stream<node_distance_burst_t> &node_distance_burst_stream_0,
+                     hls::stream<node_distance_burst_t> &node_distance_burst_stream_1,
                      int num_nodes, hls::stream<bool> &load_finished_signal) {
     // Use ap_uint for wide bus access
     const ap_uint<AXI_BUS_WIDTH> *wide_bus_ptr =
@@ -1036,16 +1036,25 @@ LOOP_NODE_PROP_LOADER_848:
     for (int i = 0; i < num_wide_reads; ++i) {
 #pragma HLS PIPELINE II = 1
         ap_uint<AXI_BUS_WIDTH> wide_word = wide_bus_ptr[i];
+        node_distance_burst_t burst;
+        int batch_idx = i * NUM_WORDS_PER_BUS / PE_NUM;
     UNPACK_NODES_LOOP:
     LOOP_NODE_PROP_LOADER_UNPACK_852:
-        for (int j = 0; j < NUM_WORDS_PER_BUS; ++j) {
+        for (int j = 0; j < NUM_WORDS_PER_BUS; j += PE_NUM) {
 #pragma HLS UNROLL
-            int node_idx = i * NUM_WORDS_PER_BUS + j;
-            if (node_idx < num_nodes) {
-                node_distance_cache_for_edge_loader[node_idx] = wide_word.range(
-                    (j + 1) * DATA_TYPE_WIDTH - 1, j * DATA_TYPE_WIDTH);
-                node_distance_cache_for_responder[node_idx] = wide_word.range(
-                    (j + 1) * DATA_TYPE_WIDTH - 1, j * DATA_TYPE_WIDTH);
+            bool valid_pack = false;
+            for (int pe = 0; pe < PE_NUM; ++pe) {
+#pragma HLS UNROLL
+                int node_idx = i * NUM_WORDS_PER_BUS + j + pe;
+                if (node_idx < num_nodes) {
+                    burst.data[pe] = wide_word.range((j + pe + 1) * DATA_TYPE_WIDTH - 1,
+                                                     (j + pe) * DATA_TYPE_WIDTH);
+                    valid_pack |= true;
+                }
+            }
+            if (valid_pack){
+                node_distance_burst_stream_0.write(burst);
+                node_distance_burst_stream_1.write(burst);
             }
         }
     }
@@ -1107,7 +1116,8 @@ LOOP_EDGE_DESC_LOADER_872:
 static void edge_property_loader_and_dispatcher(
     const int *src_offsets_ddr,
     hls::stream<edge_descriptor_batch_t> &edge_stream,
-    const int32_t node_distance_cache[MAX_NUM], int num_nodes,
+    hls::stream<node_distance_burst_t> &node_distance_burst_stream,
+    int num_nodes,
     hls::stream<bool> &load_finished_signal,
     hls::stream<edge_batch_t> &response_stream) {
     // --- PHASE A: Wait for node properties to be fully cached on-chip ---
@@ -1139,38 +1149,51 @@ LOOP_EDGE_PROP_LOADER_CACHE_OFFSETS_884:
 #pragma HLS ARRAY_PARTITION variable = edge_batch.edges complete dim = 0
 #pragma HLS dependence variable = edge_batch inter false
 
-PROCESS_NODES_LOOP:
-LOOP_EDGE_PROP_LOADER_PROCESS_NODES_894:
-    for (int u = 0; u < num_nodes; ++u) {
-        int32_t src_dist = node_distance_cache[u];
-        int start_edge_idx = src_offsets_cache[u];
-        int end_edge_idx = src_offsets_cache[u + 1];
+    node_distance_burst_t node_distance_burst;
+#pragma HLS ARRAY_PARTITION variable = node_distance_burst.data complete dim = 0
+#pragma HLS dependence variable = node_distance_burst inter false
 
-    PROCESS_EDGES_LOOP:
-    LOOP_EDGE_PROP_LOADER_PROCESS_EDGES_900:
-        for (int e_idx = start_edge_idx; e_idx < end_edge_idx; ++e_idx) {
-#pragma HLS PIPELINE II = 1
-            if (edge_batch_pos == edge_batch.end_pos) {
-                edge_batch = edge_stream.read();
-                edge_batch_pos = 0;
+    int32_t max_node_burst_idx = (num_nodes + PE_NUM - 1) / PE_NUM;
+LOOP_EDGE_PROP_LOADER_MAX_BURST_891:
+    for (int node_burst_idx = 0; node_burst_idx < max_node_burst_idx;
+         ++node_burst_idx) {
+        node_distance_burst = node_distance_burst_stream.read();
+        int32_t base_idx = node_burst_idx << LOG_PE_NUM;
+    LOOP_EDGE_PROP_LOADER_PROCESS_NODES_894:
+        for (int pe_idx = 0; pe_idx < PE_NUM; ++pe_idx) {
+            int32_t u = base_idx + pe_idx;
+            if (u >= num_nodes) {
+                break;
             }
-            edge_descriptor_t edge = edge_batch.edges[edge_batch_pos++];
-            int batch_idx = current_batch.end_pos;
-            current_batch.weights[batch_idx] = edge.weight;
-            current_batch.src_distances[batch_idx] = src_dist;
-            current_batch.dst_ids[batch_idx] = edge.dst_id;
-            current_batch.end_pos++;
+            int32_t src_dist = node_distance_burst.data[pe_idx];
+            int start_edge_idx = src_offsets_cache[u];
+            int end_edge_idx = src_offsets_cache[u + 1];
 
-            // ap_fixed<32, 16> src_dist_fp = *reinterpret_cast<ap_fixed<32, 16>
-            // *>(&src_dist); ap_fixed<32, 16> weight_fp =
-            // *reinterpret_cast<ap_fixed<32, 16> *>(&edge.weight);
+        LOOP_EDGE_PROP_LOADER_PROCESS_EDGES_900:
+            for (int e_idx = start_edge_idx; e_idx < end_edge_idx; ++e_idx) {
+    #pragma HLS PIPELINE II = 1
+                if (edge_batch_pos == edge_batch.end_pos) {
+                    edge_batch = edge_stream.read();
+                    edge_batch_pos = 0;
+                }
+                edge_descriptor_t edge = edge_batch.edges[edge_batch_pos++];
+                int batch_idx = current_batch.end_pos;
+                current_batch.weights[batch_idx] = edge.weight;
+                current_batch.src_distances[batch_idx] = src_dist;
+                current_batch.dst_ids[batch_idx] = edge.dst_id;
+                current_batch.end_pos++;
 
-            // printf("DEBUG: Edge (src=%d, dst=%d, weight=%.2f) with src_dist=%.2f\n",
-            //        u, edge.dst_id, (float)weight_fp, (float)src_dist_fp);
+                // ap_fixed<32, 16> src_dist_fp = *reinterpret_cast<ap_fixed<32, 16>
+                // *>(&src_dist); ap_fixed<32, 16> weight_fp =
+                // *reinterpret_cast<ap_fixed<32, 16> *>(&edge.weight);
 
-            if (current_batch.end_pos == PE_NUM) {
-                response_stream.write(current_batch);
-                current_batch.end_pos = 0;
+                // printf("DEBUG: Edge (src=%d, dst=%d, weight=%.2f) with src_dist=%.2f\n",
+                //        u, edge.dst_id, (float)weight_fp, (float)src_dist_fp);
+
+                if (current_batch.end_pos == PE_NUM) {
+                    response_stream.write(current_batch);
+                    current_batch.end_pos = 0;
+                }
             }
         }
     }
@@ -1190,7 +1213,7 @@ LOOP_EDGE_PROP_LOADER_PROCESS_NODES_894:
  * @param response_stream     Stream of batched node distance responses.
  */
 static void
-node_property_responder(const int32_t node_distance_cache[MAX_NUM],
+node_property_responder(hls::stream<node_distance_burst_t> &node_distance_burst_stream,
                         int num_nodes,
                         hls::stream<struct_ibu_14_t> &all_distances_stream) {
     /**
@@ -1201,16 +1224,36 @@ node_property_responder(const int32_t node_distance_cache[MAX_NUM],
     dist_batch.end_pos = 0;
     dist_batch.end_flag = false;
 
-BROADCAST_LOOP:
-LOOP_NODE_PROP_RESPONDER_BROADCAST_936:
-    for (int i = 0; i < num_nodes; i++) {
+// BROADCAST_LOOP:
+// LOOP_NODE_PROP_RESPONDER_BROADCAST_936:
+//     for (int i = 0; i < num_nodes; i++) {
+// #pragma HLS PIPELINE II = 1
+//         dist_batch.data[dist_batch.end_pos] = node_distance_cache[i];
+//         dist_batch.end_pos++;
+//         if (dist_batch.end_pos == PE_NUM) {
+//             all_distances_stream.write(dist_batch);
+//             dist_batch.end_pos = 0;
+//         }
+//     }
+    int32_t max_node_burst_idx = (num_nodes + PE_NUM - 1) / PE_NUM;
+LOOP_NODE_PROP_RESPONDER_MAX_BURST_940:
+    for (int node_burst_idx = 0; node_burst_idx < max_node_burst_idx;
+         ++node_burst_idx) {
 #pragma HLS PIPELINE II = 1
-        dist_batch.data[dist_batch.end_pos] = node_distance_cache[i];
-        dist_batch.end_pos++;
-        if (dist_batch.end_pos == PE_NUM) {
-            all_distances_stream.write(dist_batch);
-            dist_batch.end_pos = 0;
+        node_distance_burst_t node_distance_burst = node_distance_burst_stream.read();
+        int32_t base_idx = node_burst_idx << LOG_PE_NUM;
+    LOOP_NODE_PROP_RESPONDER_PROCESS_NODES_943:
+        for (int32_t pe_idx = 0; pe_idx < PE_NUM; ++pe_idx) {
+#pragma HLS UNROLL
+            int32_t node_idx = base_idx + pe_idx;
+            if (node_idx >= num_nodes) {
+                break;
+            }
+            dist_batch.data[dist_batch.end_pos] = node_distance_burst.data[pe_idx];
+            dist_batch.end_pos++;
         }
+        all_distances_stream.write(dist_batch);
+        dist_batch.end_pos = 0;
     }
 
     // Send the final batch (can be partial) with the end flag set.
@@ -1228,12 +1271,16 @@ void UnifiedMemoryController(
 #pragma HLS DATAFLOW
 
     // On-chip caches
-    static int32_t node_distance_cache_for_edge_loader[MAX_NUM];
-#pragma HLS BIND_STORAGE variable = node_distance_cache_for_edge_loader type = \
-    RAM_T2P impl = URAM
-    static int32_t node_distance_cache_for_responder[MAX_NUM];
-#pragma HLS BIND_STORAGE variable = node_distance_cache_for_responder type =   \
-    RAM_T2P impl = URAM
+//     static int32_t node_distance_cache_for_edge_loader[MAX_NUM];
+// #pragma HLS BIND_STORAGE variable = node_distance_cache_for_edge_loader type = \
+//     RAM_T2P impl = URAM
+//     static int32_t node_distance_cache_for_responder[MAX_NUM];
+// #pragma HLS BIND_STORAGE variable = node_distance_cache_for_responder type =   \
+//     RAM_T2P impl = URAM
+    hls::stream<node_distance_burst_t> node_distance_burst_stream_0;
+#pragma HLS STREAM variable = node_distance_burst_stream_0 depth = 12
+    hls::stream<node_distance_burst_t> node_distance_burst_stream_1;
+#pragma HLS STREAM variable = node_distance_burst_stream_1 depth = 12
 
     hls::stream<edge_descriptor_batch_t> edge_stream;
 #pragma HLS STREAM variable = edge_stream depth = 12
@@ -1242,17 +1289,17 @@ void UnifiedMemoryController(
     static hls::stream<bool> node_loader_finished;
 #pragma HLS STREAM variable = node_loader_finished depth = 2
 
-    node_property_loader(node_distances, node_distance_cache_for_edge_loader,
-                         node_distance_cache_for_responder, num_nodes,
+    node_property_loader(node_distances, node_distance_burst_stream_0,
+                         node_distance_burst_stream_1, num_nodes,
                          node_loader_finished);
 
     edge_descriptor_loader(edge_des_bursts, edge_stream, num_edges);
 
     edge_property_loader_and_dispatcher(
-        src_offsets, edge_stream, node_distance_cache_for_edge_loader,
+        src_offsets, edge_stream, node_distance_burst_stream_0,
         num_nodes, node_loader_finished, response_to_318);
 
-    node_property_responder(node_distance_cache_for_responder, num_nodes,
+    node_property_responder(node_distance_burst_stream_1, num_nodes,
                             all_node_distances_to_343);
 }
 
