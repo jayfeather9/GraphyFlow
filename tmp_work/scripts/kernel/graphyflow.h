@@ -39,6 +39,10 @@ struct __attribute__((packed)) edge_descriptor_t {
     int32_t weight;
 };
 
+struct __attribute__((packed)) edge_des_burst_t {
+    edge_descriptor_t edges[PE_NUM];
+};
+
 struct __attribute__((packed)) edge_descriptor_batch_t {
     edge_descriptor_t edges[PE_NUM];
     uint8_t end_pos;
@@ -209,14 +213,14 @@ void Scatt_346(hls::stream<struct_sbu_19_t> &i_0,
  * @param response_to_343   Stream to send node distances.
  */
 void UnifiedMemoryController(
-    const int *src_offsets, const edge_descriptor_t *edge_descriptors,
+    const int *src_offsets, const edge_des_burst_t *edge_des_bursts,
     const int *node_distances, int num_nodes, int num_edges,
     hls::stream<edge_batch_t> &response_to_318,
     hls::stream<struct_ibu_14_t> &all_node_distances_to_343);
 
 static void graphyflow_dataflow(
-    // UMC inputs
-    const int *src_offsets, const edge_descriptor_t *edge_descriptors,
+    // UMC inputs from DDR
+    const int *src_offsets, const edge_des_burst_t *edge_des_bursts,
     const int *node_distances, int num_nodes, int num_edges,
     // Final output stream
     hls::stream<struct_sbu_19_t> &o_0_342_stream);
@@ -232,7 +236,7 @@ static void graphyflow_dataflow(
  * @param num_nodes         The total number of nodes in the graph.
  */
 extern "C" void graphyflow(const int *src_offsets,
-                           const edge_descriptor_t *edge_descriptors,
+                           const edge_des_burst_t *edge_des_bursts,
                            int *node_distances, int num_nodes, int num_edges,
                            KernelOutputBatch *o_0_342);
 

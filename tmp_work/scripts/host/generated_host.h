@@ -29,8 +29,8 @@ class AlgorithmHost {
 
     // Host-side memory buffers for CSR graph representation (aligned for DMA)
     std::vector<int, aligned_allocator<int>> h_src_offsets;
-    std::vector<edge_descriptor_t, aligned_allocator<edge_descriptor_t>>
-        h_edge_descriptors;
+    std::vector<edge_des_burst_t, aligned_allocator<edge_des_burst_t>>
+        h_edge_desc_bursts;
     std::vector<int, aligned_allocator<int>> h_node_distances;
 
     // Host-side buffer for kernel output
@@ -39,7 +39,7 @@ class AlgorithmHost {
 
     // Device-side OpenCL buffer handles
     cl::Buffer d_src_offsets;
-    cl::Buffer d_edge_descriptors;
+    cl::Buffer d_edge_desc_bursts;
     cl::Buffer d_node_distances;
     cl::Buffer d_o_0_342;
 };

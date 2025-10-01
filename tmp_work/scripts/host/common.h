@@ -11,6 +11,7 @@
 
 // A constant representing infinity for distance initialization
 const int INFINITY_DIST = 16384;
+const int PE_NUM = 8; // Number of Processing Elements
 
 typedef uint16_t node_id_t;
 typedef uint16_t edge_id_t;
@@ -19,6 +20,11 @@ typedef uint16_t edge_id_t;
 struct __attribute__((packed)) edge_descriptor_t {
     node_id_t dst_id;
     int32_t weight;
+};
+
+
+struct __attribute__((packed)) edge_des_burst_t {
+    edge_descriptor_t edges[PE_NUM];
 };
 
 // Structure to hold the graph in Compressed Sparse Row (CSR) format

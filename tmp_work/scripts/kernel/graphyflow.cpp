@@ -1064,11 +1064,10 @@ LOOP_NODE_PROP_LOADER_848:
  * @param num_edges       Total number of edges.
  */
 static void
-edge_descriptor_loader(const edge_descriptor_t *edge_descriptors,
+edge_descriptor_loader(const edge_des_burst_t *edge_des_bursts,
                        hls::stream<edge_descriptor_batch_t> &edge_stream,
                        int num_edges) {
-#pragma HLS dependence variable = edge_descriptors inter false
-#pragma HLS ARRAY_PARTITION variable = edge_descriptors cyclic factor = 8
+#pragma HLS dependence variable = edge_des_bursts inter false
     // read 8 edges at one time and push
     const int num_batches = (num_edges + PE_NUM - 1) / PE_NUM;
 LOAD_EDGES_LOOP:
@@ -1078,6 +1077,7 @@ LOOP_EDGE_DESC_LOADER_872:
         edge_descriptor_batch_t edge_batch;
 #pragma HLS ARRAY_PARTITION variable = edge_batch.edges complete dim = 0
 #pragma HLS dependence variable = edge_batch inter false direction = WAW
+        edge_des_burst_t burst = edge_des_bursts[i];
         edge_batch.end_pos = 0;
     LOAD_EDGE_BATCH_LOOP:
     LOOP_EDGE_DESC_LOADER_LOAD_BATCH_877:
@@ -1085,8 +1085,7 @@ LOOP_EDGE_DESC_LOADER_872:
 #pragma HLS UNROLL
             int edge_idx = i * PE_NUM + j;
             if (edge_idx < num_edges) {
-                edge_batch.edges[edge_batch.end_pos] =
-                    edge_descriptors[edge_idx];
+                edge_batch.edges[edge_batch.end_pos] = burst.edges[j];
                 edge_batch.end_pos++;
             }
         }
@@ -1166,8 +1165,7 @@ LOOP_EDGE_PROP_LOADER_PROCESS_NODES_894:
             // *>(&src_dist); ap_fixed<32, 16> weight_fp =
             // *reinterpret_cast<ap_fixed<32, 16> *>(&edge.weight);
 
-            // printf("DEBUG: Edge (src=%d, dst=%d, weight=%.2f) with
-            // src_dist=%.2f\n",
+            // printf("DEBUG: Edge (src=%d, dst=%d, weight=%.2f) with src_dist=%.2f\n",
             //        u, edge.dst_id, (float)weight_fp, (float)src_dist_fp);
 
             if (current_batch.end_pos == PE_NUM) {
@@ -1223,7 +1221,7 @@ LOOP_NODE_PROP_RESPONDER_BROADCAST_936:
 // --- PHASE 2.4: UMC Top-Level Dataflow Function ---
 
 void UnifiedMemoryController(
-    const int *src_offsets, const edge_descriptor_t *edge_descriptors,
+    const int *src_offsets, const edge_des_burst_t *edge_des_bursts,
     const int *node_distances, int num_nodes, int num_edges,
     hls::stream<edge_batch_t> &response_to_318,
     hls::stream<struct_ibu_14_t> &all_node_distances_to_343) {
@@ -1248,7 +1246,7 @@ void UnifiedMemoryController(
                          node_distance_cache_for_responder, num_nodes,
                          node_loader_finished);
 
-    edge_descriptor_loader(edge_descriptors, edge_stream, num_edges);
+    edge_descriptor_loader(edge_des_bursts, edge_stream, num_edges);
 
     edge_property_loader_and_dispatcher(
         src_offsets, edge_stream, node_distance_cache_for_edge_loader,
@@ -1299,7 +1297,7 @@ LOOP_STREAM_TO_MEM_1008:
 
 static void graphyflow_dataflow(
     // UMC inputs from DDR
-    const int *src_offsets, const edge_descriptor_t *edge_descriptors,
+    const int *src_offsets, const edge_des_burst_t *edge_des_bursts,
     const int *node_distances, int num_nodes, int num_edges,
     // Final output stream
     hls::stream<struct_sbu_19_t> &o_0_342_stream) {
@@ -1313,7 +1311,7 @@ static void graphyflow_dataflow(
 #pragma HLS STREAM variable = umc_all_node_distances_stream depth = 4
 
     // --- PHASE 2: Instantiate the Unified Memory Controller ---
-    UnifiedMemoryController(src_offsets, edge_descriptors, node_distances,
+    UnifiedMemoryController(src_offsets, edge_des_bursts, node_distances,
                             num_nodes, num_edges, umc_edge_resp_stream,
                             umc_all_node_distances_stream);
 
@@ -1425,7 +1423,7 @@ static void graphyflow_dataflow(
  * @param num_nodes         The total number of nodes in the graph.
  */
 extern "C" void graphyflow(
-    const int *src_offsets, const edge_descriptor_t *edge_descriptors,
+    const int *src_offsets, const edge_des_burst_t *edge_des_bursts,
     int *node_distances, int num_nodes, int num_edges,
     // Note: The original output 'o_0_342' is still needed for the final
     // results, but its role inside the kernel logic needs clarification.
@@ -1435,13 +1433,13 @@ extern "C" void graphyflow(
     // 'o_0_342' will produce the results as per the dataflow logic.
     KernelOutputBatch *o_0_342) {
 #pragma HLS INTERFACE m_axi port = src_offsets offset = slave bundle = gmem0
-#pragma HLS INTERFACE m_axi port = edge_descriptors offset = slave bundle =    \
+#pragma HLS INTERFACE m_axi port = edge_des_bursts offset = slave bundle =    \
     gmem1
 #pragma HLS INTERFACE m_axi port = node_distances offset = slave bundle = gmem2
 #pragma HLS INTERFACE m_axi port = o_0_342 offset = slave bundle = gmem3
 
 #pragma HLS INTERFACE s_axilite port = src_offsets
-#pragma HLS INTERFACE s_axilite port = edge_descriptors
+#pragma HLS INTERFACE s_axilite port = edge_des_bursts
 #pragma HLS INTERFACE s_axilite port = node_distances
 #pragma HLS INTERFACE s_axilite port = num_nodes
 #pragma HLS INTERFACE s_axilite port = num_edges
@@ -1455,7 +1453,7 @@ extern "C" void graphyflow(
 #pragma HLS DATAFLOW
 
     // The main dataflow function, now driven by the new CSR inputs.
-    graphyflow_dataflow(src_offsets, edge_descriptors, node_distances,
+    graphyflow_dataflow(src_offsets, edge_des_bursts, node_distances,
                         num_nodes, num_edges, o_0_342_internal_stream);
 
     // Writes the final result from the dataflow to global memory.

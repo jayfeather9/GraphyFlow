@@ -32,14 +32,15 @@ void AlgorithmHost::setup_buffers(const GraphCSR &graph, int start_node) {
     h_src_offsets.assign(graph.offsets.begin(), graph.offsets.end());
 
     // 1.2 Edge Descriptors (Destination and Weight)
-    h_edge_descriptors.resize(graph.num_edges);
+    int bursts_num = (m_num_edges + PE_NUM - 1) / PE_NUM;
+    h_edge_desc_bursts.resize(bursts_num);
     for (int i = 0; i < graph.num_edges; ++i) {
-        h_edge_descriptors[i].dst_id = graph.columns[i];
+        h_edge_desc_bursts[i / PE_NUM].edges[i % PE_NUM].dst_id = graph.columns[i];
         // The kernel expects ap_fixed<32,16> stored as int32_t.
         // We can treat host-side weights as floats for this conversion.
         ap_fixed<32, 16> weight_fp =
             static_cast<ap_fixed<32, 16>>(graph.weights[i]);
-        h_edge_descriptors[i].weight = float_to_int32_bits(weight_fp);
+        h_edge_desc_bursts[i / PE_NUM].edges[i % PE_NUM].weight = float_to_int32_bits(weight_fp);
     }
 
     // 1.3 Node Distances (initial state for Bellman-Ford)
@@ -61,10 +62,10 @@ void AlgorithmHost::setup_buffers(const GraphCSR &graph, int start_node) {
     h_src_offsets_ext.param = 0;
     h_src_offsets_ext.flags = (0 | XCL_MEM_TOPOLOGY);
 
-    cl_mem_ext_ptr_t h_edge_descriptors_ext;
-    h_edge_descriptors_ext.obj = h_edge_descriptors.data();
-    h_edge_descriptors_ext.param = 0;
-    h_edge_descriptors_ext.flags = (0 | XCL_MEM_TOPOLOGY);
+    cl_mem_ext_ptr_t h_edge_desc_bursts_ext;
+    h_edge_desc_bursts_ext.obj = h_edge_desc_bursts.data();
+    h_edge_desc_bursts_ext.param = 0;
+    h_edge_desc_bursts_ext.flags = (0 | XCL_MEM_TOPOLOGY);
 
     cl_mem_ext_ptr_t h_node_distances_ext;
     h_node_distances_ext.obj = h_node_distances.data();
@@ -83,11 +84,11 @@ void AlgorithmHost::setup_buffers(const GraphCSR &graph, int start_node) {
                  CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_USE_HOST_PTR,
                  h_src_offsets.size() * sizeof(int), &h_src_offsets_ext, &err));
     OCL_CHECK(
-        err, d_edge_descriptors = cl::Buffer(
+        err, d_edge_desc_bursts = cl::Buffer(
                  m_context,
                  CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_USE_HOST_PTR,
-                 h_edge_descriptors.size() * sizeof(edge_descriptor_t),
-                 &h_edge_descriptors_ext, &err));
+                 h_edge_desc_bursts.size() * sizeof(edge_des_burst_t),
+                 &h_edge_desc_bursts_ext, &err));
     OCL_CHECK(err, d_node_distances =
                        cl::Buffer(m_context,
                                   CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX |
@@ -108,7 +109,7 @@ void AlgorithmHost::transfer_data_to_fpga() {
     // The other buffers are read-only and can be transferred just once if
     // desired, but transferring them all simplifies the logic.
     OCL_CHECK(err, err = m_q.enqueueMigrateMemObjects(
-                       {d_src_offsets, d_edge_descriptors, d_node_distances},
+                       {d_src_offsets, d_edge_desc_bursts, d_node_distances},
                        0 /* 0 means from host to device */));
 }
 
@@ -118,7 +119,7 @@ void AlgorithmHost::execute_kernel_iteration(cl::Event &event) {
 
     // Set the new kernel arguments in the correct order
     OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, d_src_offsets));
-    OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, d_edge_descriptors));
+    OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, d_edge_desc_bursts));
     OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, d_node_distances));
     OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, m_num_vertices));
     OCL_CHECK(err, err = m_kernel.setArg(arg_idx++, m_num_edges));
