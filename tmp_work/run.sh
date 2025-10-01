@@ -15,7 +15,7 @@ fi
 echo "--- Running for target: $TARGET ---"
 
 # 1. 设置环境变量
-source /home/feiyang/set_env.sh
+source /home/feiyang/GraphyFlow/output/env.sh
 
 if [ "$TARGET" = "sw_emu" ] || [ "$TARGET" = "hw_emu" ]; then
     export XCL_EMULATION_MODE=$TARGET

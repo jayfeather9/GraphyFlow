@@ -309,12 +309,23 @@ LOOP_REDUC_PRE_PROCESS_268:
 void Reduc_141_unit_reduce(
     hls::stream<net_wrapper_kt_pair_141_t_t> (&kt_wrap_item)[PE_NUM],
     hls::stream<struct_sbu_19_t> &o_0) {
-    // 1. Stateful memories for PE_NUM parallel reduction units
-    struct_sb_38_t key_mem[PE_NUM][MAX_NUM >> LOG_PE_NUM];
-#pragma HLS dependence variable = key_mem inter false direction = WAW
-#pragma HLS dependence variable = key_mem inter false direction = RAW
-#pragma HLS BIND_STORAGE variable = key_mem type = RAM_2P impl = URAM
-#pragma HLS ARRAY_PARTITION variable = key_mem complete dim = 1
+    
+    // **KEY OPTIMIZATION**: Split struct into separate arrays
+    // Valid flags use BRAM (lower latency ~0.5-1ns vs URAM 2.189ns)
+    bool key_mem_valid[PE_NUM][MAX_NUM >> LOG_PE_NUM];
+#pragma HLS dependence variable = key_mem_valid inter false direction = WAW
+#pragma HLS dependence variable = key_mem_valid inter false direction = RAW
+#pragma HLS BIND_STORAGE variable = key_mem_valid type = RAM_2P impl = BRAM latency=1
+#pragma HLS ARRAY_PARTITION variable = key_mem_valid complete dim = 1
+
+    // Data uses URAM (large capacity)
+    struct_in_17_t key_mem_data[PE_NUM][MAX_NUM >> LOG_PE_NUM];
+#pragma HLS dependence variable = key_mem_data inter false direction = WAW
+#pragma HLS dependence variable = key_mem_data inter false direction = RAW
+#pragma HLS BIND_STORAGE variable = key_mem_data type = RAM_2P impl = URAM
+#pragma HLS ARRAY_PARTITION variable = key_mem_data complete dim = 1
+
+    // Buffers remain the same structure for simplicity
     struct_sb_38_t key_buffer[PE_NUM][L + 1];
 #pragma HLS ARRAY_PARTITION variable = key_buffer complete dim = 0
     uint32_t i_buffer[PE_NUM][L + 1];
@@ -323,7 +334,8 @@ void Reduc_141_unit_reduce(
 #pragma HLS ARRAY_PARTITION variable = tmp_key_buffer complete dim = 0
     uint32_t tmp_i_buffer[PE_NUM][L];
 #pragma HLS ARRAY_PARTITION variable = tmp_i_buffer complete dim = 0
-    // 2. Memory initialization for all PEs
+
+    // 2. Memory initialization
 LOOP_REDUC_UNIT_INIT_PE_361:
     for (uint32_t pe = 0; pe < PE_NUM; pe++) {
 #pragma HLS UNROLL
@@ -332,8 +344,19 @@ LOOP_REDUC_UNIT_INIT_PE_361:
             i_buffer[pe][i] = (MAX_NUM + 1);
         }
     }
-    memset(key_mem, 0, sizeof(key_mem));
-    // 3. Main processing loop for aggregation across PEs
+    
+    // Initialize separated memories
+LOOP_REDUC_UNIT_INIT_MEM:
+    for (uint32_t pe = 0; pe < PE_NUM; pe++) {
+        for (uint32_t i = 0; i < (MAX_NUM >> LOG_PE_NUM); i++) {
+#pragma HLS PIPELINE II=1
+            key_mem_valid[pe][i] = false;
+            key_mem_data[pe][i].ele_0 = 0;
+            key_mem_data[pe][i].ele_1 = 0;
+        }
+    }
+
+    // 3. Main processing loop
     bool end_flag;
     bool all_end_flags[PE_NUM];
 #pragma HLS ARRAY_PARTITION variable = all_end_flags complete dim = 0
@@ -342,12 +365,14 @@ LOOP_REDUC_UNIT_INIT_FLAGS_373:
 #pragma HLS UNROLL
         all_end_flags[i] = false;
     }
+
 LOOP_REDUC_UNIT_AGGREGATE_377:
     while (true) {
 #pragma HLS PIPELINE II = 1
         net_wrapper_kt_pair_141_t_t kt_elem;
         int32_t key_elem;
         struct_in_17_t transform_elem;
+        
     LOOP_REDUC_UNIT_AGGREGATE_PES_382:
         for (uint32_t i = 0; i < PE_NUM; i++) {
 #pragma HLS UNROLL
@@ -358,91 +383,72 @@ LOOP_REDUC_UNIT_AGGREGATE_377:
                 } else {
                     key_elem = kt_elem.data.key >> LOG_PE_NUM;
                     transform_elem = kt_elem.data.transform;
-                    // ap_fixed<32, 16> dist_fp =
-                    //     *reinterpret_cast<ap_fixed<32, 16> *>(
-                    //         &transform_elem.ele_0);
-                    // printf("Reducer input key: %d, value: %.2f, node: %d\n",
-                    //        key_elem,
-                    //        (float)dist_fp,
-                    //        transform_elem.ele_1);
-                    // -- Begin Reduction Logic --
-                    struct_sb_38_t old_ele;
-                    old_ele = key_mem[i][key_elem];
+                    
+                    // **OPTIMIZED**: Separate reads with different latencies
+                    bool old_valid = key_mem_valid[i][key_elem];
+                    struct_in_17_t old_data = key_mem_data[i][key_elem];
+                    
                 LOOP_REDUC_UNIT_SEARCH_BUFFER_401:
                     for (uint32_t i_search = 0; i_search < L + 1; i_search++) {
 #pragma HLS UNROLL
                         if ((key_elem == i_buffer[i][i_search])) {
-                            old_ele = key_buffer[i][i_search];
+                            old_valid = key_buffer[i][i_search].ele_1;
+                            old_data = key_buffer[i][i_search].ele_0;
                             break;
                         }
                     }
+                    
                 LOOP_REDUC_UNIT_MOVE_BUFFER_407:
                     for (uint32_t i_move = 0; i_move < L; i_move++) {
 #pragma HLS UNROLL
                         tmp_i_buffer[i][i_move] = i_buffer[i][i_move + 1];
                         tmp_key_buffer[i][i_move] = key_buffer[i][i_move + 1];
                     }
+                    
                 LOOP_REDUC_UNIT_UPDATE_BUFFER_412:
                     for (uint32_t i_update = 0; i_update < L; i_update++) {
 #pragma HLS UNROLL
                         i_buffer[i][i_update] = tmp_i_buffer[i][i_update];
                         key_buffer[i][i_update] = tmp_key_buffer[i][i_update];
                     }
-                    //                     for (uint32_t i_move = 0; i_move < L;
-                    //                     i_move++) {
-                    // #pragma HLS UNROLL
-                    //                         {
-                    //                             i_buffer[i][i_move] =
-                    //                             i_buffer[i][i_move + 1];
-                    //                             key_buffer[i][i_move] =
-                    //                             key_buffer[i][i_move + 1];
-                    //                         }
-                    //                     }
-                    struct_sb_38_t new_ele;
-                    if (old_ele.ele_1) {
-                        struct_in_17_t old_data;
-                        old_data = old_ele.ele_0;
-                        // -- Inline sub graph --
-                        // Inlining Scatt_256
-                        int32_t temp_Scatt_256_o_0;
-                        node_id_t temp_Scatt_256_o_1;
-                        temp_Scatt_256_o_0 = old_data.ele_0;
-                        temp_Scatt_256_o_1 = old_data.ele_1;
-                        // Inlining Scatt_260
-                        int32_t temp_Scatt_260_o_0;
-                        node_id_t temp_Scatt_260_o_1;
-                        temp_Scatt_260_o_0 = transform_elem.ele_0;
-                        // Inlining fused_op_250
-                        // -- Begin Nested Inline for FusedOp fused_op_250 --
-                        // Inlining BinOp_132
-                        int32_t fused_temp_BinOp_132_o_0;
+                    
+                    // **OPTIMIZED**: Compute new value
+                    struct_in_17_t new_data;
+                    bool new_valid = true;
+                    
+                    if (old_valid) {
+                        // Min reduction logic
+                        int32_t temp_Scatt_256_o_0 = old_data.ele_0;
+                        node_id_t temp_Scatt_256_o_1 = old_data.ele_1;
+                        int32_t temp_Scatt_260_o_0 = transform_elem.ele_0;
+                        
                         ap_fixed<32, 16> lhs_132 =
-                            *reinterpret_cast<ap_fixed<32, 16> *>(
-                                &temp_Scatt_256_o_0);
+                            *reinterpret_cast<ap_fixed<32, 16> *>(&temp_Scatt_256_o_0);
                         ap_fixed<32, 16> rhs_132 =
-                            *reinterpret_cast<ap_fixed<32, 16> *>(
-                                &temp_Scatt_260_o_0);
+                            *reinterpret_cast<ap_fixed<32, 16> *>(&temp_Scatt_260_o_0);
                         ap_fixed<32, 16> temp_BinOp_132_o_0_ap_result;
                         temp_BinOp_132_o_0_ap_result =
                             (((lhs_132) < (rhs_132) ? lhs_132 : rhs_132));
-                        fused_temp_BinOp_132_o_0 = *reinterpret_cast<int32_t *>(
+                        
+                        new_data.ele_0 = *reinterpret_cast<int32_t *>(
                             &temp_BinOp_132_o_0_ap_result);
-                        // Inlining Gathe_244
-                        new_ele.ele_0.ele_0 = fused_temp_BinOp_132_o_0;
-                        new_ele.ele_0.ele_1 = temp_Scatt_256_o_1;
-                        // -- End Nested Inline for FusedOp fused_op_250 --
-                        // -- Inline sub graph end --
-                        new_ele.ele_1 = true;
+                        new_data.ele_1 = temp_Scatt_256_o_1;
                     } else {
-                        new_ele.ele_1 = true;
-                        new_ele.ele_0 = transform_elem;
+                        new_data = transform_elem;
                     }
-                    key_mem[i][key_elem] = new_ele;
-                    key_buffer[i][L] = new_ele;
+                    
+                    // **OPTIMIZED**: Separate writes
+                    key_mem_valid[i][key_elem] = new_valid;
+                    key_mem_data[i][key_elem] = new_data;
+                    
+                    // Update buffer
+                    key_buffer[i][L].ele_1 = new_valid;
+                    key_buffer[i][L].ele_0 = new_data;
                     i_buffer[i][L] = key_elem;
                 }
             }
         }
+        
         end_flag = true;
     LOOP_REDUC_UNIT_CHECK_END_450:
         for (uint32_t i = 0; i < PE_NUM; i++) {
@@ -453,86 +459,64 @@ LOOP_REDUC_UNIT_AGGREGATE_377:
             break;
         }
     }
-    // printf("Reduction finished\n");
-
-    // 4. Final output loop to drain all PE memories with swapped loops
+    
+    // 4. Final drain loop (修改为使用分离的存储)
     struct_sbu_19_t data_pack;
 #pragma HLS ARRAY_PARTITION variable = data_pack.data complete dim = 0
-#pragma HLS dependence variable = data_pack inter false direction = WAW
-    struct_sbu_19_t tmp_data;
-#pragma HLS ARRAY_PARTITION variable = tmp_data.data complete dim = 0
-#pragma HLS dependence variable = tmp_data inter false direction = WAW
+    uint32_t write_positions[PE_NUM];
+#pragma HLS ARRAY_PARTITION variable = write_positions complete dim = 0
+    struct_in_17_t tmp_data[PE_NUM];
+#pragma HLS ARRAY_PARTITION variable = tmp_data complete dim = 0
     bool tmp_data_valid[PE_NUM];
 #pragma HLS ARRAY_PARTITION variable = tmp_data_valid complete dim = 0
-#pragma HLS dependence variable = tmp_data_valid inter false direction = WAW
+    
     data_pack.end_flag = false;
     uint32_t k = 0;
+    
 LOOP_REDUC_UNIT_FINAL_DRAIN_481:
     while ((k < (MAX_NUM >> LOG_PE_NUM))) {
 #pragma HLS PIPELINE II = 1
+        
+        // Load from separated arrays
         for (uint32_t pe = 0; pe < PE_NUM; pe++) {
 #pragma HLS UNROLL
-            tmp_data.data[pe] = key_mem[pe][k].ele_0;
-            tmp_data_valid[pe] = key_mem[pe][k].ele_1;
+            tmp_data[pe] = key_mem_data[pe][k];
+            tmp_data_valid[pe] = key_mem_valid[pe][k];
         }
-        uint32_t data_cnt = 0;
+        
+        // Parallel prefix sum
+        uint32_t prefix_sum = 0;
+        for (uint32_t pe = 0; pe < PE_NUM; pe++) {
+#pragma HLS UNROLL
+            write_positions[pe] = prefix_sum;
+            prefix_sum += (tmp_data_valid[pe] ? 1 : 0);
+        }
+        uint32_t data_cnt = prefix_sum;
+        
+        // Parallel write
         for (uint32_t pe = 0; pe < PE_NUM; pe++) {
 #pragma HLS UNROLL
             if (tmp_data_valid[pe]) {
-                data_pack.data[data_cnt] = tmp_data.data[pe];
-                data_cnt = (data_cnt + 1);
-                // printf("Reducer output key: %d, value: %.2f, node: %d\n",
-                //        key_mem[pe][(k + pe)].ele_0.ele_1,
-                //        (float)(*reinterpret_cast<ap_fixed<32, 16> *>(
-                //            &key_mem[pe][(k + pe)].ele_0.ele_0)),
-                //        key_mem[pe][(k + pe)].ele_0.ele_1);
+                data_pack.data[write_positions[pe]] = tmp_data[pe];
             }
         }
+        
         k = (k + 1);
+        
         if (data_cnt == 0) {
             continue;
         }
+        
         data_pack.end_pos = data_cnt;
         o_0.write(data_pack);
     }
-    // printf("Final drain finished\n");
-    //     while ((k < MAX_NUM)) {
-    // #pragma HLS PIPELINE
-    //         for (uint32_t pe = 0; pe < PE_NUM; pe++) {
-    // #pragma HLS UNROLL
-    //             if (key_mem[pe][(k + pe)].ele_1) {
-    //                 data_to_write[(start_pos % ((PE_NUM << 1)))] =
-    //                 key_mem[pe][(k + pe)].ele_0; data_cnt = (data_cnt + 1);
-    //                 start_pos = (start_pos + 1);
-    //             }
-    //         }
-    //         if ((data_cnt >= PE_NUM)) {
-    //             data_pack.end_pos = PE_NUM;
-    //             for (uint32_t i = 0; i < PE_NUM; i++) {
-    // #pragma HLS UNROLL
-    //                 data_pack.data[i] = data_to_write[(((start_pos -
-    //                 data_cnt) + i) % (PE_NUM << 1))];
-    //             }
-    //             o_0.write(data_pack);
-    //             data_cnt = (data_cnt - PE_NUM);
-    //         }
-    //         k = (k + PE_NUM);
-    //     }
-
-    // 5. Drain any remaining data and send final batch with end_flag
-    // This part remains the same as the original logic.
+    
+    // 5. Final batch
     data_pack.end_flag = true;
     data_pack.end_pos = 0;
-    // LOOP_REDUC_UNIT_FINAL_PACK_492:
-    // for (uint32_t i = 0; i < PE_NUM; i++) {
-    // #pragma HLS UNROLL
-    //     if (i < data_cnt) {
-    //         data_pack.data[i] = data_to_write[((start_pos - data_cnt) + i) %
-    //         (PE_NUM << 1)];
-    //     }
-    // }
     o_0.write(data_pack);
 }
+
 
 void Colle_65(hls::stream<struct_obu_10_t> &i_0,
               hls::stream<struct_sbu_12_t> &o_0) {
@@ -828,106 +812,72 @@ void Memor_343(hls::stream<struct_ibu_14_t> &o_0_node_distance,
      * Assumes both input streams are sorted by node ID.
      */
 
-    // Read the first batch of requests to start the process
-    struct_nbu_16_t req_batch, tmp_batch;
-    req_batch = i_0_node_id.read();
-    uint8_t cur_avail_cnt = 1;
-    int req_idx = 0;
-    node_id_t current_req_id = req_batch.data[req_idx];
-
-    // Prepare the output batch
+    struct_nbu_16_t in_node_id_batch;
+    struct_ibu_14_t in_dist_batch;
     struct_ibu_14_t out_dist_batch;
-    out_dist_batch.end_pos = 0;
+#pragma HLS ARRAY_PARTITION variable = in_node_id_batch.data complete dim = 0
+#pragma HLS ARRAY_PARTITION variable = in_dist_batch.data complete dim = 0
+#pragma HLS ARRAY_PARTITION variable = out_dist_batch.data complete dim = 0
 
-    int processed_props_in_batch = 0;
-    struct_ibu_14_t prop_batch = all_node_distances_from_umc.read();
-    int implicit_prop_id_base = 0;
+    // Initial reads
+    in_node_id_batch = i_0_node_id.read();
+    in_dist_batch = all_node_distances_from_umc.read();
 
-    node_id_t current_prop_id = 0;
+    uint32_t in_node_base_id = 0;
+    uint32_t id_idx = 0;
+    
+    // **CRITICAL OPTIMIZATION**: Use end_id instead of upper_bound to reduce arithmetic
+    // This changes: base + len - 1 (2 ops) → base + len (1 op)
+    uint32_t in_node_end_id = in_dist_batch.end_pos;
+#pragma HLS BIND_STORAGE variable=in_node_end_id type=register impl=srl
 
-FILTER_LOOP:
 LOOP_MEMORY_343_FILTER_715:
-    while (!req_batch.end_flag || req_idx < req_batch.end_pos) {
+    while (true) {
 #pragma HLS PIPELINE II = 1
-        if (cur_avail_cnt == 1) {
-            // Load the next request batch if available
-            if (!req_batch.end_flag) {
-                tmp_batch = i_0_node_id.read();
-                cur_avail_cnt++;
-            }
-        }
-
-        // node_id_t current_prop_id =
-        //     implicit_prop_id_base + processed_props_in_batch;
-        int32_t current_prop_dist = prop_batch.data[processed_props_in_batch];
-
-        if (current_prop_id < current_req_id) {
-            // This property is not requested, discard it and advance property
-            // stream
-            processed_props_in_batch++;
-            current_prop_id++;
-        } else if (current_prop_id == current_req_id) {
-            // Match found! Add to output and advance both streams
-            out_dist_batch.data[out_dist_batch.end_pos] = current_prop_dist;
-            out_dist_batch.end_pos++;
-
-            processed_props_in_batch++;
-            current_prop_id++;
-            req_idx++;
-        } else { // current_prop_id > current_req_id
-            // We've passed the requested ID. This implies the requested node
-            // has no corresponding property, which shouldn't happen in this
-            // design. We advance the request stream to the next ID.
-            req_idx++;
-        }
-
-        // Send output batch if it's equal to input size
-        if (out_dist_batch.end_pos == req_batch.end_pos) {
-            out_dist_batch.end_flag = false;
+#pragma HLS expression_balance
+        
+        uint32_t current_batch_len = in_node_id_batch.end_pos;
+        if (current_batch_len == 0 || id_idx >= current_batch_len) {
+            out_dist_batch.end_pos = id_idx;
             o_0_node_distance.write(out_dist_batch);
-            // printf("DEBUG: Sent output batch with end_pos=%d\n",
-            //        out_dist_batch.end_pos);
-            out_dist_batch.end_pos = 0;
+
+            if (in_node_id_batch.end_flag) {
+                break;
+            }
+
+            in_node_id_batch = i_0_node_id.read();
+            id_idx = 0;
+            continue;
         }
 
-        // Manage request batch roll-over
-        if (req_idx >= req_batch.end_pos && !req_batch.end_flag) {
-            req_batch = tmp_batch;
-            cur_avail_cnt--;
-            req_idx = 0;
-            current_req_id = req_batch.data[req_idx];
-            // printf("DEBUG: Loaded new request batch with end_flag=%d,
-            // end_pos=%d, first_id=%d\n",
-            //        req_batches[current_idx].end_flag,
-            //        req_batches[current_idx].end_pos, current_req_id);
-        } else if (req_idx < req_batch.end_pos) {
-            current_req_id = req_batch.data[req_idx];
-        } else {
-            // No more requests to process
-            break;
+        node_id_t target_node_id = in_node_id_batch.data[id_idx];
+        
+        // **OPTIMIZED**: Use >= with end_id instead of < with upper_bound
+        // Equivalent logic: (target >= end) ⇔ (target > end-1) ⇔ (upper_bound < target)
+        if (target_node_id >= in_node_end_id) {
+            // Update base to current end position
+            in_node_base_id = in_node_end_id;
+            in_dist_batch = all_node_distances_from_umc.read();
+            
+            // **OPTIMIZED**: Single add operation (reduced from base + len - 1)
+            uint32_t batch_len = in_dist_batch.end_pos;
+            in_node_end_id = in_node_base_id + batch_len;
+#pragma HLS BIND_OP variable=in_node_end_id op=add impl=fabric latency=0
+            continue;
         }
-
-        // Manage property batch roll-over
-        if (processed_props_in_batch == prop_batch.end_pos &&
-            !prop_batch.end_flag) {
-            implicit_prop_id_base += prop_batch.end_pos;
-            // current_prop_id += prop_batch.end_pos - processed_props_in_batch;
-            prop_batch = all_node_distances_from_umc.read();
-            processed_props_in_batch = 0;
-        }
+        
+        // Index calculation remains the same
+        out_dist_batch.data[id_idx] = in_dist_batch.data[target_node_id - in_node_base_id];
+        id_idx++;
     }
 
-    if (out_dist_batch.end_pos > 0) {
-        // Send any remaining output data
-        out_dist_batch.end_flag = false;
-        o_0_node_distance.write(out_dist_batch);
-    }
-
-    // Send the final output batch
-    out_dist_batch.end_flag = true;
-    out_dist_batch.end_pos = 0;
-    o_0_node_distance.write(out_dist_batch);
+    // Send the final output batch with end_flag
+    struct_ibu_14_t final_batch;
+    final_batch.end_flag = true;
+    final_batch.end_pos = 0;
+    o_0_node_distance.write(final_batch);
 }
+
 
 void fused_op_338(hls::stream<struct_ibu_14_t> &i_0,
                   hls::stream<struct_ibu_14_t> &i_1,
