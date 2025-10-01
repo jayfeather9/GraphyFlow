@@ -389,7 +389,7 @@ LOOP_REDUC_UNIT_AGGREGATE_377:
                     struct_in_17_t old_data = key_mem_data[i][key_elem];
                     
                 LOOP_REDUC_UNIT_SEARCH_BUFFER_401:
-                    for (uint32_t i_search = 0; i_search < L + 1; i_search++) {
+                    for (int32_t i_search = L; i_search >= 0; i_search--) {
 #pragma HLS UNROLL
                         if ((key_elem == i_buffer[i][i_search])) {
                             old_valid = key_buffer[i][i_search].ele_1;
@@ -426,15 +426,27 @@ LOOP_REDUC_UNIT_AGGREGATE_377:
                             *reinterpret_cast<ap_fixed<32, 16> *>(&temp_Scatt_256_o_0);
                         ap_fixed<32, 16> rhs_132 =
                             *reinterpret_cast<ap_fixed<32, 16> *>(&temp_Scatt_260_o_0);
+                        
+                            // printf("Reducer input old: %.2f, new: %.2f, node: %d\n",
+                            //        (float)lhs_132,
+                            //        (float)rhs_132,
+                            //           transform_elem.ele_1);
                         ap_fixed<32, 16> temp_BinOp_132_o_0_ap_result;
                         temp_BinOp_132_o_0_ap_result =
                             (((lhs_132) < (rhs_132) ? lhs_132 : rhs_132));
                         
+                            // printf("Reducer output min: %.2f\n",
+                                //    (float)temp_BinOp_132_o_0_ap_result);
+                                               
                         new_data.ele_0 = *reinterpret_cast<int32_t *>(
                             &temp_BinOp_132_o_0_ap_result);
                         new_data.ele_1 = temp_Scatt_256_o_1;
                     } else {
                         new_data = transform_elem;
+                        // printf("Reducer new entry: %.2f, node: %d\n",
+                        //        (float)(*reinterpret_cast<ap_fixed<32, 16> *>(
+                        //            &transform_elem.ele_0)),
+                        //        transform_elem.ele_1);
                     }
                     
                     // **OPTIMIZED**: Separate writes
@@ -492,20 +504,27 @@ LOOP_REDUC_UNIT_FINAL_DRAIN_481:
             prefix_sum += (tmp_data_valid[pe] ? 1 : 0);
         }
         uint32_t data_cnt = prefix_sum;
-        
+
+        if (data_cnt == 0) {
+            k = k + 1;
+            continue;
+        }
+        // if (data_cnt > 0) {
+        //     printf("Reducer final drain round %d, valid count: %d\n", k, data_cnt);
+        // }
         // Parallel write
         for (uint32_t pe = 0; pe < PE_NUM; pe++) {
 #pragma HLS UNROLL
             if (tmp_data_valid[pe]) {
                 data_pack.data[write_positions[pe]] = tmp_data[pe];
+                // printf("Reducer final output: %.2f, node: %d\n",
+                //        (float)(*reinterpret_cast<ap_fixed<32, 16> *>(
+                //            &tmp_data[pe].ele_0)),
+                //        tmp_data[pe].ele_1);
             }
         }
         
         k = (k + 1);
-        
-        if (data_cnt == 0) {
-            continue;
-        }
         
         data_pack.end_pos = data_cnt;
         o_0.write(data_pack);
@@ -763,6 +782,12 @@ LOOP_MEMORY_318_641:
             weight_batch.data[i] = in_batch.weights[i];
             src_dist_batch.data[i] = in_batch.src_distances[i];
             dst_id_batch.data[i] = in_batch.dst_ids[i];
+            // printf("Edge weight: %.2f, src dist: %.2f, dst id: %d\n",
+            //        (float)reinterpret_cast<ap_fixed<32, 16> *>(
+            //            &in_batch.weights[i])[0],
+            //        (float)reinterpret_cast<ap_fixed<32, 16> *>(
+            //            &in_batch.src_distances[i])[0],
+            //        in_batch.dst_ids[i]);
         }
 
         o_0_edge_weight.write(weight_batch);
@@ -819,6 +844,8 @@ void Memor_343(hls::stream<struct_ibu_14_t> &o_0_node_distance,
 #pragma HLS ARRAY_PARTITION variable = in_dist_batch.data complete dim = 0
 #pragma HLS ARRAY_PARTITION variable = out_dist_batch.data complete dim = 0
 
+    out_dist_batch.end_flag = false;
+
     // Initial reads
     in_node_id_batch = i_0_node_id.read();
     in_dist_batch = all_node_distances_from_umc.read();
@@ -838,9 +865,10 @@ LOOP_MEMORY_343_FILTER_715:
         
         uint32_t current_batch_len = in_node_id_batch.end_pos;
         if (current_batch_len == 0 || id_idx >= current_batch_len) {
-            out_dist_batch.end_pos = id_idx;
-            o_0_node_distance.write(out_dist_batch);
-
+            if (id_idx > 0){
+                out_dist_batch.end_pos = id_idx;
+                o_0_node_distance.write(out_dist_batch);
+            }
             if (in_node_id_batch.end_flag) {
                 break;
             }
@@ -876,6 +904,10 @@ LOOP_MEMORY_343_FILTER_715:
     final_batch.end_flag = true;
     final_batch.end_pos = 0;
     o_0_node_distance.write(final_batch);
+
+    while (in_dist_batch.end_flag == false) {
+        in_dist_batch = all_node_distances_from_umc.read();
+    }
 }
 
 
@@ -918,7 +950,8 @@ LOOP_FUSED_OP_338_771:
             ap_fixed<32, 16> temp_BinOp_164_o_0_ap_result;
             temp_BinOp_164_o_0_ap_result =
                 (((lhs_164) < (rhs_164) ? lhs_164 : rhs_164));
-            // printf("DEBUG: lhs_164=%.2f, rhs_164=%.2f, min=%.2f\n",
+            // printf("DEBUG: node_id=%d lhs_164=%.2f, rhs_164=%.2f, min=%.2f\n",
+            //     in_batch_i_2.data[i],
             // (float)lhs_164, (float)rhs_164,
             // (float)temp_BinOp_164_o_0_ap_result);
             // fflush(stdout);

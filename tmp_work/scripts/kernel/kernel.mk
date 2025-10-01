@@ -20,10 +20,10 @@ LDFLAGS_VPP += -I$(XILINX_VITIS)/include
 
 $(KERNEL_XO): $(KERNEL_SRC)
 	@mkdir -p $(XCLBIN_DIR)
-	$(VPP) -c -t $(TARGET) --platform $(DEVICE) $(CLFLAGS) -o $@ $<
+	$(VPP) -c -t $(TARGET) --platform $(DEVICE) --freqhz $(FREQ_HZ) $(CLFLAGS) -o $@ $<
 
 $(XCLBIN_FILE): $(KERNEL_XO)
-	$(VPP) -l -t $(TARGET) --platform $(DEVICE) $(LDFLAGS_VPP) -o $@ $<
+	$(VPP) -l -t $(TARGET) --platform $(DEVICE) --freqhz $(FREQ_HZ) $(LDFLAGS_VPP) -o $@ $<
 
 emconfig:
 	emconfigutil --platform $(DEVICE) --od .
