@@ -23,7 +23,7 @@ $(KERNEL_XO): $(KERNEL_SRC)
 	$(VPP) -c -t $(TARGET) --platform $(DEVICE) --freqhz $(FREQ_HZ) $(CLFLAGS) -o $@ $<
 
 $(XCLBIN_FILE): $(KERNEL_XO)
-	$(VPP) -l -t $(TARGET) --platform $(DEVICE) --freqhz $(FREQ_HZ) $(LDFLAGS_VPP) -o $@ $<
+	$(VPP) -l -t $(TARGET) --platform $(DEVICE) $(LDFLAGS_VPP) -o $@ $<
 
 emconfig:
 	emconfigutil --platform $(DEVICE) --od .

@@ -4,7 +4,7 @@ EXECUTABLE := graphyflow_host
 
 TARGET ?= sw_emu
 DEVICE := /opt/xilinx/platforms/xilinx_u55c_gen3x16_xdma_3_202210_1/xilinx_u55c_gen3x16_xdma_3_202210_1.xpfm
-FREQ_HZ = 400000000
+FREQ_HZ = 390000000
 
 .PHONY: all clean cleanall exe check
 

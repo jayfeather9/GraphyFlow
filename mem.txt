@@ -10,3 +10,5 @@ collect要加dependence pragma
 想一想paper里用到一些fancy的名字
 
 再看看report，提高一下Estimated Fmax:
+
+看看我电脑上的ReGraph编译报告的频率，和他们一样就行
