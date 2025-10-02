@@ -1054,6 +1054,34 @@ LOOP_NODE_PROP_LOADER_848:
             }
             if (sent_pack_cnt < total_pack_cnt) {
                 node_distance_burst_stream_0.write(burst);
+                // node_distance_burst_stream_1.write(burst);
+                sent_pack_cnt++;
+            }
+        }
+    }
+
+    sent_pack_cnt = 0;
+    LOAD_NODES_LOOP_2:
+LOOP_NODE_PROP_LOADER_848_2:
+    for (int i = 0; i < num_wide_reads; ++i) {
+#pragma HLS PIPELINE II = 1
+        ap_uint<AXI_BUS_WIDTH> wide_word = wide_bus_ptr[i];
+        node_distance_burst_t burst;
+        int batch_idx = i * NUM_WORDS_PER_BUS / PE_NUM;
+    UNPACK_NODES_LOOP_2:
+    LOOP_NODE_PROP_LOADER_UNPACK_852_2:
+        for (int j = 0; j < NUM_WORDS_PER_BUS; j += PE_NUM) {
+#pragma HLS UNROLL
+            for (int pe = 0; pe < PE_NUM; ++pe) {
+#pragma HLS UNROLL
+                int node_idx = i * NUM_WORDS_PER_BUS + j + pe;
+                if (node_idx < num_nodes) {
+                    burst.data[pe] = wide_word.range((j + pe + 1) * DATA_TYPE_WIDTH - 1,
+                                                     (j + pe) * DATA_TYPE_WIDTH);
+                }
+            }
+            if (sent_pack_cnt < total_pack_cnt) {
+                // node_distance_burst_stream_0.write(burst);
                 node_distance_burst_stream_1.write(burst);
                 sent_pack_cnt++;
             }
