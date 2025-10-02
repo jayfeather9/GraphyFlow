@@ -1024,7 +1024,7 @@ static void
 node_property_loader(const int *node_distances_ddr,
                      hls::stream<node_distance_burst_t> &node_distance_burst_stream_0,
                      hls::stream<node_distance_burst_t> &node_distance_burst_stream_1,
-                     int num_nodes, hls::stream<bool> &load_finished_signal) {
+                     int num_nodes) {
     // Use ap_uint for wide bus access
     const ap_uint<AXI_BUS_WIDTH> *wide_bus_ptr =
         reinterpret_cast<const ap_uint<AXI_BUS_WIDTH> *>(node_distances_ddr);
@@ -1059,7 +1059,6 @@ LOOP_NODE_PROP_LOADER_848:
         }
     }
 
-    load_finished_signal.write(true);
 }
 
 // --- PHASE 2.2: UMC Sub-module: Edge Loader and Dispatcher ---
@@ -1102,36 +1101,42 @@ LOOP_EDGE_DESC_LOADER_872:
     }
 }
 
+static void src_offset_loader(const int *src_offsets_ddr,
+                               hls::stream<int> &src_offsets_stream,
+                               int num_nodes) {
+#pragma HLS dependence variable = src_offsets_ddr inter false
+    // read src offsets and push to stream
+LOAD_SRC_OFFSETS_LOOP:
+LOOP_SRC_OFFSET_LOADER_881:
+    for (int i = 0; i <= num_nodes; ++i) {
+#pragma HLS PIPELINE II = 1
+        src_offsets_stream.write(src_offsets_ddr[i]);
+    }
+}
+
 /**
  * @brief Reads CSR graph data, fetches corresponding source node distances from
  * the URAM cache, and serves batches of processed edges to downstream modules.
- *
- * @param src_offsets_ddr     DDR pointer for CSR offsets.
- * @param edge_descriptors_ddr DDR pointer for edge data.
- * @param node_distance_cache On-chip URAM cache for node distances (read-only).
- * @param num_nodes           Total number of nodes.
- * @param load_finished_signal Stream to wait for node loading completion.
- * @param response_stream     Stream to send processed edge batches.
  */
 static void edge_property_loader_and_dispatcher(
-    const int *src_offsets_ddr,
+    hls::stream<int> &src_offsets_cache_stream,
     hls::stream<edge_descriptor_batch_t> &edge_stream,
     hls::stream<node_distance_burst_t> &node_distance_burst_stream,
     int num_nodes,
-    hls::stream<bool> &load_finished_signal,
     hls::stream<edge_batch_t> &response_stream) {
-    // --- PHASE A: Wait for node properties to be fully cached on-chip ---
-    (void)load_finished_signal.read();
+    // // --- PHASE A: Wait for node properties to be fully cached on-chip ---
+    // (void)load_finished_signal.read();
     // --- PHASE B: Cache src_offsets on-chip for fast access ---
-    int src_offsets_cache[MAX_NUM + 1];
-#pragma HLS BIND_STORAGE variable = src_offsets_cache type = RAM_1P impl = BRAM
+//     int src_offsets_cache[MAX_NUM + 1];
+// #pragma HLS BIND_STORAGE variable = src_offsets_cache type = RAM_1P impl = BRAM
 
-CACHE_OFFSETS_LOOP:
-LOOP_EDGE_PROP_LOADER_CACHE_OFFSETS_884:
-    for (int i = 0; i <= num_nodes; ++i) {
-#pragma HLS PIPELINE II = 1
-        src_offsets_cache[i] = src_offsets_ddr[i];
-    }
+// CACHE_OFFSETS_LOOP:
+// LOOP_EDGE_PROP_LOADER_CACHE_OFFSETS_884:
+//     for (int i = 0; i <= num_nodes; ++i) {
+// #pragma HLS PIPELINE II = 1
+//         // src_offsets_cache[i] = src_offsets_ddr[i];
+//         src_offsets_cache_stream.write(src_offsets_ddr[i]);
+//     }
 
     // --- PHASE C: Process and dispatch all edges unconditionally ---
     edge_batch_t current_batch;
@@ -1153,6 +1158,9 @@ LOOP_EDGE_PROP_LOADER_CACHE_OFFSETS_884:
 #pragma HLS ARRAY_PARTITION variable = node_distance_burst.data complete dim = 0
 #pragma HLS dependence variable = node_distance_burst inter false
 
+    int start_edge_idx, end_edge_idx;
+    start_edge_idx = src_offsets_cache_stream.read();
+
     int32_t max_node_burst_idx = (num_nodes + PE_NUM - 1) / PE_NUM;
 LOOP_EDGE_PROP_LOADER_MAX_BURST_891:
     for (int node_burst_idx = 0; node_burst_idx < max_node_burst_idx;
@@ -1166,8 +1174,9 @@ LOOP_EDGE_PROP_LOADER_MAX_BURST_891:
                 break;
             }
             int32_t src_dist = node_distance_burst.data[pe_idx];
-            int start_edge_idx = src_offsets_cache[u];
-            int end_edge_idx = src_offsets_cache[u + 1];
+            // int start_edge_idx = src_offsets_cache[u];
+            // int end_edge_idx = src_offsets_cache[u + 1];
+            end_edge_idx = src_offsets_cache_stream.read();
 
         LOOP_EDGE_PROP_LOADER_PROCESS_EDGES_900:
             for (int e_idx = start_edge_idx; e_idx < end_edge_idx; ++e_idx) {
@@ -1195,6 +1204,8 @@ LOOP_EDGE_PROP_LOADER_MAX_BURST_891:
                     current_batch.end_pos = 0;
                 }
             }
+
+            start_edge_idx = end_edge_idx;
         }
     }
 
@@ -1285,19 +1296,23 @@ void UnifiedMemoryController(
     hls::stream<edge_descriptor_batch_t> edge_stream;
 #pragma HLS STREAM variable = edge_stream depth = 12
 
+    hls::stream<int> src_offsets_cache_stream;
+#pragma HLS STREAM variable = src_offsets_cache_stream depth = 32
+
     // Internal Signal Stream
-    static hls::stream<bool> node_loader_finished;
-#pragma HLS STREAM variable = node_loader_finished depth = 2
+//     static hls::stream<bool> node_loader_finished;
+// #pragma HLS STREAM variable = node_loader_finished depth = 2
+
+    src_offset_loader(src_offsets, src_offsets_cache_stream, num_nodes);
 
     node_property_loader(node_distances, node_distance_burst_stream_0,
-                         node_distance_burst_stream_1, num_nodes,
-                         node_loader_finished);
+                         node_distance_burst_stream_1, num_nodes);
 
     edge_descriptor_loader(edge_des_bursts, edge_stream, num_edges);
 
     edge_property_loader_and_dispatcher(
-        src_offsets, edge_stream, node_distance_burst_stream_0,
-        num_nodes, node_loader_finished, response_to_318);
+        src_offsets_cache_stream, edge_stream, node_distance_burst_stream_0,
+        num_nodes, response_to_318);
 
     node_property_responder(node_distance_burst_stream_1, num_nodes,
                             all_node_distances_to_343);
