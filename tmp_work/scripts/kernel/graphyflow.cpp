@@ -1030,6 +1030,8 @@ node_property_loader(const int *node_distances_ddr,
         reinterpret_cast<const ap_uint<AXI_BUS_WIDTH> *>(node_distances_ddr);
     const int num_wide_reads =
         (num_nodes + NUM_WORDS_PER_BUS - 1) / NUM_WORDS_PER_BUS;
+    int sent_pack_cnt = 0;
+    int total_pack_cnt = (num_nodes + PE_NUM - 1) / PE_NUM;
 
 LOAD_NODES_LOOP:
 LOOP_NODE_PROP_LOADER_848:
@@ -1042,19 +1044,18 @@ LOOP_NODE_PROP_LOADER_848:
     LOOP_NODE_PROP_LOADER_UNPACK_852:
         for (int j = 0; j < NUM_WORDS_PER_BUS; j += PE_NUM) {
 #pragma HLS UNROLL
-            bool valid_pack = false;
             for (int pe = 0; pe < PE_NUM; ++pe) {
 #pragma HLS UNROLL
                 int node_idx = i * NUM_WORDS_PER_BUS + j + pe;
                 if (node_idx < num_nodes) {
                     burst.data[pe] = wide_word.range((j + pe + 1) * DATA_TYPE_WIDTH - 1,
                                                      (j + pe) * DATA_TYPE_WIDTH);
-                    valid_pack |= true;
                 }
             }
-            if (valid_pack){
+            if (sent_pack_cnt < total_pack_cnt) {
                 node_distance_burst_stream_0.write(burst);
                 node_distance_burst_stream_1.write(burst);
+                sent_pack_cnt++;
             }
         }
     }
@@ -1104,13 +1105,29 @@ LOOP_EDGE_DESC_LOADER_872:
 static void src_offset_loader(const int *src_offsets_ddr,
                                hls::stream<int> &src_offsets_stream,
                                int num_nodes) {
-#pragma HLS dependence variable = src_offsets_ddr inter false
+    const ap_uint<AXI_BUS_WIDTH> *wide_bus_ptr =
+        reinterpret_cast<const ap_uint<AXI_BUS_WIDTH> *>(src_offsets_ddr);
+    const int num_wide_reads =
+        (num_nodes + 1 + NUM_WORDS_PER_BUS - 1) / NUM_WORDS_PER_BUS;
+#pragma HLS dependence variable = wide_bus_ptr inter false
+
     // read src offsets and push to stream
 LOAD_SRC_OFFSETS_LOOP:
 LOOP_SRC_OFFSET_LOADER_881:
-    for (int i = 0; i <= num_nodes; ++i) {
+    for (int i = 0; i <= num_wide_reads; ++i) {
 #pragma HLS PIPELINE II = 1
-        src_offsets_stream.write(src_offsets_ddr[i]);
+        ap_uint<AXI_BUS_WIDTH> wide_word = wide_bus_ptr[i];
+        // src_offsets_stream.write(src_offsets_ddr[i]);
+        for (int j = 0; j < NUM_WORDS_PER_BUS; j++) {
+#pragma HLS UNROLL
+            int node_idx = i * NUM_WORDS_PER_BUS + j;
+            int cur_data;
+            if (node_idx <= num_nodes) {
+                cur_data = wide_word.range((j + 1) * DATA_TYPE_WIDTH - 1,
+                                           j * DATA_TYPE_WIDTH);
+                src_offsets_stream.write(cur_data);
+            }
+        }
     }
 }
 
