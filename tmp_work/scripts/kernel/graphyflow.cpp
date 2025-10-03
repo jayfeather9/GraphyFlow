@@ -1374,28 +1374,70 @@ void UnifiedMemoryController(
 //     }
 // }
 
-static void stream_to_mem_func(hls::stream<struct_sbu_19_t> &in_o_0_342_stream,
-                               KernelOutputBatch *out_o_0_342) {
-    int32_t i = 0;
-LOOP_STREAM_TO_MEM_1008:
+// static void stream_to_mem_func(hls::stream<struct_sbu_19_t> &in_o_0_342_stream,
+//                                KernelOutputBatch *out_o_0_342) {
+//     int32_t i = 0;
+// LOOP_STREAM_TO_MEM_1008:
+//     while (true) {
+// #pragma HLS PIPELINE
+//         struct_sbu_19_t internal_batch;
+//         internal_batch = in_o_0_342_stream.read();
+//         KernelOutputBatch output_batch;
+//     LOOP_STREAM_TO_MEM_UNROLL_1013:
+//         for (uint32_t k = 0; k < PE_NUM; k++) {
+// #pragma HLS UNROLL
+//             ap_fixed<32, 16> final_dist_fp;
+//             final_dist_fp = *reinterpret_cast<ap_fixed<32, 16> *>(
+//                 &internal_batch.data[k].ele_0);
+//             output_batch.data[k].distance = (float)final_dist_fp;
+//             output_batch.data[k].id = internal_batch.data[k].ele_1;
+//         }
+//         output_batch.end_flag = internal_batch.end_flag;
+//         output_batch.end_pos = internal_batch.end_pos;
+//         out_o_0_342[i] = output_batch;
+//         if (out_o_0_342[i].end_flag) {
+//             break;
+//         }
+//         i = (i + 1);
+//     }
+// }
+
+static void final_convert(
+    hls::stream<struct_sbu_19_t> &in_stream,
+    hls::stream<KernelOutputBatch> &converted_stream) {
+LOOP_FINAL_CONVERT_1033:
     while (true) {
-#pragma HLS PIPELINE
-        struct_sbu_19_t internal_batch;
-        internal_batch = in_o_0_342_stream.read();
-        KernelOutputBatch output_batch;
-    LOOP_STREAM_TO_MEM_UNROLL_1013:
-        for (uint32_t k = 0; k < PE_NUM; k++) {
+#pragma HLS PIPELINE II=1
+        struct_sbu_19_t in_batch = in_stream.read();
+        KernelOutputBatch out_batch;
+        out_batch.end_flag = in_batch.end_flag;
+        out_batch.end_pos = in_batch.end_pos;
+    LOOP_FINAL_CONVERT_UNROLL_1038:
+        for (int i = 0; i < PE_NUM; ++i) {
 #pragma HLS UNROLL
-            ap_fixed<32, 16> final_dist_fp;
-            final_dist_fp = *reinterpret_cast<ap_fixed<32, 16> *>(
-                &internal_batch.data[k].ele_0);
-            output_batch.data[k].distance = (float)final_dist_fp;
-            output_batch.data[k].id = internal_batch.data[k].ele_1;
+            ap_fixed<32, 16> dist_fp =
+                *reinterpret_cast<ap_fixed<32, 16> *>(&in_batch.data[i].ele_0);
+            out_batch.data[i].distance = (float)dist_fp;
+            out_batch.data[i].id = in_batch.data[i].ele_1;
         }
-        output_batch.end_flag = internal_batch.end_flag;
-        output_batch.end_pos = internal_batch.end_pos;
-        out_o_0_342[i] = output_batch;
-        if (out_o_0_342[i].end_flag) {
+        converted_stream.write(out_batch);
+        if (in_batch.end_flag) {
+            break;
+        }
+    }
+}
+
+static void final_write(
+    hls::stream<KernelOutputBatch> &converted_stream,
+    KernelOutputBatch *out_o_0_342) {
+    #pragma HLS dependence variable=out_o_0_342 inter false
+    int32_t i = 0;
+LOOP_FINAL_WRITE_1055:
+    while (true) {
+#pragma HLS PIPELINE II=1
+        KernelOutputBatch out_batch = converted_stream.read();
+        out_o_0_342[i] = out_batch;
+        if (out_batch.end_flag) {
             break;
         }
         i = (i + 1);
@@ -1555,7 +1597,7 @@ extern "C" void graphyflow(
 
     // This stream connects the dataflow output to the memory writer.
     static hls::stream<struct_sbu_19_t> o_0_342_internal_stream;
-#pragma HLS STREAM variable = o_0_342_internal_stream depth = 4
+#pragma HLS STREAM variable = o_0_342_internal_stream depth = 32
 
 #pragma HLS DATAFLOW
 
@@ -1564,5 +1606,9 @@ extern "C" void graphyflow(
                         num_nodes, num_edges, o_0_342_internal_stream);
 
     // Writes the final result from the dataflow to global memory.
-    stream_to_mem_func(o_0_342_internal_stream, o_0_342);
+    // stream_to_mem_func(o_0_342_internal_stream, o_0_342);
+    hls::stream<KernelOutputBatch> converted_stream;
+#pragma HLS STREAM variable = converted_stream depth = 32
+    final_convert(o_0_342_internal_stream, converted_stream);
+    final_write(converted_stream, o_0_342);
 }

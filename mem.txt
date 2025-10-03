@@ -13,4 +13,4 @@ collect要加dependence pragma
 
 看看我电脑上的ReGraph编译报告的频率，和他们一样就行
 
-下一步：优化写入
+下一步：优化写入，然后可以优化一下nodeprop loader和edge desc loader的II
