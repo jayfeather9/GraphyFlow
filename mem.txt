@@ -14,3 +14,7 @@ collect要加dependence pragma
 看看我电脑上的ReGraph编译报告的频率，和他们一样就行
 
 下一步：优化写入，然后可以优化一下nodeprop loader和edge desc loader的II
+
+优化了src_offset_loader，发现是负优化
+
+先改host改成partition的版本和ReGraph比一下速度吧
