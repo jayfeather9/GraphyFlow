@@ -26,6 +26,6 @@ include $(SCRIPTS_PATH)/kernel/kernel.mk
 include $(SCRIPTS_PATH)/clean.mk
 
 # Update the 'all' rule to depend on the .xclbin file, the host executable, and emconfig
-all: $(XCLBIN_FILE) $(EXECUTABLE) emconfig
+all: $(XCLBIN_FILES) $(EXECUTABLE) emconfig
 
 exe: $(EXECUTABLE)

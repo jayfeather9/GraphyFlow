@@ -1,29 +1,30 @@
 
 # Makefile for the Vitis Kernel
 VPP := v++
-# KERNEL_NAME is passed from the top Makefile
-KERNEL_SRC := scripts/kernel/$(KERNEL_NAME).cpp
+# KERNEL_NAMES is a list of all kernels to be compiled
+KERNEL_NAMES := graphyflow glb_controller
+
 XCLBIN_DIR := ./xclbin
-XCLBIN_FILE := $(XCLBIN_DIR)/$(KERNEL_NAME).$(TARGET).xclbin
-KERNEL_XO := $(XCLBIN_DIR)/$(KERNEL_NAME).$(TARGET).xo
+# Generate .xo and .xclbin file paths for each kernel
+KERNEL_XOS := $(patsubst %,$(XCLBIN_DIR)/%.$(TARGET).xo,$(KERNEL_NAMES))
+XCLBIN_FILES := $(patsubst %,$(XCLBIN_DIR)/%.$(TARGET).xclbin,$(KERNEL_NAMES))
+
 EMCONFIG_FILE := ./emconfig.json
-CLFLAGS += --kernel $(KERNEL_NAME)
-CLFLAGS += -Iscripts/kernel
-CLFLAGS += -Iscripts/host
-CLFLAGS += -I$(XILINX_XRT)/include
-CLFLAGS += -I$(XILINX_VITIS)/include
-LDFLAGS_VPP += --config ./system.cfg
-LDFLAGS_VPP += -Iscripts/kernel
-LDFLAGS_VPP += -Iscripts/host
-LDFLAGS_VPP += -I$(XILINX_XRT)/include
-LDFLAGS_VPP += -I$(XILINX_VITIS)/include
 
-$(KERNEL_XO): $(KERNEL_SRC)
+# Common flags
+COMMON_FLAGS += -Iscripts/kernel
+COMMON_FLAGS += -Iscripts/host
+COMMON_FLAGS += -I$(XILINX_XRT)/include
+COMMON_FLAGS += -I$(XILINX_VITIS)/include
+
+# Rule to compile .cpp to .xo for each kernel
+$(XCLBIN_DIR)/%.$(TARGET).xo: scripts/kernel/%.cpp
 	@mkdir -p $(XCLBIN_DIR)
-	$(VPP) -c -t $(TARGET) --platform $(DEVICE) --freqhz $(FREQ_HZ) $(CLFLAGS) -o $@ $<
+	$(VPP) -c -t $(TARGET) --platform $(DEVICE) --freqhz $(FREQ_HZ) --kernel $* $(COMMON_FLAGS) -o $@ $<
 
-$(XCLBIN_FILE): $(KERNEL_XO)
-	$(VPP) -l -t $(TARGET) --platform $(DEVICE) $(LDFLAGS_VPP) -o $@ $<
+# Rule to link .xo to .xclbin for each kernel
+$(XCLBIN_DIR)/%.$(TARGET).xclbin: $(XCLBIN_DIR)/%.$(TARGET).xo
+	$(VPP) -l -t $(TARGET) --platform $(DEVICE) --config ./system.cfg $(COMMON_FLAGS) -o $@ $<
 
 emconfig:
 	emconfigutil --platform $(DEVICE) --od .

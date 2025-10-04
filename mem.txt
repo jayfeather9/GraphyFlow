@@ -18,3 +18,7 @@ collect要加dependence pragma
 优化了src_offset_loader，发现是负优化
 
 先改host改成partition的版本和ReGraph比一下速度吧
+
+添加了graph partition和merge的逻辑，还需要加一个kernel wrapper，然后给kernel加一个int i作为function instantiate（要加pragma），然后改一下调用部分，然后为每个kernel指定一个输出buffer就行
+
+Added kernel cpps, added create queues, now need to modify AlgorithmHost to support multiple partitions

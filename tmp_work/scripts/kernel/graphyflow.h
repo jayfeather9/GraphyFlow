@@ -218,16 +218,23 @@ void Scatt_346(hls::stream<struct_sbu_19_t> &i_0,
  * @param response_to_318   Stream to send processed edge batches.
  * @param response_to_343   Stream to send node distances.
  */
-void UnifiedMemoryController(
-    const int *src_offsets, const edge_des_burst_t *edge_des_bursts,
-    const int *node_distances, int num_nodes, int num_edges,
-    hls::stream<edge_batch_t> &response_to_318,
-    hls::stream<struct_ibu_14_t> &all_node_distances_to_343);
+// void UnifiedMemoryController(
+//     const int *src_offsets, const edge_des_burst_t *edge_des_bursts,
+//     const int *node_distances, int num_nodes, int num_edges,
+//     hls::stream<edge_batch_t> &response_to_318,
+//     hls::stream<struct_ibu_14_t> &all_node_distances_to_343);
 
-static void graphyflow_dataflow(
-    // UMC inputs from DDR
-    const int *src_offsets, const edge_des_burst_t *edge_des_bursts,
-    const int *node_distances, int num_nodes, int num_edges,
+// static void graphyflow_dataflow(
+//     // UMC inputs from DDR
+//     const int *src_offsets, const edge_des_burst_t *edge_des_bursts,
+//     const int *node_distances, int num_nodes, int num_edges,
+//     // Final output stream
+//     hls::stream<struct_sbu_19_t> &o_0_342_stream);
+
+extern "C" void graphyflow_kernel(
+    // input stream
+    hls::stream<edge_batch_t> &umc_edge_resp_stream,
+    hls::stream<struct_ibu_14_t> &umc_all_node_distances_stream,
     // Final output stream
     hls::stream<struct_sbu_19_t> &o_0_342_stream);
 
@@ -241,9 +248,9 @@ static void graphyflow_dataflow(
  * writable).
  * @param num_nodes         The total number of nodes in the graph.
  */
-extern "C" void graphyflow(const int *src_offsets,
-                           const edge_des_burst_t *edge_des_bursts,
-                           int *node_distances, int num_nodes, int num_edges,
-                           KernelOutputBatch *o_0_342);
+// extern "C" void graphyflow(const int *src_offsets,
+//                            const edge_des_burst_t *edge_des_bursts,
+//                            int *node_distances, int num_nodes, int num_edges,
+//                            KernelOutputBatch *o_0_342);
 
 #endif // __GRAPHYFLOW_GRAPHYFLOW_H__

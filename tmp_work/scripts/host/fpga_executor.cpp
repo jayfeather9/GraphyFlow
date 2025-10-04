@@ -3,7 +3,7 @@
 #include "generated_host.h"
 #include <iostream>
 
-#define KERNEL_NAME "graphyflow"
+#define KERNEL_NAME "graphyflow_kernel"
 
 // ... (fpga_executor.cpp 的其余内容保持不变) ...
 std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
@@ -21,10 +21,35 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
     OCL_CHECK(err, cl::Context context(device, NULL, NULL, NULL, &err));
     OCL_CHECK(err, cl::CommandQueue q(context, device,
                                       CL_QUEUE_PROFILING_ENABLE, &err));
+    // create global controller queue
+    OCL_CHECK(err, cl::CommandQueue q_glb(context, device,
+                                      CL_QUEUE_PROFILING_ENABLE, &err));
+    // create each graphyflow kernel queue
+    std::vector<cl::CommandQueue> q_graphyflow;
+    q_graphyflow.resize(NUM_PARTITIONS);
+    for (int i = 0; i < NUM_PARTITIONS; ++i) {
+        OCL_CHECK(err, cl::CommandQueue q_graphyflow[i](context, device,
+                                          CL_QUEUE_PROFILING_ENABLE, &err));
+    }
+    // read binary file
     auto fileBuf = xcl::read_binary_file(xclbin_path);
     cl::Program::Binaries bins{{fileBuf.data(), fileBuf.size()}};
     OCL_CHECK(err, cl::Program program(context, {device}, bins, NULL, &err));
-    OCL_CHECK(err, cl::Kernel kernel(program, KERNEL_NAME, &err));
+    
+    // create global controller kernel
+    OCL_CHECK(err, cl::Kernel kernel_glb(program, "global_controller", &err));
+    // create each graphyflow kernel
+    std::vector<cl::Kernel> kernel_graphyflow;
+    kernel_graphyflow.resize(NUM_PARTITIONS);
+    for (int i = 0; i < NUM_PARTITIONS; ++i) {
+        std::string k_id = std::to_string(i + 1);
+        // std::string krnl_name_full = acc.big_gs_kernel_name + ":{" + "bigKernelScatterGather_" + cu_id + "}";
+        std::string krnl_name_full = KERNEL_NAME + ":{" + KERNEL_NAME + "_" + k_id + "}";
+        printf("Creating kernel %s for partition %d\n", krnl_name_full.c_str(), i);
+        OCL_CHECK(err, cl::Kernel kernel_graphyflow[i](program, krnl_name_full.c_str(), &err));
+    }
+
+    // TODO: modify AlgorithmHost to support multiple partitions
 
     AlgorithmHost algo_host(context, kernel, q);
     algo_host.setup_buffers(graph, start_node);

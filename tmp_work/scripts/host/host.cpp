@@ -26,6 +26,20 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
 
+    // 1.5. 图划分 (新增)
+    std::cout << "\n--- Step 1.5: Partitioning Graph ---" << std::endl;
+    std::vector<GraphCSR> partitions =
+        partition_graph(graph, NUM_PARTITIONS, std::vector<float>(
+                                       PARTITION_WEIGHTS,
+                                       PARTITION_WEIGHTS + NUM_PARTITIONS));
+    std::cout << "Graph partitioned into " << partitions.size() << " partitions."
+              << std::endl;
+    for (int i = 0; i < partitions.size(); ++i) {
+        std::cout << " Partition " << i << ": "
+                  << partitions[i].num_vertices << " vertices, "
+                  << partitions[i].num_edges << " edges." << std::endl;
+    }
+
     // 2. 在 FPGA 上运行 (调用新的通用执行器)
     std::cout << "\n--- Step 2: Running on FPGA ---" << std::endl;
     double total_kernel_time_sec = 0;
