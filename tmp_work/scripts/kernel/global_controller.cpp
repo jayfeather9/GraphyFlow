@@ -1,4 +1,81 @@
-#include "glb_controller.h"
+#include "graphyflow_kernel.h"
+
+void memory_loader(
+    int instantiate_idx,
+    const int *src_offsets, const edge_des_burst_t *edge_des_bursts,
+    const int *node_distances, int num_nodes, int num_edges,
+    hls::stream<edge_batch_t> &response_to_318,
+    hls::stream<struct_ibu_14_t> &all_node_distances_to_343);
+
+void final_writeback(
+    int instantiate_idx,
+    hls::stream<struct_sbu_19_t> &in_stream,
+    KernelOutputBatch *out_o_0_342);
+
+void axi_to_ori_edge_batch_wrapper(
+    hls::stream<edge_batch_axi_t> &axi_stream,
+    hls::stream<edge_batch_t> &ori_stream) {
+    while (true) {
+#pragma HLS PIPELINE II=1
+        edge_batch_axi_t axi_data = axi_stream.read();
+        ori_stream.write(axi2ori(axi_data));
+        if (axi_data.last) {
+            break;
+        }
+    }
+}
+
+void ori_to_axi_edge_batch_wrapper(
+    int instantiate_idx,
+    hls::stream<edge_batch_t> &ori_stream,
+    hls::stream<edge_batch_axi_t> &axi_stream) {
+#pragma HLS function_instantiate variable = instantiate_idx
+    while (true) {
+#pragma HLS PIPELINE II=1
+        edge_batch_t ori_data = ori_stream.read();
+        // printf("[%d] Edge batch end_flag: %d, end_pos: %d\n", instantiate_idx, ori_data.end_flag, ori_data.end_pos);
+        edge_batch_axi_t axi_data = ori2axi(ori_data);
+        axi_data.last = ori_data.end_flag;
+        axi_stream.write(axi_data);
+        if (ori_data.end_flag) {
+            break;
+        }
+    }
+}
+
+void ori_to_axi_struct_ibu_14_wrapper(
+    int instantiate_idx,
+    hls::stream<struct_ibu_14_t> &ori_stream,
+    hls::stream<struct_ibu_14_axi_t> &axi_stream) {
+#pragma HLS function_instantiate variable = instantiate_idx
+    while (true) {
+#pragma HLS PIPELINE II=1
+        struct_ibu_14_t ori_data = ori_stream.read();
+        // printf("[%d] Node distances batch end_flag: %d, end_pos: %d\n", instantiate_idx, ori_data.end_flag, ori_data.end_pos);
+        struct_ibu_14_axi_t axi_data = ori2axi(ori_data);
+        axi_data.last = ori_data.end_flag;
+        axi_stream.write(axi_data);
+        if (ori_data.end_flag) {
+            break;
+        }
+    }
+}
+
+void axi_to_ori_struct_sbu_19_wrapper(
+    int instantiate_idx,
+    hls::stream<struct_sbu_19_axi_t> &axi_stream,
+    hls::stream<struct_sbu_19_t> &ori_stream) {
+#pragma HLS function_instantiate variable = instantiate_idx
+    while (true) {
+#pragma HLS PIPELINE II=1
+        struct_sbu_19_axi_t axi_data = axi_stream.read();
+        ori_stream.write(axi2ori(axi_data));
+        // printf("[%d] Result batch end_flag: %d, end_pos: %d\n", instantiate_idx, axi2ori(axi_data).end_flag, axi2ori(axi_data).end_pos);
+        if (axi_data.last) {
+            break;
+        }
+    }
+}
 
 extern "C" void global_controller(
     // input i/o
@@ -14,41 +91,48 @@ extern "C" void global_controller(
     const int *node_distances_2, 
     const int *node_distances_3, 
     const int *node_distances_4,
-    hls::stream<edge_batch_t> &edge_batches_1,
-    hls::stream<edge_batch_t> &edge_batches_2,
-    hls::stream<edge_batch_t> &edge_batches_3,
-    hls::stream<edge_batch_t> &edge_batches_4,
-    hls::stream<struct_ibu_14_t> &node_distances_1, 
-    hls::stream<struct_ibu_14_t> &node_distances_2, 
-    hls::stream<struct_ibu_14_t> &node_distances_3, 
-    hls::stream<struct_ibu_14_t> &node_distances_4,
     // output i/o
-    hls::stream<struct_sbu_19_t> &result_stream_1,
-    hls::stream<struct_sbu_19_t> &result_stream_2,
-    hls::stream<struct_sbu_19_t> &result_stream_3,
-    hls::stream<struct_sbu_19_t> &result_stream_4,
     KernelOutputBatch *output_ptr_1,
     KernelOutputBatch *output_ptr_2,
     KernelOutputBatch *output_ptr_3,
     KernelOutputBatch *output_ptr_4,
     // graph metadata
-    int num_nodes, 
-    int num_edges
+    int num_nodes_1,
+    int num_nodes_2,
+    int num_nodes_3,
+    int num_nodes_4,
+    int num_edges_1,
+    int num_edges_2,
+    int num_edges_3,
+    int num_edges_4,
+    // streams to/from graphyflow kernels
+    hls::stream<edge_batch_axi_t> &edge_batches_1,
+    hls::stream<edge_batch_axi_t> &edge_batches_2,
+    hls::stream<edge_batch_axi_t> &edge_batches_3,
+    hls::stream<edge_batch_axi_t> &edge_batches_4,
+    hls::stream<struct_ibu_14_axi_t> &node_distances_stream_1, 
+    hls::stream<struct_ibu_14_axi_t> &node_distances_stream_2, 
+    hls::stream<struct_ibu_14_axi_t> &node_distances_stream_3, 
+    hls::stream<struct_ibu_14_axi_t> &node_distances_stream_4,
+    hls::stream<struct_sbu_19_axi_t> &result_stream_1,
+    hls::stream<struct_sbu_19_axi_t> &result_stream_2,
+    hls::stream<struct_sbu_19_axi_t> &result_stream_3,
+    hls::stream<struct_sbu_19_axi_t> &result_stream_4
 ) {
     #pragma HLS INTERFACE m_axi port = src_offsets_1 offset = slave bundle = gmem0
     #pragma HLS INTERFACE m_axi port = src_offsets_2 offset = slave bundle = gmem1
     #pragma HLS INTERFACE m_axi port = src_offsets_3 offset = slave bundle = gmem2
     #pragma HLS INTERFACE m_axi port = src_offsets_4 offset = slave bundle = gmem3
     
-    #pragma HLS INTERFACE m_axi port = edge_des_bursts_1 offset = slave bundle = gmem0
-    #pragma HLS INTERFACE m_axi port = edge_des_bursts_2 offset = slave bundle = gmem1
-    #pragma HLS INTERFACE m_axi port = edge_des_bursts_3 offset = slave bundle = gmem2
-    #pragma HLS INTERFACE m_axi port = edge_des_bursts_4 offset = slave bundle = gmem3
+    #pragma HLS INTERFACE m_axi port = edge_des_bursts_1 offset = slave bundle = gmem4
+    #pragma HLS INTERFACE m_axi port = edge_des_bursts_2 offset = slave bundle = gmem5
+    #pragma HLS INTERFACE m_axi port = edge_des_bursts_3 offset = slave bundle = gmem6
+    #pragma HLS INTERFACE m_axi port = edge_des_bursts_4 offset = slave bundle = gmem7
 
-    #pragma HLS INTERFACE m_axi port = node_distances_1 offset = slave bundle = gmem0
-    #pragma HLS INTERFACE m_axi port = node_distances_2 offset = slave bundle = gmem1
-    #pragma HLS INTERFACE m_axi port = node_distances_3 offset = slave bundle = gmem2
-    #pragma HLS INTERFACE m_axi port = node_distances_4 offset = slave bundle = gmem3
+    #pragma HLS INTERFACE m_axi port = node_distances_1 offset = slave bundle = gmem8
+    #pragma HLS INTERFACE m_axi port = node_distances_2 offset = slave bundle = gmem9
+    #pragma HLS INTERFACE m_axi port = node_distances_3 offset = slave bundle = gmem10
+    #pragma HLS INTERFACE m_axi port = node_distances_4 offset = slave bundle = gmem11
 
     #pragma HLS INTERFACE m_axi port = output_ptr_1 offset = slave bundle = gmem0
     #pragma HLS INTERFACE m_axi port = output_ptr_2 offset = slave bundle = gmem1
@@ -75,33 +159,55 @@ extern "C" void global_controller(
     #pragma HLS INTERFACE s_axilite port = output_ptr_3 bundle = control
     #pragma HLS INTERFACE s_axilite port = output_ptr_4 bundle = control
 
-    #pragma HLS INTERFACE s_axilite port = num_nodes bundle = control
-    #pragma HLS INTERFACE s_axilite port = num_edges bundle = control
+    #pragma HLS INTERFACE s_axilite port = num_nodes_1 bundle = control
+    #pragma HLS INTERFACE s_axilite port = num_nodes_2 bundle = control
+    #pragma HLS INTERFACE s_axilite port = num_nodes_3 bundle = control
+    #pragma HLS INTERFACE s_axilite port = num_nodes_4 bundle = control
+    #pragma HLS INTERFACE s_axilite port = num_edges_1 bundle = control
+    #pragma HLS INTERFACE s_axilite port = num_edges_2 bundle = control
+    #pragma HLS INTERFACE s_axilite port = num_edges_3 bundle = control
+    #pragma HLS INTERFACE s_axilite port = num_edges_4 bundle = control
     #pragma HLS INTERFACE s_axilite port = return bundle = control
 
     #pragma HLS DATAFLOW
 
-//     void memory_loader(
-//     int instantiate_idx,
-//     const int *src_offsets, const edge_des_burst_t *edge_des_bursts,
-//     const int *node_distances, int num_nodes, int num_edges,
-//     hls::stream<edge_batch_t> &response_to_318,
-//     hls::stream<struct_ibu_14_t> &all_node_distances_to_343);
+    hls::stream<edge_batch_t> edge_batches_1_ori;
+    hls::stream<edge_batch_t> edge_batches_2_ori;
+    hls::stream<edge_batch_t> edge_batches_3_ori;
+    hls::stream<edge_batch_t> edge_batches_4_ori;
+    hls::stream<struct_ibu_14_t> node_distances_stream_1_ori;
+    hls::stream<struct_ibu_14_t> node_distances_stream_2_ori;
+    hls::stream<struct_ibu_14_t> node_distances_stream_3_ori;
+    hls::stream<struct_ibu_14_t> node_distances_stream_4_ori;
+    hls::stream<struct_sbu_19_t> result_stream_1_ori;
+    hls::stream<struct_sbu_19_t> result_stream_2_ori;
+    hls::stream<struct_sbu_19_t> result_stream_3_ori;
+    hls::stream<struct_sbu_19_t> result_stream_4_ori;
 
-// void final_writeback(
-//     int instantiate_idx,
-//     hls::stream<struct_sbu_19_t> &in_stream,
-//     KernelOutputBatch *out_o_0_342);
+    memory_loader(1, src_offsets_1, edge_des_bursts_1, node_distances_1, num_nodes_1, num_edges_1, edge_batches_1_ori, node_distances_stream_1_ori);
+    memory_loader(2, src_offsets_2, edge_des_bursts_2, node_distances_2, num_nodes_2, num_edges_2, edge_batches_2_ori, node_distances_stream_2_ori);
+    memory_loader(3, src_offsets_3, edge_des_bursts_3, node_distances_3, num_nodes_3, num_edges_3, edge_batches_3_ori, node_distances_stream_3_ori);
+    memory_loader(4, src_offsets_4, edge_des_bursts_4, node_distances_4, num_nodes_4, num_edges_4, edge_batches_4_ori, node_distances_stream_4_ori);
 
-    memory_loader(1, src_offsets_1, edge_des_bursts_1, node_distances_1, num_nodes, num_edges, edge_batches_1, node_distances_1);
-    memory_loader(2, src_offsets_2, edge_des_bursts_2, node_distances_2, num_nodes, num_edges, edge_batches_2, node_distances_2);
-    memory_loader(3, src_offsets_3, edge_des_bursts_3, node_distances_3, num_nodes, num_edges, edge_batches_3, node_distances_3);
-    memory_loader(4, src_offsets_4, edge_des_bursts_4, node_distances_4, num_nodes, num_edges, edge_batches_4, node_distances_4);
+    ori_to_axi_edge_batch_wrapper(1, edge_batches_1_ori, edge_batches_1);
+    ori_to_axi_edge_batch_wrapper(2, edge_batches_2_ori, edge_batches_2);
+    ori_to_axi_edge_batch_wrapper(3, edge_batches_3_ori, edge_batches_3);
+    ori_to_axi_edge_batch_wrapper(4, edge_batches_4_ori, edge_batches_4);
 
-    final_writeback(1, result_stream_1, output_ptr_1);
-    final_writeback(2, result_stream_2, output_ptr_2);
-    final_writeback(3, result_stream_3, output_ptr_3);
-    final_writeback(4, result_stream_4, output_ptr_4);
+    ori_to_axi_struct_ibu_14_wrapper(1, node_distances_stream_1_ori, node_distances_stream_1);
+    ori_to_axi_struct_ibu_14_wrapper(2, node_distances_stream_2_ori, node_distances_stream_2);
+    ori_to_axi_struct_ibu_14_wrapper(3, node_distances_stream_3_ori, node_distances_stream_3);
+    ori_to_axi_struct_ibu_14_wrapper(4, node_distances_stream_4_ori, node_distances_stream_4);
+
+    axi_to_ori_struct_sbu_19_wrapper(1, result_stream_1, result_stream_1_ori);
+    axi_to_ori_struct_sbu_19_wrapper(2, result_stream_2, result_stream_2_ori);
+    axi_to_ori_struct_sbu_19_wrapper(3, result_stream_3, result_stream_3_ori);
+    axi_to_ori_struct_sbu_19_wrapper(4, result_stream_4, result_stream_4_ori);
+
+    final_writeback(1, result_stream_1_ori, output_ptr_1);
+    final_writeback(2, result_stream_2_ori, output_ptr_2);
+    final_writeback(3, result_stream_3_ori, output_ptr_3);
+    final_writeback(4, result_stream_4_ori, output_ptr_4);
 }
 
 // --- PHASE 2.1: UMC Sub-module: Node Property Loader ---

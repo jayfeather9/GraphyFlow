@@ -1,4 +1,4 @@
-#include "graphyflow.h"
+#include "graphyflow_kernel.h"
 
 // --- Utility Network Functions ---
 void stream_zipper_0(hls::stream<struct_ibu_14_t> &in_key_batch_stream,
@@ -1047,18 +1047,82 @@ LOOP_SCATTER_346_810:
 //     }
 // }
 
+static void axi_to_ori_edge_batch_wrapper(
+    hls::stream<edge_batch_axi_t> &axi_stream,
+    hls::stream<edge_batch_t> &ori_stream) {
+    while (true) {
+#pragma HLS PIPELINE II=1
+        edge_batch_axi_t axi_data = axi_stream.read();
+        ori_stream.write(axi2ori(axi_data));
+        if (axi_data.last) {
+            break;
+        }
+    }
+}
+
+static void ori_to_axi_struct_ibu_14_wrapper(
+    hls::stream<struct_ibu_14_t> &ori_stream,
+    hls::stream<struct_ibu_14_axi_t> &axi_stream) {
+    while (true) {
+#pragma HLS PIPELINE II=1
+        struct_ibu_14_t ori_data = ori_stream.read();
+        struct_ibu_14_axi_t axi_data = ori2axi(ori_data);
+        axi_data.last = ori_data.end_flag;
+        axi_stream.write(axi_data);
+        if (ori_data.end_flag) {
+            break;
+        }
+    }
+}
+
+static void axi_to_ori_struct_ibu_14_wrapper(
+    hls::stream<struct_ibu_14_axi_t> &axi_stream,
+    hls::stream<struct_ibu_14_t> &ori_stream) {
+    while (true) {
+#pragma HLS PIPELINE II=1
+        struct_ibu_14_axi_t axi_data = axi_stream.read();
+        ori_stream.write(axi2ori(axi_data));
+        if (axi_data.last) {
+            break;
+        }
+    }
+}
+
+static void ori_to_axi_struct_sbu_19_wrapper(
+    hls::stream<struct_sbu_19_t> &ori_stream,
+    hls::stream<struct_sbu_19_axi_t> &axi_stream) {
+    while (true) {
+#pragma HLS PIPELINE II=1
+        struct_sbu_19_t ori_data = ori_stream.read();
+        struct_sbu_19_axi_t axi_data = ori2axi(ori_data);
+        axi_data.last = ori_data.end_flag;
+        axi_stream.write(axi_data);
+        if (ori_data.end_flag) {
+            break;
+        }
+    }
+}
+
 extern "C" void graphyflow_kernel(
-    // UMC inputs from DDR
-    // const int *src_offsets, const edge_des_burst_t *edge_des_bursts,
-    // const int *node_distances, int num_nodes, int num_edges,
     // input stream
-    hls::stream<edge_batch_t> &umc_edge_resp_stream,
-    hls::stream<struct_ibu_14_t> &umc_all_node_distances_stream,
+    hls::stream<edge_batch_axi_t> &umc_edge_resp_stream_axi,
+    hls::stream<struct_ibu_14_axi_t> &umc_all_node_distances_stream_axi,
     // Final output stream
-    hls::stream<struct_sbu_19_t> &o_0_342_stream) {
+    hls::stream<struct_sbu_19_axi_t> &o_0_342_stream_axi) {
 #pragma HLS DATAFLOW
 
+// #pragma HLS INTERFACE axis port=umc_edge_resp_stream_axi
+// #pragma HLS INTERFACE axis port=umc_all_node_distances_stream_axi
+// #pragma HLS INTERFACE axis port=o_0_342_stream_axi
 #pragma HLS INTERFACE s_axilite port = return bundle = control
+
+    hls::stream<edge_batch_t> umc_edge_resp_stream;
+    hls::stream<struct_ibu_14_t> umc_all_node_distances_stream;
+    hls::stream<struct_sbu_19_t> o_0_342_stream;
+
+    axi_to_ori_edge_batch_wrapper(umc_edge_resp_stream_axi, umc_edge_resp_stream);
+    axi_to_ori_struct_ibu_14_wrapper(umc_all_node_distances_stream_axi, umc_all_node_distances_stream);
+    ori_to_axi_struct_sbu_19_wrapper(o_0_342_stream, o_0_342_stream_axi);
 
     // --- PHASE 1: Streams for UMC Communication ---
     // Streams for edge data requests (Memor_318 <-> UMC)

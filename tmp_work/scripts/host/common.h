@@ -13,7 +13,7 @@
 const int INFINITY_DIST = 16384;
 const int PE_NUM = 8; // Number of Processing Elements
 const int NUM_PARTITIONS = 4; // Number of graph partitions
-const int PARTITION_WEIGHTS[NUM_PARTITIONS] = {1, 1, 1, 1}; // Weights for each partition
+const float PARTITION_WEIGHTS[NUM_PARTITIONS] = {1.0, 1.0, 1.0, 1.0}; // Weights for each partition
 
 typedef uint16_t node_id_t;
 typedef uint16_t edge_id_t;

@@ -1,6 +1,7 @@
 #include "common.h"
 #include "fpga_executor.h" // <-- 修改: 包含新的执行器
 #include "graph_loader.h"
+#include "graph_partition.h"
 #include "host_verifier.h"
 #include <iostream>
 #include <string>
@@ -28,10 +29,11 @@ int main(int argc, char **argv) {
 
     // 1.5. 图划分 (新增)
     std::cout << "\n--- Step 1.5: Partitioning Graph ---" << std::endl;
-    std::vector<GraphCSR> partitions =
-        partition_graph(graph, NUM_PARTITIONS, std::vector<float>(
-                                       PARTITION_WEIGHTS,
-                                       PARTITION_WEIGHTS + NUM_PARTITIONS));
+    float partition_weights[NUM_PARTITIONS];
+    for (int i = 0; i < NUM_PARTITIONS; ++i) {
+        partition_weights[i] = PARTITION_WEIGHTS[i];
+    }
+    std::vector<GraphCSR> partitions = partition_graph(graph, NUM_PARTITIONS, partition_weights);
     std::cout << "Graph partitioned into " << partitions.size() << " partitions."
               << std::endl;
     for (int i = 0; i < partitions.size(); ++i) {
@@ -45,8 +47,8 @@ int main(int argc, char **argv) {
     double total_kernel_time_sec = 0;
     int iter_count = 0;
     std::vector<int> fpga_distances =
-        run_fpga_kernel(xclbin_file, graph, start_node, total_kernel_time_sec,
-                        iter_count, device_no);
+        run_fpga_kernel(xclbin_file, partitions, start_node, total_kernel_time_sec,
+                        iter_count, device_no, graph.num_vertices);
 
     // 3. 在 Host CPU 上验证 (不变, 按你的要求保留)
     std::cout << "\n--- Step 3: Verifying on Host CPU ---" << std::endl;

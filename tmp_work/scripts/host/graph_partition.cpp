@@ -1,12 +1,12 @@
 #include "graph_partition.h"
 
-std::vector<GraphCSR> partition_graph(const GraphCSR &graph, int num_partitions, std::vector<float> partition_weights) {
+std::vector<GraphCSR> partition_graph(const GraphCSR &graph, int num_partitions, float *partition_weights) {
     std::vector<GraphCSR> partitions(num_partitions);
     // partition the graph based on dst id
     // partition different dst id to different partition
     // first, change the format to vector-vector
     // first vector is dst, second vector is different edges (src, weight)
-    std::vector<std::vector<std::pair<int, int>>> adj_list(graph.num_nodes);
+    std::vector<std::vector<std::pair<int, int>>> adj_list(graph.num_vertices);
     for (int src = 0; src < graph.num_vertices; ++src) {
         for (int i = graph.offsets[src]; i < graph.offsets[src + 1]; ++i) {
             int dst = graph.columns[i];
@@ -27,11 +27,11 @@ std::vector<GraphCSR> partition_graph(const GraphCSR &graph, int num_partitions,
     });
     // normalize the partition weights to sum = total_edge_cnt
     float total_weight = 0.0f;
-    for (float w : partition_weights) {
-        total_weight += w;
+    for (int i = 0; i < num_partitions; ++i) {
+        total_weight += partition_weights[i];
     }
-    for (float &w : partition_weights) {
-        w = w / total_weight * total_edge_cnt;
+    for (int i = 0; i < num_partitions; ++i) {
+        partition_weights[i] = partition_weights[i] / total_weight * total_edge_cnt;
     }
     // assign dst to partitions
     // iterate dst from big to small

@@ -11,6 +11,7 @@ HOST_SRCS := scripts/host/host.cpp \
              scripts/host/generated_host.cpp \
              scripts/host/host_verifier.cpp \
              scripts/host/host_bellman_ford.cpp \
+             scripts/host/graph_partition.cpp \
              scripts/host/xcl2.cpp
 
 # Include directories

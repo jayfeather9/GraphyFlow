@@ -1,7 +1,9 @@
-#ifndef __GRAPHYFLOW_GRAPHYFLOW_H__
-#define __GRAPHYFLOW_GRAPHYFLOW_H__
+#ifndef __GRAPHYFLOW_KERNEL_H__
+#define __GRAPHYFLOW_KERNEL_H__
 
 #include <ap_fixed.h>
+#include <ap_int.h>
+#include <ap_axi_sdata.h>
 #include <hls_stream.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -145,6 +147,127 @@ struct __attribute__((packed)) struct_kbu_30_t {
     uint8_t end_pos;
 };
 
+// --- AXI Stream Type Definitions and Conversion Functions ---
+
+#define PAD8(x) (((x) + 7) & ~7)
+
+// ap_axiu<width, user, id, dest>
+#define EDGE_BATCH_T_WIDTH (PAD8(PE_NUM * 32 + PE_NUM * 32 + PE_NUM * 16 + 1 + 8))
+typedef ap_axiu<EDGE_BATCH_T_WIDTH, 0, 0, 0> edge_batch_axi_t;
+
+inline edge_batch_t axi2ori(edge_batch_axi_t axi) {
+    edge_batch_t ori;
+    ap_uint<EDGE_BATCH_T_WIDTH> data = axi.data;
+    int offset = 0;
+    for (int i = 0; i < PE_NUM; ++i) {
+        ori.weights[i] = data.range(offset + 31, offset);
+        offset += 32;
+    }
+    for (int i = 0; i < PE_NUM; ++i) {
+        ori.src_distances[i] = data.range(offset + 31, offset);
+        offset += 32;
+    }
+    for (int i = 0; i < PE_NUM; ++i) {
+        ori.dst_ids[i] = data.range(offset + 15, offset);
+        offset += 16;
+    }
+    ori.end_flag = data.range(offset, offset);
+    offset += 1;
+    ori.end_pos = data.range(offset + 7, offset);
+    return ori;
+}
+
+inline edge_batch_axi_t ori2axi(edge_batch_t ori) {
+    edge_batch_axi_t axi;
+    ap_uint<EDGE_BATCH_T_WIDTH> data = 0;
+    int offset = 0;
+    for (int i = 0; i < PE_NUM; ++i) {
+        data.range(offset + 31, offset) = ori.weights[i];
+        offset += 32;
+    }
+    for (int i = 0; i < PE_NUM; ++i) {
+        data.range(offset + 31, offset) = ori.src_distances[i];
+        offset += 32;
+    }
+    for (int i = 0; i < PE_NUM; ++i) {
+        data.range(offset + 15, offset) = ori.dst_ids[i];
+        offset += 16;
+    }
+    data.range(offset, offset) = ori.end_flag;
+    offset += 1;
+    data.range(offset + 7, offset) = ori.end_pos;
+    axi.data = data;
+    return axi;
+}
+
+#define STRUCT_IBU_14_T_WIDTH (PAD8(PE_NUM * 32 + 1 + 8))
+typedef ap_axiu<STRUCT_IBU_14_T_WIDTH, 0, 0, 0> struct_ibu_14_axi_t;
+
+inline struct_ibu_14_t axi2ori(struct_ibu_14_axi_t axi) {
+    struct_ibu_14_t ori;
+    ap_uint<STRUCT_IBU_14_T_WIDTH> data = axi.data;
+    int offset = 0;
+    for (int i = 0; i < PE_NUM; ++i) {
+        ori.data[i] = data.range(offset + 31, offset);
+        offset += 32;
+    }
+    ori.end_flag = data.range(offset, offset);
+    offset += 1;
+    ori.end_pos = data.range(offset + 7, offset);
+    return ori;
+}
+
+inline struct_ibu_14_axi_t ori2axi(struct_ibu_14_t ori) {
+    struct_ibu_14_axi_t axi;
+    ap_uint<STRUCT_IBU_14_T_WIDTH> data = 0;
+    int offset = 0;
+    for (int i = 0; i < PE_NUM; ++i) {
+        data.range(offset + 31, offset) = ori.data[i];
+        offset += 32;
+    }
+    data.range(offset, offset) = ori.end_flag;
+    offset += 1;
+    data.range(offset + 7, offset) = ori.end_pos;
+    axi.data = data;
+    return axi;
+}
+
+#define STRUCT_SBU_19_T_WIDTH (PAD8(PE_NUM * (32 + 16) + 1 + 8))
+typedef ap_axiu<STRUCT_SBU_19_T_WIDTH, 0, 0, 0> struct_sbu_19_axi_t;
+
+inline struct_sbu_19_t axi2ori(struct_sbu_19_axi_t axi) {
+    struct_sbu_19_t ori;
+    ap_uint<STRUCT_SBU_19_T_WIDTH> data = axi.data;
+    int offset = 0;
+    for (int i = 0; i < PE_NUM; ++i) {
+        ori.data[i].ele_0 = data.range(offset + 31, offset);
+        offset += 32;
+        ori.data[i].ele_1 = data.range(offset + 15, offset);
+        offset += 16;
+    }
+    ori.end_flag = data.range(offset, offset);
+    offset += 1;
+    ori.end_pos = data.range(offset + 7, offset);
+    return ori;
+}
+
+inline struct_sbu_19_axi_t ori2axi(struct_sbu_19_t ori) {
+    struct_sbu_19_axi_t axi;
+    ap_uint<STRUCT_SBU_19_T_WIDTH> data = 0;
+    int offset = 0;
+    for (int i = 0; i < PE_NUM; ++i) {
+        data.range(offset + 31, offset) = ori.data[i].ele_0;
+        offset += 32;
+        data.range(offset + 15, offset) = ori.data[i].ele_1;
+        offset += 16;
+    }
+    data.range(offset, offset) = ori.end_flag;
+    offset += 1;
+    data.range(offset + 7, offset) = ori.end_pos;
+    axi.data = data;
+    return axi;
+}
+
 // --- Function Prototypes ---
 void Reduc_141_pre_process(
     hls::stream<struct_ibu_14_t> &i_global_data_0,
@@ -233,10 +356,10 @@ void Scatt_346(hls::stream<struct_sbu_19_t> &i_0,
 
 extern "C" void graphyflow_kernel(
     // input stream
-    hls::stream<edge_batch_t> &umc_edge_resp_stream,
-    hls::stream<struct_ibu_14_t> &umc_all_node_distances_stream,
+    hls::stream<edge_batch_axi_t> &umc_edge_resp_stream_axi,
+    hls::stream<struct_ibu_14_axi_t> &umc_all_node_distances_stream_axi,
     // Final output stream
-    hls::stream<struct_sbu_19_t> &o_0_342_stream);
+    hls::stream<struct_sbu_19_axi_t> &o_0_342_stream_axi);
 
 // --- Top-Level Function Prototype ---
 /**
@@ -253,4 +376,4 @@ extern "C" void graphyflow_kernel(
 //                            int *node_distances, int num_nodes, int num_edges,
 //                            KernelOutputBatch *o_0_342);
 
-#endif // __GRAPHYFLOW_GRAPHYFLOW_H__
+#endif // __GRAPHYFLOW_KERNEL_H__
