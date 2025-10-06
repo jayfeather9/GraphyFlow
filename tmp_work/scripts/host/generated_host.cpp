@@ -30,6 +30,10 @@ static ap_fixed<32, 16> int32_bits_to_float(int32_t val) {
 void AlgorithmHost::setup_buffers(int start_node) {
     cl_int err;
     printf("Setting up buffers for %zu partitions...\n", m_graphs.size());
+    int src_off_base = 0 * NUM_PARTITIONS;
+    int edge_desc_base = 1 * NUM_PARTITIONS;
+    int node_dist_base = 2 * NUM_PARTITIONS;
+    int output_base = 3 * NUM_PARTITIONS;
     
     for (int i = 0; i < NUM_PARTITIONS; i++) {
         printf(" Setting up partition %d...\n", i);
@@ -75,22 +79,22 @@ void AlgorithmHost::setup_buffers(int start_node) {
         cl_mem_ext_ptr_t h_src_offsets_ext;
         h_src_offsets_ext.obj = h_memory_buffers[i].h_src_offsets.data();
         h_src_offsets_ext.param = 0;
-        h_src_offsets_ext.flags = (0 | XCL_MEM_TOPOLOGY);
+        h_src_offsets_ext.flags = ((src_off_base + i) | XCL_MEM_TOPOLOGY);
 
         cl_mem_ext_ptr_t h_edge_desc_bursts_ext;
         h_edge_desc_bursts_ext.obj = h_memory_buffers[i].h_edge_desc_bursts.data();
         h_edge_desc_bursts_ext.param = 0;
-        h_edge_desc_bursts_ext.flags = (0 | XCL_MEM_TOPOLOGY);
+        h_edge_desc_bursts_ext.flags = ((edge_desc_base + i) | XCL_MEM_TOPOLOGY);
 
         cl_mem_ext_ptr_t h_node_distances_ext;
         h_node_distances_ext.obj = h_memory_buffers[i].h_node_distances.data();
         h_node_distances_ext.param = 0;
-        h_node_distances_ext.flags = (0 | XCL_MEM_TOPOLOGY);
+        h_node_distances_ext.flags = ((node_dist_base + i) | XCL_MEM_TOPOLOGY);
 
         cl_mem_ext_ptr_t h_outputs_ext;
         h_outputs_ext.obj = h_memory_buffers[i].h_outputs.data();
         h_outputs_ext.param = 0;
-        h_outputs_ext.flags = (0 | XCL_MEM_TOPOLOGY);
+        h_outputs_ext.flags = ((output_base + i) | XCL_MEM_TOPOLOGY);
 
         // --- PHASE 2: Create OpenCL device buffers ---
         OCL_CHECK(
@@ -183,7 +187,7 @@ bool AlgorithmHost::check_convergence_and_update() {
     bool changed = false;
     // This map stores the minimum distance found for each original node ID in this
     // iteration's output.
-    std::map<int, ap_fixed<32, 16>> min_distances;
+    std::map<int, float> min_distances;
 
     // --- PHASE 1: Process all kernel outputs to find new minimum distances for original node IDs ---
     for (int i = 0; i < NUM_PARTITIONS; i++) {
@@ -194,7 +198,7 @@ bool AlgorithmHost::check_convergence_and_update() {
         for (const auto &batch : kernel_output) {
             for (int j = 0; j < batch.end_pos; ++j) {
                 int local_node_id = batch.data[j].id;
-                ap_fixed<32, 16> dist = int32_bits_to_float(batch.data[j].distance);
+                float dist = batch.data[j].distance;
 
                 // Convert local ID back to original ID
                 int original_node_id = vtx_map_rev.at(local_node_id);
@@ -220,9 +224,10 @@ bool AlgorithmHost::check_convergence_and_update() {
                 int local_node_id = graph.vtx_map[original_node_id];
                 
                 ap_fixed<32, 16> current_dist = int32_bits_to_float(node_distances[local_node_id]);
+                ap_fixed<32, 16> new_dist_apf = static_cast<ap_fixed<32, 16>>(new_dist);
 
-                if (new_dist < current_dist) {
-                    node_distances[local_node_id] = float_to_int32_bits(new_dist);
+                if (new_dist_apf < current_dist) {
+                    node_distances[local_node_id] = float_to_int32_bits(new_dist_apf);
                     changed = true;
                 }
             }
