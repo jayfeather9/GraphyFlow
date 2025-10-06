@@ -22,3 +22,5 @@ collect要加dependence pragma
 添加了graph partition和merge的逻辑，还需要加一个kernel wrapper，然后给kernel加一个int i作为function instantiate（要加pragma），然后改一下调用部分，然后为每个kernel指定一个输出buffer就行
 
 Added kernel cpps, added create queues, now need to modify AlgorithmHost to support multiple partitions
+
+多kernel加完了，a bit faster, but partition method need to change or big graph will all kernel all node and can't support larger graph
