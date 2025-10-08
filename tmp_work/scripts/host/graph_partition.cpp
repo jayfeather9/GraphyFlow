@@ -1,6 +1,7 @@
 #include "graph_partition.h"
 
-std::vector<GraphCSR> partition_graph(const GraphCSR &graph, int num_partitions, float *partition_weights) {
+std::vector<GraphCSR> partition_graph(const GraphCSR &graph, int num_partitions,
+                                      float *partition_weights) {
     std::vector<GraphCSR> partitions(num_partitions);
     // partition the graph based on dst id
     // partition different dst id to different partition
@@ -22,16 +23,16 @@ std::vector<GraphCSR> partition_graph(const GraphCSR &graph, int num_partitions,
         total_edge_cnt += adj_list[dst].size();
     }
     // sort the dst by number of edges from big to small
-    std::sort(dst_sizes.begin(), dst_sizes.end(), [](const auto &a, const auto &b) {
-        return a.second > b.second;
-    });
+    std::sort(dst_sizes.begin(), dst_sizes.end(),
+              [](const auto &a, const auto &b) { return a.second > b.second; });
     // normalize the partition weights to sum = total_edge_cnt
     float total_weight = 0.0f;
     for (int i = 0; i < num_partitions; ++i) {
         total_weight += partition_weights[i];
     }
     for (int i = 0; i < num_partitions; ++i) {
-        partition_weights[i] = partition_weights[i] / total_weight * total_edge_cnt;
+        partition_weights[i] =
+            partition_weights[i] / total_weight * total_edge_cnt;
     }
     // assign dst to partitions
     // iterate dst from big to small
@@ -49,8 +50,9 @@ std::vector<GraphCSR> partition_graph(const GraphCSR &graph, int num_partitions,
             }
         }
         if (!assigned) {
-            // if no partition can hold the dst, assign it to the partition with the most space left
-            // find the partition that partition_weights[p] - partition_edge_counts[p] is the largest
+            // if no partition can hold the dst, assign it to the partition with
+            // the most space left find the partition that partition_weights[p]
+            // - partition_edge_counts[p] is the largest
             int best_p = 0;
             float best_space = partition_weights[0] - partition_edge_counts[0];
             for (int p = 1; p < num_partitions; ++p) {
@@ -83,14 +85,25 @@ std::vector<GraphCSR> partition_graph(const GraphCSR &graph, int num_partitions,
         partitions[p].offsets.resize(partitions[p].num_vertices + 1, 0);
         partitions[p].columns.reserve(edge_count);
         partitions[p].weights.reserve(edge_count);
-        // use GraphCSR's std::unordered_map<int, int> vtx_map to map old vertex id to new vertex id
-        // new vertex id from 0 to num_vertices - 1
+        // use GraphCSR's std::unordered_map<int, int> vtx_map to map old vertex
+        // id to new vertex id new vertex id from 0 to num_vertices - 1 Ensure
+        // dst ids are at the beginning, followed by other src ids (if not set)
         partitions[p].vtx_map.clear();
+        partitions[p].vtx_map_rev.clear();
         int new_id = 0;
-        for (int v : vertex_set) {
-            partitions[p].vtx_map[v] = new_id;
-            partitions[p].vtx_map_rev[new_id] = v;
+        // First, map dst ids
+        for (int dst : dst_ids) {
+            partitions[p].vtx_map[dst] = new_id;
+            partitions[p].vtx_map_rev[new_id] = dst;
             new_id++;
+        }
+        // Then, map other src ids
+        for (int v : vertex_set) {
+            if (partitions[p].vtx_map.find(v) == partitions[p].vtx_map.end()) {
+                partitions[p].vtx_map[v] = new_id;
+                partitions[p].vtx_map_rev[new_id] = v;
+                new_id++;
+            }
         }
         // fill in offsets, columns, weights
         // a map from new src to list of (new dst, weight)

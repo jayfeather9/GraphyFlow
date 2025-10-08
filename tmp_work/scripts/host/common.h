@@ -11,9 +11,10 @@
 
 // A constant representing infinity for distance initialization
 const int INFINITY_DIST = 16384;
-const int PE_NUM = 8; // Number of Processing Elements
-const int NUM_PARTITIONS = 4; // Number of graph partitions
-const float PARTITION_WEIGHTS[NUM_PARTITIONS] = {1.0, 1.0, 1.0, 1.0}; // Weights for each partition
+const int PE_NUM = 8;          // Number of Processing Elements
+const int NUM_PARTITIONS = 10; // Number of graph partitions
+const float PARTITION_WEIGHTS[NUM_PARTITIONS] = {1.0, 1.0, 1.0, 1.0, 1.0,
+                                                 1.0, 1.0, 1.0, 1.0, 1.0};
 
 typedef uint16_t node_id_t;
 typedef uint16_t edge_id_t;
@@ -23,7 +24,6 @@ struct __attribute__((packed)) edge_descriptor_t {
     node_id_t dst_id;
     int32_t weight;
 };
-
 
 struct __attribute__((packed)) edge_des_burst_t {
     edge_descriptor_t edges[PE_NUM];
@@ -36,7 +36,7 @@ struct GraphCSR {
     std::vector<int> offsets;
     std::vector<int> columns;
     std::vector<int> weights;
-    std::unordered_map<int, int> vtx_map; // ori id to new id
+    std::unordered_map<int, int> vtx_map;     // ori id to new id
     std::unordered_map<int, int> vtx_map_rev; // reverse mapping
 };
 
