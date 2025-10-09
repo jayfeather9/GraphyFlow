@@ -3,36 +3,51 @@
 
 #include "common.h"
 #include <vector>
-#include "xcl2.h"
+#include "acc_setup/acc_setup.h"
+#include "graph_preprocess/graph_preprocess.h"
 
+
+// static part
 class AlgorithmHost {
   public:
-    AlgorithmHost(cl::Context &context, cl::Kernel &kernel, cl::CommandQueue &q);
-    void setup_buffers(const GraphCSR &graph, int start_node);
-    void transfer_data_to_fpga();
+    AlgorithmHost(acc_descriptor_dt& acc);
+    void setup_buffers(const partition_container_dt& container, int start_node);
+    void transfer_data_to_fpga(const partition_container_dt &partition_container,acc_descriptor_dt &acc);
     void execute_kernel_iteration(cl::Event &event);
-    void transfer_data_from_fpga();
-    bool check_convergence_and_update();
+    void transfer_data_from_fpga(const partition_container_dt &partition_container,acc_descriptor_dt &acc);
+    bool check_convergence_and_update(partition_container_dt& container);
     const std::vector<int> &get_results() const;
 
   private:
-    // OpenCL-related objects
-    cl::Context &m_context;
-    cl::Kernel &m_kernel;
-    cl::CommandQueue &m_q;
+    
+    acc_descriptor_dt acc;
 
     // Algorithm state
     int m_num_vertices;
     size_t m_num_batches;
-
-    // Host-side memory buffers (aligned for efficient DMA)
-    // {{GRAPHYFLOW_HOST_BUFFER_DECLARATIONS}}
     
     // Host-side state for iterative algorithm (Bellman-Ford)
-    std::vector<ap_fixed<32, 16>> h_distances;
+    // {{GRAPHYFLOW_HOST_STATE_DECLARATIONS}}
 
-    // Device-side OpenCL buffer handles
-    // {{GRAPHYFLOW_DEVICE_BUFFER_DECLARATIONS}}
+    // Big Kernels
+    std::vector<cl::Buffer> big_kernel_input_bufs;
+    std::vector<cl::Buffer> big_kernel_output_bufs;
+    std::vector<cl::Buffer> big_kernel_stop_flag_bufs;
+    
+    // Little Kernels
+    std::vector<cl::Buffer> little_kernel_input_bufs;
+    std::vector<cl::Buffer> little_kernel_output_bufs;
+    std::vector<cl::Buffer> little_kernel_stop_flag_bufs;
+
+    std::vector<std::vector<KERNEL_OUTPUT_BATCH_TYPE> > big_kernel_host_outputs;//暂时用来存放结果
+    //std::vector<int, aligned_allocator<int>> big_kernel_stop_flags;
+    std::vector<std::vector<int, aligned_allocator<int>>> big_kernel_stop_flags;
+
+    std::vector<std::vector<KERNEL_OUTPUT_BATCH_TYPE> > little_kernel_host_outputs;//暂时用来存放结果
+    //std::vector<int, aligned_allocator<int>> little_kernel_stop_flags;
+    std::vector<std::vector<int, aligned_allocator<int>>> little_kernel_stop_flags;
+
+
 };
 
 #endif // __GENERATED_HOST_H__

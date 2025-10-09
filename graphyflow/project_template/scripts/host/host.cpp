@@ -66,4 +66,6 @@ int main(int argc, char **argv) {
               << " MTEPS" << std::endl;
 
     return (error_count == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
+
+    std::cout << " finish\n";
 }

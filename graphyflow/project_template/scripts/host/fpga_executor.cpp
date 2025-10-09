@@ -1,6 +1,8 @@
 
 #include "fpga_executor.h"
+#include "acc_setup/acc_setup.h"
 #include "generated_host.h"
+#include "graph_preprocess/graph_preprocess.h"
 #include <iostream>
 
 #define KERNEL_NAME "graphyflow"
@@ -10,34 +12,29 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
                                  const GraphCSR &graph, int start_node,
                                  double &total_kernel_time_sec,
                                  int &iter_count) {
-    cl_int err;
-    auto devices = xcl::get_xil_devices();
-    auto device = devices[0];
-    OCL_CHECK(err, cl::Context context(device, NULL, NULL, NULL, &err));
-    OCL_CHECK(err, cl::CommandQueue q(context, device,
-                                      CL_QUEUE_PROFILING_ENABLE, &err));
-    auto fileBuf = xcl::read_binary_file(xclbin_path);
-    cl::Program::Binaries bins{{fileBuf.data(), fileBuf.size()}};
-    OCL_CHECK(err, cl::Program program(context, {device}, bins, NULL, &err));
-    OCL_CHECK(err, cl::Kernel kernel(program, KERNEL_NAME, &err));
 
-    AlgorithmHost algo_host(context, kernel, q);
-    algo_host.setup_buffers(graph, start_node);
+    // GraphPartiton
+    partition_container_dt partition_container = partitionGraph(&graph);
+
+    // init accelerator
+    acc_descriptor_dt acc = initAccelerator(xclbin_path);
+
+    AlgorithmHost algo_host(acc);
+    algo_host.setup_buffers(partition_container, start_node);
     total_kernel_time_sec = 0;
     int max_iterations = graph.num_vertices;
     int iter = 0;
     std::cout << "\nStarting FPGA execution..." << std::endl;
 
-    // 对于流式内核, 这个循环只会执行一次 (因为 get_stop_flag 返回 1)
-    // This loop now performs Bellman-Ford iterations until convergence or
-    // max_iterations
     for (iter = 0; iter < max_iterations; ++iter) {
-        algo_host.transfer_data_to_fpga();
+
+        algo_host.transfer_data_to_fpga(partition_container, acc);
         cl::Event event;
         algo_host.execute_kernel_iteration(event);
         event.wait();
-        algo_host.transfer_data_from_fpga();
+        algo_host.transfer_data_from_fpga(partition_container, acc);
 
+        // iv. 性能统计
         unsigned long start = 0, end = 0;
         event.getProfilingInfo(CL_PROFILING_COMMAND_START, &start);
         event.getProfilingInfo(CL_PROFILING_COMMAND_END, &end);
@@ -50,10 +47,11 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
                   << "Time = " << (iteration_time_ns * 1.0e-6) << " ms, "
                   << "Throughput = " << mteps << " MTEPS" << std::endl;
 
-        if (algo_host.check_convergence_and_update()) {
+        // v. 检查是否收敛。如果未收敛，此函数会更新 partition_container
+        // 为下次迭代做准备
+        if (algo_host.check_convergence_and_update(partition_container)) {
             std::cout << "FPGA computation converged after " << iter + 1
                       << " iteration(s)." << std::endl;
-            iter_count = iter + 1;
             break;
         }
     }
