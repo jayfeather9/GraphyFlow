@@ -20,6 +20,7 @@ from graphyflow.backend_defines import (
     HLSExprT,
     CodeBreak,
     CodeWhile,
+    HLSCodeLine,
 )
 from graphyflow.dataflow_ir_datatype import ArrayType, SpecialType
 
@@ -241,6 +242,7 @@ class MemoryAndGraphManager:
         int_ptr_const = HLSType(HLSBasicType.POINTER, [HLSType(HLSBasicType.INT)], is_const_ptr=True)
         stream_t = HLSType(HLSBasicType.STREAM, [T["node_distance_burst_t"]])
         int_t = HLSType(HLSBasicType.INT)
+        bool_t = HLSType(HLSBasicType.BOOL)
 
         func = HLSFunction("node_property_loader", comp=None)
         func.params = [
@@ -267,14 +269,10 @@ class MemoryAndGraphManager:
                 ]
             )
 
-            # This logic is complex for CodeFor, so we use CodeOther for the loop signature
-            inner_loop_str = "for (int j = 0; j < NUM_WORDS_PER_BUS; j += PE_NUM)"
-            pe_loop_str = "for (int pe = 0; pe < PE_NUM; ++pe)"
-
             pe_loop_body = [
                 CodePragma("UNROLL"),
                 CodeIf(
-                    HLSExpr(HLSExprT.VAR, HLSVar("i * NUM_WORDS_PER_BUS + j + pe < num_nodes", bool)),
+                    HLSExpr(HLSExprT.VAR, HLSVar("i * NUM_WORDS_PER_BUS + j + pe < num_nodes", bool_t)),
                     [
                         CodeAssign(
                             HLSVar("burst.data[pe]", int_t),
@@ -289,9 +287,10 @@ class MemoryAndGraphManager:
                     ],
                 ),
             ]
+            pe_loop = CodeFor(pe_loop_body, "PE_NUM", iter_name="pe")
 
             middle_if = CodeIf(
-                HLSExpr(HLSExprT.VAR, HLSVar("sent_pack_cnt < total_pack_cnt", bool)),
+                HLSExpr(HLSExprT.VAR, HLSVar("sent_pack_cnt < total_pack_cnt", bool_t)),
                 [
                     CodeWriteStream(
                         HLSVar(f"node_distance_burst_stream_{stream_idx}", stream_t),
@@ -306,9 +305,12 @@ class MemoryAndGraphManager:
 
             inner_loop_body = [
                 CodePragma("UNROLL"),
-                CodeOther(pe_loop_str + "{\n" + "".join(c.gen_code(1) for c in pe_loop_body) + "}\n"),
+                pe_loop,
                 middle_if,
             ]
+
+            # Use CodeFor with a custom step for the middle loop
+            inner_loop = CodeFor(inner_loop_body, "NUM_WORDS_PER_BUS", iter_name="j", iter_step="j += PE_NUM")
 
             main_loop_body = [
                 CodePragma("PIPELINE II=1"),
@@ -320,7 +322,7 @@ class MemoryAndGraphManager:
                     ),
                 ),
                 CodeVarDecl("burst", T["node_distance_burst_t"]),
-                CodeOther(inner_loop_str + "{\n" + "".join(c.gen_code(1) for c in inner_loop_body) + "}\n"),
+                inner_loop,
             ]
             body.append(CodeFor(main_loop_body, "num_wide_reads", iter_name="i"))
 

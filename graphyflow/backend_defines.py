@@ -64,9 +64,9 @@ class HLSType:
         self.array_dims = array_dims
         self.is_const_ptr = is_const_ptr
 
-        self.width = width # --- 新增 ---
+        self.width = width  # --- 新增 ---
 
-        if basic_type == HLSBasicType.AP_UINT: # --- 新增 ---
+        if basic_type == HLSBasicType.AP_UINT:  # --- 新增 ---
             assert width is not None
             self.name = f"ap_uint<{width}>"
             self.full_name = self.name
@@ -310,18 +310,20 @@ class CodeFor(HLSCodeLine):
         iter_limit: Union[str, HLSVar],
         iter_cmp="<",
         iter_name="i",
+        iter_step=None,
     ) -> None:
         super().__init__()
         self.i_name = iter_name
         self.i_cmp = iter_cmp
         self.i_lim = iter_limit
         self.codes = codes
+        self.i_step = iter_step if iter_step else f"{self.i_name}++"
 
     def gen_code(self, indent_lvl: int = 0) -> str:
         oind = indent_lvl * INDENT_UNIT
         return (
             oind
-            + f"for (uint32_t {self.i_name} = 0; {self.i_name} {self.i_cmp} {self.i_lim}; {self.i_name}++) "
+            + f"for (uint32_t {self.i_name} = 0; {self.i_name} {self.i_cmp} {self.i_lim}; {self.i_step}) "
             + "{\n"
             + "".join(c.gen_code(indent_lvl + 1) for c in self.codes)
             + oind

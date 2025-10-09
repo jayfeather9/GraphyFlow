@@ -24,3 +24,9 @@ collect要加dependence pragma
 Added kernel cpps, added create queues, now need to modify AlgorithmHost to support multiple partitions
 
 多kernel加完了，a bit faster, but partition method need to change or big graph will all kernel all node and can't support larger graph
+
+---
+
+有几个其他函数的性能优化，记得补上
+
+然后看看逻辑有没有问题，目前生成了代码，但是没编译
