@@ -2,7 +2,7 @@
 #include "host_bellman_ford.h"
 #include <iostream>
 
-std::vector<int> verify_on_host(const GraphCSR &graph, int start_node) {
+std::vector<int> verify_on_host(const GraphCSR& graph, int start_node) {
     std::vector<int> distances(graph.num_vertices, INFINITY_DIST);
     distances[start_node] = 0;
 
@@ -18,14 +18,11 @@ std::vector<int> verify_on_host(const GraphCSR &graph, int start_node) {
         iter++;
     }
 
-    std::cout << "Host computation converged after " << iter << " iterations."
-              << std::endl;
-
+    std::cout << "Host computation converged after " << iter << " iterations." << std::endl;
+    
     // Check for negative weight cycles (optional but good practice)
-    if (iter == max_iterations &&
-        host_bellman_ford_iteration(graph, distances)) {
-        std::cout << "Warning: Negative weight cycle detected by host verifier."
-                  << std::endl;
+    if (iter == max_iterations && host_bellman_ford_iteration(graph, distances)) {
+        std::cout << "Warning: Negative weight cycle detected by host verifier." << std::endl;
     }
 
     return distances;

@@ -1,10 +1,10 @@
 #include "graph_loader.h"
-#include <algorithm>
-#include <fstream>
 #include <iostream>
+#include <fstream>
 #include <sstream>
-#include <stdexcept>
 #include <vector>
+#include <algorithm>
+#include <stdexcept>
 
 // 边结构体，用于临时存储从文件中读取的边
 struct Edge {
@@ -12,13 +12,12 @@ struct Edge {
 };
 
 // 主函数，从文件中加载图并转换为 CSR 格式
-GraphCSR load_graph_from_file(const std::string &file_path) {
+GraphCSR load_graph_from_file(const std::string& file_path) {
     // ---- 1. 根据文件扩展名判断图的格式 ----
     bool is_one_based = false; // 默认为 0-indexed
     char comment_char = '#';   // 默认注释符
 
-    if (file_path.size() > 4 &&
-        file_path.substr(file_path.size() - 4) == ".mtx") {
+    if (file_path.size() > 4 && file_path.substr(file_path.size() - 4) == ".mtx") {
         is_one_based = true; // .mtx 文件通常是 1-indexed
         comment_char = '%';  // .mtx 文件使用 '%' 作为注释
         std::cout << "Detected .mtx format (1-based indexing)." << std::endl;
@@ -29,8 +28,7 @@ GraphCSR load_graph_from_file(const std::string &file_path) {
     // ---- 2. 打开文件并逐行解析 ----
     std::ifstream file(file_path);
     if (!file.is_open()) {
-        std::cerr << "Error: Could not open graph file: " << file_path
-                  << std::endl;
+        std::cerr << "Error: Could not open graph file: " << file_path << std::endl;
         exit(EXIT_FAILURE);
     }
 
@@ -48,7 +46,7 @@ GraphCSR load_graph_from_file(const std::string &file_path) {
 
         std::istringstream iss(line);
         Edge edge;
-
+        
         // 尝试读取 src, dest, weight
         if (iss >> edge.src >> edge.dest >> edge.weight) {
             // 成功读取三个值
@@ -59,23 +57,20 @@ GraphCSR load_graph_from_file(const std::string &file_path) {
             if (iss >> edge.src >> edge.dest) {
                 edge.weight = 1; // 赋予默认权重 1
             } else {
-                std::cerr << "Warning: Skipping malformed line " << line_num
-                          << ": " << line << std::endl;
+                std::cerr << "Warning: Skipping malformed line " << line_num << ": " << line << std::endl;
                 continue;
             }
         }
-
+        
         // 如果是 1-based 格式，转换为 0-based
         if (is_one_based) {
             edge.src--;
             edge.dest--;
         }
-
+        
         // 检查顶点ID是否有效
         if (edge.src < 0 || edge.dest < 0) {
-            std::cerr
-                << "Warning: Skipping edge with negative vertex ID on line "
-                << line_num << std::endl;
+            std::cerr << "Warning: Skipping edge with negative vertex ID on line " << line_num << std::endl;
             continue;
         }
 
@@ -95,12 +90,11 @@ GraphCSR load_graph_from_file(const std::string &file_path) {
 
     graph.num_vertices = max_vertex_id + 1;
     graph.num_edges = edges.size();
-
-    std::cout << "Graph loaded: " << graph.num_vertices << " vertices, "
-              << graph.num_edges << " edges." << std::endl;
+    
+    std::cout << "Graph loaded: " << graph.num_vertices << " vertices, " << graph.num_edges << " edges." << std::endl;
 
     // 为了进行 CSR 转换，按源顶点 ID 对边进行排序
-    std::sort(edges.begin(), edges.end(), [](const Edge &a, const Edge &b) {
+    std::sort(edges.begin(), edges.end(), [](const Edge& a, const Edge& b) {
         if (a.src != b.src) {
             return a.src < b.src;
         }
@@ -111,10 +105,10 @@ GraphCSR load_graph_from_file(const std::string &file_path) {
     graph.offsets.resize(graph.num_vertices + 1);
     graph.columns.resize(graph.num_edges);
     graph.weights.resize(graph.num_edges);
-
+    
     // 填充 columns 和 weights 数组，并计算每个顶点的出度
     std::vector<int> out_degree(graph.num_vertices, 0);
-    for (int i = 0; i < graph.num_edges; ++i) {
+    for(int i = 0; i < graph.num_edges; ++i) {
         graph.columns[i] = edges[i].dest;
         graph.weights[i] = edges[i].weight;
         out_degree[edges[i].src]++;
@@ -123,7 +117,7 @@ GraphCSR load_graph_from_file(const std::string &file_path) {
     // 通过出度的前缀和计算 offsets 数组
     graph.offsets[0] = 0;
     for (int i = 0; i < graph.num_vertices; ++i) {
-        graph.offsets[i + 1] = graph.offsets[i] + out_degree[i];
+        graph.offsets[i+1] = graph.offsets[i] + out_degree[i];
     }
 
     return graph;

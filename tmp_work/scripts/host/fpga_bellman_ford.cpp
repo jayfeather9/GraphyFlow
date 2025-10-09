@@ -1,10 +1,16 @@
 #include "fpga_bellman_ford.h"
 
-void fpga_bellman_ford_iteration(cl::CommandQueue &q, cl::Kernel &kernel,
-                                 int num_vertices, cl::Buffer &d_offsets,
-                                 cl::Buffer &d_columns, cl::Buffer &d_weights,
-                                 cl::Buffer &d_distances,
-                                 cl::Buffer &d_stop_flag, cl::Event &event) {
+void fpga_bellman_ford_iteration(
+    cl::CommandQueue& q,
+    cl::Kernel& kernel,
+    int num_vertices,
+    cl::Buffer& d_offsets,
+    cl::Buffer& d_columns,
+    cl::Buffer& d_weights,
+    cl::Buffer& d_distances,
+    cl::Buffer& d_stop_flag,
+    cl::Event& event)
+{
     cl_int err;
     int arg_idx = 0;
 
