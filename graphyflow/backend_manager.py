@@ -1,5 +1,6 @@
 from __future__ import annotations
 from enum import Enum
+from pathlib import Path
 from typing import List, Optional, Union, Dict, Any, Tuple
 import graphyflow.dataflow_ir_datatype as dftype
 import graphyflow.dataflow_ir as dfir
@@ -30,8 +31,7 @@ from graphyflow.backend_defines import (
     CodeOther,
 )
 from graphyflow.backend_utils import generate_demux, generate_omega_network, generate_stream_zipper
-
-
+from graphyflow.backend_mem_manager import MemoryAndGraphManager
 
 
 class BackendManager:
@@ -48,26 +48,21 @@ class BackendManager:
         self.struct_definitions: Dict[str, Tuple[HLSType, List[str]]] = {}
         self.unstreamed_funcs: set[str] = set()
 
-        # State for Phase 2 & 3
+        # State for code generation
         self.hls_functions: Dict[int, HLSFunction] = {}
         self.top_level_stream_decls: List[Tuple[CodeVarDecl, CodePragma]] = []
-        self.top_level_io_ports: List[dfir.Port] = []
-
+        
         self.reduce_internal_streams: Dict[int, Dict[str, HLSVar]] = {}
-
         self.utility_functions: List[HLSFunction] = []
         self.reduce_helpers: Dict[int, Dict[str, Any]] = {}
 
         self.global_graph_store = None
         self.comp_col_store = None
-
-        # 新增: 存储AXI相关的函数和类型信息
-        self.axi_input_ports: List[dfir.Port] = []
-        self.axi_output_ports: List[dfir.Port] = []
-        self.mem_to_stream_func: Optional[HLSFunction] = None
-        self.stream_to_mem_func: Optional[HLSFunction] = None
+        
+        # New manager for memory and specific graph structures
+        self.mem_manager: Optional[MemoryAndGraphManager] = None
         self.dataflow_core_func: Optional[HLSFunction] = None
-
+        
         # reduce_mode
         self.REDUCE_MODE = "big_pipeline"
 
@@ -77,44 +72,42 @@ class BackendManager:
     ) -> Tuple[str, str]:
         """
         Main entry point to generate HLS header and source files.
+        This is the new, refactored version that uses MemoryAndGraphManager.
         """
-
+        print("--- Starting Backend Generation (with Memory Manager) ---")
         self.global_graph_store = global_graph
         self.comp_col_store = comp_col
-        if self.REDUCE_MODE == "big_pipeline":
-            header_name = f"{top_func_name}_big.h"
-        else:
-            header_name = f"{top_func_name}_little.h"
 
-        # 1. Discover top-level I/O ports
-        top_level_inputs = []
-        for comp in comp_col.components:
-            if isinstance(comp, dfir.IOComponent) and comp.io_type == dfir.IOComponent.IOType.INPUT:
-                if comp.get_port("o_0").connected:
-                    top_level_inputs.append(comp.get_port("o_0").connection)
-
-        self.axi_input_ports = top_level_inputs
-        self.axi_output_ports = comp_col.outputs
-        self.top_level_io_ports = self.axi_input_ports + self.axi_output_ports
-
-        # Phase 1: Type Analysis
+        # --- Phase 1: Graph Validation and Memory Module Preparation ---
+        # The MemoryAndGraphManager validates the structure and builds HLSFunction
+        # objects for memory-related operations.
+        self.mem_manager = MemoryAndGraphManager(comp_col, global_graph)
+        
+        # --- Phase 2: Type Analysis for Computational Components ---
+        # This remains the same, analyzing types for all components.
         self._analyze_and_map_types(comp_col)
-        # Phase 2: Function Definition and Stream Instantiation
+        
+        # --- Phase 3: Define HLSFunctions for the Computational Core ---
+        # This now excludes IO and MemoryRead components, focusing only on compute.
         self._define_functions_and_streams(comp_col, top_func_name)
-        # Phase 3: Code Body Generation
+
+        # --- Phase 4: Translate DFIR to HLS for the Computational Core ---
+        # This generates the C++ body for each computational HLSFunction.
         self._translate_functions()
 
-        # Phase 4: AXI Wrapper Generation
-        self.mem_to_stream_func = self._generate_mem_to_stream_func()
-        self.stream_to_mem_func = self._generate_stream_to_mem_func()
-        self.dataflow_core_func = self._generate_dataflow_core_func(top_func_name)
-
+        # --- Phase 5: Assemble the final Kernel ---
+        # 5.1 Create the wrapper function for the computational core.
+        self.dataflow_core_func = self._generate_dataflow_core_func(f"{top_func_name}_dataflow")
+        
+        # 5.2 Generate the top-level orchestrator kernel with AXI interfaces.
         axi_wrapper_func_str, top_func_sig = self._generate_axi_kernel_wrapper(top_func_name)
 
-        # 2. Generate file contents
+        # --- Phase 6: Generate file contents ---
+        header_name = f"{top_func_name}.h"
         header_code = self._generate_header_file(top_func_name, top_func_sig)
         source_code = self._generate_source_file(header_name, axi_wrapper_func_str)
 
+        print("--- Backend Generation Complete ---")
         return header_code, source_code
 
     def generate_host_codes(self, top_func_name: str, template_path: Path) -> Tuple[str, str]:
@@ -489,8 +482,9 @@ emconfig:
 
     def _define_functions_and_streams(self, comp_col: dfir.ComponentCollection, top_func_name: str):
         """
-        Phase 2: Creates HLSFunction objects, defines their signatures, and
-        identifies the intermediate streams needed for the top-level function.
+        Phase 3: Creates HLSFunction objects for computational components and
+        identifies intermediate streams for the dataflow core.
+        This version explicitly ignores IO and MemoryRead components.
         """
         self.hls_functions.clear()
         self.top_level_stream_decls.clear()
@@ -499,6 +493,8 @@ emconfig:
 
         processed_sub_comp_ids = set()
 
+        # This entire loop for ReduceComponent pre-processing and helper generation
+        # remains largely the same as it deals with the logical structure of Reduce.
         for comp in comp_col.components:
             if isinstance(comp, dfir.ReduceComponent):
                 pre_process_func = HLSFunction(name=f"{comp.name}_pre_process", comp=comp)
@@ -538,36 +534,19 @@ emconfig:
                 base_out_batch_type = self._get_batch_type(self.type_map[out_dfir_type])
                 
                 if self.REDUCE_MODE == "little_pipeline":
-                    # MODIFICATION: The 'net_wrapper_type' for the Omega network is no longer needed for small pipeline
                     unit_reduce_func.params = [
-                        # Input is now the single zipped stream of key-transform pairs
                         HLSVar("in_kt_pair_stream", HLSType(HLSBasicType.STREAM, [kt_pair_batch_type])),
-                        # Output remains the same
                         HLSVar("o_0", HLSType(HLSBasicType.STREAM, [base_out_batch_type])),
                     ]
-
                     self.hls_functions[pre_process_func.readable_id] = pre_process_func
                     self.hls_functions[unit_reduce_func.readable_id] = unit_reduce_func
-
-                    # Only the zipper function is needed from the utils
                     self.utility_functions.append(zipper_func)
-
-                    helpers = {
-                        "pre_process": pre_process_func,
-                        "unit_reduce": unit_reduce_func,
-                        "zipper": zipper_func,
-                    }
-
-                    # Declare only the necessary intermediate streams
+                    helpers = {"pre_process": pre_process_func, "unit_reduce": unit_reduce_func, "zipper": zipper_func}
                     streams_to_declare = {
-                        "zipper_to_unit_reduce": HLSVar(  # Renamed for clarity
-                            f"reduce_{comp.readable_id}_z2u_pair",
-                            HLSType(HLSBasicType.STREAM, [kt_pair_batch_type]),
-                        ),
+                        "zipper_to_unit_reduce": HLSVar(f"reduce_{comp.readable_id}_z2u_pair", HLSType(HLSBasicType.STREAM, [kt_pair_batch_type])),
                         "intermediate_key": inter_key_var,
                         "intermediate_transform": inter_transform_var,
                     }
-
                 elif self.REDUCE_MODE == "big_pipeline":
                     net_wrapper_type = HLSType(
                         HLSBasicType.STRUCT,
@@ -576,49 +555,27 @@ emconfig:
                         struct_prop_names=["data", "end_flag"],
                     )
                     self.struct_definitions[net_wrapper_type.name] = (net_wrapper_type, ["data", "end_flag"])
-
                     unit_reduce_func.params = [
-                        HLSVar(
-                            "kt_wrap_item",
-                            HLSType(
-                                HLSBasicType.ARRAY,
-                                [HLSType(HLSBasicType.STREAM, [net_wrapper_type])],
-                                array_dims=["PE_NUM"],
-                            ),
-                        ),
+                        HLSVar("kt_wrap_item", HLSType(HLSBasicType.ARRAY, [HLSType(HLSBasicType.STREAM, [net_wrapper_type])], array_dims=["PE_NUM"])),
                         HLSVar("o_0", HLSType(HLSBasicType.STREAM, [base_out_batch_type])),
                     ]
-                    
                     self.hls_functions[pre_process_func.readable_id] = pre_process_func
                     self.hls_functions[unit_reduce_func.readable_id] = unit_reduce_func
-
                     demux_func = generate_demux(self.PE_NUM, kt_pair_batch_type, net_wrapper_type)
                     omega_funcs = generate_omega_network(self.PE_NUM, net_wrapper_type, routing_key_member="key")
                     omega_func = next(f for f in omega_funcs if "omega_switch" in f.name)
                     self.utility_functions.extend([zipper_func, demux_func] + omega_funcs)
-                    
                     helpers = {
-                        "pre_process": pre_process_func,
-                        "unit_reduce": unit_reduce_func,
-                        "zipper": zipper_func,
-                        "demux": demux_func,
-                        "omega": omega_func,
+                        "pre_process": pre_process_func, "unit_reduce": unit_reduce_func,
+                        "zipper": zipper_func, "demux": demux_func, "omega": omega_func,
                     }
-
                     streams_to_declare = {
-                        "zipper_to_demux": HLSVar(
-                            f"reduce_{comp.readable_id}_z2d_pair",
-                            HLSType(HLSBasicType.STREAM, [kt_pair_batch_type]),
-                        ),
-                        "demux_to_omega": HLSVar(
-                            f"reduce_{comp.readable_id}_d2o_pair", demux_func.params[1].type
-                        ),
+                        "zipper_to_demux": HLSVar(f"reduce_{comp.readable_id}_z2d_pair", HLSType(HLSBasicType.STREAM, [kt_pair_batch_type])),
+                        "demux_to_omega": HLSVar(f"reduce_{comp.readable_id}_d2o_pair", demux_func.params[1].type),
                         "omega_to_unit": HLSVar(f"reduce_{comp.readable_id}_o2u_pair", omega_func.params[1].type),
                         "intermediate_key": inter_key_var,
                         "intermediate_transform": inter_transform_var,
                     }
-
-                # shared logic:
                 for stream_var in streams_to_declare.values():
                     decl = CodeVarDecl(stream_var.name, stream_var.type)
                     pragma = CodePragma(f"STREAM variable={stream_var.name} depth={self.STREAM_DEPTH}")
@@ -626,8 +583,6 @@ emconfig:
 
                 helpers["streams"] = streams_to_declare
                 self.reduce_helpers[comp.readable_id] = helpers
-
-                # Mark the sub-graph components as processed
                 for port in comp.subg_input_ports:
                     port_name = port.name
                     if comp.get_port(port_name).connected:
@@ -635,15 +590,14 @@ emconfig:
                         visited_sub = set()
                         while q:
                             sub_comp = q.pop(0)
-                            if sub_comp.readable_id in visited_sub:
-                                continue
+                            if sub_comp.readable_id in visited_sub: continue
                             visited_sub.add(sub_comp.readable_id)
                             processed_sub_comp_ids.add(sub_comp.readable_id)
                             for p in sub_comp.out_ports:
                                 if p.connected and not isinstance(p.connection.parent, dfir.ReduceComponent):
                                     q.append(p.connection.parent)
 
-        # Manage regular components
+        # Manage regular components, EXCLUDING IO and MemoryRead
         for comp in comp_col.components:
             if comp.readable_id in processed_sub_comp_ids or isinstance(
                 comp,
@@ -652,12 +606,13 @@ emconfig:
                     dfir.ConstantComponent,
                     dfir.UnusedEndMarkerComponent,
                     dfir.ReduceComponent,
+                    dfir.MemoryReadComponent, # --- Exclude MemoryRead ---
                 ),
             ):
                 continue
+            
             hls_func = HLSFunction(name=comp.name, comp=comp)
             for port in comp.ports:
-                # Skip the ports connected to Constant or UnusedEndMarker
                 if port.connection and isinstance(
                     port.connection.parent, (dfir.UnusedEndMarkerComponent, dfir.ConstantComponent)
                 ):
@@ -671,21 +626,22 @@ emconfig:
                 hls_func.params.append(HLSVar(var_name=port.name, var_type=param_type))
             self.hls_functions[comp.readable_id] = hls_func
 
-        # Declare intermediate streams for the top-level function
+        # Declare intermediate streams for the computational core
         all_stream_comp_ids = {f.dfir_comp.readable_id for f in self.hls_functions.values()}
         visited_ports = set()
+        
+        # This logic remains valid for finding connections *between* computational components.
         for port in comp_col.all_connected_ports:
-            if port.readable_id in visited_ports:
-                continue
+            if port.readable_id in visited_ports: continue
+            
             conn = port.connection
             is_intermediate = (
                 port.parent.readable_id in all_stream_comp_ids
                 and conn.parent.readable_id in all_stream_comp_ids
             )
+            
             if is_intermediate:
-                dfir_type = (
-                    port.data_type.type_ if isinstance(port.data_type, dftype.ArrayType) else port.data_type
-                )
+                dfir_type = port.data_type.type_ if isinstance(port.data_type, dftype.ArrayType) else port.data_type
                 base_hls_type = self.type_map[dfir_type]
                 batch_type = self.batch_type_map[base_hls_type]
                 stream_type = HLSType(HLSBasicType.STREAM, sub_types=[batch_type])
@@ -694,7 +650,7 @@ emconfig:
                 decl = CodeVarDecl(stream_name, stream_type)
                 pragma = CodePragma(f"STREAM variable={stream_name} depth={self.STREAM_DEPTH}")
                 self.top_level_stream_decls.append((decl, pragma))
-            # else, it is connect to/from Constant/UnusedEndMarker/SubGraph
+
             visited_ports.add(port.readable_id)
             visited_ports.add(conn.readable_id)
 
@@ -879,124 +835,109 @@ emconfig:
         func.codes = body
         return func
 
-    def _generate_dataflow_core_func(self, top_func_name: str) -> HLSFunction:
-        """Phase 4.3: Generates the implementation of the core dataflow function (the old top-level)."""
-        # This function is largely the same as the old _generate_top_level_function
-        # but with a new name and a signature composed of only streams.
-        func = HLSFunction(f"{top_func_name}_dataflow", comp=None)
+    def _generate_dataflow_core_func(self, core_func_name: str) -> HLSFunction:
+        """
+        Phase 5.1: Generates the HLSFunction for the core dataflow block.
+        This function is a wrapper around the translated DFIR components.
+        """
+        assert self.mem_manager is not None
+        func = HLSFunction(core_func_name, comp=None)
 
-        params = []
-        for port in self.axi_input_ports + self.axi_output_ports:
-            batch_type = self.batch_type_map[self.type_map[port.data_type]]
-            stream_type = HLSType(HLSBasicType.STREAM, [batch_type])
-            params.append(HLSVar(f"{port.unique_name}_stream", stream_type))
+        # Define parameters: the streams connecting memory modules and the compute core
+        params = [
+            self.mem_manager.memory_loader_func.params[6], # response_to_318 (edge_batch_t stream)
+            self.mem_manager.memory_loader_func.params[7], # all_node_distances_to_343 (struct_ibu_14_t stream)
+            self.mem_manager.final_writeback_func.params[1], # in_stream (struct_sbu_19_t stream)
+        ]
         func.params = params
-
-        # The body generation is the same as the original _generate_top_level_function
-        func.codes = self._generate_top_level_function_body()  # Delegate body generation
+        
+        # The body contains the instantiation of the computational DFIR components
+        func.codes = self._generate_top_level_function_body()
         return func
 
     def _generate_axi_kernel_wrapper(self, top_func_name: str) -> Tuple[str, str]:
-        """Generates the final extern "C" kernel with AXI pragmas placed correctly."""
+        """
+        Phase 5.2: Generates the final extern "C" kernel with AXI pragmas.
+        This function orchestrates the memory_loader, dataflow_core, and final_writeback.
+        """
+        assert self.mem_manager is not None and self.dataflow_core_func is not None
+
+        # --- Phase 1: Define kernel signature with CSR-style AXI pointers ---
         params_str_list = []
         param_vars = []
 
-        # 1. Build parameter list for the top-level function signature
-        for port in self.axi_input_ports:
-            batch_type = self.batch_type_map[self.type_map[port.data_type]]
-            axi_ptr_type = HLSType(HLSBasicType.POINTER, sub_types=[batch_type], is_const_ptr=True)
-            axi_param = HLSVar(port.unique_name, axi_ptr_type)
-            params_str_list.append(axi_param.type.get_upper_decl(axi_param.name))
-            param_vars.append(axi_param)
+        # Get types from mem_manager's function definitions
+        loader_params = self.mem_manager.memory_loader_func.params
+        writer_params = self.mem_manager.final_writeback_func.params
 
-        for port in self.axi_output_ports:
-            host_output_type = self._get_host_output_type()
-            axi_ptr_type = HLSType(HLSBasicType.POINTER, sub_types=[host_output_type], is_const_ptr=False)
-            axi_param = HLSVar(port.unique_name, axi_ptr_type)
-            params_str_list.append(axi_param.type.get_upper_decl(axi_param.name))
-            param_vars.append(axi_param)
+        # Input pointers from memory_loader
+        p_src_offsets = HLSVar("src_offsets", loader_params[1].type)
+        p_edge_bursts = HLSVar("edge_des_bursts", loader_params[2].type)
+        p_node_dists = HLSVar("node_distances", loader_params[3].type)
+        
+        # Output pointer from final_writeback
+        p_output = HLSVar("o_0_342", writer_params[2].type)
 
-        params_str_list.append("int* stop_flag")
-        param_vars.append(HLSVar("stop_flag", HLSType(HLSBasicType.POINTER, [HLSType(HLSBasicType.INT)])))
-        params_str_list.append("uint16_t input_length_in_batches")
-        param_vars.append(HLSVar("input_length_in_batches", HLSType(HLSBasicType.UINT16)))
+        # Metadata
+        p_num_nodes = HLSVar("num_nodes", loader_params[4].type)
+        p_num_edges = HLSVar("num_edges", loader_params[5].type)
+        
+        param_vars.extend([p_src_offsets, p_edge_bursts, p_node_dists, p_output, p_num_nodes, p_num_edges])
 
-        if self.REDUCE_MODE == "big_pipeline":
-            top_func_sig = (
-                f'extern "C" void {top_func_name}_big(\n{INDENT_UNIT}'
-                + f",\n{INDENT_UNIT}".join(params_str_list)
-                + "\n)"
-            )
-        else:
-            top_func_sig = (
-                f'extern "C" void {top_func_name}_little(\n{INDENT_UNIT}'
-                + f",\n{INDENT_UNIT}".join(params_str_list)
-                + "\n)"
-            )
-
-        # 2. Prepare Pragmas and Body
-        pragmas = []
-        for i, var in enumerate(param_vars):
-            bundle = f"gmem{i}"
-            if var.type.type == HLSBasicType.POINTER:
-                pragmas.append(f"#pragma HLS INTERFACE m_axi port={var.name} offset=slave bundle={bundle}")
-        for var in param_vars:
-            pragmas.append(f"#pragma HLS INTERFACE s_axilite port={var.name}")
-        pragmas.append("#pragma HLS INTERFACE s_axilite port=return")
-
+        for p in param_vars:
+            params_str_list.append(p.type.get_upper_decl(p.name))
+        
+        top_func_sig = (
+            f'extern "C" void {top_func_name}(\n{INDENT_UNIT}'
+            + f",\n{INDENT_UNIT}".join(params_str_list)
+            + "\n)"
+        )
+        
+        # --- Phase 2: Prepare Pragmas for AXI interfaces ---
         body: List[HLSCodeLine] = []
+        axi_pointers = [p_src_offsets, p_edge_bursts, p_node_dists, p_output]
+        for i, var in enumerate(axi_pointers):
+            body.append(CodePragma(f"INTERFACE m_axi port={var.name} offset=slave bundle=gmem{i}"))
+        
+        for var in param_vars:
+             body.append(CodePragma(f"INTERFACE s_axilite port={var.name}"))
+        body.append(CodePragma("INTERFACE s_axilite port=return"))
 
-        # --- *** 关键修正：将 Pragma 作为 CodeLine 对象添加到函数体列表的开头 *** ---
-        for p_str in pragmas:
-            body.append(CodePragma(p_str.replace("#pragma HLS ", "")))
-
-        internal_streams = []
-        for port in self.top_level_io_ports:
-            batch_type = self.batch_type_map[self.type_map[port.data_type]]
-            stream_var = HLSVar(
-                f"{port.unique_name}_internal_stream", HLSType(HLSBasicType.STREAM, [batch_type])
-            )
-            internal_streams.append(stream_var)
-            decl = CodeVarDecl(stream_var.name, stream_var.type)
-            setattr(decl, "is_static", True)
-            body.append(decl)
-            body.append(CodePragma(f"STREAM variable={stream_var.name} depth={self.STREAM_DEPTH}"))
-
+        # --- Phase 3: Build the DATAFLOW body ---
         body.append(CodePragma("DATAFLOW"))
+        
+        # 3.1 Declare streams to connect the three stages
+        stream_edge_batch = CodeVarDecl("stream_edge_data", self.dataflow_core_func.params[0].type)
+        stream_node_dist = CodeVarDecl("stream_node_dist_data", self.dataflow_core_func.params[1].type)
+        stream_result = CodeVarDecl("stream_result_data", self.dataflow_core_func.params[2].type)
+        body.extend([
+            stream_edge_batch, CodePragma(f"STREAM variable={stream_edge_batch.var.name} depth={self.STREAM_DEPTH}"),
+            stream_node_dist, CodePragma(f"STREAM variable={stream_node_dist.var.name} depth={self.STREAM_DEPTH}"),
+            stream_result, CodePragma(f"STREAM variable={stream_result.var.name} depth={self.STREAM_DEPTH}"),
+        ])
 
-        # Generate calls (logic remains the same)
-        m2s_axi_params = [p for p in param_vars if p.type.is_const_ptr]
-        m2s_stream_params = [
-            s for s in internal_streams if any(p.unique_name in s.name for p in self.axi_input_ports)
+        # 3.2 Generate calls to the three stages
+        # Call memory_loader
+        loader_call_params = [
+            HLSExpr(HLSExprT.CONST, 0), # instantiate_idx
+            p_src_offsets, p_edge_bursts, p_node_dists, 
+            p_num_nodes, p_num_edges,
+            stream_edge_batch.var, stream_node_dist.var
         ]
-        m2s_len_param = [p for p in param_vars if "input_length" in p.name]
-        body.append(CodeCall(self.mem_to_stream_func, m2s_axi_params + m2s_stream_params + m2s_len_param))
+        body.append(CodeCall(self.mem_manager.memory_loader_func, loader_call_params))
+        
+        # Call dataflow_core_func
+        core_call_params = [stream_edge_batch.var, stream_node_dist.var, stream_result.var]
+        body.append(CodeCall(self.dataflow_core_func, core_call_params))
 
-        df_core_input_streams = [
-            s for s in internal_streams if any(p.unique_name in s.name for p in self.axi_input_ports)
-        ]
-        df_core_output_streams = [
-            s for s in internal_streams if any(p.unique_name in s.name for p in self.axi_output_ports)
-        ]
-        body.append(CodeCall(self.dataflow_core_func, df_core_input_streams + df_core_output_streams))
-
-        s2m_stream_params = [
-            s for s in internal_streams if any(p.unique_name in s.name for p in self.axi_output_ports)
-        ]
-        s2m_axi_params = [
-            p
-            for p in param_vars
-            if p.type.type == HLSBasicType.POINTER and not p.type.is_const_ptr and "stop_flag" not in p.name
-        ]
-        body.append(CodeCall(self.stream_to_mem_func, s2m_stream_params + s2m_axi_params))
-
-        # 3. Assemble final C++ string
+        # Call final_writeback
+        writer_call_params = [HLSExpr(HLSExprT.CONST, 0), stream_result.var, p_output]
+        body.append(CodeCall(self.mem_manager.final_writeback_func, writer_call_params))
+        
+        # --- Phase 4: Assemble final C++ string ---
         code = f"{top_func_sig} " + "{\n"
         for line in body:
-            if isinstance(line, CodeVarDecl) and getattr(line, "is_static", False):
-                code += f"{INDENT_UNIT}static {line.gen_code().lstrip()}"
-            else:
-                code += line.gen_code(1)
+            code += line.gen_code(1)
         code += "}\n"
 
         return code, top_func_sig
@@ -3238,29 +3179,51 @@ emconfig:
 
     def _generate_header_file(self, top_func_name: str, top_func_sig: str) -> str:
         """Generates the full content of the .h header file."""
+        assert self.mem_manager is not None
+        
         header_guard = f"__GRAPHYFLOW_{top_func_name.upper()}_H__"
         code = f"#ifndef {header_guard}\n#define {header_guard}\n\n"
-        code += "#include <hls_stream.h>\n#include <ap_fixed.h>\n#include <stdint.h>\n\n"
+        code += "#include <hls_stream.h>\n#include <ap_fixed.h>\n#include <ap_int.h>\n#include <stdint.h>\n\n"
         code += "#include <string.h>\n\n"
         code += f"#define PE_NUM {self.PE_NUM}\n"
         code += f"#define MAX_NUM {self.MAX_NUM}\n"
         code += f"#define L {self.L}\n\n"
+        code += "#define AXI_BUS_WIDTH 512\n"
+        code += "#define DATA_TYPE_WIDTH 32\n"
+        code += "#define NUM_WORDS_PER_BUS (AXI_BUS_WIDTH / DATA_TYPE_WIDTH)\n"
+        code += "#define LOG_PE_NUM 3\n\n"
 
-        # define edge_id_t & node_id_t
+
         code += "// --- Graph Type Definitions ---\n"
         code += "typedef uint16_t edge_id_t;\n"
         code += "typedef uint16_t node_id_t;\n"
         code += "typedef uint32_t ap_fixed_pod_t;\n\n"
 
         code += "// --- Struct Type Definitions ---\n"
+        # Combine structs from both managers
+        all_struct_defs = self.struct_definitions.copy()
+        all_struct_defs.update({s.name: (s, s.struct_prop_names) for s in self.mem_manager.mem_types.values() if s.type == HLSBasicType.STRUCT})
+        self.struct_definitions = all_struct_defs # Update self for _topologically_sort_structs
+        
         sorted_defs = self._topologically_sort_structs()
         for hls_type, members in sorted_defs:
             code += hls_type.gen_decl(members) + "\n"
 
         code += "// --- Function Prototypes ---\n"
+        # Add prototypes for memory helper functions
+        for func in self.mem_manager.helper_funcs:
+            params_str = ", ".join([p.type.get_upper_param(p.name, p.type.type != HLSBasicType.INT) for p in func.params])
+            code += f"static void {func.name}({params_str});\n"
+        
+        # Add prototypes for computational functions
         for func in self.hls_functions.values():
             params_str = ", ".join([p.type.get_upper_param(p.name, True) for p in func.params])
             code += f"static void {func.name}({params_str});\n"
+            
+        # Add prototypes for top-level memory and dataflow functions
+        for func in [self.mem_manager.memory_loader_func, self.dataflow_core_func, self.mem_manager.final_writeback_func]:
+             params_str = ", ".join([p.type.get_upper_param(p.name, p.type.type != HLSBasicType.INT) for p in func.params])
+             code += f"static void {func.name}({params_str});\n"
 
         code += f"\n// --- Top-Level Function Prototype ---\n"
         code += f"{top_func_sig};\n\n"
@@ -3269,42 +3232,42 @@ emconfig:
         return code
 
     def _generate_top_level_function_body(self) -> List[HLSCodeLine]:
-        """Generates the implementation of the dataflow core function body,
-        based on the proven logic from the original implementation.
+        """
+        Generates the implementation of the dataflow core function body.
+        This logic remains largely the same but its boundaries are now defined by streams, not AXI.
         """
         from collections import defaultdict
+        assert self.mem_manager is not None and self.dataflow_core_func is not None
 
         body: List[HLSCodeLine] = [CodePragma("DATAFLOW")]
 
-        # 1. Declare all intermediate streams
         for decl, pragma in self.top_level_stream_decls:
             body.append(decl)
             if pragma:
                 body.append(pragma)
 
-        # 2. Prepare maps for I/O and intermediate streams
         stream_map = {decl.var.name: decl.var for decl, _ in self.top_level_stream_decls}
         top_io_map: Dict[int, HLSVar] = {}
+        
+        # --- Map the dataflow core's stream parameters to the DFIR connection points ---
+        # The connection points are the ports of the MemoryRead components.
+        
+        # Input to dataflow: fed by memory_loader, which replaces pre_reduce_mem_read
+        if self.mem_manager.pre_reduce_mem_read:
+            for i, p_out in enumerate(self.mem_manager.pre_reduce_mem_read.out_ports):
+                assert p_out.connected
+                # Map the port where the compute graph *receives* data
+                top_io_map[p_out.connection.readable_id] = self.dataflow_core_func.params[i]
 
-        # --- *** 关键修正：在此处重新发现顶层IO端口，确保状态最新 *** ---
-        top_level_inputs = []
-        for comp in self.comp_col_store.components:
-            if isinstance(comp, dfir.IOComponent) and comp.io_type == dfir.IOComponent.IOType.INPUT:
-                if comp.get_port("o_0").connected:
-                    top_level_inputs.append(comp.get_port("o_0").connection)
-        top_level_outputs = self.comp_col_store.outputs
+        # Output from dataflow: feeds final_writeback, which replaces post_reduce_mem_read
+        if self.mem_manager.post_reduce_mem_read:
+            for i, p_in in enumerate(self.mem_manager.post_reduce_mem_read.in_ports):
+                assert p_in.connected
+                # Map the port where the compute graph *sends* data
+                top_io_map[p_in.connection.readable_id] = self.dataflow_core_func.params[-1]
 
-        current_top_level_io_ports = top_level_inputs + top_level_outputs
-        # ----------------------------------------------------------------
-
-        for p in current_top_level_io_ports:
-            dfir_type = p.data_type.type_ if isinstance(p.data_type, dftype.ArrayType) else p.data_type
-            batch_type = self.batch_type_map[self.type_map[dfir_type]]
-            top_io_map[p.readable_id] = HLSVar(
-                f"{p.unique_name}_stream", HLSType(HLSBasicType.STREAM, [batch_type])
-            )
-
-        # 3. Topologically sort functions (logic is unchanged)
+        # The rest of the topological sort and code generation logic is the same,
+        # as it operates on the connections between computational components.
         stream_funcs = [f for f in self.hls_functions.values() if f.streamed]
         id_to_func = {f.readable_id: f for f in stream_funcs}
         comp_to_func = {f.dfir_comp: f for f in stream_funcs}
@@ -3351,7 +3314,6 @@ emconfig:
         if len(sorted_funcs) != len(stream_funcs):
             raise RuntimeError("A cycle was detected in the top-level dataflow graph.")
 
-        # 4. Generate calls (MODIFIED for Little Pipeline)
         body.append(CodeComment("--- Function Calls (in topological order) ---"))
         handled_unit_reduce_ids = set()
         for func in sorted_funcs:
@@ -3365,151 +3327,109 @@ emconfig:
                 streams = helpers["streams"]
                 unit_reduce_func = helpers["unit_reduce"]
 
-                body.append(
-                    CodeComment(f"--- Start of Reduce Super-Block for {comp.name} (Little Pipeline) ---")
-                )
-
+                body.append(CodeComment(f"--- Start of Reduce Super-Block for {comp.name} ---"))
                 in_ports = comp.get_port_group("global", "in")
                 in_stream_vars = []
                 for in_port in in_ports:
                     pred_port = in_port.connection
-                    in_stream_var = (
-                        top_io_map[in_port.readable_id]
-                        if isinstance(pred_port.parent, dfir.IOComponent)
-                        else stream_map[f"stream_{pred_port.unique_name}"]
-                    )
-                    in_stream_vars.append(in_stream_var)
-
-                pre_process_call_params = in_stream_vars + [
-                    streams["intermediate_key"],
-                    streams["intermediate_transform"],
-                ]
+                    # Check if input comes from a boundary (MemRead) or another compute component
+                    if pred_port.readable_id in top_io_map:
+                         in_stream_vars.append(top_io_map[pred_port.readable_id])
+                    else:
+                         in_stream_vars.append(stream_map[f"stream_{pred_port.unique_name}"])
+                
+                pre_process_call_params = in_stream_vars + [streams["intermediate_key"], streams["intermediate_transform"]]
                 body.append(CodeCall(func, pre_process_call_params))
 
-                # HERE
                 if self.REDUCE_MODE == "little_pipeline":
-                    body.append(
-                        CodeCall(
-                            helpers["zipper"],
-                            [
-                                streams["intermediate_key"],
-                                streams["intermediate_transform"],
-                                streams[
-                                    "zipper_to_unit_reduce"
-                                ],  # Zipper now outputs directly to the unit_reduce input stream
-                            ],
-                        )
-                    )
-                    # The calls to demux and omega are removed.
+                    body.append(CodeCall(helpers["zipper"], [streams["intermediate_key"], streams["intermediate_transform"], streams["zipper_to_unit_reduce"]]))
                     out_port = unit_reduce_func.dfir_comp.get_port("o_0")
-                    out_stream_var = (
-                        top_io_map[out_port.readable_id]
-                        if out_port.connection is None
-                        else stream_map[f"stream_{out_port.unique_name}"]
-                    )
-
-                    # unit_reduce now takes the zipped stream directly.
-                    body.append(
-                        CodeCall(unit_reduce_func, [streams["zipper_to_unit_reduce"], out_stream_var])
-                    )
-
-                    body.append(CodeComment(f"--- End of Reduce Super-Block for {comp.name} ---"))
-                    handled_unit_reduce_ids.add(comp_id)
+                    # Check if output goes to a boundary (MemRead) or another compute component
+                    if out_port.connection.readable_id in top_io_map:
+                         out_stream_var = top_io_map[out_port.connection.readable_id]
+                    else:
+                         out_stream_var = stream_map[f"stream_{out_port.unique_name}"]
+                    body.append(CodeCall(unit_reduce_func, [streams["zipper_to_unit_reduce"], out_stream_var]))
+                
                 elif self.REDUCE_MODE == "big_pipeline":
-                    body.append(
-                        CodeCall(
-                            helpers["zipper"],
-                            [
-                                streams["intermediate_key"],
-                                streams["intermediate_transform"],
-                                streams["zipper_to_demux"],
-                            ],
-                        )
-                    )
-                    body.append(
-                        CodeCall(helpers["demux"], [streams["zipper_to_demux"], streams["demux_to_omega"]])
-                    )
-                    body.append(
-                        CodeCall(helpers["omega"], [streams["demux_to_omega"], streams["omega_to_unit"]])
-                    )
-
+                    body.append(CodeCall(helpers["zipper"], [streams["intermediate_key"], streams["intermediate_transform"], streams["zipper_to_demux"]]))
+                    body.append(CodeCall(helpers["demux"], [streams["zipper_to_demux"], streams["demux_to_omega"]]))
+                    body.append(CodeCall(helpers["omega"], [streams["demux_to_omega"], streams["omega_to_unit"]]))
                     out_port = unit_reduce_func.dfir_comp.get_port("o_0")
-                    out_stream_var = (
-                        top_io_map[out_port.readable_id]
-                        if out_port.connection is None
-                        else stream_map[f"stream_{out_port.unique_name}"]
-                    )
+                    if out_port.connection.readable_id in top_io_map:
+                        out_stream_var = top_io_map[out_port.connection.readable_id]
+                    else:
+                        out_stream_var = stream_map[f"stream_{out_port.unique_name}"]
                     body.append(CodeCall(unit_reduce_func, [streams["omega_to_unit"], out_stream_var]))
-                    body.append(CodeComment(f"--- End of Reduce Super-Block for {comp.name} ---"))
-                    handled_unit_reduce_ids.add(comp_id)
 
-            elif not isinstance(comp, dfir.ReduceComponent):  # This part is unchanged
+                body.append(CodeComment(f"--- End of Reduce Super-Block for {comp.name} ---"))
+                handled_unit_reduce_ids.add(comp_id)
+
+            elif not isinstance(comp, dfir.ReduceComponent):
                 call_params: List[HLSVar] = []
                 for func_param in func.params:
                     port = comp.get_port(func_param.name)
-
                     if port.port_type == dfir.PortType.IN:
-                        predecessor_port = port.connection
-                        if isinstance(predecessor_port.parent, dfir.IOComponent):
-                            call_params.append(top_io_map[port.readable_id])
+                        pred_port = port.connection
+                        if pred_port.readable_id in top_io_map:
+                             call_params.append(top_io_map[pred_port.readable_id])
                         else:
-                            call_params.append(stream_map[f"stream_{predecessor_port.unique_name}"])
-                    else:  # OUT port
-                        if port.connection is None:
-                            call_params.append(top_io_map[port.readable_id])
+                             call_params.append(stream_map[f"stream_{pred_port.unique_name}"])
+                    else:
+                        if port.connection.readable_id in top_io_map:
+                             call_params.append(top_io_map[port.connection.readable_id])
                         else:
-                            call_params.append(stream_map[f"stream_{port.unique_name}"])
+                             call_params.append(stream_map[f"stream_{port.unique_name}"])
                 body.append(CodeCall(func, call_params))
 
         return body
 
     def _generate_source_file(self, header_name: str, axi_wrapper_func_str: str) -> str:
         """Generates the full content of the .cpp source file with correct function order."""
+        assert self.mem_manager is not None and self.dataflow_core_func is not None
 
         code = f'#include "{header_name}"\n\n'
 
-
-        # --- *** 关键修正：调整函数定义顺序 *** ---
-        # 顺序: 辅助网络 -> DFIR组件 -> AXI数据搬运 -> AXI顶层封装
-
-        # 1. Utility Network Functions (callees)
-        if self.utility_functions:
-            code += "// --- Utility Network Functions ---\n"
-            for func in self.utility_functions:
-                params_str = ", ".join(
-                    [p.type.get_upper_param(p.name, p.type.type != HLSBasicType.INT) for p in func.params]
-                )
-                code += f"static void {func.name}({params_str}) " + "{\n"
-                code += "".join([line.gen_code(1) for line in func.codes])
-                code += "}\n\n"
-
-        # 2. DFIR Component Functions (callees)
-        code += "// --- DFIR Component Functions ---\n"
-        for func in self.hls_functions.values():
-            params_str = ", ".join([p.type.get_upper_param(p.name, True) for p in func.params])
+        # --- Function Definition Order ---
+        # 1. Memory helper functions (lowest level)
+        # 2. Utility Network Functions (zipper, demux, etc.)
+        # 3. DFIR Component Functions (computational logic)
+        # 4. Top-level Memory/Dataflow functions (callers)
+        # 5. Top-level AXI Kernel Wrapper (final orchestrator)
+        
+        def write_func_body(func: HLSFunction):
+            nonlocal code
+            params_str = ", ".join(
+                [p.type.get_upper_param(p.name, p.type.type != HLSBasicType.INT) for p in func.params]
+            )
             code += f"static void {func.name}({params_str}) " + "{\n"
             code += "".join([line.gen_code(1) for line in func.codes])
             code += "}\n\n"
 
-        # 3. AXI Helper Functions (callers)
-        #    Note: The dataflow core function must come AFTER the components it calls.
-        for func in [self.mem_to_stream_func, self.stream_to_mem_func, self.dataflow_core_func]:
-            if func:
-                params_str_list = []
-                for p in func.params:
-                    if p.type.type == HLSBasicType.POINTER:
-                        params_str_list.append(p.type.get_upper_decl(p.name))
-                    elif "uint16_t" in p.type.name:
-                        params_str_list.append(f"uint16_t {p.name}")
-                    else:
-                        params_str_list.append(p.type.get_upper_param(p.name, True))
+        if self.mem_manager.helper_funcs:
+            code += "// --- 1. Memory Helper Functions ---\n"
+            for func in self.mem_manager.helper_funcs:
+                write_func_body(func)
+                
+        if self.utility_functions:
+            code += "// --- 2. Utility Network Functions ---\n"
+            for func in self.utility_functions:
+                write_func_body(func)
 
-                params_str = ", ".join(params_str_list)
-                code += f"static void {func.name}({params_str}) " + "{\n"
+        if self.hls_functions:
+            code += "// --- 3. DFIR Component Functions ---\n"
+            for func in self.hls_functions.values():
+                params_str_val = ", ".join([p.type.get_upper_param(p.name, True) for p in func.params])
+                code += f"static void {func.name}({params_str_val}) " + "{\n"
                 code += "".join([line.gen_code(1) for line in func.codes])
                 code += "}\n\n"
+        
+        code += "// --- 4. Top-level Memory/Dataflow Functions ---\n"
+        write_func_body(self.mem_manager.memory_loader_func)
+        write_func_body(self.dataflow_core_func)
+        write_func_body(self.mem_manager.final_writeback_func)
 
-        # 4. Top-level AXI Kernel Wrapper (final caller)
+        code += "// --- 5. Top-level AXI Kernel Wrapper ---\n"
         code += axi_wrapper_func_str
 
         return code

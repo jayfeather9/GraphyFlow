@@ -830,6 +830,7 @@ class MemoryReadComponent(Component):
         """
         self.access_pattern = access_pattern
         self.access_tree = self._build_access_tree()
+        self.output_types = output_types
         self.pattern_to_pname = {}
 
         ports = []

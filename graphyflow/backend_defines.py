@@ -20,6 +20,7 @@ class HLSBasicType(Enum):
     EDGE_ID = "edge_id_t"
     AP_FIXED_POD = "ap_fixed_pod_t"
     REAL_FLOAT = "float"
+    AP_UINT = "ap_uint"
     BOOL = "bool"
     STRUCT = "struct"
     STREAM = "stream"
@@ -54,6 +55,7 @@ class HLSType:
         struct_prop_names: Optional[List[str]] = None,
         array_dims: Optional[List[Union[str, int]]] = None,
         is_const_ptr: bool = False,
+        width: Optional[int] = None,
     ) -> None:
         self.type = basic_type
         self.sub_types = sub_types
@@ -62,7 +64,13 @@ class HLSType:
         self.array_dims = array_dims
         self.is_const_ptr = is_const_ptr
 
-        if basic_type.is_simple:
+        self.width = width # --- 新增 ---
+
+        if basic_type == HLSBasicType.AP_UINT: # --- 新增 ---
+            assert width is not None
+            self.name = f"ap_uint<{width}>"
+            self.full_name = self.name
+        elif basic_type.is_simple:
             self.name = basic_type.value
             self.full_name = self.name
         elif basic_type == HLSBasicType.STREAM:
