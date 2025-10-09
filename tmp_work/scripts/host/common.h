@@ -12,9 +12,9 @@
 // A constant representing infinity for distance initialization
 const int INFINITY_DIST = 16384;
 const int PE_NUM = 8;          // Number of Processing Elements
-const int NUM_PARTITIONS = 10; // Number of graph partitions
+const int NUM_PARTITIONS = 8; // Number of graph partitions
 const float PARTITION_WEIGHTS[NUM_PARTITIONS] = {1.0, 1.0, 1.0, 1.0, 1.0,
-                                                 1.0, 1.0, 1.0, 1.0, 1.0};
+                                                 1.0, 1.0, 1.0};
 
 typedef uint16_t node_id_t;
 typedef uint16_t edge_id_t;

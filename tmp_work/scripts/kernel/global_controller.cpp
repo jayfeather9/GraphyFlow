@@ -81,7 +81,6 @@ extern "C" void global_controller(
     const int *src_offsets_3, const int *src_offsets_4,
     const int *src_offsets_5, const int *src_offsets_6,
     const int *src_offsets_7, const int *src_offsets_8,
-    const int *src_offsets_9, const int *src_offsets_10,
     const edge_des_burst_t *edge_des_bursts_1,
     const edge_des_burst_t *edge_des_bursts_2,
     const edge_des_burst_t *edge_des_bursts_3,
@@ -89,26 +88,21 @@ extern "C" void global_controller(
     const edge_des_burst_t *edge_des_bursts_5,
     const edge_des_burst_t *edge_des_bursts_6,
     const edge_des_burst_t *edge_des_bursts_7,
-    const edge_des_burst_t *edge_des_bursts_8,
-    const edge_des_burst_t *edge_des_bursts_9,
-    const edge_des_burst_t *edge_des_bursts_10, const int *node_distances_1,
+    const edge_des_burst_t *edge_des_bursts_8, const int *node_distances_1,
     const int *node_distances_2, const int *node_distances_3,
     const int *node_distances_4, const int *node_distances_5,
     const int *node_distances_6, const int *node_distances_7,
-    const int *node_distances_8, const int *node_distances_9,
-    const int *node_distances_10,
+    const int *node_distances_8,
     // output i/o
     KernelOutputBatch *output_ptr_1, KernelOutputBatch *output_ptr_2,
     KernelOutputBatch *output_ptr_3, KernelOutputBatch *output_ptr_4,
     KernelOutputBatch *output_ptr_5, KernelOutputBatch *output_ptr_6,
     KernelOutputBatch *output_ptr_7, KernelOutputBatch *output_ptr_8,
-    KernelOutputBatch *output_ptr_9, KernelOutputBatch *output_ptr_10,
     // graph metadata
     int num_nodes_1, int num_nodes_2, int num_nodes_3, int num_nodes_4,
     int num_nodes_5, int num_nodes_6, int num_nodes_7, int num_nodes_8,
-    int num_nodes_9, int num_nodes_10, int num_edges_1, int num_edges_2,
-    int num_edges_3, int num_edges_4, int num_edges_5, int num_edges_6,
-    int num_edges_7, int num_edges_8, int num_edges_9, int num_edges_10,
+    int num_edges_1, int num_edges_2, int num_edges_3, int num_edges_4,
+    int num_edges_5, int num_edges_6, int num_edges_7, int num_edges_8,
     // streams to/from graphyflow kernels
     hls::stream<edge_batch_axi_t> &edge_batches_1,
     hls::stream<edge_batch_axi_t> &edge_batches_2,
@@ -118,8 +112,6 @@ extern "C" void global_controller(
     hls::stream<edge_batch_axi_t> &edge_batches_6,
     hls::stream<edge_batch_axi_t> &edge_batches_7,
     hls::stream<edge_batch_axi_t> &edge_batches_8,
-    hls::stream<edge_batch_axi_t> &edge_batches_9,
-    hls::stream<edge_batch_axi_t> &edge_batches_10,
     hls::stream<struct_ibu_14_axi_t> &node_distances_stream_1,
     hls::stream<struct_ibu_14_axi_t> &node_distances_stream_2,
     hls::stream<struct_ibu_14_axi_t> &node_distances_stream_3,
@@ -128,8 +120,6 @@ extern "C" void global_controller(
     hls::stream<struct_ibu_14_axi_t> &node_distances_stream_6,
     hls::stream<struct_ibu_14_axi_t> &node_distances_stream_7,
     hls::stream<struct_ibu_14_axi_t> &node_distances_stream_8,
-    hls::stream<struct_ibu_14_axi_t> &node_distances_stream_9,
-    hls::stream<struct_ibu_14_axi_t> &node_distances_stream_10,
     hls::stream<struct_sbu_19_axi_t> &result_stream_1,
     hls::stream<struct_sbu_19_axi_t> &result_stream_2,
     hls::stream<struct_sbu_19_axi_t> &result_stream_3,
@@ -137,9 +127,7 @@ extern "C" void global_controller(
     hls::stream<struct_sbu_19_axi_t> &result_stream_5,
     hls::stream<struct_sbu_19_axi_t> &result_stream_6,
     hls::stream<struct_sbu_19_axi_t> &result_stream_7,
-    hls::stream<struct_sbu_19_axi_t> &result_stream_8,
-    hls::stream<struct_sbu_19_axi_t> &result_stream_9,
-    hls::stream<struct_sbu_19_axi_t> &result_stream_10) {
+    hls::stream<struct_sbu_19_axi_t> &result_stream_8) {
     // Assign 3 distinct gmem bundles per partition for inputs
     // and set output_ptr_i to the same bundle as src_offsets_i.
     // Pattern per partition i (1-based):
@@ -204,20 +192,6 @@ extern "C" void global_controller(
     gmem23
 #pragma HLS INTERFACE m_axi port = output_ptr_8 offset = slave bundle = gmem21
 
-#pragma HLS INTERFACE m_axi port = src_offsets_9 offset = slave bundle = gmem24
-#pragma HLS INTERFACE m_axi port = edge_des_bursts_9 offset = slave bundle =   \
-    gmem25
-#pragma HLS INTERFACE m_axi port = node_distances_9 offset = slave bundle =    \
-    gmem26
-#pragma HLS INTERFACE m_axi port = output_ptr_9 offset = slave bundle = gmem24
-
-#pragma HLS INTERFACE m_axi port = src_offsets_10 offset = slave bundle = gmem27
-#pragma HLS INTERFACE m_axi port = edge_des_bursts_10 offset = slave bundle =  \
-    gmem28
-#pragma HLS INTERFACE m_axi port = node_distances_10 offset = slave bundle =   \
-    gmem29
-#pragma HLS INTERFACE m_axi port = output_ptr_10 offset = slave bundle = gmem27
-
 #pragma HLS INTERFACE s_axilite port = src_offsets_1 bundle = control
 #pragma HLS INTERFACE s_axilite port = src_offsets_2 bundle = control
 #pragma HLS INTERFACE s_axilite port = src_offsets_3 bundle = control
@@ -226,8 +200,6 @@ extern "C" void global_controller(
 #pragma HLS INTERFACE s_axilite port = src_offsets_6 bundle = control
 #pragma HLS INTERFACE s_axilite port = src_offsets_7 bundle = control
 #pragma HLS INTERFACE s_axilite port = src_offsets_8 bundle = control
-#pragma HLS INTERFACE s_axilite port = src_offsets_9 bundle = control
-#pragma HLS INTERFACE s_axilite port = src_offsets_10 bundle = control
 
 #pragma HLS INTERFACE s_axilite port = edge_des_bursts_1 bundle = control
 #pragma HLS INTERFACE s_axilite port = edge_des_bursts_2 bundle = control
@@ -237,8 +209,6 @@ extern "C" void global_controller(
 #pragma HLS INTERFACE s_axilite port = edge_des_bursts_6 bundle = control
 #pragma HLS INTERFACE s_axilite port = edge_des_bursts_7 bundle = control
 #pragma HLS INTERFACE s_axilite port = edge_des_bursts_8 bundle = control
-#pragma HLS INTERFACE s_axilite port = edge_des_bursts_9 bundle = control
-#pragma HLS INTERFACE s_axilite port = edge_des_bursts_10 bundle = control
 
 #pragma HLS INTERFACE s_axilite port = node_distances_1 bundle = control
 #pragma HLS INTERFACE s_axilite port = node_distances_2 bundle = control
@@ -248,8 +218,6 @@ extern "C" void global_controller(
 #pragma HLS INTERFACE s_axilite port = node_distances_6 bundle = control
 #pragma HLS INTERFACE s_axilite port = node_distances_7 bundle = control
 #pragma HLS INTERFACE s_axilite port = node_distances_8 bundle = control
-#pragma HLS INTERFACE s_axilite port = node_distances_9 bundle = control
-#pragma HLS INTERFACE s_axilite port = node_distances_10 bundle = control
 
 #pragma HLS INTERFACE s_axilite port = output_ptr_1 bundle = control
 #pragma HLS INTERFACE s_axilite port = output_ptr_2 bundle = control
@@ -259,8 +227,6 @@ extern "C" void global_controller(
 #pragma HLS INTERFACE s_axilite port = output_ptr_6 bundle = control
 #pragma HLS INTERFACE s_axilite port = output_ptr_7 bundle = control
 #pragma HLS INTERFACE s_axilite port = output_ptr_8 bundle = control
-#pragma HLS INTERFACE s_axilite port = output_ptr_9 bundle = control
-#pragma HLS INTERFACE s_axilite port = output_ptr_10 bundle = control
 
 #pragma HLS INTERFACE s_axilite port = num_nodes_1 bundle = control
 #pragma HLS INTERFACE s_axilite port = num_nodes_2 bundle = control
@@ -270,8 +236,6 @@ extern "C" void global_controller(
 #pragma HLS INTERFACE s_axilite port = num_nodes_6 bundle = control
 #pragma HLS INTERFACE s_axilite port = num_nodes_7 bundle = control
 #pragma HLS INTERFACE s_axilite port = num_nodes_8 bundle = control
-#pragma HLS INTERFACE s_axilite port = num_nodes_9 bundle = control
-#pragma HLS INTERFACE s_axilite port = num_nodes_10 bundle = control
 #pragma HLS INTERFACE s_axilite port = num_edges_1 bundle = control
 #pragma HLS INTERFACE s_axilite port = num_edges_2 bundle = control
 #pragma HLS INTERFACE s_axilite port = num_edges_3 bundle = control
@@ -280,8 +244,6 @@ extern "C" void global_controller(
 #pragma HLS INTERFACE s_axilite port = num_edges_6 bundle = control
 #pragma HLS INTERFACE s_axilite port = num_edges_7 bundle = control
 #pragma HLS INTERFACE s_axilite port = num_edges_8 bundle = control
-#pragma HLS INTERFACE s_axilite port = num_edges_9 bundle = control
-#pragma HLS INTERFACE s_axilite port = num_edges_10 bundle = control
 #pragma HLS INTERFACE s_axilite port = return bundle = control
 
 #pragma HLS DATAFLOW
@@ -294,8 +256,6 @@ extern "C" void global_controller(
     hls::stream<edge_batch_t> edge_batches_6_ori;
     hls::stream<edge_batch_t> edge_batches_7_ori;
     hls::stream<edge_batch_t> edge_batches_8_ori;
-    hls::stream<edge_batch_t> edge_batches_9_ori;
-    hls::stream<edge_batch_t> edge_batches_10_ori;
     hls::stream<struct_ibu_14_t> node_distances_stream_1_ori;
     hls::stream<struct_ibu_14_t> node_distances_stream_2_ori;
     hls::stream<struct_ibu_14_t> node_distances_stream_3_ori;
@@ -304,8 +264,6 @@ extern "C" void global_controller(
     hls::stream<struct_ibu_14_t> node_distances_stream_6_ori;
     hls::stream<struct_ibu_14_t> node_distances_stream_7_ori;
     hls::stream<struct_ibu_14_t> node_distances_stream_8_ori;
-    hls::stream<struct_ibu_14_t> node_distances_stream_9_ori;
-    hls::stream<struct_ibu_14_t> node_distances_stream_10_ori;
     hls::stream<struct_sbu_19_t> result_stream_1_ori;
     hls::stream<struct_sbu_19_t> result_stream_2_ori;
     hls::stream<struct_sbu_19_t> result_stream_3_ori;
@@ -314,8 +272,6 @@ extern "C" void global_controller(
     hls::stream<struct_sbu_19_t> result_stream_6_ori;
     hls::stream<struct_sbu_19_t> result_stream_7_ori;
     hls::stream<struct_sbu_19_t> result_stream_8_ori;
-    hls::stream<struct_sbu_19_t> result_stream_9_ori;
-    hls::stream<struct_sbu_19_t> result_stream_10_ori;
 
     memory_loader(1, src_offsets_1, edge_des_bursts_1, node_distances_1,
                   num_nodes_1, num_edges_1, edge_batches_1_ori,
@@ -341,12 +297,6 @@ extern "C" void global_controller(
     memory_loader(8, src_offsets_8, edge_des_bursts_8, node_distances_8,
                   num_nodes_8, num_edges_8, edge_batches_8_ori,
                   node_distances_stream_8_ori);
-    memory_loader(9, src_offsets_9, edge_des_bursts_9, node_distances_9,
-                  num_nodes_9, num_edges_9, edge_batches_9_ori,
-                  node_distances_stream_9_ori);
-    memory_loader(10, src_offsets_10, edge_des_bursts_10, node_distances_10,
-                  num_nodes_10, num_edges_10, edge_batches_10_ori,
-                  node_distances_stream_10_ori);
 
     ori_to_axi_edge_batch_wrapper(1, edge_batches_1_ori, edge_batches_1);
     ori_to_axi_edge_batch_wrapper(2, edge_batches_2_ori, edge_batches_2);
@@ -356,8 +306,6 @@ extern "C" void global_controller(
     ori_to_axi_edge_batch_wrapper(6, edge_batches_6_ori, edge_batches_6);
     ori_to_axi_edge_batch_wrapper(7, edge_batches_7_ori, edge_batches_7);
     ori_to_axi_edge_batch_wrapper(8, edge_batches_8_ori, edge_batches_8);
-    ori_to_axi_edge_batch_wrapper(9, edge_batches_9_ori, edge_batches_9);
-    ori_to_axi_edge_batch_wrapper(10, edge_batches_10_ori, edge_batches_10);
 
     ori_to_axi_struct_ibu_14_wrapper(1, node_distances_stream_1_ori,
                                      node_distances_stream_1);
@@ -375,10 +323,6 @@ extern "C" void global_controller(
                                      node_distances_stream_7);
     ori_to_axi_struct_ibu_14_wrapper(8, node_distances_stream_8_ori,
                                      node_distances_stream_8);
-    ori_to_axi_struct_ibu_14_wrapper(9, node_distances_stream_9_ori,
-                                     node_distances_stream_9);
-    ori_to_axi_struct_ibu_14_wrapper(10, node_distances_stream_10_ori,
-                                     node_distances_stream_10);
 
     axi_to_ori_struct_sbu_19_wrapper(1, result_stream_1, result_stream_1_ori);
     axi_to_ori_struct_sbu_19_wrapper(2, result_stream_2, result_stream_2_ori);
@@ -388,9 +332,6 @@ extern "C" void global_controller(
     axi_to_ori_struct_sbu_19_wrapper(6, result_stream_6, result_stream_6_ori);
     axi_to_ori_struct_sbu_19_wrapper(7, result_stream_7, result_stream_7_ori);
     axi_to_ori_struct_sbu_19_wrapper(8, result_stream_8, result_stream_8_ori);
-    axi_to_ori_struct_sbu_19_wrapper(9, result_stream_9, result_stream_9_ori);
-    axi_to_ori_struct_sbu_19_wrapper(10, result_stream_10,
-                                     result_stream_10_ori);
 
     final_writeback(1, result_stream_1_ori, output_ptr_1);
     final_writeback(2, result_stream_2_ori, output_ptr_2);
@@ -400,8 +341,6 @@ extern "C" void global_controller(
     final_writeback(6, result_stream_6_ori, output_ptr_6);
     final_writeback(7, result_stream_7_ori, output_ptr_7);
     final_writeback(8, result_stream_8_ori, output_ptr_8);
-    final_writeback(9, result_stream_9_ori, output_ptr_9);
-    final_writeback(10, result_stream_10_ori, output_ptr_10);
 }
 
 // --- PHASE 2.1: UMC Sub-module: Node Property Loader ---
