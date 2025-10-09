@@ -70,8 +70,6 @@ def _create_cfg(dest: Path, kernel_name: str):
         content.append(f"sp={instance_name}.m_axi_gmem2:HBM[{little_kernel_hbm_output_id[i]}]")
         content.append("")
 
-    
-
     output_file = dest / "system.cfg"
     dest.mkdir(parents=True, exist_ok=True)
     file_content = "\n".join(content)
@@ -199,6 +197,10 @@ def generate_project(
     # 5. 实例化后端并生成所有动态代码
     print("[4/6] Generating Dynamic Source Code via BackendManager...")
     bkd_mng = BackendManager()
+
+    # Perform type analysis once, before any kernel generation.
+    bkd_mng.analyze_graph_types(comp_col, global_graph)
+
     bkd_mng.REDUCE_MODE = "big_pipeline"
     kernel_h_big, kernel_cpp_big = bkd_mng.generate_backend(
         comp_col,
