@@ -173,7 +173,7 @@ class HLSType:
                 return f"{base_type_str} {var_name}{dims_str}"
             else:
                 assert False
-        if ref:
+        if ref and self.type != HLSBasicType.POINTER:
             return f"{self.name} &{var_name}"
         return f"{self.name} {var_name}"
 
@@ -227,14 +227,22 @@ class HLSCodeLine:
 
 
 class CodeVarDecl(HLSCodeLine):
-    def __init__(self, var_name, var_type, init_val=None) -> None:
+    def __init__(self, var_name, var_type, init_val=None, const=False) -> None:
         super().__init__()
         self.var = HLSVar(var_name, var_type)
         self.init_val = init_val
+        self.const = const
 
     def gen_code(self, indent_lvl: int = 0):
         init_code = f" = {self.init_val}" if self.init_val is not None else ""
-        return indent_lvl * INDENT_UNIT + self.var.type.get_upper_decl(self.var.name) + init_code + ";\n"
+        const_code = "const " if self.const else ""
+        return (
+            indent_lvl * INDENT_UNIT
+            + const_code
+            + self.var.type.get_upper_decl(self.var.name)
+            + init_code
+            + ";\n"
+        )
 
 
 class CodeIf(HLSCodeLine):
@@ -281,6 +289,9 @@ class CodeIf(HLSCodeLine):
         return if_part + elif_part + else_part + "\n"
 
 
+GLOBAL_LOOP_CNT = 0
+
+
 class CodeWhile(HLSCodeLine):
     def __init__(
         self,
@@ -290,12 +301,15 @@ class CodeWhile(HLSCodeLine):
         super().__init__()
         self.i_expr = iter_expr
         self.codes = codes
+        global GLOBAL_LOOP_CNT
+        self.loop_id = GLOBAL_LOOP_CNT
+        GLOBAL_LOOP_CNT += 1
 
     def gen_code(self, indent_lvl: int = 0) -> str:
         oind = indent_lvl * INDENT_UNIT
         return (
-            oind
-            + f"while ({self.i_expr.code}) "
+            f"{oind}LOOP_WHILE_{self.loop_id}:\n"
+            + f"{oind}while ({self.i_expr.code}) "
             + "{\n"
             + "".join(c.gen_code(indent_lvl + 1) for c in self.codes)
             + oind
@@ -310,20 +324,25 @@ class CodeFor(HLSCodeLine):
         iter_limit: Union[str, HLSVar],
         iter_cmp="<",
         iter_name="i",
+        iter_start="0",
         iter_step=None,
     ) -> None:
         super().__init__()
         self.i_name = iter_name
+        self.i_start = iter_start
         self.i_cmp = iter_cmp
-        self.i_lim = iter_limit
+        self.i_lim = iter_limit.name if isinstance(iter_limit, HLSVar) else iter_limit
         self.codes = codes
         self.i_step = iter_step if iter_step else f"{self.i_name}++"
+        global GLOBAL_LOOP_CNT
+        self.loop_id = GLOBAL_LOOP_CNT
+        GLOBAL_LOOP_CNT += 1
 
     def gen_code(self, indent_lvl: int = 0) -> str:
         oind = indent_lvl * INDENT_UNIT
         return (
-            oind
-            + f"for (uint32_t {self.i_name} = 0; {self.i_name} {self.i_cmp} {self.i_lim}; {self.i_step}) "
+            f"{oind}LOOP_FOR_{self.loop_id}:\n"
+            + f"{oind}for (uint32_t {self.i_name} = {self.i_start}; {self.i_name} {self.i_cmp} {self.i_lim}; {self.i_step}) "
             + "{\n"
             + "".join(c.gen_code(indent_lvl + 1) for c in self.codes)
             + oind

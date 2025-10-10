@@ -39,6 +39,8 @@ class BackendManager:
 
     def __init__(self):
         self.PE_NUM = 8
+        assert self.PE_NUM & (self.PE_NUM - 1) == 0, "PE_NUM must be a power of 2"
+        self.LOG_PE_NUM = self.PE_NUM.bit_length() - 1
         self.STREAM_DEPTH = 4
         self.MAX_NUM = 32768  # For ReduceComponent key_mem size
         self.L = 4  # For ReduceComponent buffer size
@@ -94,7 +96,8 @@ class BackendManager:
         axi_wrapper_func_str, top_func_sig = self._generate_axi_kernel_wrapper(top_func_name)
 
         # --- Phase 6: Generate file contents ---
-        header_name = f"{top_func_name}.h"
+        reduce_suffix = "_little" if self.REDUCE_MODE == "little_pipeline" else "_big"
+        header_name = f"{top_func_name}{reduce_suffix}.h"
         header_code = self._generate_header_file(top_func_name, top_func_sig)
         source_code = self._generate_source_file(header_name, axi_wrapper_func_str)
 
@@ -3260,15 +3263,16 @@ emconfig:
 
         header_guard = f"__GRAPHYFLOW_{top_func_name.upper()}_H__"
         code = f"#ifndef {header_guard}\n#define {header_guard}\n\n"
-        code += "#include <hls_stream.h>\n#include <ap_fixed.h>\n#include <ap_int.h>\n#include <stdint.h>\n\n"
+        code += "#include <hls_stream.h>\n#include <ap_fixed.h>\n#include <ap_int.h>\n"
+        code += "#include <stdint.h>\n#include <ap_axi_sdata.h>\n"
         code += "#include <string.h>\n\n"
         code += f"#define PE_NUM {self.PE_NUM}\n"
+        code += f"#define LOG_PE_NUM {self.LOG_PE_NUM}\n"
         code += f"#define MAX_NUM {self.MAX_NUM}\n"
         code += f"#define L {self.L}\n\n"
         code += "#define AXI_BUS_WIDTH 512\n"
         code += "#define DATA_TYPE_WIDTH 32\n"
         code += "#define NUM_WORDS_PER_BUS (AXI_BUS_WIDTH / DATA_TYPE_WIDTH)\n"
-        code += "#define LOG_PE_NUM 3\n\n"
 
         code += "// --- Graph Type Definitions ---\n"
         code += "typedef uint16_t edge_id_t;\n"

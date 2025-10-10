@@ -260,15 +260,15 @@ class MemoryAndGraphManager:
                 "num_wide_reads", int_t, init_val="(num_nodes + NUM_WORDS_PER_BUS - 1) / NUM_WORDS_PER_BUS"
             ),
         ]
+        body.extend(
+            [
+                CodeVarDecl("sent_pack_cnt", int_t, init_val="0"),
+                CodeVarDecl("total_pack_cnt", int_t, init_val="(num_nodes + PE_NUM - 1) / PE_NUM"),
+            ]
+        )
 
         for stream_idx in range(2):
-            body.extend(
-                [
-                    CodeVarDecl("sent_pack_cnt", int_t, init_val="0"),
-                    CodeVarDecl("total_pack_cnt", int_t, init_val="(num_nodes + PE_NUM - 1) / PE_NUM"),
-                ]
-            )
-
+            body.append(CodeAssign(HLSVar("sent_pack_cnt", int_t), HLSExpr(HLSExprT.CONST, 0)))
             pe_loop_body = [
                 CodePragma("UNROLL"),
                 CodeIf(
@@ -314,6 +314,7 @@ class MemoryAndGraphManager:
 
             main_loop_body = [
                 CodePragma("PIPELINE II=1"),
+                CodeVarDecl("wide_word", HLSType(HLSBasicType.AP_UINT, width="AXI_BUS_WIDTH")),
                 CodeAssign(
                     HLSVar("wide_word", HLSType(HLSBasicType.AP_UINT, width="AXI_BUS_WIDTH")),
                     HLSExpr(
@@ -339,6 +340,14 @@ class MemoryAndGraphManager:
             HLSVar("edge_stream", HLSType(HLSBasicType.STREAM, [T["edge_descriptor_batch_t"]])),
             HLSVar("num_edges", HLSType(HLSBasicType.INT)),
         ]
+
+        num_batches_decl = CodeVarDecl(
+            "num_batches",
+            HLSType(HLSBasicType.INT),
+            init_val="(num_edges + PE_NUM - 1) / PE_NUM",
+            const=True,
+        )
+        num_batches_var = num_batches_decl.var
 
         inner_loop = CodeFor(
             [
@@ -368,6 +377,8 @@ class MemoryAndGraphManager:
                 CodePragma("PIPELINE II=1"),
                 CodeVarDecl("edge_batch", T["edge_descriptor_batch_t"]),
                 CodePragma("ARRAY_PARTITION variable=edge_batch.edges complete dim=0"),
+                CodePragma("dependence variable = edge_batch inter false direction = WAW"),
+                CodeVarDecl("burst", T["edge_des_burst_t"]),
                 CodeAssign(
                     HLSVar("burst", T["edge_des_burst_t"]),
                     HLSExpr(HLSExprT.VAR, HLSVar("edge_des_bursts[i]", T["edge_des_burst_t"])),
@@ -378,11 +389,15 @@ class MemoryAndGraphManager:
                 inner_loop,
                 CodeWriteStream(func.params[1], HLSVar("edge_batch", T["edge_descriptor_batch_t"])),
             ],
-            "(num_edges + PE_NUM - 1) / PE_NUM",
+            num_batches_var,
             iter_name="i",
         )
 
-        func.codes = [CodePragma("dependence variable=edge_des_bursts inter false"), main_loop]
+        func.codes = [
+            CodePragma("dependence variable=edge_des_bursts inter false"),
+            num_batches_decl,
+            main_loop,
+        ]
         return func
 
     def _build_src_offset_loader_func(self) -> HLSFunction:
@@ -407,9 +422,18 @@ class MemoryAndGraphManager:
         )
         inner_loop = CodeFor([CodePragma("UNROLL"), inner_if], "NUM_WORDS_PER_BUS", iter_name="j")
 
+        num_wide_reads_decl = CodeVarDecl(
+            "num_wide_reads",
+            int_t,
+            init_val="(num_nodes + 1 + NUM_WORDS_PER_BUS - 1) / NUM_WORDS_PER_BUS",
+            const=True,
+        )
+        num_wide_reads_var = num_wide_reads_decl.var
+
         main_loop = CodeFor(
             [
                 CodePragma("PIPELINE II=1"),
+                CodeVarDecl("wide_word", HLSType(HLSBasicType.AP_UINT, width="AXI_BUS_WIDTH")),
                 CodeAssign(
                     HLSVar("wide_word", HLSType(HLSBasicType.AP_UINT, width="AXI_BUS_WIDTH")),
                     HLSExpr(
@@ -419,7 +443,7 @@ class MemoryAndGraphManager:
                 ),
                 inner_loop,
             ],
-            "(num_nodes + 1 + NUM_WORDS_PER_BUS - 1) / NUM_WORDS_PER_BUS",
+            num_wide_reads_var,
             iter_cmp="<=",
             iter_name="i",
         )
@@ -429,6 +453,7 @@ class MemoryAndGraphManager:
                 "const ap_uint<AXI_BUS_WIDTH> *wide_bus_ptr = reinterpret_cast<const ap_uint<AXI_BUS_WIDTH> *>(src_offsets_ddr);"
             ),
             CodePragma("dependence variable=wide_bus_ptr inter false"),
+            num_wide_reads_decl,
             main_loop,
         ]
         return func
@@ -459,6 +484,7 @@ class MemoryAndGraphManager:
                         CodeAssign(HLSVar("edge_batch_pos", int_t), HLSExpr(HLSExprT.CONST, 0)),
                     ],
                 ),
+                CodeVarDecl("edge", T["edge_descriptor_t"]),
                 CodeAssign(
                     HLSVar("edge", T["edge_descriptor_t"]),
                     HLSExpr(
@@ -492,13 +518,20 @@ class MemoryAndGraphManager:
             "end_edge_idx",
             iter_name="e_idx",
             iter_cmp="<",
+            iter_start="start_edge_idx",
         )
-        # Custom loop start
-        edge_loop.iter_start = "start_edge_idx"
+
+        base_idx_decl = CodeVarDecl(
+            "base_idx",
+            int_t,
+            init_val="(node_burst_idx << LOG_PE_NUM)",
+            const=True,
+        )
 
         pe_loop = CodeFor(
             [
                 CodeIf(HLSExpr(HLSExprT.VAR, HLSVar("base_idx + pe_idx >= num_nodes", bool)), [CodeBreak()]),
+                CodeVarDecl("src_dist", int_t),
                 CodeAssign(
                     HLSVar("src_dist", int_t),
                     HLSExpr(HLSExprT.VAR, HLSVar("node_distance_burst.data[pe_idx]", int_t)),
@@ -516,32 +549,50 @@ class MemoryAndGraphManager:
             iter_name="pe_idx",
         )
 
+        max_node_burst_idx_decl = CodeVarDecl(
+            "max_node_burst_idx",
+            int_t,
+            init_val="(num_nodes + PE_NUM - 1) / PE_NUM",
+            const=True,
+        )
+        max_node_burst_idx_var = max_node_burst_idx_decl.var
+
         main_loop = CodeFor(
             [
                 CodeAssign(
                     HLSVar("node_distance_burst", T["node_distance_burst_t"]),
                     HLSExpr(HLSExprT.STREAM_READ, None, [HLSExpr(HLSExprT.VAR, func.params[2])]),
                 ),
+                base_idx_decl,
                 pe_loop,
             ],
-            "(num_nodes + PE_NUM - 1) / PE_NUM",
+            max_node_burst_idx_var,
             iter_name="node_burst_idx",
         )
 
         func.codes = [
             CodeVarDecl("current_batch", T["edge_batch_t"]),
+            CodePragma("ARRAY_PARTITION variable=current_batch.weights complete dim=0"),
+            CodePragma("ARRAY_PARTITION variable=current_batch.src_distances complete dim=0"),
+            CodePragma("ARRAY_PARTITION variable=current_batch.dst_ids complete dim=0"),
+            CodePragma("dependence variable=current_batch inter false direction=WAW"),
             CodeAssign(HLSVar("current_batch.end_pos", int_t), HLSExpr(HLSExprT.CONST, 0)),
             CodeAssign(HLSVar("current_batch.end_flag", bool), HLSExpr(HLSExprT.CONST, False)),
             CodeVarDecl("edge_batch", T["edge_descriptor_batch_t"]),
             CodeAssign(HLSVar("edge_batch.end_pos", int_t), HLSExpr(HLSExprT.CONST, 0)),
+            CodePragma("ARRAY_PARTITION variable=edge_batch.edges complete dim=0"),
+            CodePragma("dependence variable=edge_batch inter false direction=WAW"),
             CodeVarDecl("edge_batch_pos", int_t, init_val=0),
             CodeVarDecl("node_distance_burst", T["node_distance_burst_t"]),
+            CodePragma("ARRAY_PARTITION variable=node_distance_burst.data complete dim=0"),
+            CodePragma("dependence variable=node_distance_burst inter false"),
             CodeVarDecl("start_edge_idx", int_t),
             CodeVarDecl("end_edge_idx", int_t),
             CodeAssign(
                 HLSVar("start_edge_idx", int_t),
                 HLSExpr(HLSExprT.STREAM_READ, None, [HLSExpr(HLSExprT.VAR, func.params[0])]),
             ),
+            max_node_burst_idx_decl,
             main_loop,
             CodeAssign(HLSVar("current_batch.end_flag", bool), HLSExpr(HLSExprT.CONST, True)),
             CodeWriteStream(func.params[4], HLSVar("current_batch", T["edge_batch_t"])),
@@ -554,7 +605,9 @@ class MemoryAndGraphManager:
         func.params = [
             HLSVar("node_distance_burst_stream", HLSType(HLSBasicType.STREAM, [T["node_distance_burst_t"]])),
             HLSVar("num_nodes", HLSType(HLSBasicType.INT)),
-            HLSVar("all_distances_stream", HLSType(HLSBasicType.STREAM, [T["struct_ibu_14_t"]])),
+            HLSVar(
+                "all_distances_stream", HLSType(HLSBasicType.STREAM, [T["struct_ibu_14_t"]])
+            ),  # TODO: make this dynamic
         ]
 
         pe_loop = CodeFor(
@@ -576,12 +629,27 @@ class MemoryAndGraphManager:
             iter_name="pe_idx",
         )
 
+        max_node_burst_idx_decl = CodeVarDecl(
+            "max_node_burst_idx",
+            HLSType(HLSBasicType.INT),
+            init_val="(num_nodes + PE_NUM - 1) / PE_NUM",
+            const=True,
+        )
+        max_node_burst_idx_var = max_node_burst_idx_decl.var
+
         main_loop = CodeFor(
             [
                 CodePragma("PIPELINE II=1"),
+                CodeVarDecl("node_distance_burst", T["node_distance_burst_t"]),
                 CodeAssign(
                     HLSVar("node_distance_burst", T["node_distance_burst_t"]),
                     HLSExpr(HLSExprT.STREAM_READ, None, [HLSExpr(HLSExprT.VAR, func.params[0])]),
+                ),
+                CodeVarDecl(
+                    "base_idx",
+                    HLSType(HLSBasicType.INT),
+                    init_val="(node_burst_idx << LOG_PE_NUM)",
+                    const=True,
                 ),
                 pe_loop,
                 CodeWriteStream(func.params[2], HLSVar("dist_batch", T["struct_ibu_14_t"])),
@@ -589,7 +657,7 @@ class MemoryAndGraphManager:
                     HLSVar("dist_batch.end_pos", HLSType(HLSBasicType.INT)), HLSExpr(HLSExprT.CONST, 0)
                 ),
             ],
-            "(num_nodes + PE_NUM - 1) / PE_NUM",
+            max_node_burst_idx_var,
             iter_name="node_burst_idx",
         )
 
@@ -597,6 +665,7 @@ class MemoryAndGraphManager:
             CodeVarDecl("dist_batch", T["struct_ibu_14_t"]),
             CodeAssign(HLSVar("dist_batch.end_pos", HLSType(HLSBasicType.INT)), HLSExpr(HLSExprT.CONST, 0)),
             CodeAssign(HLSVar("dist_batch.end_flag", bool), HLSExpr(HLSExprT.CONST, False)),
+            max_node_burst_idx_decl,
             main_loop,
             CodeAssign(HLSVar("dist_batch.end_flag", bool), HLSExpr(HLSExprT.CONST, True)),
             CodeWriteStream(func.params[2], HLSVar("dist_batch", T["struct_ibu_14_t"])),
@@ -634,6 +703,7 @@ class MemoryAndGraphManager:
             CodeWhile(
                 codes=[
                     CodePragma("PIPELINE II=1"),
+                    CodeVarDecl("in_batch", T["struct_sbu_19_t"]),
                     CodeAssign(
                         HLSVar("in_batch", T["struct_sbu_19_t"]),
                         HLSExpr(HLSExprT.STREAM_READ, None, [HLSExpr(HLSExprT.VAR, func.params[0])]),
@@ -669,6 +739,7 @@ class MemoryAndGraphManager:
             CodeWhile(
                 codes=[
                     CodePragma("PIPELINE II=1"),
+                    CodeVarDecl("out_batch", T["KernelOutputBatch"]),
                     CodeAssign(
                         HLSVar("out_batch", T["KernelOutputBatch"]),
                         HLSExpr(HLSExprT.STREAM_READ, None, [HLSExpr(HLSExprT.VAR, func.params[0])]),

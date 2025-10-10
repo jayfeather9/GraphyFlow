@@ -30,3 +30,10 @@ Added kernel cpps, added create queues, now need to modify AlgorithmHost to supp
 有几个其他函数的性能优化，记得补上
 
 然后看看逻辑有没有问题，目前生成了代码，但是没编译
+
+正在一个个过函数，下一个要过node_property_responder - DONE
+下一个过host代码
+
+TODO: replace all "struct_ibu_14_t" / "struct_sbu_19_t" in backend_mem_manager.py
+
+注意：受制于数据结构uint16_t大小，partition被分配的node id最大65535
