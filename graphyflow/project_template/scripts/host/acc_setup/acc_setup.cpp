@@ -1,8 +1,8 @@
 #include "acc_setup.h"
 
-acc_descriptor_dt initAccelerator(const std::string xclbin_path) {
+AccDescriptor initAccelerator(const std::string xclbin_path) {
     cl_int err;
-    acc_descriptor_dt acc;
+    AccDescriptor acc;
 
     auto devices = xcl::get_xil_devices();
     auto device = devices[0];

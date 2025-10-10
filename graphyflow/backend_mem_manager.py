@@ -232,6 +232,7 @@ class MemoryAndGraphManager:
             "struct_ibu_14_t": ibu_14_t,
             "KernelOutputData": kernel_out_data_t,
             "KernelOutputBatch": kernel_out_batch_t,
+            "sbu_19_ele_t": sbu_19_ele_t,
             "struct_sbu_19_t": sbu_19_t,
         }
 

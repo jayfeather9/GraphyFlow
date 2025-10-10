@@ -7,17 +7,16 @@
 
 #define KERNEL_NAME "graphyflow"
 
-// ... (fpga_executor.cpp 的其余内容保持不变) ...
 std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
                                  const GraphCSR &graph, int start_node,
                                  double &total_kernel_time_sec,
                                  int &iter_count) {
 
     // GraphPartiton
-    partition_container_dt partition_container = partitionGraph(&graph);
+    PartitionContainer partition_container = partitionGraph(&graph);
 
     // init accelerator
-    acc_descriptor_dt acc = initAccelerator(xclbin_path);
+    AccDescriptor acc = initAccelerator(xclbin_path);
 
     AlgorithmHost algo_host(acc);
     algo_host.setup_buffers(partition_container, start_node);
@@ -28,11 +27,11 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
 
     for (iter = 0; iter < max_iterations; ++iter) {
 
-        algo_host.transfer_data_to_fpga(partition_container, acc);
+        algo_host.transfer_data_to_fpga(partition_container);
         cl::Event event;
-        algo_host.execute_kernel_iteration(event);
+        algo_host.execute_kernel_iteration(partition_container, event);
         event.wait();
-        algo_host.transfer_data_from_fpga(partition_container, acc);
+        algo_host.transfer_data_from_fpga();
 
         // iv. 性能统计
         unsigned long start = 0, end = 0;

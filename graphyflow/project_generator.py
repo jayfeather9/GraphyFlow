@@ -7,17 +7,19 @@ from .dataflow_ir import ComponentCollection
 from .backend_manager import BackendManager
 
 
-# --- 在这里配置内核数量 ---
-NUM_BIG_KERNELS = 2
-NUM_LITTLE_KERNELS = 3
+# --- CONFIGURATION SECTION ---
+# You can change the number of kernels and their HBM mapping here.
+NUM_BIG_KERNELS = 1
+NUM_LITTLE_KERNELS = 2
 
-# Big Kernels
-big_kernel_hbm_input_id = [1, 3]
-big_kernel_hbm_output_id = [2, 4]
+# HBM channel IDs for Big Kernels. The list length must match NUM_BIG_KERNELS.
+big_kernel_hbm_input_id = [0]
+big_kernel_hbm_output_id = [1]
 
-# Little Kernels
-little_kernel_hbm_input_id = [5, 7, 9]
-little_kernel_hbm_output_id = [6, 8, 10]
+# HBM channel IDs for Little Kernels. The list length must match NUM_LITTLE_KERNELS.
+little_kernel_hbm_input_id = [4, 8]
+little_kernel_hbm_output_id = [5, 9]
+# --- END CONFIGURATION SECTION ---
 
 
 def _copy_and_template(src: Path, dest: Path, replacements: Dict[str, str]):
@@ -29,7 +31,30 @@ def _copy_and_template(src: Path, dest: Path, replacements: Dict[str, str]):
 
 
 def _create_cfg(dest: Path, kernel_name: str):
+    """
+    Programmatically generates the system.cfg file based on the
+    kernel configuration defined at the top of this file.
+    """
+    # --- PHASE 1: Validation ---
+    # Ensure the number of HBM IDs matches the number of kernel instances.
+    assert (
+        len(big_kernel_hbm_input_id) == NUM_BIG_KERNELS
+    ), "Mismatch between NUM_BIG_KERNELS and the length of big_kernel_hbm_input_id list."
+    assert (
+        len(big_kernel_hbm_output_id) == NUM_BIG_KERNELS
+    ), "Mismatch between NUM_BIG_KERNELS and the length of big_kernel_hbm_output_id list."
+    assert (
+        len(little_kernel_hbm_input_id) == NUM_LITTLE_KERNELS
+    ), "Mismatch between NUM_LITTLE_KERNELS and the length of little_kernel_hbm_input_id list."
+    assert (
+        len(little_kernel_hbm_output_id) == NUM_LITTLE_KERNELS
+    ), "Mismatch between NUM_LITTLE_KERNELS and the length of little_kernel_hbm_output_id list."
 
+    print(
+        f"[INFO] Generating system.cfg for {NUM_BIG_KERNELS} big kernel(s) and {NUM_LITTLE_KERNELS} little kernel(s)."
+    )
+
+    # --- PHASE 2: Content Generation ---
     big_kernel_base_name = f"{kernel_name}_big"
     little_kernel_base_name = f"{kernel_name}_little"
 
@@ -37,62 +62,61 @@ def _create_cfg(dest: Path, kernel_name: str):
     little_instance_names = [f"{little_kernel_base_name}_{i+1}" for i in range(NUM_LITTLE_KERNELS)]
 
     content = ["[connectivity]"]
+    content.append("# --- 1. Kernel Instantiation (nk) ---")
 
-    # --- 添加内核实例化 (nk) 配置 -
-    content.append("# --- 1. 内核实例化 ---")
+    # Define number of compute units (nk) for each kernel type
     if NUM_BIG_KERNELS > 0:
-        content.append(f"# 创建 {NUM_BIG_KERNELS} 个 big 内核实例")
         content.append(f"nk={big_kernel_base_name}:{NUM_BIG_KERNELS}:{'.'.join(big_instance_names)}")
-
     if NUM_LITTLE_KERNELS > 0:
-        content.append(f"# 创建 {NUM_LITTLE_KERNELS} 个 little 内核实例")
         content.append(f"nk={little_kernel_base_name}:{NUM_LITTLE_KERNELS}:{'.'.join(little_instance_names)}")
 
-    content.append("")
+    content.append("\n# --- 2. HBM Port Mapping (sp) ---")
 
-    content.append("# --- 2. HBM 通道映射 ---")
-
-    # 遍历所有 Big Kernel 实例
+    # Generate port mappings for all Big Kernel instances
     for i, instance_name in enumerate(big_instance_names):
-        content.append(f"# 将 {instance_name} 的端口连接到 HBM bank")
-        # gmem0 是输入, gmem1 是输出
-        content.append(f"sp={instance_name}.m_axi_gmem0:HBM[{big_kernel_hbm_input_id[i]}]")
-        content.append(f"sp={instance_name}.m_axi_gmem1:HBM[{big_kernel_hbm_output_id[i]}]")
-        content.append(f"sp={instance_name}.m_axi_gmem2:HBM[{big_kernel_hbm_output_id[i]}]")
-        content.append("")
+        input_hbm = big_kernel_hbm_input_id[i]
+        output_hbm = big_kernel_hbm_output_id[i]
+        content.append(f"\n# -- Mapping for instance: {instance_name} --")
+        content.append(f"# All 3 input ports (gmem0, gmem1, gmem2) connect to HBM[{input_hbm}]")
+        content.append(f"sp={instance_name}.m_axi_gmem0:HBM[{input_hbm}]")
+        content.append(f"sp={instance_name}.m_axi_gmem1:HBM[{input_hbm}]")
+        content.append(f"sp={instance_name}.m_axi_gmem2:HBM[{input_hbm}]")
+        content.append(f"# Output port (gmem3) connects to HBM[{output_hbm}]")
+        content.append(f"sp={instance_name}.m_axi_gmem3:HBM[{output_hbm}]")
 
-    # 遍历所有 Little Kernel 实例
+    # Generate port mappings for all Little Kernel instances
     for i, instance_name in enumerate(little_instance_names):
-        content.append(f"# 将 {instance_name} 的端口连接到 HBM bank")
-        # gmem0 是输入, gmem1 是输出
-        content.append(f"sp={instance_name}.m_axi_gmem0:HBM[{little_kernel_hbm_input_id[i]}]")
-        content.append(f"sp={instance_name}.m_axi_gmem1:HBM[{little_kernel_hbm_output_id[i]}]")
-        content.append(f"sp={instance_name}.m_axi_gmem2:HBM[{little_kernel_hbm_output_id[i]}]")
-        content.append("")
+        input_hbm = little_kernel_hbm_input_id[i]
+        output_hbm = little_kernel_hbm_output_id[i]
+        content.append(f"\n# -- Mapping for instance: {instance_name} --")
+        content.append(f"# All 3 input ports (gmem0, gmem1, gmem2) connect to HBM[{input_hbm}]")
+        content.append(f"sp={instance_name}.m_axi_gmem0:HBM[{input_hbm}]")
+        content.append(f"sp={instance_name}.m_axi_gmem1:HBM[{input_hbm}]")
+        content.append(f"sp={instance_name}.m_axi_gmem2:HBM[{input_hbm}]")
+        content.append(f"# Output port (gmem3) connects to HBM[{output_hbm}]")
+        content.append(f"sp={instance_name}.m_axi_gmem3:HBM[{output_hbm}]")
 
+    # --- PHASE 3: File Writing ---
     output_file = dest / "system.cfg"
-    dest.mkdir(parents=True, exist_ok=True)
     file_content = "\n".join(content)
 
-    with open(output_file, "w") as f:
-        f.write(file_content)
+    output_file.write_text(file_content)
+    print(f"[SUCCESS] Successfully generated dynamic system.cfg at '{output_file}'")
+
+
+# --- MODIFICATION END ---
 
 
 def fill_host_config(file_to_modify: Path):
     """
-    读取指定文件，将其中的占位符替换为全局列表的内容，
-    然后将修改后的内容写回原文件（就地修改）。
-
-    Args:
-        file_to_modify (Path): 需要就地修改的文件的路径。
+    Reads the specified file, replaces placeholders with the content of global variables,
+    and writes the modified content back to the original file.
     """
     try:
-        # 检查文件是否存在
         if not file_to_modify.is_file():
-            print(f"错误: 文件未找到 '{file_to_modify}'")
+            print(f"Error: File not found '{file_to_modify}'")
             return
 
-        # 定义占位符与对应全局变量的映射关系
         replacements = {
             "{{BIG_KERNEL_NUM}}": NUM_BIG_KERNELS,
             "{{LITTLE_KERNEL_NUM}}": NUM_LITTLE_KERNELS,
@@ -102,29 +126,23 @@ def fill_host_config(file_to_modify: Path):
             "{{LITTLE_KERNEL_HBM_OUTPUT_ID}}": little_kernel_hbm_output_id,
         }
 
-        # 1. 读取文件的全部内容
         original_content = file_to_modify.read_text(encoding="utf-8")
         modified_content = original_content
 
-        # 2. 遍历所有需要替换的占位符
         for placeholder, value in replacements.items():
-
             replacement_string = ""
             if isinstance(value, list):
-                # 列表 -> "{item1, item2}"
                 replacement_string = f"{{{', '.join(map(str, value))}}}"
             elif isinstance(value, int):
-                # 整数 -> "1"
                 replacement_string = str(value)
 
             if replacement_string:
                 modified_content = modified_content.replace(placeholder, replacement_string)
 
-        # 3. 将替换后的内容写回到同一个文件
         file_to_modify.write_text(modified_content, encoding="utf-8")
 
     except Exception as e:
-        print(f"在处理文件 '{file_to_modify}' 时发生错误: {e}")
+        print(f"An error occurred while processing file '{file_to_modify}': {e}")
 
 
 def generate_project(
@@ -141,17 +159,17 @@ def generate_project(
     """
     print(f"--- Starting Project Generation for Kernel '{kernel_name}' ---")
 
-    # 1. 定义路径
+    # 1. Define paths
     if template_dir_override:
         template_dir = template_dir_override
     else:
-        project_root = Path(__file__).parent.parent.resolve()
-        template_dir = project_root / "graphyflow" / "project_template"
+        # Assuming this script is in graphyflow/
+        template_dir = Path(__file__).parent / "project_template"
 
     if not template_dir.exists():
         raise FileNotFoundError(f"Project template directory not found at: {template_dir}")
 
-    # 2. 创建输出目录结构
+    # 2. Create output directory structure
     print(f"[1/6] Setting up Output Directory: '{output_dir}'")
     if output_dir.exists():
         shutil.rmtree(output_dir)
@@ -159,78 +177,64 @@ def generate_project(
     scripts_dir = output_dir / "scripts"
     host_script_dir = scripts_dir / "host"
     kernel_script_dir = scripts_dir / "kernel"
-    xclbin_dir = output_dir / "xclbin"
 
+    # Copy the entire template directory first
+    shutil.copytree(template_dir, output_dir, dirs_exist_ok=True)
+
+    # Ensure specific directories exist after copy
     host_script_dir.mkdir(parents=True, exist_ok=True)
     kernel_script_dir.mkdir(parents=True, exist_ok=True)
-    xclbin_dir.mkdir(exist_ok=True)
+    (output_dir / "xclbin").mkdir(exist_ok=True)
 
-    # 3. 复制静态文件
-    print(f"[2/6] Copying Static Files from Template: '{template_dir}'")
-    static_files_to_ignore = ["Makefile", "run.sh", "system.cfg", "*.template"]
-    shutil.copytree(
-        template_dir, output_dir, dirs_exist_ok=True, ignore=shutil.ignore_patterns(*static_files_to_ignore)
-    )
-
-    # 3.1
+    # 3. Fill dynamic configurations
+    print("[2/6] Filling Dynamic Configuration Files...")
     fill_host_config(host_script_dir / "host_config.h")
 
-    # 4. 动态生成需要模板化的脚本文件
-    print("[3/6] Generating Templated Scripts...")
+    # Call the new dynamic system.cfg generator
+    _create_cfg(output_dir, kernel_name)
+
+    # Template the Makefile and run.sh (placeholders might be simple)
     replacements = {
-        "{{KERNEL_NAME_little}}": kernel_name + "_little",
-        "{{KERNEL_NAME_big}}": kernel_name + "_big",
-        "{{KERNEL_NAME_big}}": kernel_name,
         "{{EXECUTABLE_NAME}}": executable_name,
     }
-
     _copy_and_template(template_dir / "Makefile", output_dir / "Makefile", replacements)
     _copy_and_template(template_dir / "run.sh", output_dir / "run.sh", replacements)
     (output_dir / "run.sh").chmod(0o755)
-    # _copy_and_template(template_dir / "system.cfg", output_dir / "system.cfg", replacements)
-    _create_cfg(output_dir, kernel_name)
 
-    _copy_and_template(
-        template_dir / "scripts/kernel/kernel.mk", output_dir / "scripts/kernel/kernel.mk", replacements
-    )
-
-    # 5. 实例化后端并生成所有动态代码
-    print("[4/6] Generating Dynamic Source Code via BackendManager...")
+    # 4. Instantiate backend and generate all dynamic code
+    print("[3/6] Generating Dynamic Source Code via BackendManager...")
     bkd_mng = BackendManager()
 
-    # Perform type analysis once, before any kernel generation.
+    # Perform type analysis once
     bkd_mng.analyze_graph_types(comp_col, global_graph)
 
+    # Generate Big Kernel
     bkd_mng.REDUCE_MODE = "big_pipeline"
-    kernel_h_big, kernel_cpp_big = bkd_mng.generate_backend(
-        comp_col,
-        global_graph,
-        kernel_name,
-    )
+    kernel_h_big, kernel_cpp_big = bkd_mng.generate_backend(comp_col, global_graph, f"{kernel_name}_big")
+
+    # Generate Little Kernel
     bkd_mng.REDUCE_MODE = "little_pipeline"
-    kernel_h_little, kernel_cpp_little = bkd_mng.generate_backend(comp_col, global_graph, kernel_name)
+    kernel_h_little, kernel_cpp_little = bkd_mng.generate_backend(
+        comp_col, global_graph, f"{kernel_name}_little"
+    )
 
     common_h = bkd_mng.generate_common_header(kernel_name)
-
     host_h, host_cpp = bkd_mng.generate_host_codes(kernel_name, template_dir / "scripts" / "host")
 
-    # 6. 部署所有动态生成的文件
-    print(f"[5/6] Deploying Generated Files to '{output_dir}'")
-    with open(kernel_script_dir / f"{kernel_name}_big.h", "w") as f:
-        f.write(kernel_h_big)
-    with open(kernel_script_dir / f"{kernel_name}_big.cpp", "w") as f:
-        f.write(kernel_cpp_big)
+    # 5. Deploy all dynamically generated files
+    print(f"[4/6] Deploying Generated Kernel Files to '{kernel_script_dir}'")
+    (kernel_script_dir / f"{kernel_name}_big.h").write_text(kernel_h_big)
+    (kernel_script_dir / f"{kernel_name}_big.cpp").write_text(kernel_cpp_big)
+    (kernel_script_dir / f"{kernel_name}_little.h").write_text(kernel_h_little)
+    (kernel_script_dir / f"{kernel_name}_little.cpp").write_text(kernel_cpp_little)
 
-    with open(kernel_script_dir / f"{kernel_name}_little.h", "w") as f:
-        f.write(kernel_h_little)
-    with open(kernel_script_dir / f"{kernel_name}_little.cpp", "w") as f:
-        f.write(kernel_cpp_little)
+    print(f"[5/6] Deploying Generated Host Files to '{host_script_dir}'")
+    (host_script_dir / "common.h").write_text(common_h)
+    (host_script_dir / "generated_host.h").write_text(host_h)
+    (host_script_dir / "generated_host.cpp").write_text(host_cpp)
 
-    with open(host_script_dir / "common.h", "w") as f:
-        f.write(common_h)
-    with open(host_script_dir / "generated_host.h", "w") as f:
-        f.write(host_h)
-    with open(host_script_dir / "generated_host.cpp", "w") as f:
-        f.write(host_cpp)
+    # 6. Clean up template files that were replaced by generated ones
+    (host_script_dir / "generated_host.h.template").unlink()
+    (host_script_dir / "generated_host.cpp.template").unlink()
 
     print("[6/6] Project Generation Complete!")

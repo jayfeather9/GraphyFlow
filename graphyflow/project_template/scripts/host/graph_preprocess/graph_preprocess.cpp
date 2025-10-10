@@ -1,220 +1,211 @@
 #include "graph_preprocess.h"
-#include "common.h"
-#include "host_config.h"
-#include "iostream"
+#include <algorithm>
+#include <iostream>
+#include <numeric>
+#include <set>
+#include <vector>
 
-#define INF 16384
-
-// helper functions：
-/**
- * @brief 将CSR格式的图转换为COO格式（即 EDGE_TYPE 的 vector）
- * @param graph 输入的CSR图
- * @return 包含所有边的 std::vector<EDGE_TYPE>
- */
-std::vector<EDGE_TYPE> csrToCoo(const GraphCSR &graph) {
-    std::vector<EDGE_TYPE> all_edges;
-    all_edges.reserve(graph.num_edges); // 预分配内存以提高效率
-
-    for (int u = 0; u < graph.num_vertices; ++u) {
-        for (int i = graph.offsets[u]; i < graph.offsets[u + 1]; ++i) {
-            int v = graph.columns[i];
-            int w = graph.weights[i];
-
-            EDGE_TYPE edge;
-            edge.src.id = u;
-            edge.dst.id = v;
-
-            // --- *** 核心修正点：将所有整数值转换为 ap_fixed 的二进制模式 ***
-            // ---
-
-            // 1. 处理 weight
-            ap_fixed<32, 16> weight_fp = w;
-            edge.weight = *reinterpret_cast<int32_t *>(&weight_fp);
-
-            // 2. 处理 src.distance (保留您原来的 if/else 逻辑)
-            int src_dist_val = (edge.src.id == 0) ? 0 : INF;
-            ap_fixed<32, 16> src_dist_fp = src_dist_val;
-            edge.src.distance = *reinterpret_cast<int32_t *>(&src_dist_fp);
-
-            // 3. 处理 dst.distance (保留您原来的 if/else 逻辑)
-            int dst_dist_val = (edge.dst.id == 0) ? 0 : INF;
-            ap_fixed<32, 16> dst_dist_fp = dst_dist_val;
-            edge.dst.distance = *reinterpret_cast<int32_t *>(&dst_dist_fp);
-
-            // --- *** 修正结束 *** ---
-
-            all_edges.push_back(edge);
-        }
-    }
-    return all_edges;
-}
+// A local helper struct to temporarily hold edge information with global vertex
+// IDs.
+struct Edge {
+    int src, dest, weight;
+};
 
 /**
- * @brief 将一个边的vector打包成多个批处理，并直接填充到目标vector中。
- * @param edges 输入的边列表。
- * @param batches [输出] 用于接收批处理数据的、使用对齐内存的vector的引用。
+ * @brief Partitions a global graph and preprocesses each partition into a local
+ * CSR format.
+ *
+ * This function implements a partitioning strategy based on destination
+ * vertices.
+ * 1.  It identifies all unique destination vertices in the graph.
+ * 2.  It distributes these destination vertices disjointly and as evenly as
+ * possible among all available partitions (for both big and little kernels).
+ * 3.  It assigns each edge from the global graph to the partition that is
+ * responsible for its destination vertex.
+ * 4.  For each partition, it collects all unique vertices involved (both
+ * sources and destinations).
+ * 5.  It performs vertex ID compression for each partition, creating a local ID
+ * space. Destination vertices are mapped first to ensure they occupy the lower
+ * ID range.
+ * 6.  It rewrites the partition's edges using these new local IDs.
+ * 7.  Finally, it converts the rewritten edges into a local CSR format.
+ *
+ * @param graph The input global graph in CSR format.
+ * @return A PartitionContainer object containing all processed partitions.
  */
-// **********************************************************
-// *** 修正点 1: 修改函数签名，不再返回值，而是通过引用填充 ***
-void createBatches(
-    const std::vector<EDGE_TYPE> &edges,
-    std::vector<BATCH_TYPE, aligned_allocator<BATCH_TYPE>> &batches) {
-
-    batches.clear(); // 确保开始前目标 vector 是空的
-    if (edges.empty()) {
-        return;
-    }
-
-    BATCH_TYPE current_batch;
-    int edges_in_batch = 0;
-
-    for (const auto &edge : edges) {
-        current_batch.data[edges_in_batch] = edge;
-        edges_in_batch++;
-
-        if (edges_in_batch == PE_NUM) {
-            current_batch.end_pos = PE_NUM;
-            current_batch.end_flag = false;
-            batches.push_back(current_batch); // 直接填充到传入的 vector 中
-            edges_in_batch = 0;
-        }
-    }
-
-    // 处理最后一个可能未满的batch
-    if (edges_in_batch > 0) {
-        current_batch.end_pos = edges_in_batch;
-        current_batch.end_flag = true;
-        batches.push_back(current_batch);
-    }
-    // 如果整个流恰好被PE_NUM整除，那么最后一个已满的batch也应该是结束batch
-    else if (!batches.empty()) {
-        batches.back().end_flag = true;
-    }
-    // 函数现在是 void，不需要 return 语句
-}
-// **********************************************************
-
-partition_container_dt partitionGraph(const GraphCSR *graph) {
-
-    // --- 1: CSR to COO ---
-    std::vector<edge_t> all_edges = csrToCoo(*graph);
-
-    // --- 2: 将 COO vector 分割成多个部分 ---
-
-    /*
-    //方案一：均分
-    const int num_partitions = LITTLE_KERNEL_NUM + BIG_KERNEL_NUM;
-    size_t total_edges = all_edges.size();
-    size_t base_partition_size = total_edges / num_partitions;
-    size_t remainder = total_edges % num_partitions;
-
-    std::vector<std::vector<edge_t>> coo_parts(num_partitions);
-    auto current_iter = all_edges.begin();
-    for (int i = 0; i < num_partitions; ++i) {
-        size_t part_size = base_partition_size + (i < remainder ? 1 : 0);
-        auto end_iter = current_iter + part_size;
-        coo_parts[i].assign(current_iter, end_iter);
-        current_iter = end_iter;
-    }
-    */
-    // --- 2: 按顶点划分，并将所有入边(ingoing-edges)分配到对应分区 ---
-
-    const int num_partitions = LITTLE_KERNEL_NUM + BIG_KERNEL_NUM;
-    const int num_vertices = graph->num_vertices;
-
-    // 2a. 首先，将所有顶点尽量平均地分配到每个分区
-    // 创建一个映射，记录每个顶点ID属于哪个分区ID
-    std::vector<int> vertex_to_partition_map(num_vertices);
-    int base_verts_per_part = num_vertices / num_partitions;
-    int remainder_verts = num_vertices % num_partitions;
-    int current_vertex_id = 0;
-    for (int part_id = 0; part_id < num_partitions; ++part_id) {
-        int verts_in_this_part =
-            base_verts_per_part + (part_id < remainder_verts ? 1 : 0);
-        for (int i = 0; i < verts_in_this_part; ++i) {
-            if (current_vertex_id < num_vertices) {
-                vertex_to_partition_map[current_vertex_id] = part_id;
-                current_vertex_id++;
-            }
-        }
-    }
-
-    // 2b. 然后，遍历所有边，根据其目标顶点(dst)的归属，将边放入对应的分区
-    std::vector<std::vector<edge_t>> coo_parts(num_partitions);
-    for (const auto &edge : all_edges) {
-        int dst_id = edge.dst.id;
-
-        // 确保目标顶点ID有效
-        if (dst_id < num_vertices) {
-            // 查找目标顶点属于哪个分区
-            int target_partition_id = vertex_to_partition_map[dst_id];
-
-            // 将这条边添加到那个分区的边列表中
-            coo_parts[target_partition_id].push_back(edge);
-        }
-    }
-
-    // --- 3: 创建并填充 partition_container_dt ---
-    std::cout << "Populating the Partition Container with batched data..."
+PartitionContainer partitionGraph(const GraphCSR *graph) {
+    std::cout << "--- Starting Graph Partitioning and Preprocessing ---"
               << std::endl;
-
-    partition_container_dt container;
+    PartitionContainer container;
     container.num_graph_vertices = graph->num_vertices;
     container.num_graph_edges = graph->num_edges;
 
-    // --- 为小核（Dense Partitions）创建分区描述符 ---
-    for (size_t i = 0; i < LITTLE_KERNEL_NUM; ++i) {
+    const int num_partitions = BIG_KERNEL_NUM + LITTLE_KERNEL_NUM;
+    if (num_partitions == 0) {
+        std::cerr << "Error: No kernels defined (BIG_KERNEL_NUM and "
+                     "LITTLE_KERNEL_NUM are both 0)."
+                  << std::endl;
+        return container;
+    }
+    std::cout << "[INFO] Total partitions to create: " << num_partitions
+              << std::endl;
 
-        partition_descriptor_dt pd;
+    // --- PHASE 1: Identify and Collect All Unique Destination Vertices ---
+    std::set<int> unique_dst_vertices_set;
+    for (int i = 0; i < graph->num_edges; ++i) {
+        unique_dst_vertices_set.insert(graph->columns[i]);
+    }
+    std::vector<int> unique_dst_vertices(unique_dst_vertices_set.begin(),
+                                         unique_dst_vertices_set.end());
+    std::cout << "[PHASE 1] Found " << unique_dst_vertices.size()
+              << " unique destination vertices." << std::endl;
 
-        // **********************************************************
-        // *** 修正点 2: 调用新版 createBatches，直接填充 pd.batch_array_host
-        // ***
-        createBatches(coo_parts[i], pd.batch_array_host);
-        // **********************************************************
+    // --- PHASE 2: Distribute Destination Vertices to Partitions ---
+    std::vector<std::set<int>> dst_vertices_per_partition(num_partitions);
+    std::unordered_map<int, int> dst_vertex_to_partition_map;
 
-        // 填充元数据
-        pd.num_edges = coo_parts[i].size();
-        pd.num_vertices = graph->num_vertices;
+    size_t base_dst_per_part = unique_dst_vertices.size() / num_partitions;
+    size_t remainder_dst = unique_dst_vertices.size() % num_partitions;
+    size_t current_dst_idx = 0;
+
+    for (int i = 0; i < num_partitions; ++i) {
+        size_t num_dst_in_part =
+            base_dst_per_part + (i < remainder_dst ? 1 : 0);
+        for (size_t j = 0; j < num_dst_in_part; ++j) {
+            if (current_dst_idx < unique_dst_vertices.size()) {
+                int vertex_id = unique_dst_vertices[current_dst_idx];
+                dst_vertices_per_partition[i].insert(vertex_id);
+                dst_vertex_to_partition_map[vertex_id] = i;
+                current_dst_idx++;
+            }
+        }
+        std::cout << "[PHASE 2] Partition " << i << " assigned "
+                  << dst_vertices_per_partition[i].size()
+                  << " destination vertices." << std::endl;
+    }
+
+    // --- PHASE 3: Assign Edges to Partitions Based on Destination Vertex ---
+    std::vector<std::vector<Edge>> edges_per_partition(num_partitions);
+    for (int u = 0; u < graph->num_vertices; ++u) {
+        for (int i = graph->offsets[u]; i < graph->offsets[u + 1]; ++i) {
+            int v = graph->columns[i];
+            int w = graph->weights[i];
+
+            // Find which partition this edge belongs to
+            auto it = dst_vertex_to_partition_map.find(v);
+            if (it != dst_vertex_to_partition_map.end()) {
+                int partition_id = it->second;
+                edges_per_partition[partition_id].push_back({u, v, w});
+            } else {
+                // This case should not happen if all dst vertices are mapped.
+                // It might occur for sink nodes with no incoming edges, which
+                // is fine.
+            }
+        }
+    }
+    std::cout << "[PHASE 3] All edges have been assigned to their respective "
+                 "partitions."
+              << std::endl;
+
+    // --- PHASE 4: Process Each Partition (Compress IDs and Convert to CSR) ---
+    std::cout << "[PHASE 4] Processing each partition..." << std::endl;
+    for (int i = 0; i < num_partitions; ++i) {
+        PartitionDescriptor pd;
+        GraphCSR &p_graph = pd.partitioned_graph;
+        const auto &partition_edges = edges_per_partition[i];
+        const auto &partition_dst_nodes = dst_vertices_per_partition[i];
+
+        if (partition_edges.empty()) {
+            std::cout << "  - Partition " << i << " has no edges. Skipping."
+                      << std::endl;
+            // Still create a valid (but empty) partition descriptor
+            pd.num_edges = 0;
+            pd.num_vertices = 0;
+            p_graph.num_edges = 0;
+            p_graph.num_vertices = 0;
+            p_graph.offsets.push_back(0);
+
+        } else {
+            // --- 4.1: Collect unique vertices and build ID mappings ---
+            std::set<int> local_vertices_set;
+            for (const auto &edge : partition_edges) {
+                local_vertices_set.insert(edge.src);
+                local_vertices_set.insert(edge.dest);
+            }
+
+            int local_id_counter = 0;
+            // First, map destination vertices to guarantee they have
+            // lower-range IDs
+            for (int global_id : partition_dst_nodes) {
+                p_graph.vtx_map[global_id] = local_id_counter;
+                p_graph.vtx_map_rev[local_id_counter] = global_id;
+                local_id_counter++;
+            }
+            // Then, map the remaining source vertices
+            for (int global_id : local_vertices_set) {
+                if (p_graph.vtx_map.find(global_id) == p_graph.vtx_map.end()) {
+                    p_graph.vtx_map[global_id] = local_id_counter;
+                    p_graph.vtx_map_rev[local_id_counter] = global_id;
+                    local_id_counter++;
+                }
+            }
+            p_graph.num_vertices = local_vertices_set.size();
+            p_graph.num_edges = partition_edges.size();
+
+            // --- 4.2: Rewrite edges with local, compressed IDs ---
+            std::vector<Edge> local_edges;
+            local_edges.reserve(p_graph.num_edges);
+            for (const auto &global_edge : partition_edges) {
+                local_edges.push_back({p_graph.vtx_map[global_edge.src],
+                                       p_graph.vtx_map[global_edge.dest],
+                                       global_edge.weight});
+            }
+
+            // --- 4.3: Convert local edges to CSR format ---
+            std::sort(
+                local_edges.begin(), local_edges.end(),
+                [](const Edge &a, const Edge &b) { return a.src < b.src; });
+
+            p_graph.offsets.resize(p_graph.num_vertices + 1, 0);
+            p_graph.columns.resize(p_graph.num_edges);
+            p_graph.weights.resize(p_graph.num_edges);
+
+            std::vector<int> out_degree(p_graph.num_vertices, 0);
+            for (int j = 0; j < p_graph.num_edges; ++j) {
+                p_graph.columns[j] = local_edges[j].dest;
+                p_graph.weights[j] = local_edges[j].weight;
+                out_degree[local_edges[j].src]++;
+            }
+
+            p_graph.offsets[0] = 0;
+            for (int j = 0; j < p_graph.num_vertices; ++j) {
+                p_graph.offsets[j + 1] = p_graph.offsets[j] + out_degree[j];
+            }
+
+            // --- 4.4: Finalize partition descriptor metadata ---
+            pd.num_edges = p_graph.num_edges;
+            pd.num_vertices = p_graph.num_vertices;
+        }
+
         pd.kernel_id = i;
-        pd.is_dense = true;
-
-        container.DP.push_back(pd);
+        if (i < LITTLE_KERNEL_NUM) {
+            pd.is_dense =
+                true; // This is a Dense Partition (DP) for a little kernel
+            container.DPs.push_back(pd);
+        } else {
+            pd.is_dense =
+                false; // This is a Sparse Partition (SP) for a big kernel
+            container.SPs.push_back(pd);
+        }
+        std::cout << "  - Processed Partition " << i << ": " << pd.num_vertices
+                  << " local vertices, " << pd.num_edges << " edges."
+                  << std::endl;
     }
 
-    // --- 为大核（Sparse Partitions）创建分区描述符 ---
-    for (size_t i = 0; i < BIG_KERNEL_NUM; ++i) {
-        size_t part_index = i + LITTLE_KERNEL_NUM;
+    container.num_dense_partitions = container.DPs.size();
+    container.num_sparse_partitions = container.SPs.size();
 
-        partition_descriptor_dt pd;
-
-        // **********************************************************
-        // *** 修正点 2: 调用新版 createBatches，直接填充 pd.batch_array_host
-        // ***
-        createBatches(coo_parts[part_index], pd.batch_array_host);
-        // **********************************************************
-
-        // 填充元数据
-        pd.num_edges = coo_parts[part_index].size();
-        pd.num_vertices = graph->num_vertices;
-        pd.kernel_id = part_index;
-        pd.is_dense = false;
-
-        container.SP.push_back(pd);
-    }
-
-    // 更新容器中的分区数量
-    container.num_sparse_partitions = container.SP.size();
-    container.num_dense_partitions = container.DP.size();
-
-    std::cout << "Partition Container populated successfully." << std::endl;
-
+    std::cout << "[SUCCESS] Graph partitioning and preprocessing complete."
+              << std::endl;
     return container;
 }
-
-/*
-//reorder vertices according to the outdegree of the vertices...
-void reorderGraph(CSR* csr){
-
-}
-*/

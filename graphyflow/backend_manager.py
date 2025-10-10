@@ -96,8 +96,7 @@ class BackendManager:
         axi_wrapper_func_str, top_func_sig = self._generate_axi_kernel_wrapper(top_func_name)
 
         # --- Phase 6: Generate file contents ---
-        reduce_suffix = "_little" if self.REDUCE_MODE == "little_pipeline" else "_big"
-        header_name = f"{top_func_name}{reduce_suffix}.h"
+        header_name = f"{top_func_name}.h"
         header_code = self._generate_header_file(top_func_name, top_func_sig)
         source_code = self._generate_source_file(header_name, axi_wrapper_func_str)
 
@@ -179,66 +178,66 @@ static int32_t ap_fixed_to_int32(const ap_fixed<32, 16>& val) {
 }
 """
 
-        convergence_impl = f"""
-bool AlgorithmHost::check_convergence_and_update() {{
-    bool changed = false;
-    std::map<int, ap_fixed<32, 16>> min_distances;
+        #         convergence_impl = f"""
+        # bool AlgorithmHost::check_convergence_and_update() {{
+        #     bool changed = false;
+        #     std::map<int, ap_fixed<32, 16>> min_distances;
 
-    for (const auto& batch : h_{output_var_name}) {{
-        for (int i = 0; i < batch.end_pos; ++i) {{
-            int node_id = batch.data[i].id;
-            ap_fixed<32, 16> dist = batch.data[i].distance;
-            if (min_distances.find(node_id) == min_distances.end() || dist < min_distances[node_id]) {{
-                min_distances[node_id] = dist;
-            }}
-        }}
-    }}
+        #     for (const auto& batch : h_{output_var_name}) {{
+        #         for (int i = 0; i < batch.end_pos; ++i) {{
+        #             int node_id = batch.data[i].id;
+        #             ap_fixed<32, 16> dist = batch.data[i].distance;
+        #             if (min_distances.find(node_id) == min_distances.end() || dist < min_distances[node_id]) {{
+        #                 min_distances[node_id] = dist;
+        #             }}
+        #         }}
+        #     }}
 
-    for (auto const &[node_id, new_dist] : min_distances) {{
-        if (new_dist < h_distances[node_id]) {{
-            h_distances[node_id] = new_dist;
-            changed = true;
-        }}
-    }}
+        #     for (auto const &[node_id, new_dist] : min_distances) {{
+        #         if (new_dist < h_distances[node_id]) {{
+        #             h_distances[node_id] = new_dist;
+        #             changed = true;
+        #         }}
+        #     }}
 
-    if (changed) {{
-        for (auto& batch : h_{input_var_name}) {{
-            for (int i = 0; i < batch.end_pos; ++i) {{
-                batch.data[i].src.distance = ap_fixed_to_int32(h_distances[batch.data[i].src.id]);
-                batch.data[i].dst.distance = ap_fixed_to_int32(h_distances[batch.data[i].dst.id]);
-            }}
-        }}
-    }}
+        #     if (changed) {{
+        #         for (auto& batch : h_{input_var_name}) {{
+        #             for (int i = 0; i < batch.end_pos; ++i) {{
+        #                 batch.data[i].src.distance = ap_fixed_to_int32(h_distances[batch.data[i].src.id]);
+        #                 batch.data[i].dst.distance = ap_fixed_to_int32(h_distances[batch.data[i].dst.id]);
+        #             }}
+        #         }}
+        #     }}
 
-    return !changed;
-}}
+        #     return !changed;
+        # }}
 
-const std::vector<int> &AlgorithmHost::get_results() const {{
-    static std::vector<int> final_distances;
-    final_distances.clear();
-    final_distances.reserve(h_distances.size());
-    for (const auto &dist : h_distances) {{
-        if (dist > std::numeric_limits<int>::max()) {{
-            final_distances.push_back(std::numeric_limits<int>::max());
-        }} else {{
-            final_distances.push_back(dist.to_int());
-        }}
-    }}
-    return final_distances;
-}}
-"""
+        # const std::vector<int> &AlgorithmHost::get_results() const {{
+        #     static std::vector<int> final_distances;
+        #     final_distances.clear();
+        #     final_distances.reserve(h_distances.size());
+        #     for (const auto &dist : h_distances) {{
+        #         if (dist > std::numeric_limits<int>::max()) {{
+        #             final_distances.push_back(std::numeric_limits<int>::max());
+        #         }} else {{
+        #             final_distances.push_back(dist.to_int());
+        #         }}
+        #     }}
+        #     return final_distances;
+        # }}
+        # """
 
         # --- Replace Placeholders in Templates ---
         cpp_final = cpp_template
         cpp_final = cpp_final.replace("// {{GRAPHYFLOW_HELPER_FUNCTIONS}}", helper_func)
 
-        start_str = "bool AlgorithmHost::check_convergence_and_update() {"
-        end_str = "return final_distances;\n}"
-        cpp_final_start = cpp_final.find(start_str)
-        cpp_final_end = cpp_final.find(end_str) + len(end_str)
+        # start_str = "bool AlgorithmHost::check_convergence_and_update() {"
+        # end_str = "return final_distances;\n}"
+        # cpp_final_start = cpp_final.find(start_str)
+        # cpp_final_end = cpp_final.find(end_str) + len(end_str)
 
-        if cpp_final_start != -1 and cpp_final_end != -1:
-            cpp_final = cpp_final[:cpp_final_start] + convergence_impl + cpp_final[cpp_final_end:]
+        # if cpp_final_start != -1 and cpp_final_end != -1:
+        #     cpp_final = cpp_final[:cpp_final_start] + convergence_impl + cpp_final[cpp_final_end:]
 
         h_final = h_template
         h_final = h_final.replace(
@@ -467,6 +466,13 @@ emconfig:
 
         code += "// A constant representing infinity for distance initialization\n"
         code += "const int INFINITY_DIST = 16384;\n\n"
+
+        code += "// --- Graph Type Definitions ---\n"
+        code += "typedef uint16_t edge_id_t;\n"
+        code += "typedef uint16_t node_id_t;\n"
+        code += "typedef uint32_t ap_fixed_pod_t;\n\n"
+
+        # Add vtx_map and vtx_map_rev for vertex ID mapping
         code += "// Structure to hold the graph in Compressed Sparse Row (CSR) format\n"
         code += "struct GraphCSR {\n"
         code += "    int num_vertices;\n"
@@ -474,8 +480,9 @@ emconfig:
         code += "    std::vector<int> offsets;\n"
         code += "    std::vector<int> columns;\n"
         code += "    std::vector<int> weights;\n"
-        # Add the vertex mapping structures required by the reference host code
+        code += "    // Map from original global vertex ID to compressed local ID\n"
         code += "    std::unordered_map<int, int> vtx_map;\n"
+        code += "    // Map from compressed local ID to original global vertex ID\n"
         code += "    std::unordered_map<int, int> vtx_map_rev;\n"
         code += "};\n\n"
 

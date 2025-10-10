@@ -1,635 +1,326 @@
 #include "generated_host.h"
 #include <iostream>
+#include <vector>
 #include <map>
 #include <limits>
-#include <cstring> // For memcpy
 
-// Constructor
-AlgorithmHost::AlgorithmHost(acc_descriptor_dt& acc)
-    : acc{acc}{}
+// A helper function to reinterpret the bits of an ap_fixed value as an int32_t
+// This is used for preparing node distances for the kernel.
+static int32_t ap_fixed_to_int32(const ap_fixed<32, 16>& val) {
+    return *reinterpret_cast<const int32_t*>(&val);
+}
 
-// --- DYNAMICALLY GENERATED SECTIONS ---
-// {{GRAPHYFLOW_HELPER_FUNCTIONS}}
+AlgorithmHost::AlgorithmHost(AccDescriptor& acc)
+    : acc(acc) {}
 
-// example 示例：
-/**
- * @brief 从已准备好的分区数据为所有核心创建并设置OpenCL HBM缓冲区。
- * 此函数使用修正后的 partition_descriptor_dt 定义，直接从 batch_array_host 读取数据。
- * @param container 包含图分区数据的容器，其中每个分区的 'batch_array_host' 已是批处理格式。
- * @param start_node (未使用) 为保持API一致性而保留。
- */
-void AlgorithmHost::setup_buffers(const partition_container_dt& container, int start_node) {
+
+// --- PHASE 1: BUFFER SETUP ---
+void AlgorithmHost::setup_buffers(const PartitionContainer& container, int start_node) {
     cl_int err;
+    std::cout << "--- [Host] Phase 1: Setting up HBM buffers for all kernels ---" << std::endl;
 
-    // 1. 初始化状态和主机端容器
+    // 1.1: Initialize global distance vector on the host
     m_num_vertices = container.num_graph_vertices;
-
-    h_distances.resize(m_num_vertices);
-    h_distances.assign(m_num_vertices, 16384);
+    h_distances.assign(m_num_vertices, ap_fixed<32, 16>(INFINITY_DIST));
     if (start_node < m_num_vertices) {
         h_distances[start_node] = 0;
     }
 
-    // 清空所有旧的OpenCL缓冲区句柄
-    big_kernel_input_bufs.clear();
-    big_kernel_output_bufs.clear();
-    big_kernel_stop_flag_bufs.clear();
-    little_kernel_input_bufs.clear();
-    little_kernel_output_bufs.clear();
-    little_kernel_stop_flag_bufs.clear();
+    // 1.2: Clear old buffer handles and resize host-side result vectors
+    big_kernel_buffers.clear();
+    little_kernel_buffers.clear();
+    big_kernel_host_outputs.resize(container.SPs.size());
+    little_kernel_host_outputs.resize(container.DPs.size());
 
-    // 调整主机端输出/停止标志向量的大小以匹配核心数量
-    big_kernel_host_outputs.resize(container.SP.size());
-    big_kernel_stop_flags.resize(container.SP.size());
-    little_kernel_host_outputs.resize(container.DP.size());
-    little_kernel_stop_flags.resize(container.DP.size());
+    // --- 1.3: Setup buffers for BIG kernels (Sparse Partitions) ---
+    for (size_t i = 0; i < container.SPs.size(); ++i) {
+        const auto& partition = container.SPs[i];
+        const auto& p_graph = partition.partitioned_graph;
+        KernelBuffers buffers;
 
+        // Prepare HBM extension pointers for buffer allocation
+        cl_mem_ext_ptr_t hbm_ext_in0, hbm_ext_in1, hbm_ext_in2, hbm_ext_out;
+        hbm_ext_in0.flags = XCL_MEM_TOPOLOGY | acc.big_kernel_hbm_input_id[i]; hbm_ext_in0.obj = nullptr; hbm_ext_in0.param = 0;
+        hbm_ext_in1.flags = XCL_MEM_TOPOLOGY | acc.big_kernel_hbm_input_id[i]; hbm_ext_in1.obj = nullptr; hbm_ext_in1.param = 0;
+        hbm_ext_in2.flags = XCL_MEM_TOPOLOGY | acc.big_kernel_hbm_input_id[i]; hbm_ext_in2.obj = nullptr; hbm_ext_in2.param = 0;
+        hbm_ext_out.flags = XCL_MEM_TOPOLOGY | acc.big_kernel_hbm_output_id[i]; hbm_ext_out.obj = nullptr; hbm_ext_out.param = 0;
 
-    // --- 为大核（稀疏分区）设置缓冲区 ---
-    for (size_t i = 0; i < container.SP.size(); ++i) {
-        const auto& partition = container.SP[i];
+        // Create buffers for static CSR data (offsets and edge properties)
+        OCL_CHECK(err, buffers.src_offsets_buf = cl::Buffer(acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_COPY_HOST_PTR, (p_graph.num_vertices + 1) * sizeof(int), &hbm_ext_in0, &err));
         
-        // a. 直接从修正后的成员 `batch_array_host` 获取预处理好的输入数据
-        const auto& host_input_batches = partition.batch_array_host;
-
-        // b. 准备输出和停止标志的主机端内存
-        big_kernel_host_outputs[i].resize(host_input_batches.size());
-
-        // c. 在指定的HBM bank上创建缓冲区
-        cl_mem_ext_ptr_t hbm_ext_in, hbm_ext_out; // <-- 修改点: 移除了 hbm_ext_stop
-
-        hbm_ext_in.flags = XCL_MEM_TOPOLOGY | acc.big_kernel_hbm_input_id[i];
-        hbm_ext_in.obj = nullptr;
-        hbm_ext_in.param = 0;
-
-        hbm_ext_out.flags = XCL_MEM_TOPOLOGY | acc.big_kernel_hbm_output_id[i];
-        hbm_ext_out.obj = nullptr;
-        hbm_ext_out.param = 0;
-
-        // --- *** 仅修改 stop_flag 相关的部分 开始 *** ---
-
-        // hbm_ext_stop 的设置已被移除
+        size_t num_edge_bursts = (p_graph.num_edges + PE_NUM - 1) / PE_NUM;
+        std::vector<edge_des_burst_t, aligned_allocator<edge_des_burst_t>> edge_bursts(num_edge_bursts);
+        for(size_t j=0; j < p_graph.num_edges; ++j) {
+            edge_bursts[j / PE_NUM].edges[j % PE_NUM] = { (uint16_t)p_graph.columns[j], p_graph.weights[j] };
+        }
+        OCL_CHECK(err, buffers.edge_props_buf = cl::Buffer(acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_COPY_HOST_PTR, num_edge_bursts * sizeof(edge_des_burst_t), &hbm_ext_in1, &err));
         
-        cl::Buffer in_buf, out_buf, stop_buf;
-        OCL_CHECK(err, in_buf = cl::Buffer(acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX , host_input_batches.size() * sizeof(BATCH_TYPE), &hbm_ext_in, &err));
-        OCL_CHECK(err, out_buf = cl::Buffer(acc.context, CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX , big_kernel_host_outputs[i].size() * sizeof(KERNEL_OUTPUT_BATCH_TYPE), &hbm_ext_out, &err));
-        
-        // 修改 stop_buf 的创建方式：不使用 HBM 扩展指针，而是直接关联主机内存
-        //this->big_kernel_stop_flags[i].resize(1);
-        //OCL_CHECK(err, stop_buf = cl::Buffer(acc.context, 
-        //                             CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, 
-        //                             sizeof(int), 
-        //                             this->big_kernel_stop_flags[i].data(), // <-- 使用 .data() 获取对齐指针
-        //                             &err));
-        cl_mem_ext_ptr_t hbm_ext_stop; // 新增 stop_flag 的 HBM 扩展指针
-        hbm_ext_stop.flags = XCL_MEM_TOPOLOGY | acc.big_kernel_hbm_output_id[i]; // 使用新配置的 HBM ID
-        hbm_ext_stop.obj = nullptr;
-        hbm_ext_stop.param = 0;
+        // Create buffer for dynamic node distances (will be updated each iteration)
+        OCL_CHECK(err, buffers.node_props_buf = cl::Buffer(acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX, p_graph.num_vertices * sizeof(int32_t), &hbm_ext_in2, &err));
 
-        this->big_kernel_stop_flags[i].resize(1); // 尺寸调整仍然需要
-        OCL_CHECK(err, stop_buf = cl::Buffer(acc.context, 
-                                     CL_MEM_READ_WRITE | CL_MEM_EXT_PTR_XILINX, // 修改为使用 Xilinx 扩展
-                                     sizeof(int), 
-                                     &hbm_ext_stop, // 传递 HBM 扩展指针
-                                     &err));
-        
+        // Create buffer for kernel output
+        size_t max_output_batches = (p_graph.num_vertices + PE_NUM - 1) / PE_NUM + 1;
+        big_kernel_host_outputs[i].resize(max_output_batches);
+        OCL_CHECK(err, buffers.output_buf = cl::Buffer(acc.context, CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX, max_output_batches * sizeof(KernelOutputBatch), &hbm_ext_out, &err));
 
-        // d. 将新创建的缓冲区句柄添加到向量中
-        big_kernel_input_bufs.push_back(in_buf);
-        big_kernel_output_bufs.push_back(out_buf);
-        big_kernel_stop_flag_bufs.push_back(stop_buf);
+        big_kernel_buffers.push_back(buffers);
     }
 
+    // --- 1.4: Setup buffers for LITTLE kernels (Dense Partitions) ---
+    for (size_t i = 0; i < container.DPs.size(); ++i) {
+        // (Logic is identical to big kernels, just using different container and HBM banks)
+        const auto& partition = container.DPs[i];
+        const auto& p_graph = partition.partitioned_graph;
+        KernelBuffers buffers;
 
-    // --- 为小核（密集分区）设置缓冲区 ---
-    for (size_t i = 0; i < container.DP.size(); ++i) {
-        const auto& partition = container.DP[i];
+        cl_mem_ext_ptr_t hbm_ext_in0, hbm_ext_in1, hbm_ext_in2, hbm_ext_out;
+        hbm_ext_in0.flags = XCL_MEM_TOPOLOGY | acc.little_kernel_hbm_input_id[i]; hbm_ext_in0.obj = nullptr; hbm_ext_in0.param = 0;
+        hbm_ext_in1.flags = XCL_MEM_TOPOLOGY | acc.little_kernel_hbm_input_id[i]; hbm_ext_in1.obj = nullptr; hbm_ext_in1.param = 0;
+        hbm_ext_in2.flags = XCL_MEM_TOPOLOGY | acc.little_kernel_hbm_input_id[i]; hbm_ext_in2.obj = nullptr; hbm_ext_in2.param = 0;
+        hbm_ext_out.flags = XCL_MEM_TOPOLOGY | acc.little_kernel_hbm_output_id[i]; hbm_ext_out.obj = nullptr; hbm_ext_out.param = 0;
         
-        // a. 直接从修正后的成员 `batch_array_host` 获取预处理好的输入数据
-        const auto& host_input_batches = partition.batch_array_host;
-
-        // b. 准备输出和停止标志的主机端内存
-        little_kernel_host_outputs[i].resize(host_input_batches.size());
-
-        // c. 在指定的HBM bank上创建缓冲区
-        cl_mem_ext_ptr_t hbm_ext_in, hbm_ext_out; // <-- 修改点: 移除了 hbm_ext_stop
-
-        hbm_ext_in.flags = XCL_MEM_TOPOLOGY | acc.little_kernel_hbm_input_id[i];
-        hbm_ext_in.obj = nullptr;
-        hbm_ext_in.param = 0;
-
-        hbm_ext_out.flags = XCL_MEM_TOPOLOGY | acc.little_kernel_hbm_output_id[i];
-        hbm_ext_out.obj = nullptr;
-        hbm_ext_out.param = 0;
+        OCL_CHECK(err, buffers.src_offsets_buf = cl::Buffer(acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_COPY_HOST_PTR, (p_graph.num_vertices + 1) * sizeof(int), &hbm_ext_in0, &err));
         
-   
+        size_t num_edge_bursts = (p_graph.num_edges + PE_NUM - 1) / PE_NUM;
+        std::vector<edge_des_burst_t, aligned_allocator<edge_des_burst_t>> edge_bursts(num_edge_bursts);
+        for(size_t j=0; j < p_graph.num_edges; ++j) {
+            edge_bursts[j / PE_NUM].edges[j % PE_NUM] = { (uint16_t)p_graph.columns[j], p_graph.weights[j] };
+        }
+        OCL_CHECK(err, buffers.edge_props_buf = cl::Buffer(acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_COPY_HOST_PTR, num_edge_bursts * sizeof(edge_des_burst_t), &hbm_ext_in1, &err));
 
-        cl::Buffer in_buf, out_buf, stop_buf;
-        OCL_CHECK(err, in_buf = cl::Buffer(acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX , host_input_batches.size() * sizeof(BATCH_TYPE), &hbm_ext_in, &err));
-        OCL_CHECK(err, out_buf = cl::Buffer(acc.context, CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX , little_kernel_host_outputs[i].size() * sizeof(KERNEL_OUTPUT_BATCH_TYPE), &hbm_ext_out, &err));
+        OCL_CHECK(err, buffers.node_props_buf = cl::Buffer(acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX, p_graph.num_vertices * sizeof(int32_t), &hbm_ext_in2, &err));
 
-        // 修改 stop_buf 的创建方式：不使用 HBM 扩展指针，而是直接关联主机内存
-        //this->little_kernel_stop_flags[i].resize(1);
-        //OCL_CHECK(err, stop_buf = cl::Buffer(acc.context, 
-        //                             CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, 
-        //                             sizeof(int), 
-        //                             this->little_kernel_stop_flags[i].data(), // <-- 使用 .data() 获取对齐指针
-        //                             &err));
-        
-        cl_mem_ext_ptr_t hbm_ext_stop; // 新增 stop_flag 的 HBM 扩展指针
-        hbm_ext_stop.flags = XCL_MEM_TOPOLOGY | acc.little_kernel_hbm_output_id[i]; // 使用新配置的 HBM ID
-        hbm_ext_stop.obj = nullptr;
-        hbm_ext_stop.param = 0;
+        size_t max_output_batches = (p_graph.num_vertices + PE_NUM - 1) / PE_NUM + 1;
+        little_kernel_host_outputs[i].resize(max_output_batches);
+        OCL_CHECK(err, buffers.output_buf = cl::Buffer(acc.context, CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX, max_output_batches * sizeof(KernelOutputBatch), &hbm_ext_out, &err));
 
-        this->little_kernel_stop_flags[i].resize(1); // 尺寸调整仍然需要
-        OCL_CHECK(err, stop_buf = cl::Buffer(acc.context, 
-                                     CL_MEM_READ_WRITE | CL_MEM_EXT_PTR_XILINX, // 修改为使用 Xilinx 扩展
-                                     sizeof(int), 
-                                     &hbm_ext_stop, // 传递 HBM 扩展指针
-                                     &err));
-
-
-        // d. 将新创建的缓冲区句柄添加到向量中
-        little_kernel_input_bufs.push_back(in_buf);
-        little_kernel_output_bufs.push_back(out_buf);
-        little_kernel_stop_flag_bufs.push_back(stop_buf);
+        little_kernel_buffers.push_back(buffers);
     }
     
-    std::cout << "Successfully set up buffers for " << container.SP.size() << " big kernels and "
-              << container.DP.size() << " little kernels using pre-batched data." << std::endl;
+    std::cout << "[SUCCESS] HBM buffers created for " << container.SPs.size() << " big and " << container.DPs.size() << " little kernels." << std::endl;
 }
 
-
-/**
- * @brief 将主机上准备好的批处理数据传输到FPGA的HBM中。
- * 此函数为每个大核和小核分别执行数据拷贝，并初始化它们的停止标志。
- * @param partition_container 含有已经分好区并打包成批处理的数据。
- * @param acc 包含OpenCL队列和内核信息的加速器描述符。
- */
-void AlgorithmHost::transfer_data_to_fpga(
-    const partition_container_dt &partition_container,
-    acc_descriptor_dt &acc
-) {
+// --- PHASE 2: DATA TRANSFER TO FPGA ---
+void AlgorithmHost::transfer_data_to_fpga(const PartitionContainer& container) {
     cl_int err;
-    // stop_flag 在设备端的初始值应为0
-    const int stop_flag_init = 0; 
+    std::cout << "--- [Host] Phase 2: Transferring node distances to HBM ---" << std::endl;
 
-    // --- 1. 为所有 "big" 内核实例传输数据 ---
-    std::cout << "--- Transferring partitioned data to HBM for Big Kernels ---" << std::endl;
-    for (int i = 0; i < acc.num_big_krnl; ++i) {
-        
-        // 获取第i个大核需要处理的数据源 (来自稀疏分区SP[i]的batch_array_host)
-        const auto& source_data = partition_container.SP[i].batch_array_host;
-        
-        // 获取第i个大核对应的HBM输入缓冲区句柄 (这是AlgorithmHost的成员)
-        cl::Buffer &target_buffer = this->big_kernel_input_bufs[i];
+    // 2.1: Transfer data for BIG kernels
+    for (size_t i = 0; i < big_kernel_buffers.size(); ++i) {
+        const auto& p_graph = container.SPs[i].partitioned_graph;
+        std::vector<int32_t> local_node_distances(p_graph.num_vertices);
+        for (int local_id = 0; local_id < p_graph.num_vertices; ++local_id) {
+            int global_id = p_graph.vtx_map_rev.at(local_id);
+            local_node_distances[local_id] = ap_fixed_to_int32(h_distances[global_id]);
+        }
 
-        // 获取第i个大核专属的命令队列
-        cl::CommandQueue &queue = acc.big_gs_queue[i];
-        
-#ifdef DEBUG
-std::cout << "\n--- [DEBUG] Data for Big Kernel ID: " << i << " ---" << std::endl;
-std::cout << "Total batches to transfer: " << source_data.size() << std::endl;
-for (size_t j = 0; j < source_data.size(); ++j) {
-    const auto& batch = source_data[j];
-    std::cout << "  Batch [" << j << "]: "
-              << "end_pos = " << std::left << std::setw(2) << static_cast<unsigned int>(batch.end_pos) << ", "
-              << "end_flag = " << (batch.end_flag ? "true" : "false")
-              << std::endl;
+        OCL_CHECK(err, err = acc.big_gs_queue[i].enqueueWriteBuffer(
+            big_kernel_buffers[i].node_props_buf,
+            CL_FALSE, 0,
+            local_node_distances.size() * sizeof(int32_t),
+            local_node_distances.data()
+        ));
+
+        std::vector<edge_des_burst_t> edge_bursts((p_graph.num_edges + PE_NUM - 1) / PE_NUM);
+        for (size_t j = 0; j < p_graph.num_edges; ++j) {
+            edge_bursts[j / PE_NUM].edges[j % PE_NUM] = { (uint16_t)p_graph.columns[j], p_graph.weights[j] };
+        }
+        OCL_CHECK(err, err = acc.big_gs_queue[i].enqueueWriteBuffer(
+            big_kernel_buffers[i].edge_props_buf,
+            CL_FALSE, 0,
+            edge_bursts.size() * sizeof(edge_des_burst_t),
+            edge_bursts.data()
+        ));
+
+        OCL_CHECK(err, err = acc.big_gs_queue[i].enqueueWriteBuffer(
+            big_kernel_buffers[i].src_offsets_buf,
+            CL_FALSE, 0,
+            (p_graph.num_vertices + 1) * sizeof(int),
+            p_graph.offsets.data()
+        ));
+    }
+
+    // 2.2: Transfer data for LITTLE kernels
+    for (size_t i = 0; i < little_kernel_buffers.size(); ++i) {
+        const auto& p_graph = container.DPs[i].partitioned_graph;
+        std::vector<int32_t> local_node_distances(p_graph.num_vertices);
+        for (int local_id = 0; local_id < p_graph.num_vertices; ++local_id) {
+            int global_id = p_graph.vtx_map_rev.at(local_id);
+            local_node_distances[local_id] = ap_fixed_to_int32(h_distances[global_id]);
+        }
+
+        OCL_CHECK(err, err = acc.little_gs_queue[i].enqueueWriteBuffer(
+            little_kernel_buffers[i].node_props_buf,
+            CL_FALSE, 0,
+            local_node_distances.size() * sizeof(int32_t),
+            local_node_distances.data()
+        ));
+
+        std::vector<edge_des_burst_t> edge_bursts((p_graph.num_edges + PE_NUM - 1) / PE_NUM);
+        for (size_t j = 0; j < p_graph.num_edges; ++j) {
+            edge_bursts[j / PE_NUM].edges[j % PE_NUM] = { (uint16_t)p_graph.columns[j], p_graph.weights[j] };
+        }
+        OCL_CHECK(err, err = acc.little_gs_queue[i].enqueueWriteBuffer(
+            little_kernel_buffers[i].edge_props_buf,
+            CL_FALSE, 0,
+            edge_bursts.size() * sizeof(edge_des_burst_t),
+            edge_bursts.data()
+        ));
+
+        OCL_CHECK(err, err = acc.little_gs_queue[i].enqueueWriteBuffer(
+            little_kernel_buffers[i].src_offsets_buf,
+            CL_FALSE, 0,
+            (p_graph.num_vertices + 1) * sizeof(int),
+            p_graph.offsets.data()
+        ));
+    }
+
+    // 2.3: Wait for all transfers to complete
+    for (auto& q : acc.big_gs_queue) q.finish();
+    for (auto& q : acc.little_gs_queue) q.finish();
+    std::cout << "[SUCCESS] All node distances for current iteration transferred." << std::endl;
+}
+
+// --- PHASE 3: KERNEL EXECUTION ---
+void AlgorithmHost::execute_kernel_iteration(const PartitionContainer& container, cl::Event &event) {
+    cl_int err;
+    std::cout << "--- [Host] Phase 3: Enqueuing kernel tasks ---" << std::endl;
+
+    // 3.1: Enqueue BIG kernels
+    for (size_t i = 0; i < big_kernel_buffers.size(); ++i) {
+        auto& kernel = acc.big_gs_krnls[i];
+        auto& buffers = big_kernel_buffers[i];
+        const auto& p_graph = container.SPs[i].partitioned_graph;
+
+        int arg_idx = 0;
+        OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.src_offsets_buf));
+        OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.edge_props_buf));
+        OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.node_props_buf));
+        OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.output_buf));
+        OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_vertices));
+        OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_edges));
+
+        cl::Event* event_ptr = (i == big_kernel_buffers.size() - 1 && little_kernel_buffers.empty()) ? &event : nullptr;
+        OCL_CHECK(err, err = acc.big_gs_queue[i].enqueueTask(kernel, nullptr, event_ptr));
+    }
+
+    // 3.2: Enqueue LITTLE kernels
+    for (size_t i = 0; i < little_kernel_buffers.size(); ++i) {
+        auto& kernel = acc.little_gs_krnls[i];
+        auto& buffers = little_kernel_buffers[i];
+        const auto& p_graph = container.DPs[i].partitioned_graph;
+
+        int arg_idx = 0;
+        OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.src_offsets_buf));
+        OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.edge_props_buf));
+        OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.node_props_buf));
+        OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.output_buf));
+        OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_vertices));
+        OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_edges));
+
+        cl::Event* event_ptr = (i == little_kernel_buffers.size() - 1) ? &event : nullptr;
+        OCL_CHECK(err, err = acc.little_gs_queue[i].enqueueTask(kernel, nullptr, event_ptr));
+    }
+    std::cout << "[SUCCESS] All kernel tasks enqueued for one iteration." << std::endl;
+}
+
+// --- PHASE 4: DATA TRANSFER FROM FPGA ---
+void AlgorithmHost::transfer_data_from_fpga() {
+    cl_int err;
+    std::cout << "--- [Host] Phase 4: Transferring results from HBM ---" << std::endl;
+
+    for (size_t i = 0; i < big_kernel_buffers.size(); ++i) {
+        OCL_CHECK(err, err = acc.big_gs_queue[i].enqueueReadBuffer(
+            big_kernel_buffers[i].output_buf,
+            CL_FALSE, 0,
+            big_kernel_host_outputs[i].size() * sizeof(KernelOutputBatch),
+            big_kernel_host_outputs[i].data()
+        ));
+    }
+
+    for (size_t i = 0; i < little_kernel_buffers.size(); ++i) {
+        OCL_CHECK(err, err = acc.little_gs_queue[i].enqueueReadBuffer(
+            little_kernel_buffers[i].output_buf,
+            CL_FALSE, 0,
+            little_kernel_host_outputs[i].size() * sizeof(KernelOutputBatch),
+            little_kernel_host_outputs[i].data()
+        ));
+    }
     
-    for (uint8_t k = 0; k < batch.end_pos; ++k) {
-        const auto& edge = batch.data[k];
-
-        // --- *** 核心修正点：将二进制模式转回 ap_fixed 值再打印 *** ---
-        // 使用 const ap_fixed<32, 16>* 来安全地进行只读转换
-        ap_fixed<32, 16> src_dist_val = *reinterpret_cast<const ap_fixed<32, 16>*>(&edge.src.distance);
-        ap_fixed<32, 16> dst_dist_val = *reinterpret_cast<const ap_fixed<32, 16>*>(&edge.dst.distance);
-        ap_fixed<32, 16> weight_val   = *reinterpret_cast<const ap_fixed<32, 16>*>(&edge.weight);
-        
-        std::cout << "    Edge " << static_cast<unsigned int>(k) << ": "
-                  << "(src={id:"   << std::left << std::setw(4) << edge.src.id    << ", "
-                  << "dist:"       << std::setw(8) << src_dist_val   << "}, " // 打印转换后的值
-                  << "dst={id:"   << std::setw(4) << edge.dst.id    << ", "
-                  << "dist:"       << std::setw(8) << dst_dist_val   << "}, " // 打印转换后的值
-                  << "w:"          << std::setw(4) << weight_val     << ")"   // 打印转换后的值
-                  << std::endl;
-        // --- *** 修正结束 *** ---
-            }
-        }
-        std::cout << "--- [DEBUG] End of data for Big Kernel ID: " << i << " ---\n" << std::endl;
-#endif
-
-
-        // 执行从主机RAM到HBM的物理拷贝
-        OCL_CHECK(err, err = queue.enqueueWriteBuffer(
-                                 target_buffer,
-                                 CL_FALSE, // 非阻塞式，让所有传输任务先排队
-                                 0,
-                                 source_data.size() * sizeof(BATCH_TYPE),
-                                 source_data.data(),
-                                 nullptr, nullptr));
-
-        // 初始化该内核的stop_flag
-        this->big_kernel_stop_flags[i][0] = stop_flag_init;
-        OCL_CHECK(err, err = queue.enqueueWriteBuffer(
-                                 this->big_kernel_stop_flag_bufs[i], 
-                                 CL_FALSE, 
-                                 0, 
-                                 sizeof(int), 
-                                 this->big_kernel_stop_flags[i].data(), 
-                                 nullptr, nullptr));
-    }
-
-    // --- 2. 为所有 "little" 内核实例传输数据 ---
-    std::cout << "--- Transferring partitioned data to HBM for Little Kernels ---" << std::endl;
-    for (int i = 0; i < acc.num_little_krnl; ++i) {
-
-        // 获取第i个小核需要处理的数据源 (来自稠密分区DP[i]的batch_array_host)
-        const auto& source_data = partition_container.DP[i].batch_array_host;
-
-        // 获取第i个小核对应的HBM输入缓冲区句柄 (这是AlgorithmHost的成员)
-        cl::Buffer &target_buffer = this->little_kernel_input_bufs[i];
-        
-        // 获取第i个小核专属的命令队列
-        cl::CommandQueue &queue = acc.little_gs_queue[i];
-
-
-#ifdef DEBUG
-        std::cout << "\n--- [DEBUG] Data for Little Kernel ID: " << i << " ---" << std::endl;
-        std::cout << "Total batches to transfer: " << source_data.size() << std::endl;
-        for (size_t j = 0; j < source_data.size(); ++j) {
-            const auto& batch = source_data[j];
-            std::cout << "  Batch [" << j << "]: "
-                      << "end_pos = " << std::left << std::setw(2) << static_cast<unsigned int>(batch.end_pos) << ", "
-                      << "end_flag = " << (batch.end_flag ? "true" : "false")
-                      << std::endl;
-
-            for (uint8_t k = 0; k < batch.end_pos; ++k) {
-                const auto& edge = batch.data[k];
-
-                // --- *** 核心修正点：将二进制模式转回 ap_fixed 值再打印 *** ---
-                ap_fixed<32, 16> src_dist_val = *reinterpret_cast<const ap_fixed<32, 16>*>(&edge.src.distance);
-                ap_fixed<32, 16> dst_dist_val = *reinterpret_cast<const ap_fixed<32, 16>*>(&edge.dst.distance);
-                ap_fixed<32, 16> weight_val   = *reinterpret_cast<const ap_fixed<32, 16>*>(&edge.weight);
-                
-                std::cout << "    Edge " << static_cast<unsigned int>(k) << ": "
-                          << "(src={id:"   << std::left << std::setw(4) << edge.src.id    << ", "
-                          << "dist:"       << std::setw(8) << src_dist_val   << "}, " // 打印转换后的值
-                          << "dst={id:"   << std::setw(4) << edge.dst.id    << ", "
-                          << "dist:"       << std::setw(8) << dst_dist_val   << "}, " // 打印转换后的值
-                          << "w:"          << std::setw(4) << weight_val     << ")"   // 打印转换后的值
-                          << std::endl;
-                // --- *** 修正结束 *** ---
-            }
-        }
-        std::cout << "--- [DEBUG] End of data for Little Kernel ID: " << i << " ---\n" << std::endl;
-#endif
-
-        // 执行从主机RAM到HBM的物理拷贝
-        OCL_CHECK(err, err = queue.enqueueWriteBuffer(
-                                 target_buffer,
-                                 CL_FALSE, // 非阻塞式
-                                 0,
-                                 source_data.size() * sizeof(BATCH_TYPE),
-                                 source_data.data(),
-                                 nullptr, nullptr));
-
-        // 初始化该内核的stop_flag
-        this->little_kernel_stop_flags[i][0] = stop_flag_init;
-        OCL_CHECK(err, err = queue.enqueueWriteBuffer(
-                                 this->little_kernel_stop_flag_bufs[i], 
-                                 CL_FALSE,
-                                 0, 
-                                 sizeof(int), 
-                                 this->little_kernel_stop_flags[i].data(),
-                                 nullptr, nullptr));
-    }
-
-    // --- 3. 全局同步：等待所有队列中的传输任务完成 ---
-    // 调用 finish() 会阻塞主机线程，直到该队列中所有先前提交的命令都执行完毕。
-    std::cout << "--- Waiting for all data transfers to complete ---" << std::endl;
-    for (int i = 0; i < acc.num_big_krnl; ++i) {
-        OCL_CHECK(err, err = acc.big_gs_queue[i].finish());
-    }
-    for (int i = 0; i < acc.num_little_krnl; ++i) {
-        OCL_CHECK(err, err = acc.little_gs_queue[i].finish());
-    }
-    std::cout << "--- All data successfully transferred to HBM ---" << std::endl;
+    // Wait for all transfers to complete
+    for (auto& q : acc.big_gs_queue) q.finish();
+    for (auto& q : acc.little_gs_queue) q.finish();
+    std::cout << "[SUCCESS] All results transferred from HBM." << std::endl;
 }
 
 
-/**
- * @brief 将所有大核和小核的计算任务压入队列以执行一次迭代。
- * 该函数会为每个内核实例单独设置参数并启动它。
- * @param event [输出] 用于跟踪最后启动的内核任务完成情况的事件对象。
- */
-void AlgorithmHost::execute_kernel_iteration(cl::Event &event) {
-    cl_int err;
-
-    // --- 1. 启动所有 "big" 内核实例 ---
-    std::cout << "--- Enqueuing tasks for Big Kernels ---" << std::endl;
-    for (int i = 0; i < acc.num_big_krnl; ++i) {
-        
-        // a. 获取第i个大核所需的所有资源
-        cl::Kernel &kernel = acc.big_gs_krnls[i];
-        cl::CommandQueue &queue = acc.big_gs_queue[i];
-
-        // b. 确定该内核需要处理的批处理数量
-        //    这个数量是在 setup_buffers 阶段根据分区数据的大小确定的。
-        uint16_t num_batches = this->big_kernel_host_outputs[i].size();
-
-
-        // c. 为该内核设置参数 (Argument Index: 0, 1, 2, 3)
-        int arg_idx = 0;
-        OCL_CHECK(err, err = kernel.setArg(arg_idx++, this->big_kernel_input_bufs[i]));
-        OCL_CHECK(err, err = kernel.setArg(arg_idx++, this->big_kernel_output_bufs[i]));
-        OCL_CHECK(err, err = kernel.setArg(arg_idx++, this->big_kernel_stop_flag_bufs[i]));
-        OCL_CHECK(err, err = kernel.setArg(arg_idx++, num_batches)); 
-
-        // d. 将内核执行任务压入其专属队列
-        //    注意：我们只为最后一个启动的任务关联外部事件 `event`
-        cl::Event* p_event = ((i == acc.num_big_krnl - 1) && (acc.num_little_krnl == 0)) ? &event : nullptr;
-        OCL_CHECK(err, err = queue.enqueueTask(kernel, nullptr, p_event));
-    }
-
-    // --- 2. 启动所有 "little" 内核实例 ---
-    std::cout << "--- Enqueuing tasks for Little Kernels ---" << std::endl;
-    for (int i = 0; i < acc.num_little_krnl; ++i) {
-        
-        // a. 获取第i个小核所需的所有资源
-        cl::Kernel &kernel = acc.little_gs_krnls[i];
-        cl::CommandQueue &queue = acc.little_gs_queue[i];
-
-        // b. 确定该内核需要处理的批处理数量
-        uint16_t num_batches = this->little_kernel_host_outputs[i].size();
-        //if (num_batches == 0) {
-        //    std::cout << "Skipping Little Kernel " << i << " as it has no batches to process." << std::endl;
-        //    continue;
-        //}
-
-        // c. 为该内核设置参数 (Argument Index: 0, 1, 2, 3)
-        int arg_idx = 0;
-        OCL_CHECK(err, err = kernel.setArg(arg_idx++, this->little_kernel_input_bufs[i]));
-        OCL_CHECK(err, err = kernel.setArg(arg_idx++, this->little_kernel_output_bufs[i]));
-        OCL_CHECK(err, err = kernel.setArg(arg_idx++, this->little_kernel_stop_flag_bufs[i]));
-        OCL_CHECK(err, err = kernel.setArg(arg_idx++, num_batches));
-
-        // d. 将内核执行任务压入其专属队列
-        //    如果这是最后一个小核，就将外部事件 `event` 与它关联
-        cl::Event* p_event = (i == acc.num_little_krnl - 1) ? &event : nullptr;
-        OCL_CHECK(err, err = queue.enqueueTask(kernel, nullptr, p_event));
-    }
-
-    std::cout << "--- All kernel tasks enqueued for one iteration ---" << std::endl;
-}
-
-
-
-/**
- * @brief 将所有内核的计算结果（输出数据和停止标志）从FPGA的HBM传输回主机内存。
- * 按照要求，此版本将读回的数据存储在函数内的局部变量中，以便后续处理。
- */
-void AlgorithmHost::transfer_data_from_fpga(
-    const partition_container_dt &partition_container,
-    acc_descriptor_dt &acc
-) { 
-    cl_int err;
-
-    // --- 1. 准备用于存储结果的局部变量 ---
-    // 我们根据 AlgorithmHost 中已有的主机端输出向量的大小来准备这些局部容器。
-    // 这些大小是在 setup_buffers 阶段确定的。
-
-    //std::vector<std::vector<KERNEL_OUTPUT_BATCH_TYPE> > big_kernel_results(acc.num_big_krnl);
-    //std::vector<std::vector<int>> big_kernel_stop_flags(acc.num_big_krnl);
-
-    //std::vector<std::vector<KERNEL_OUTPUT_BATCH_TYPE> > little_kernel_results(acc.num_little_krnl);
-    //std::vector<std::vector<int>> little_kernel_stop_flags(acc.num_little_krnl);
-
-
-    // --- 2. 从所有 "big" 内核实例的HBM中回收数据 ---
-    std::cout << "--- Transferring results from HBM for Big Kernels ---" << std::endl;
-    for (int i = 0; i < acc.num_big_krnl; ++i) {
-        
-        std::vector<KERNEL_OUTPUT_BATCH_TYPE> &target_host_buffer = big_kernel_host_outputs[i];
-        
-        // 源：HBM上第i个大核的输出缓冲区句柄 (来自AlgorithmHost成员)
-        cl::Buffer &source_device_buffer = this->big_kernel_output_bufs[i];
-
-        // 获取第i个大核专属的命令队列
-        cl::CommandQueue &queue = acc.big_gs_queue[i];
-
-        // 计算需要读取的总字节数
-        size_t output_size_in_bytes = target_host_buffer.size() * sizeof(KERNEL_OUTPUT_BATCH_TYPE);
-
-        // 执行从HBM到主机RAM的物理拷贝
-        OCL_CHECK(err, err = queue.enqueueReadBuffer(
-                                 source_device_buffer,
-                                 CL_FALSE, // 非阻塞式，让所有传输任务先排队
-                                 0,
-                                 output_size_in_bytes,
-                                 target_host_buffer.data(),
-                                 nullptr, nullptr));
-
-        // 回收该内核的stop_flag
-        OCL_CHECK(err, err = queue.enqueueReadBuffer(
-                                 this->big_kernel_stop_flag_bufs[i], // 正确的stop_flag句柄
-                                 CL_FALSE,
-                                 0, 
-                                 sizeof(int), 
-                                 this->big_kernel_stop_flags[i].data(),
-                                 nullptr, nullptr));
-    }
-
-    // --- 3. 从所有 "little" 内核实例的HBM中回收数据 ---
-    std::cout << "--- Transferring results from HBM for Little Kernels ---" << std::endl;
-    for (int i = 0; i < acc.num_little_krnl; ++i) {
-
-        // 目标：主机上为第i个小核准备的局部结果向量
-        std::vector<KERNEL_OUTPUT_BATCH_TYPE> &target_host_buffer = little_kernel_host_outputs[i];
-
-        // 源：HBM上第i个小核的输出缓冲区句柄 (来自AlgorithmHost成员)
-        cl::Buffer &source_device_buffer = this->little_kernel_output_bufs[i];
-        
-        // 获取第i个小核专属的命令队列
-        cl::CommandQueue &queue = acc.little_gs_queue[i];
-
-        size_t output_size_in_bytes = target_host_buffer.size() * sizeof(KERNEL_OUTPUT_BATCH_TYPE);
-
-        // 执行从HBM到主机RAM的物理拷贝
-        OCL_CHECK(err, err = queue.enqueueReadBuffer(
-                                 source_device_buffer,
-                                 CL_FALSE, // 非阻塞式
-                                 0,
-                                 output_size_in_bytes,
-                                 target_host_buffer.data(),
-                                 nullptr, nullptr));
-
-        // 回收该内核的stop_flag
-        OCL_CHECK(err, err = queue.enqueueReadBuffer(
-                                 this->little_kernel_stop_flag_bufs[i], // 正确的stop_flag句柄
-                                 CL_FALSE,
-                                  0, 
-                                  sizeof(int), 
-                                 this->little_kernel_stop_flags[i].data(),
-                                 nullptr, nullptr));
-    }
-
-    // --- 4. 全局同步：等待所有队列中的数据回收任务完成 ---
-    std::cout << "--- Waiting for all result transfers to complete ---" << std::endl;
-    for (int i = 0; i < acc.num_big_krnl; ++i) {
-        OCL_CHECK(err, err = acc.big_gs_queue[i].finish());
-    }
-    for (int i = 0; i < acc.num_little_krnl; ++i) {
-        OCL_CHECK(err, err = acc.little_gs_queue[i].finish());
-    }
-    std::cout << "--- All results successfully transferred from HBM to host ---" << std::endl;
-
-#ifdef DEBUG
-    // --- 打印 "big" 内核的返回结果 ---
-    for (int i = 0; i < acc.num_big_krnl; ++i) {
-        const auto& result_data = this->big_kernel_host_outputs[i];
-        std::cout << "\n--- [DEBUG] Results from Big Kernel ID: " << i << " ---" << std::endl;
-        std::cout << "Total batches received: " << result_data.size() 
-                  << ", Stop Flag: " << this->big_kernel_stop_flags[i] << std::endl;
-                  
-        for (size_t j = 0; j < result_data.size(); ++j) {
-            const auto& batch = result_data[j];
-            std::cout << "  Batch [" << j << "]: "
-                      << "end_pos = " << std::left << std::setw(2) << static_cast<unsigned int>(batch.end_pos) << ", "
-                      << "end_flag = " << (batch.end_flag ? "true" : "false")
-                      << std::endl;
-            
-            for (uint8_t k = 0; k < batch.end_pos; ++k) {
-                const auto& output = batch.data[k];
-                std::cout << "    Output " << static_cast<unsigned int>(k) << ": "
-                          << "(id:" << std::left << std::setw(4) << output.id << ", "
-                          << "distance:" << std::setw(8) << output.distance << ")"
-                          << std::endl;
-            }
-        }
-        std::cout << "--- [DEBUG] End of results for Big Kernel ID: " << i << " ---\n" << std::endl;
-    }
-
-    // --- 打印 "little" 内核的返回结果 ---
-    for (int i = 0; i < acc.num_little_krnl; ++i) {
-        const auto& result_data = this->little_kernel_host_outputs[i];
-        std::cout << "\n--- [DEBUG] Results from Little Kernel ID: " << i << " ---" << std::endl;
-        std::cout << "Total batches received: " << result_data.size() 
-                  << ", Stop Flag: " << this->little_kernel_stop_flags[i] << std::endl;
-
-        for (size_t j = 0; j < result_data.size(); ++j) {
-            const auto& batch = result_data[j];
-             std::cout << "  Batch [" << j << "]: "
-                      << "end_pos = " << std::left << std::setw(2) << static_cast<unsigned int>(batch.end_pos) << ", "
-                      << "end_flag = " << (batch.end_flag ? "true" : "false")
-                      << std::endl;
-
-            for (uint8_t k = 0; k < batch.end_pos; ++k) {
-                const auto& output = batch.data[k];
-                std::cout << "    Output " << static_cast<unsigned int>(k) << ": "
-                          << "(id:" << std::left << std::setw(4) << output.id << ", "
-                          << "distance:" << std::setw(8) << output.distance << ")"
-                          << std::endl;
-            }
-        }
-        std::cout << "--- [DEBUG] End of results for Little Kernel ID: " << i << " ---\n" << std::endl;
-    }
-#endif
-}
-
-
-
-bool AlgorithmHost::check_convergence_and_update(partition_container_dt& container) {
+// --- PHASE 5: CONVERGENCE CHECK AND GLOBAL STATE UPDATE ---
+bool AlgorithmHost::check_convergence_and_update(const PartitionContainer& container) {
     bool changed = false;
-    
-    // --- 步骤 1: 收集所有内核返回的、最新的、最优的距离值 ---
-    // 使用 map 来确保对于同一个节点，我们只保留最小的距离值
+    std::cout << "--- [Host] Phase 5: Checking for convergence and updating global distances ---" << std::endl;
+
+    // Use a map to collect the minimum distance for each updated vertex from all partitions
     std::map<int, ap_fixed<32, 16>> min_distances;
 
-    // 1a. 收集 Big Kernels 的结果
-    for (const auto& kernel_output : this->big_kernel_host_outputs) {
-        for (const auto& batch : kernel_output) {
-            for (uint8_t k = 0; k < batch.end_pos; ++k) {
-                const auto& output_data = batch.data[k];
-                int node_id = output_data.id;
-                ap_fixed<32, 16> new_dist(output_data.distance);
+    // 5.1: Gather results from BIG kernels
+    for (size_t i = 0; i < big_kernel_host_outputs.size(); ++i) {
+        const auto& p_graph = container.SPs[i].partitioned_graph;
+        for (const auto& batch : big_kernel_host_outputs[i]) {
+            for (int k = 0; k < batch.end_pos; ++k) {
+                int local_id = batch.data[k].id;
+                int global_id = p_graph.vtx_map_rev.at(local_id);
+                ap_fixed<32, 16> new_dist(batch.data[k].distance);
 
-                if (min_distances.find(node_id) == min_distances.end() || new_dist < min_distances[node_id]) {
-                    min_distances[node_id] = new_dist;
+                if (min_distances.find(global_id) == min_distances.end() || new_dist < min_distances[global_id]) {
+                    min_distances[global_id] = new_dist;
                 }
             }
             if (batch.end_flag) break;
         }
     }
 
-    // 1b. 收集 Little Kernels 的结果
-    for (const auto& kernel_output : this->little_kernel_host_outputs) {
-        for (const auto& batch : kernel_output) {
-            for (uint8_t k = 0; k < batch.end_pos; ++k) {
-                const auto& output_data = batch.data[k];
-                int node_id = output_data.id;
-                ap_fixed<32, 16> new_dist(output_data.distance);
+    // 5.2: Gather results from LITTLE kernels
+    for (size_t i = 0; i < little_kernel_host_outputs.size(); ++i) {
+        const auto& p_graph = container.DPs[i].partitioned_graph;
+         for (const auto& batch : little_kernel_host_outputs[i]) {
+            for (int k = 0; k < batch.end_pos; ++k) {
+                int local_id = batch.data[k].id;
+                int global_id = p_graph.vtx_map_rev.at(local_id);
+                ap_fixed<32, 16> new_dist(batch.data[k].distance);
 
-                if (min_distances.find(node_id) == min_distances.end() || new_dist < min_distances[node_id]) {
-                    min_distances[node_id] = new_dist;
+                if (min_distances.find(global_id) == min_distances.end() || new_dist < min_distances[global_id]) {
+                    min_distances[global_id] = new_dist;
                 }
             }
             if (batch.end_flag) break;
         }
     }
 
-    // --- 步骤 2: 检查收敛性，并用新结果更新主机端的主距离向量 h_distances ---
-    for (auto const& [node_id, new_dist] : min_distances) {
-        if (node_id < m_num_vertices && new_dist < this->h_distances[node_id]) {
-            this->h_distances[node_id] = new_dist;
+    // 5.3: Update global distance vector and check for changes
+    for (auto const& [global_id, new_dist] : min_distances) {
+        if (global_id < m_num_vertices && new_dist < h_distances[global_id]) {
+            h_distances[global_id] = new_dist;
             changed = true;
         }
     }
 
-    // --- 步骤 3: 如果距离发生了变化，则更新 partition_container 为下一次迭代做准备 ---
     if (changed) {
-        // 3a. 更新 SP (大核/稀疏分区) 的数据
-        for (auto& partition : container.SP) {
-            for (auto& batch : partition.batch_array_host) {
-                for (uint8_t k = 0; k < batch.end_pos; ++k) {
-                    auto& edge = batch.data[k];
-                    
-                    ap_fixed<32, 16> src_dist_fp = this->h_distances[edge.src.id];
-                    ap_fixed<32, 16> dst_dist_fp = this->h_distances[edge.dst.id];
-
-                    // 将更新后的距离值，转换为内核期望的二进制模式
-                    edge.src.distance = *reinterpret_cast<int32_t*>(&src_dist_fp);
-                    edge.dst.distance = *reinterpret_cast<int32_t*>(&dst_dist_fp);
-                }
-            }
-        }
-
-        // 3b. 更新 DP (小核/密集分区) 的数据
-        for (auto& partition : container.DP) {
-            for (auto& batch : partition.batch_array_host) {
-                for (uint8_t k = 0; k < batch.end_pos; ++k) {
-                    auto& edge = batch.data[k];
-
-                    ap_fixed<32, 16> src_dist_fp = this->h_distances[edge.src.id];
-                    ap_fixed<32, 16> dst_dist_fp = this->h_distances[edge.dst.id];
-                    
-                    edge.src.distance = *reinterpret_cast<int32_t*>(&src_dist_fp);
-                    edge.dst.distance = *reinterpret_cast<int32_t*>(&dst_dist_fp);
-                }
-            }
-        }
+        std::cout << "[INFO] Distances updated. Preparing for next iteration." << std::endl;
+    } else {
+        std::cout << "[INFO] No distance updates. Algorithm has converged." << std::endl;
     }
 
-    // 如果没有发生任何变化 (changed == false)，则算法收敛，返回 true
+    // Return true if converged (i.e., NOT changed)
     return !changed;
 }
 
-const std::vector<int> &AlgorithmHost::get_results() const {
-    // This function converts the final ap_fixed distances to integers for verification.
+// --- FINALIZATION ---
+const std::vector<int>& AlgorithmHost::get_results() const {
     static std::vector<int> final_distances;
     final_distances.clear();
     final_distances.reserve(h_distances.size());
-    for (const auto &dist : h_distances) {
+
+    for (const auto& dist : h_distances) {
         if (dist > std::numeric_limits<int>::max()) {
             final_distances.push_back(std::numeric_limits<int>::max());
         } else {
