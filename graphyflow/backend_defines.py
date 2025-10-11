@@ -5,6 +5,7 @@ from typing import List, Optional, Union, Dict, Any, Tuple
 import graphyflow.dataflow_ir_datatype as dftype
 import graphyflow.dataflow_ir as dfir
 import re
+import copy
 
 
 INDENT_UNIT = "    "
@@ -196,6 +197,21 @@ class HLSType:
             + f"\n".join([INDENT_UNIT + d for d in decls])
             + f"\n}};\n"
         )
+
+    def compare_struct(self, other: HLSType) -> bool:
+        assert self.type == HLSBasicType.STRUCT and other.type == HLSBasicType.STRUCT
+        if len(self.sub_types) != len(other.sub_types):
+            return False
+        other = copy.deepcopy(other)
+        for st1, st2 in zip(self.sub_types, other.sub_types):
+            # struct, use full comparison
+            if st1.type == HLSBasicType.STRUCT and st2.type == HLSBasicType.STRUCT:
+                if not st1.compare_struct(st2):
+                    return False
+            # others, use name comparison
+            elif st1 != st2:
+                return False
+        return True
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, HLSType):

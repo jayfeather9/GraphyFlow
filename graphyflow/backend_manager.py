@@ -84,6 +84,7 @@ class BackendManager:
 
         # --- Phase 2: Type Analysis (REMOVED FROM HERE) ---
         # self._analyze_and_map_types(comp_col) is no longer called here.
+        self.correct_mem_manager_types()
 
         # --- Phase 3: Define HLSFunctions for the Computational Core ---
         self._define_functions_and_streams(comp_col, top_func_name)
@@ -468,8 +469,8 @@ emconfig:
         code += "const int INFINITY_DIST = 16384;\n\n"
 
         code += "// --- Graph Type Definitions ---\n"
-        code += "typedef uint16_t edge_id_t;\n"
-        code += "typedef uint16_t node_id_t;\n"
+        code += "typedef uint32_t edge_id_t;\n"
+        code += "typedef uint32_t node_id_t;\n"
         code += "typedef uint32_t ap_fixed_pod_t;\n\n"
 
         # Add vtx_map and vtx_map_rev for vertex ID mapping
@@ -521,8 +522,6 @@ emconfig:
 
         processed_sub_comp_ids = set()
 
-        # This entire loop for ReduceComponent pre-processing and helper generation
-        # remains largely the same as it deals with the logical structure of Reduce.
         for comp in comp_col.components:
             if isinstance(comp, dfir.ReduceComponent):
                 pre_process_func = HLSFunction(name=f"{comp.name}_pre_process", comp=comp)
@@ -652,12 +651,9 @@ emconfig:
                                 if p.connected and not isinstance(p.connection.parent, dfir.ReduceComponent):
                                     q.append(p.connection.parent)
 
-        # --- MODIFICATION START ---
         # Define the set of components to be excluded from the computational graph
         boundary_comps = {
             self.mem_manager.io_comp,
-            self.mem_manager.pre_reduce_mem_read,
-            self.mem_manager.post_reduce_mem_read,
         }
 
         for comp in comp_col.components:
@@ -676,6 +672,11 @@ emconfig:
                 )
             ):
                 continue
+            elif isinstance(comp, dfir.MemoryReadComponent):
+                self.hls_functions[comp.readable_id] = self.mem_manager.gen_mem_read_func(
+                    comp, self.type_map, self.batch_type_map
+                )
+                continue
 
             hls_func = HLSFunction(name=comp.name, comp=comp)
             for port in comp.ports:
@@ -691,7 +692,6 @@ emconfig:
                 param_type = HLSType(HLSBasicType.STREAM, sub_types=[batch_type])
                 hls_func.params.append(HLSVar(var_name=port.name, var_type=param_type))
             self.hls_functions[comp.readable_id] = hls_func
-        # --- MODIFICATION END ---
 
         # Declare intermediate streams for the computational core
         all_stream_comp_ids = {f.dfir_comp.readable_id for f in self.hls_functions.values()}
@@ -912,15 +912,11 @@ emconfig:
         assert self.mem_manager is not None
         func = HLSFunction(core_func_name, comp=None)
 
-        # Define parameters: the streams connecting memory modules and the compute core
-        params = [
-            self.mem_manager.memory_loader_func.params[6],  # response_to_318 (edge_batch_t stream)
-            self.mem_manager.memory_loader_func.params[
-                7
-            ],  # all_node_distances_to_343 (struct_ibu_14_t stream)
-            self.mem_manager.final_writeback_func.params[1],  # in_stream (struct_sbu_19_t stream)
+        func.params = [
+            self.mem_manager.kernel_params["edge_batches"],
+            self.mem_manager.kernel_params["node_distances"],
+            self.mem_manager.kernel_params["writeback_stream"],
         ]
-        func.params = params
 
         # The body contains the instantiation of the computational DFIR components
         func.codes = self._generate_top_level_function_body(func.params)  # <-- MODIFIED LINE
@@ -1043,6 +1039,16 @@ emconfig:
 
         batch_type = HLSType(HLSBasicType.STRUCT, member_types, struct_prop_names=member_names)
 
+        # check if mem_manager has a matching type
+        if self.mem_manager is not None:
+            mem_type = self.mem_manager.check_type_exists(batch_type)
+            if mem_type:
+                member_names = mem_type.struct_prop_names if mem_type.struct_prop_names else member_names
+                batch_type = mem_type
+                print(
+                    f"In _get_batch_type, replaced batch type {batch_type.name} with mem_manager type {mem_type.name}"
+                )
+
         self.batch_type_map[base_type] = batch_type
         if batch_type.name not in self.struct_definitions:
             self.struct_definitions[batch_type.name] = (batch_type, member_names)
@@ -1074,6 +1080,14 @@ emconfig:
             sub_types = [self._to_hls_type(t) for t in dfir_type.types]
             member_names = [f"ele_{i}" for i in range(len(sub_types))]
             hls_type = HLSType(HLSBasicType.STRUCT, sub_types, struct_prop_names=member_names)
+            if self.mem_manager is not None:
+                mem_type = self.mem_manager.check_type_exists(hls_type)
+                if mem_type:
+                    member_names = mem_type.struct_prop_names if mem_type.struct_prop_names else member_names
+                    hls_type = mem_type
+                    print(
+                        f"In _to_hls_type, replaced type {hls_type.name} with mem_manager type {mem_type.name}"
+                    )
             if hls_type.name not in self.struct_definitions:
                 self.struct_definitions[hls_type.name] = (hls_type, member_names)
         elif isinstance(dfir_type, dftype.OptionalType):
@@ -1111,6 +1125,33 @@ emconfig:
             self.type_map[dftype.ArrayType(dfir_type)] = hls_type
         return hls_type
 
+    def correct_mem_manager_types(self):
+        """Iterate through current type defines & struct defines, redirect to mem_manager types."""
+        assert self.mem_manager is not None
+        new_maps = {}
+        for dfir_type, hls_type in self.type_map.items():
+            if hls_type.type == HLSBasicType.STRUCT:
+                print(f"Checking type mapping for {dfir_type} mapped to {hls_type}")
+                mem_type = self.mem_manager.check_type_exists(hls_type)
+                if mem_type and mem_type != hls_type:
+                    new_maps[dfir_type] = mem_type
+                    print(f"Corrected type mapping for {dfir_type} from {hls_type.name} to {mem_type.name}")
+                    # correct batch_type_map as well
+                    if hls_type in self.batch_type_map:
+                        self.batch_type_map[mem_type] = self._get_batch_type(mem_type)
+                        print(f"Corrected batch type mapping for {hls_type.name} to {mem_type.name}")
+                        del self.batch_type_map[hls_type]
+        self.type_map.update(new_maps)
+        new_maps = {}
+        for hls_type, member_names in self.struct_definitions.values():
+            mem_type = self.mem_manager.check_type_exists(hls_type)
+            if mem_type:
+                member_names = mem_type.struct_prop_names
+                if member_names is None:
+                    member_names = [f"ele_{i}" for i in range(len(mem_type.sub_types))]
+                new_maps[mem_type.name] = (mem_type, member_names)
+        self.struct_definitions.update(new_maps)
+
     # ======================================================================== #
     #                            PHASE 3                                       #
     # ======================================================================== #
@@ -1133,6 +1174,12 @@ emconfig:
         elif isinstance(comp, dfir.FusedOpComponent):
             inner_logic = self._translate_fused_op(comp, "i")
         elif isinstance(comp, dfir.MemoryReadComponent):
+            check_result = self.mem_manager.check_post_reduce_mem_read(
+                hls_func, comp, self.type_map, self.batch_type_map
+            )
+            if check_result is not None:
+                hls_func.codes = check_result
+                return
             inner_logic = self._translate_memory_read_op(comp, "i")
         elif isinstance(comp, dfir.ConditionalComponent):
             inner_logic = self._translate_conditional_op(comp, "i")
@@ -1365,7 +1412,7 @@ emconfig:
             in_var_expr = HLSExpr.check_const(in_var_expr, comp.in_ports[i])
 
             # Target is a member of the output struct
-            target_member = HLSVar(f"out_batch_o_0.data[{iterator}].ele_{i}", in_type)
+            target_member = HLSVar(f"out_batch_o_0.data[{iterator}].{out_type.get_nth_subname(i)}", in_type)
             assignments.append(CodeAssign(target_member, in_var_expr))
 
         return assignments
@@ -1581,11 +1628,7 @@ emconfig:
         return code_lines
 
     def _translate_memory_read_op(self, comp: dfir.MemoryReadComponent, iterator: str) -> List[HLSCodeLine]:
-        code_lines: List[HLSCodeLine] = []
-        # for now, just insert a comment for each memory path
-        for mem_path in comp.access_pattern:
-            code_lines.append(CodeComment(f"Memory read from path: {mem_path}"))
-        return code_lines
+        return self.mem_manager.gen_mem_read_op(comp, iterator, self.type_map)
 
     def _translate_conditional_op(self, comp: dfir.ConditionalComponent, iterator: str) -> List[HLSCodeLine]:
         """Generates the core logic for a ConditionalComponent."""
@@ -1778,11 +1821,14 @@ emconfig:
 
         elif isinstance(comp, dfir.GatherComponent):
             target_struct_var = p2var_map[comp.get_port("o_0")]
+            output_type = target_struct_var.type
             for i, in_port in enumerate(comp.in_ports):
                 in_var_expr = HLSExpr.check_const(
                     HLSExpr(HLSExprT.VAR, p2var_map[in_port.connection]), in_port
                 )
-                member_var = HLSVar(f"{target_struct_var.name}.ele_{i}", in_var_expr.val.type)
+                member_var = HLSVar(
+                    f"{target_struct_var.name}.{output_type.get_nth_subname(i)}", in_var_expr.val.type
+                )
                 code_lines.append(CodeAssign(member_var, in_var_expr))
 
         elif isinstance(comp, dfir.ScatterComponent):
@@ -3282,8 +3328,8 @@ emconfig:
         code += "#define NUM_WORDS_PER_BUS (AXI_BUS_WIDTH / DATA_TYPE_WIDTH)\n"
 
         code += "// --- Graph Type Definitions ---\n"
-        code += "typedef uint16_t edge_id_t;\n"
-        code += "typedef uint16_t node_id_t;\n"
+        code += "typedef uint32_t edge_id_t;\n"
+        code += "typedef uint32_t node_id_t;\n"
         code += "typedef uint32_t ap_fixed_pod_t;\n\n"
 
         code += "// --- Struct Type Definitions ---\n"
@@ -3354,22 +3400,30 @@ emconfig:
         stream_map = {decl.var.name: decl.var for decl, _ in self.top_level_stream_decls}
         top_io_map: Dict[int, HLSVar] = {}
 
-        # --- Map all boundary streams (inputs and outputs) to top_io_map ---
+        top_level_inputs = []
+        for comp in self.comp_col_store.components:
+            if isinstance(comp, dfir.IOComponent) and comp.io_type == dfir.IOComponent.IOType.INPUT:
+                if comp.get_port("o_0").connected:
+                    top_level_inputs.append(comp.get_port("o_0").connection)
+        top_level_outputs = self.comp_col_store.outputs
 
-        # 1. Map INPUT streams from pre_reduce_mem_read
-        if self.mem_manager.pre_reduce_mem_read:
-            for i, p_out_mem in enumerate(self.mem_manager.pre_reduce_mem_read.out_ports):
-                if p_out_mem.connected:
-                    top_io_map[p_out_mem.connection.readable_id] = core_func_params[i]
+        current_top_level_io_ports = top_level_inputs + top_level_outputs
 
-        # 2. Map the final OUTPUT stream (input to final_writeback)
-        # This is the port that is a final output of the entire collection AND
-        # originates from a computational component.
-        for p_out in self.comp_col_store.outputs:
-            if p_out.parent.readable_id in all_stream_comp_ids:
-                top_io_map[p_out.readable_id] = core_func_params[-1]
+        updated_out_port = False
+        for p in current_top_level_io_ports:
+            # dfir_type = p.data_type.type_ if isinstance(p.data_type, dftype.ArrayType) else p.data_type
+            # batch_type = self.batch_type_map[self.type_map[dfir_type]]
+            # top_io_map[p.readable_id] = HLSVar(
+            #     f"{p.unique_name}_stream", HLSType(HLSBasicType.STREAM, [batch_type])
+            # )
+            if p.port_type == dfir.PortType.OUT:
+                assert not updated_out_port
+                updated_out_port = True
+                top_io_map[p.readable_id] = self.mem_manager.kernel_params["writeback_stream"]
 
-        # Topological sort logic remains the same
+        top_io_map.update(self.mem_manager.mem_top_io_map)
+
+        # 3. Topologically sort functions (logic is unchanged)
         id_to_func = {f.readable_id: f for f in stream_funcs}
         comp_to_func = {f.dfir_comp: f for f in stream_funcs}
         reduce_comp_to_pre = {}
@@ -3493,17 +3547,15 @@ emconfig:
                             pred_port = port.connection
                             call_params.append(stream_map[f"stream_{pred_port.unique_name}"])
                     else:  # OUT port
-                        # --- MODIFICATION START: Rewritten logic for OUT ports ---
                         if port.readable_id in top_io_map:
                             # Case 1: This port is the final output of the compute core.
                             call_params.append(top_io_map[port.readable_id])
-                        elif port.connected and port.connection.readable_id in top_io_map:
-                            # Case 2: This port connects to an input of a boundary component. (This case is now less likely but kept for robustness)
-                            call_params.append(top_io_map[port.connection.readable_id])
+                        # elif port.connected and port.connection.readable_id in top_io_map:
+                        #     # Case 2: This port connects to an input of a boundary component. (This case is now less likely but kept for robustness)
+                        #     call_params.append(top_io_map[port.connection.readable_id])
                         else:
                             # Case 3: This is a standard internal stream connecting to another compute component.
                             call_params.append(stream_map[f"stream_{port.unique_name}"])
-                        # --- MODIFICATION END ---
                 body.append(CodeCall(func, call_params))
         return body
 

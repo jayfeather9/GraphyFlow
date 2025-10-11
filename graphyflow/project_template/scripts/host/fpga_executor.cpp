@@ -28,17 +28,56 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
     for (iter = 0; iter < max_iterations; ++iter) {
 
         algo_host.transfer_data_to_fpga(partition_container);
-        cl::Event event;
-        algo_host.execute_kernel_iteration(partition_container, event);
-        event.wait();
+        std::vector<cl::Event> big_kernel_events(acc.num_big_krnl),
+            little_kernel_events(acc.num_little_krnl);
+        algo_host.execute_kernel_iteration(
+            partition_container, big_kernel_events, little_kernel_events);
+        for (auto &q : acc.big_gs_queue)
+            q.finish();
+        for (auto &q : acc.little_gs_queue)
+            q.finish();
         algo_host.transfer_data_from_fpga();
 
         // iv. 性能统计
-        unsigned long start = 0, end = 0;
-        event.getProfilingInfo(CL_PROFILING_COMMAND_START, &start);
-        event.getProfilingInfo(CL_PROFILING_COMMAND_END, &end);
-        double iteration_time_ns = end - start;
-        total_kernel_time_sec += iteration_time_ns * 1.0e-9;
+        for (auto &event : big_kernel_events)
+            event.wait();
+        for (auto &event : little_kernel_events)
+            event.wait();
+
+        int cnt = 0;
+        for (auto &event : big_kernel_events) {
+            unsigned long start = 0, end = 0;
+            event.getProfilingInfo(CL_PROFILING_COMMAND_START, &start);
+            event.getProfilingInfo(CL_PROFILING_COMMAND_END, &end);
+            double iteration_time_ns = end - start;
+            total_kernel_time_sec =
+                std::max(total_kernel_time_sec, iteration_time_ns * 1.0e-9);
+            double mteps = (double)partition_container.SPs[cnt].num_edges /
+                           (iteration_time_ns * 1.0e-9) / 1.0e6;
+
+            std::cout << "FPGA Iteration " << iter << ": "
+                      << "Big Kernel " << cnt++ << ", "
+                      << "Time = " << (iteration_time_ns * 1.0e-6) << " ms, "
+                      << "Throughput = " << mteps << " MTEPS" << std::endl;
+        }
+        cnt = 0;
+        for (auto &event : little_kernel_events) {
+            unsigned long start = 0, end = 0;
+            event.getProfilingInfo(CL_PROFILING_COMMAND_START, &start);
+            event.getProfilingInfo(CL_PROFILING_COMMAND_END, &end);
+            double iteration_time_ns = end - start;
+            total_kernel_time_sec =
+                std::max(total_kernel_time_sec, iteration_time_ns * 1.0e-9);
+            double mteps = (double)partition_container.DPs[cnt].num_edges /
+                           (iteration_time_ns * 1.0e-9) / 1.0e6;
+
+            std::cout << "FPGA Iteration " << iter << ": "
+                      << "Little Kernel " << cnt++ << ", "
+                      << "Time = " << (iteration_time_ns * 1.0e-6) << " ms, "
+                      << "Throughput = " << mteps << " MTEPS" << std::endl;
+        }
+
+        double iteration_time_ns = total_kernel_time_sec * 1.0e9;
         double mteps =
             (double)graph.num_edges / (iteration_time_ns * 1.0e-9) / 1.0e6;
 

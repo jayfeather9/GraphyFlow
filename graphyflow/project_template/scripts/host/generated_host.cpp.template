@@ -46,14 +46,14 @@ void AlgorithmHost::setup_buffers(const PartitionContainer& container, int start
         hbm_ext_out.flags = XCL_MEM_TOPOLOGY | acc.big_kernel_hbm_output_id[i]; hbm_ext_out.obj = nullptr; hbm_ext_out.param = 0;
 
         // Create buffers for static CSR data (offsets and edge properties)
-        OCL_CHECK(err, buffers.src_offsets_buf = cl::Buffer(acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_COPY_HOST_PTR, (p_graph.num_vertices + 1) * sizeof(int), &hbm_ext_in0, &err));
+        OCL_CHECK(err, buffers.src_offsets_buf = cl::Buffer(acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX, (p_graph.num_vertices + 1) * sizeof(int), &hbm_ext_in0, &err));
         
         size_t num_edge_bursts = (p_graph.num_edges + PE_NUM - 1) / PE_NUM;
         std::vector<edge_des_burst_t, aligned_allocator<edge_des_burst_t>> edge_bursts(num_edge_bursts);
         for(size_t j=0; j < p_graph.num_edges; ++j) {
             edge_bursts[j / PE_NUM].edges[j % PE_NUM] = { (uint16_t)p_graph.columns[j], p_graph.weights[j] };
         }
-        OCL_CHECK(err, buffers.edge_props_buf = cl::Buffer(acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_COPY_HOST_PTR, num_edge_bursts * sizeof(edge_des_burst_t), &hbm_ext_in1, &err));
+        OCL_CHECK(err, buffers.edge_props_buf = cl::Buffer(acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX, num_edge_bursts * sizeof(edge_des_burst_t), &hbm_ext_in1, &err));
         
         // Create buffer for dynamic node distances (will be updated each iteration)
         OCL_CHECK(err, buffers.node_props_buf = cl::Buffer(acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX, p_graph.num_vertices * sizeof(int32_t), &hbm_ext_in2, &err));
@@ -79,14 +79,10 @@ void AlgorithmHost::setup_buffers(const PartitionContainer& container, int start
         hbm_ext_in2.flags = XCL_MEM_TOPOLOGY | acc.little_kernel_hbm_input_id[i]; hbm_ext_in2.obj = nullptr; hbm_ext_in2.param = 0;
         hbm_ext_out.flags = XCL_MEM_TOPOLOGY | acc.little_kernel_hbm_output_id[i]; hbm_ext_out.obj = nullptr; hbm_ext_out.param = 0;
         
-        OCL_CHECK(err, buffers.src_offsets_buf = cl::Buffer(acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_COPY_HOST_PTR, (p_graph.num_vertices + 1) * sizeof(int), &hbm_ext_in0, &err));
+        OCL_CHECK(err, buffers.src_offsets_buf = cl::Buffer(acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX, (p_graph.num_vertices + 1) * sizeof(int), &hbm_ext_in0, &err));
         
         size_t num_edge_bursts = (p_graph.num_edges + PE_NUM - 1) / PE_NUM;
-        std::vector<edge_des_burst_t, aligned_allocator<edge_des_burst_t>> edge_bursts(num_edge_bursts);
-        for(size_t j=0; j < p_graph.num_edges; ++j) {
-            edge_bursts[j / PE_NUM].edges[j % PE_NUM] = { (uint16_t)p_graph.columns[j], p_graph.weights[j] };
-        }
-        OCL_CHECK(err, buffers.edge_props_buf = cl::Buffer(acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_COPY_HOST_PTR, num_edge_bursts * sizeof(edge_des_burst_t), &hbm_ext_in1, &err));
+        OCL_CHECK(err, buffers.edge_props_buf = cl::Buffer(acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX, num_edge_bursts * sizeof(edge_des_burst_t), &hbm_ext_in1, &err));
 
         OCL_CHECK(err, buffers.node_props_buf = cl::Buffer(acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX, p_graph.num_vertices * sizeof(int32_t), &hbm_ext_in2, &err));
 
@@ -116,25 +112,27 @@ void AlgorithmHost::transfer_data_to_fpga(const PartitionContainer& container) {
 
         OCL_CHECK(err, err = acc.big_gs_queue[i].enqueueWriteBuffer(
             big_kernel_buffers[i].node_props_buf,
-            CL_FALSE, 0,
+            CL_TRUE, 0,
             local_node_distances.size() * sizeof(int32_t),
             local_node_distances.data()
         ));
 
         std::vector<edge_des_burst_t> edge_bursts((p_graph.num_edges + PE_NUM - 1) / PE_NUM);
         for (size_t j = 0; j < p_graph.num_edges; ++j) {
-            edge_bursts[j / PE_NUM].edges[j % PE_NUM] = { (uint16_t)p_graph.columns[j], p_graph.weights[j] };
+            edge_bursts[j / PE_NUM].edges[j % PE_NUM].node_id = (node_id_t)p_graph.columns[j];
+            ap_fixed<32, 16> weight_fixed = (float)p_graph.weights[j];
+            edge_bursts[j / PE_NUM].edges[j % PE_NUM].prop = *reinterpret_cast<int32_t*>(&weight_fixed);
         }
         OCL_CHECK(err, err = acc.big_gs_queue[i].enqueueWriteBuffer(
             big_kernel_buffers[i].edge_props_buf,
-            CL_FALSE, 0,
+            CL_TRUE, 0,
             edge_bursts.size() * sizeof(edge_des_burst_t),
             edge_bursts.data()
         ));
 
         OCL_CHECK(err, err = acc.big_gs_queue[i].enqueueWriteBuffer(
             big_kernel_buffers[i].src_offsets_buf,
-            CL_FALSE, 0,
+            CL_TRUE, 0,
             (p_graph.num_vertices + 1) * sizeof(int),
             p_graph.offsets.data()
         ));
@@ -151,25 +149,27 @@ void AlgorithmHost::transfer_data_to_fpga(const PartitionContainer& container) {
 
         OCL_CHECK(err, err = acc.little_gs_queue[i].enqueueWriteBuffer(
             little_kernel_buffers[i].node_props_buf,
-            CL_FALSE, 0,
+            CL_TRUE, 0,
             local_node_distances.size() * sizeof(int32_t),
             local_node_distances.data()
         ));
 
         std::vector<edge_des_burst_t> edge_bursts((p_graph.num_edges + PE_NUM - 1) / PE_NUM);
         for (size_t j = 0; j < p_graph.num_edges; ++j) {
-            edge_bursts[j / PE_NUM].edges[j % PE_NUM] = { (uint16_t)p_graph.columns[j], p_graph.weights[j] };
+            edge_bursts[j / PE_NUM].edges[j % PE_NUM].node_id = (node_id_t)p_graph.columns[j];
+            ap_fixed<32, 16> weight_fixed = (float)p_graph.weights[j];
+            edge_bursts[j / PE_NUM].edges[j % PE_NUM].prop = *reinterpret_cast<int32_t*>(&weight_fixed);
         }
         OCL_CHECK(err, err = acc.little_gs_queue[i].enqueueWriteBuffer(
             little_kernel_buffers[i].edge_props_buf,
-            CL_FALSE, 0,
+            CL_TRUE, 0,
             edge_bursts.size() * sizeof(edge_des_burst_t),
             edge_bursts.data()
         ));
 
         OCL_CHECK(err, err = acc.little_gs_queue[i].enqueueWriteBuffer(
             little_kernel_buffers[i].src_offsets_buf,
-            CL_FALSE, 0,
+            CL_TRUE, 0,
             (p_graph.num_vertices + 1) * sizeof(int),
             p_graph.offsets.data()
         ));
@@ -182,7 +182,7 @@ void AlgorithmHost::transfer_data_to_fpga(const PartitionContainer& container) {
 }
 
 // --- PHASE 3: KERNEL EXECUTION ---
-void AlgorithmHost::execute_kernel_iteration(const PartitionContainer& container, cl::Event &event) {
+void AlgorithmHost::execute_kernel_iteration(const PartitionContainer& container, std::vector<cl::Event> &big_kernel_events, std::vector<cl::Event> &little_kernel_events) {
     cl_int err;
     std::cout << "--- [Host] Phase 3: Enqueuing kernel tasks ---" << std::endl;
 
@@ -200,7 +200,7 @@ void AlgorithmHost::execute_kernel_iteration(const PartitionContainer& container
         OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_vertices));
         OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_edges));
 
-        cl::Event* event_ptr = (i == big_kernel_buffers.size() - 1 && little_kernel_buffers.empty()) ? &event : nullptr;
+        cl::Event* event_ptr = &big_kernel_events[i];
         OCL_CHECK(err, err = acc.big_gs_queue[i].enqueueTask(kernel, nullptr, event_ptr));
     }
 
@@ -218,7 +218,7 @@ void AlgorithmHost::execute_kernel_iteration(const PartitionContainer& container
         OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_vertices));
         OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_edges));
 
-        cl::Event* event_ptr = (i == little_kernel_buffers.size() - 1) ? &event : nullptr;
+        cl::Event* event_ptr = &little_kernel_events[i];
         OCL_CHECK(err, err = acc.little_gs_queue[i].enqueueTask(kernel, nullptr, event_ptr));
     }
     std::cout << "[SUCCESS] All kernel tasks enqueued for one iteration." << std::endl;

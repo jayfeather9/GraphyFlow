@@ -1,6 +1,7 @@
 import shutil
 from pathlib import Path
 from typing import Any, Dict, Optional
+import copy
 
 from .global_graph import GlobalGraph
 from .dataflow_ir import ComponentCollection
@@ -9,16 +10,16 @@ from .backend_manager import BackendManager
 
 # --- CONFIGURATION SECTION ---
 # You can change the number of kernels and their HBM mapping here.
-NUM_BIG_KERNELS = 1
+NUM_BIG_KERNELS = 2
 NUM_LITTLE_KERNELS = 2
 
 # HBM channel IDs for Big Kernels. The list length must match NUM_BIG_KERNELS.
-big_kernel_hbm_input_id = [0]
-big_kernel_hbm_output_id = [1]
+big_kernel_hbm_input_id = [0, 2]
+big_kernel_hbm_output_id = [1, 3]
 
 # HBM channel IDs for Little Kernels. The list length must match NUM_LITTLE_KERNELS.
-little_kernel_hbm_input_id = [4, 8]
-little_kernel_hbm_output_id = [5, 9]
+little_kernel_hbm_input_id = [4, 6]
+little_kernel_hbm_output_id = [5, 7]
 # --- END CONFIGURATION SECTION ---
 
 
@@ -210,12 +211,14 @@ def generate_project(
 
     # Generate Big Kernel
     bkd_mng.REDUCE_MODE = "big_pipeline"
-    kernel_h_big, kernel_cpp_big = bkd_mng.generate_backend(comp_col, global_graph, f"{kernel_name}_big")
+    kernel_h_big, kernel_cpp_big = bkd_mng.generate_backend(
+        copy.deepcopy(comp_col), global_graph, f"{kernel_name}_big"
+    )
 
     # Generate Little Kernel
     bkd_mng.REDUCE_MODE = "little_pipeline"
     kernel_h_little, kernel_cpp_little = bkd_mng.generate_backend(
-        comp_col, global_graph, f"{kernel_name}_little"
+        copy.deepcopy(comp_col), global_graph, f"{kernel_name}_little"
     )
 
     common_h = bkd_mng.generate_common_header(kernel_name)

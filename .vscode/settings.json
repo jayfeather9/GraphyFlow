@@ -73,6 +73,7 @@
         "acc_setup": "cpp",
         "*.template": "cpp",
         "cinttypes": "cpp",
-        "__functional_03": "cpp"
+        "__functional_03": "cpp",
+        "unordered_set": "cpp"
     }
 }

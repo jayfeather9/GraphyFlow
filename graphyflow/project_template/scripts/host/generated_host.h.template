@@ -25,7 +25,7 @@ class AlgorithmHost {
     // --- MODIFICATION: Updated function signatures to use new data structures ---
     void setup_buffers(const PartitionContainer& container, int start_node);
     void transfer_data_to_fpga(const PartitionContainer& container);
-    void execute_kernel_iteration(const PartitionContainer& container, cl::Event &event);
+    void execute_kernel_iteration(const PartitionContainer& container, std::vector<cl::Event> &big_kernel_events, std::vector<cl::Event> &little_kernel_events);
     void transfer_data_from_fpga();
     bool check_convergence_and_update(const PartitionContainer& container);
     const std::vector<int>& get_results() const;
