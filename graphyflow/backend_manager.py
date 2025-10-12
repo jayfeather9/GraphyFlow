@@ -2334,7 +2334,8 @@ emconfig:
     def _translate_reduce_unit_reduce_big(self, hls_func: HLSFunction) -> List[HLSCodeLine]:  ## modified
         """
         Generates the body for the second stage of Reduce (stateful accumulation).
-        This version is updated to use a more performant circular buffer for draining.
+        This version uses split memory structure (BRAM for valid flags, URAM for data)
+        with partitioned key addressing for better performance.
         """
         body: List[HLSCodeLine] = []
         comp = hls_func.dfir_comp
@@ -2349,24 +2350,51 @@ emconfig:
         out_batch_type = single_out_stream_type.sub_types[0]
         out_data_type = out_batch_type.sub_types[0].sub_types[0]
 
+        # Split struct type into components
         bram_elem_type = self._to_hls_type(
             dftype.TupleType([comp.get_port("i_reduce_transform_out").data_type, dftype.BoolType()])
         )
 
-        body.append(CodeComment("1. Stateful memories for PE_NUM parallel reduction units"))
-        key_mem_type = HLSType(
-            HLSBasicType.ARRAY, sub_types=[bram_elem_type], array_dims=["PE_NUM", "MAX_NUM"]
-        )
-        body.append(CodeVarDecl("key_mem", key_mem_type))
-        body.append(CodePragma("dependence variable=key_mem inter false"))
-        body.append(CodePragma("BIND_STORAGE variable=key_mem type=RAM_2P impl=URAM"))
-        body.append(CodePragma("ARRAY_PARTITION variable=key_mem complete dim=1"))
+        body.append(CodeComment("**KEY OPTIMIZATION**: Split struct into separate arrays"))
+        body.append(CodeComment("Valid flags use BRAM (lower latency)"))
 
+        # Separate boolean array for valid flags (BRAM)
+        key_mem_valid_type = HLSType(
+            HLSBasicType.ARRAY,
+            sub_types=[HLSType(HLSBasicType.BOOL)],
+            array_dims=["PE_NUM", "MAX_NUM >> LOG_PE_NUM"],
+        )
+        body.append(CodeVarDecl("key_mem_valid", key_mem_valid_type))
+        body.append(CodePragma("dependence variable=key_mem_valid inter false direction=WAW"))
+        body.append(CodePragma("dependence variable=key_mem_valid inter false direction=RAW"))
+        body.append(CodePragma("BIND_STORAGE variable=key_mem_valid type=RAM_2P impl=BRAM latency=1"))
+        body.append(CodePragma("ARRAY_PARTITION variable=key_mem_valid complete dim=1"))
+
+        body.append(CodeComment("Data uses URAM (large capacity)"))
+        # Separate data array (URAM)
+        key_mem_data_type = HLSType(
+            HLSBasicType.ARRAY, sub_types=[out_data_type], array_dims=["PE_NUM", "MAX_NUM >> LOG_PE_NUM"]
+        )
+        body.append(CodeVarDecl("key_mem_data", key_mem_data_type))
+        body.append(CodePragma("dependence variable=key_mem_data inter false direction=WAW"))
+        body.append(CodePragma("dependence variable=key_mem_data inter false direction=RAW"))
+        body.append(CodePragma("BIND_STORAGE variable=key_mem_data type=RAM_2P impl=URAM"))
+        body.append(CodePragma("ARRAY_PARTITION variable=key_mem_data complete dim=1"))
+
+        body.append(CodeComment("Buffers for latency hiding and data forwarding"))
+
+        # Buffers now store split data structure
         key_buffer_type = HLSType(
             HLSBasicType.ARRAY, sub_types=[bram_elem_type], array_dims=["PE_NUM", "L + 1"]
         )
         body.append(CodeVarDecl("key_buffer", key_buffer_type))
         body.append(CodePragma("ARRAY_PARTITION variable=key_buffer complete dim=0"))
+
+        tmp_key_buffer_type = HLSType(
+            HLSBasicType.ARRAY, sub_types=[bram_elem_type], array_dims=["PE_NUM", "L"]
+        )
+        body.append(CodeVarDecl("tmp_key_buffer", tmp_key_buffer_type))
+        body.append(CodePragma("ARRAY_PARTITION variable=tmp_key_buffer complete dim=0"))
 
         i_buffer_base_type = HLSType(HLSBasicType.UINT)
         i_buffer_type = HLSType(
@@ -2375,7 +2403,13 @@ emconfig:
         body.append(CodeVarDecl("i_buffer", i_buffer_type))
         body.append(CodePragma("ARRAY_PARTITION variable=i_buffer complete dim=0"))
 
-        body.append(CodeComment("2. Memory initialization for all PEs"))
+        tmp_i_buffer_type = HLSType(
+            HLSBasicType.ARRAY, sub_types=[i_buffer_base_type], array_dims=["PE_NUM", "L"]
+        )
+        body.append(CodeVarDecl("tmp_i_buffer", tmp_i_buffer_type))
+        body.append(CodePragma("ARRAY_PARTITION variable=tmp_i_buffer complete dim=0"))
+
+        body.append(CodeComment("2. Memory initialization"))
         uint_type = HLSType(HLSBasicType.UINT)
         max_num_var = HLSVar("MAX_NUM", uint_type)
         assign_val_expr = HLSExpr(
@@ -2390,14 +2424,29 @@ emconfig:
         )
         body.append(clear_ibuf_outer_loop)
 
-        # target_valid_flag = HLSVar("key_mem[pe][i].ele_1", HLSType(HLSBasicType.BOOL))
-        # assign_valid_false = CodeAssign(target_valid_flag, HLSExpr(HLSExprT.CONST, False))
-        # clear_valid_inner_loop = CodeFor([CodePragma("UNROLL"), assign_valid_false], "MAX_NUM", iter_name="i")
-        # clear_valid_outer_loop = CodeFor(
-        #     [CodePragma("UNROLL"), clear_valid_inner_loop], "PE_NUM", iter_name="pe"
-        # )
-        # body.append(clear_valid_outer_loop)
-        body.append(CodeOther("memset(key_mem, 0, sizeof(key_mem));"))
+        body.append(CodeComment("Initialize separated memories"))
+        # Initialize both valid and data arrays
+        init_mem_inner = []
+        init_mem_inner.append(CodePragma("PIPELINE II=1"))
+        init_mem_inner.append(
+            CodeAssign(
+                HLSVar("key_mem_valid[pe][i]", HLSType(HLSBasicType.BOOL)), HLSExpr(HLSExprT.CONST, False)
+            )
+        )
+        init_mem_inner.append(
+            CodeAssign(
+                HLSVar(f"key_mem_data[pe][i].prop", HLSType(HLSBasicType.INT)), HLSExpr(HLSExprT.CONST, 0)
+            )
+        )
+        init_mem_inner.append(
+            CodeAssign(
+                HLSVar(f"key_mem_data[pe][i].node_id", HLSType(HLSBasicType.INT)), HLSExpr(HLSExprT.CONST, 0)
+            )
+        )
+
+        init_mem_inner_loop = CodeFor(init_mem_inner, "(MAX_NUM >> LOG_PE_NUM)", iter_name="i")
+        init_mem_outer_loop = CodeFor([init_mem_inner_loop], "PE_NUM", iter_name="pe")
+        body.append(init_mem_outer_loop)
 
         body.append(CodeComment("3. Main processing loop for aggregation across PEs"))
         end_flag_var = HLSVar("end_flag", HLSType(HLSBasicType.BOOL))
@@ -2503,19 +2552,32 @@ emconfig:
 
         body.append(CodeWhile(codes=while_loop_body, iter_expr=HLSExpr(HLSExprT.CONST, True)))
 
-        body.append(CodeComment("4. Final output loop to drain all PE memories with swapped loops"))
+        body.append(CodeComment("4. Final drain loop (using optimized parallel drain logic)"))
 
-        # New variable declarations for circular buffer draining
-        cnt_var = HLSVar("data_cnt", HLSType(HLSBasicType.UINT))
-        body.append(CodeVarDecl(cnt_var.name, cnt_var.type, init_val=0))
-        body.append(CodeAssign(cnt_var, HLSExpr(HLSExprT.CONST, 0)))
-
-        start_pos_var = HLSVar("start_pos", HLSType(HLSBasicType.UINT))
-        body.append(CodeVarDecl(start_pos_var.name, start_pos_var.type, init_val=0))
-        body.append(CodeAssign(start_pos_var, HLSExpr(HLSExprT.CONST, 0)))
-
+        # Variable declarations for parallel packing
         data_pack_var = HLSVar("data_pack", out_batch_type)
         body.append(CodeVarDecl(data_pack_var.name, data_pack_var.type))
+        body.append(CodePragma(f"ARRAY_PARTITION variable={data_pack_var.name}.data complete dim=0"))
+
+        write_positions_type = HLSType(
+            HLSBasicType.ARRAY, sub_types=[HLSType(HLSBasicType.UINT)], array_dims=["PE_NUM"]
+        )
+        write_positions_var = HLSVar("write_positions", write_positions_type)
+        body.append(CodeVarDecl(write_positions_var.name, write_positions_var.type))
+        body.append(CodePragma(f"ARRAY_PARTITION variable={write_positions_var.name} complete dim=0"))
+
+        tmp_data_type = HLSType(HLSBasicType.ARRAY, sub_types=[out_data_type], array_dims=["PE_NUM"])
+        tmp_data_var = HLSVar("tmp_data", tmp_data_type)
+        body.append(CodeVarDecl(tmp_data_var.name, tmp_data_var.type))
+        body.append(CodePragma(f"ARRAY_PARTITION variable={tmp_data_var.name} complete dim=0"))
+
+        tmp_data_valid_type = HLSType(
+            HLSBasicType.ARRAY, sub_types=[HLSType(HLSBasicType.BOOL)], array_dims=["PE_NUM"]
+        )
+        tmp_data_valid_var = HLSVar("tmp_data_valid", tmp_data_valid_type)
+        body.append(CodeVarDecl(tmp_data_valid_var.name, tmp_data_valid_var.type))
+        body.append(CodePragma(f"ARRAY_PARTITION variable={tmp_data_valid_var.name} complete dim=0"))
+
         body.append(
             CodeAssign(
                 HLSVar(f"{data_pack_var.name}.end_flag", HLSType(HLSBasicType.BOOL)),
@@ -2523,189 +2585,143 @@ emconfig:
             )
         )
 
-        drain_buffer_type = HLSType(
-            HLSBasicType.ARRAY, sub_types=[out_data_type], array_dims=[f"((PE_NUM << 1))"]
-        )
-        drain_buffer_var = HLSVar("data_to_write", drain_buffer_type)
-        body.append(CodeVarDecl(drain_buffer_var.name, drain_buffer_var.type))
-        body.append(CodePragma(f"ARRAY_PARTITION variable={drain_buffer_var.name} complete dim=0"))
-
-        # Since CodeFor doesn't support custom increments, we simulate it with a while loop
+        # Initialize loop counter
         k_var = HLSVar("k", HLSType(HLSBasicType.UINT))
         body.append(CodeVarDecl(k_var.name, k_var.type, init_val=0))
         body.append(CodeAssign(k_var, HLSExpr(HLSExprT.CONST, 0)))
 
-        # Inner logic of the tiled draining loop
-        pe_var = HLSVar("pe", HLSType(HLSBasicType.UINT))
-        k_plus_pe_expr = HLSExpr(
-            HLSExprT.BINOP,
-            BinOp.ADD,
-            [HLSExpr(HLSExprT.VAR, k_var), HLSExpr(HLSExprT.VAR, pe_var)],
-        )
+        # Main drain while loop with parallel processing
+        drain_while_body = []
+        drain_while_body.append(CodePragma("PIPELINE II=1"))
 
-        is_valid_expr = HLSExpr(
-            HLSExprT.VAR,
-            HLSVar(f"key_mem[pe][{k_plus_pe_expr.code}].ele_1", HLSType(HLSBasicType.BOOL)),
-        )
-        data_from_mem = HLSExpr(
-            HLSExprT.VAR, HLSVar(f"key_mem[pe][{k_plus_pe_expr.code}].ele_0", out_data_type)
-        )
-
-        write_to_buffer_expr = HLSExpr(
-            HLSExprT.BINOP,
-            BinOp.MOD,
-            [HLSExpr(HLSExprT.VAR, start_pos_var), HLSExpr(HLSExprT.CONST, "((PE_NUM << 1))")],
-        )
-        assign_to_buffer = CodeAssign(
-            HLSVar(f"{drain_buffer_var.name}[{write_to_buffer_expr.code}]", out_data_type),
-            data_from_mem,
-        )
-
-        increment_cnt = CodeAssign(
-            cnt_var,
-            HLSExpr(
-                HLSExprT.BINOP,
-                BinOp.ADD,
-                [HLSExpr(HLSExprT.VAR, cnt_var), HLSExpr(HLSExprT.CONST, 1)],
-            ),
-        )
-        increment_pos = CodeAssign(
-            start_pos_var,
-            HLSExpr(
-                HLSExprT.BINOP,
-                BinOp.ADD,
-                [HLSExpr(HLSExprT.VAR, start_pos_var), HLSExpr(HLSExprT.CONST, 1)],
-            ),
-        )
-
-        if_valid_block = CodeIf(is_valid_expr, [assign_to_buffer, increment_cnt, increment_pos])
-
-        drain_inner_pe_loop = CodeFor(
-            codes=[CodePragma("UNROLL"), if_valid_block], iter_limit="PE_NUM", iter_name="pe"
-        )
-
-        # Logic to pack and write a full batch
-        pack_and_write_logic = []
-        pack_and_write_logic.append(
-            CodeAssign(
-                HLSVar(f"{data_pack_var.name}.end_pos", HLSType(HLSBasicType.UINT8)),
-                HLSExpr(HLSExprT.CONST, "PE_NUM"),
-            )
-        )
-
-        i_var = HLSVar("i", HLSType(HLSBasicType.UINT))
-
-        read_from_buffer_offset = HLSExpr(
-            HLSExprT.BINOP,
-            BinOp.ADD,
-            [
-                HLSExpr(
-                    HLSExprT.BINOP,
-                    BinOp.SUB,
-                    [HLSExpr(HLSExprT.VAR, start_pos_var), HLSExpr(HLSExprT.VAR, cnt_var)],
-                ),
-                HLSExpr(HLSExprT.VAR, i_var),
-            ],
-        )
-        read_from_buffer_expr = HLSExpr(
-            HLSExprT.BINOP,
-            BinOp.MOD,
-            [read_from_buffer_offset, HLSExpr(HLSExprT.CONST, "(PE_NUM << 1)")],
-        )
-
-        packing_loop_body = [
+        # Load from separated arrays
+        load_loop_body = [
             CodePragma("UNROLL"),
             CodeAssign(
-                HLSVar(f"{data_pack_var.name}.data[i]", out_data_type),
-                HLSExpr(
-                    HLSExprT.VAR,
-                    HLSVar(f"{drain_buffer_var.name}[{read_from_buffer_expr.code}]", out_data_type),
-                ),
+                HLSVar(f"{tmp_data_var.name}[pe]", out_data_type),
+                HLSExpr(HLSExprT.VAR, HLSVar(f"key_mem_data[pe][{k_var.name}]", out_data_type)),
+            ),
+            CodeAssign(
+                HLSVar(f"{tmp_data_valid_var.name}[pe]", HLSType(HLSBasicType.BOOL)),
+                HLSExpr(HLSExprT.VAR, HLSVar(f"key_mem_valid[pe][{k_var.name}]", HLSType(HLSBasicType.BOOL))),
             ),
         ]
-        packing_loop = CodeFor(packing_loop_body, iter_limit="PE_NUM", iter_name="i")
-        pack_and_write_logic.append(packing_loop)
-        pack_and_write_logic.append(CodeWriteStream(out_streams, data_pack_var))
-        pack_and_write_logic.append(
-            CodeAssign(
-                cnt_var,
-                HLSExpr(
-                    HLSExprT.BINOP,
-                    BinOp.SUB,
-                    [HLSExpr(HLSExprT.VAR, cnt_var), HLSExpr(HLSExprT.CONST, "PE_NUM")],
-                ),
-            )
-        )
+        load_loop = CodeFor(load_loop_body, "PE_NUM", iter_name="pe")
+        drain_while_body.append(load_loop)
 
-        if_data_full = CodeIf(
-            HLSExpr(
-                HLSExprT.BINOP,
-                BinOp.GE,
-                [HLSExpr(HLSExprT.VAR, cnt_var), HLSExpr(HLSExprT.CONST, "PE_NUM")],
+        # Parallel prefix sum to find write positions for valid data
+        drain_while_body.append(CodeComment("Parallel prefix sum to find write positions for valid data"))
+        prefix_sum_var = HLSVar("prefix_sum", HLSType(HLSBasicType.UINT))
+        drain_while_body.append(CodeVarDecl(prefix_sum_var.name, prefix_sum_var.type, init_val=0))
+        drain_while_body.append(CodeAssign(prefix_sum_var, HLSExpr(HLSExprT.CONST, 0)))
+
+        prefix_sum_loop_body = [
+            CodePragma("UNROLL"),
+            CodeAssign(
+                HLSVar(f"{write_positions_var.name}[pe]", HLSType(HLSBasicType.UINT)),
+                HLSExpr(HLSExprT.VAR, prefix_sum_var),
             ),
-            pack_and_write_logic,
-        )
-
-        # Main draining while loop
-        drain_while_body = [
-            CodePragma("PIPELINE"),
-            drain_inner_pe_loop,
-            if_data_full,
             CodeAssign(
-                k_var,
+                prefix_sum_var,
                 HLSExpr(
                     HLSExprT.BINOP,
                     BinOp.ADD,
-                    [HLSExpr(HLSExprT.VAR, k_var), HLSExpr(HLSExprT.CONST, "PE_NUM")],
+                    [
+                        HLSExpr(HLSExprT.VAR, prefix_sum_var),
+                        HLSExpr(
+                            HLSExprT.VAR,
+                            HLSVar(f"({tmp_data_valid_var.name}[pe] ? 1 : 0)", HLSType(HLSBasicType.UINT)),
+                        ),
+                    ],
                 ),
             ),
         ]
+        prefix_sum_loop = CodeFor(prefix_sum_loop_body, "PE_NUM", iter_name="pe")
+        drain_while_body.append(prefix_sum_loop)
+
+        cnt_var = HLSVar("data_cnt", HLSType(HLSBasicType.UINT))
+        drain_while_body.append(CodeVarDecl(cnt_var.name, cnt_var.type))
+        drain_while_body.append(CodeAssign(cnt_var, HLSExpr(HLSExprT.VAR, prefix_sum_var)))
+
+        # Skip if no valid data
+        skip_if_body = [
+            CodeAssign(
+                k_var,
+                HLSExpr(
+                    HLSExprT.BINOP, BinOp.ADD, [HLSExpr(HLSExprT.VAR, k_var), HLSExpr(HLSExprT.CONST, 1)]
+                ),
+            ),
+            CodeOther("continue;"),
+        ]
+        drain_while_body.append(
+            CodeIf(
+                HLSExpr(
+                    HLSExprT.BINOP, BinOp.EQ, [HLSExpr(HLSExprT.VAR, cnt_var), HLSExpr(HLSExprT.CONST, 0)]
+                ),
+                skip_if_body,
+            )
+        )
+
+        # Parallel write to pack the data
+        drain_while_body.append(CodeComment("Parallel write to pack the data"))
+        pack_loop_body = [
+            CodePragma("UNROLL"),
+            CodeIf(
+                HLSExpr(HLSExprT.VAR, HLSVar(f"{tmp_data_valid_var.name}[pe]", HLSType(HLSBasicType.BOOL))),
+                [
+                    CodeAssign(
+                        HLSVar(f"{data_pack_var.name}.data[{write_positions_var.name}[pe]]", out_data_type),
+                        HLSExpr(HLSExprT.VAR, HLSVar(f"{tmp_data_var.name}[pe]", out_data_type)),
+                    )
+                ],
+            ),
+        ]
+        pack_loop = CodeFor(pack_loop_body, "PE_NUM", iter_name="pe")
+        drain_while_body.append(pack_loop)
+
+        # Increment k and write output
+        drain_while_body.append(
+            CodeAssign(
+                k_var,
+                HLSExpr(
+                    HLSExprT.BINOP, BinOp.ADD, [HLSExpr(HLSExprT.VAR, k_var), HLSExpr(HLSExprT.CONST, 1)]
+                ),
+            )
+        )
+
+        drain_while_body.append(
+            CodeAssign(
+                HLSVar(f"{data_pack_var.name}.end_pos", HLSType(HLSBasicType.UINT8)),
+                HLSExpr(HLSExprT.VAR, cnt_var),
+            )
+        )
+        drain_while_body.append(CodeWriteStream(out_streams, data_pack_var))
+
         body.append(
             CodeWhile(
                 codes=drain_while_body,
                 iter_expr=HLSExpr(
                     HLSExprT.BINOP,
                     BinOp.LT,
-                    [HLSExpr(HLSExprT.VAR, k_var), HLSExpr(HLSExprT.CONST, "MAX_NUM")],
+                    [HLSExpr(HLSExprT.VAR, k_var), HLSExpr(HLSExprT.CONST, "(MAX_NUM >> LOG_PE_NUM)")],
                 ),
             )
         )
 
-        body.append(CodeComment("5. Drain any remaining data and send final batch with end_flag"))
-
-        # Final packing logic
-        final_pack_logic = []
-        final_pack_logic.append(
+        body.append(CodeComment("5. Final batch to signal end of stream"))
+        body.append(
             CodeAssign(
                 HLSVar(f"{data_pack_var.name}.end_flag", HLSType(HLSBasicType.BOOL)),
                 HLSExpr(HLSExprT.CONST, True),
             )
         )
-        final_pack_logic.append(
+        body.append(
             CodeAssign(
                 HLSVar(f"{data_pack_var.name}.end_pos", HLSType(HLSBasicType.UINT8)),
-                HLSExpr(HLSExprT.VAR, cnt_var),
+                HLSExpr(HLSExprT.CONST, 0),
             )
         )
-        d_buffer_sub = HLSVar(f"{drain_buffer_var.name}[{read_from_buffer_expr.code}]", out_data_type)
-        data_assign = CodeAssign(
-            HLSVar(f"{data_pack_var.name}.data[i]", out_data_type),
-            HLSExpr(HLSExprT.VAR, d_buffer_sub),
-        )
-        lt_cmp_vars = [HLSExpr(HLSExprT.VAR, i_var), HLSExpr(HLSExprT.VAR, cnt_var)]
-        final_packing_loop_body = [
-            CodePragma("UNROLL"),
-            CodeIf(
-                HLSExpr(HLSExprT.BINOP, BinOp.LT, lt_cmp_vars),
-                [data_assign],
-            ),
-        ]
-        final_packing_loop = CodeFor(final_packing_loop_body, iter_limit="PE_NUM", iter_name="i")
-
-        final_pack_logic.append(final_packing_loop)
-        final_pack_logic.append(CodeWriteStream(out_streams, data_pack_var))
-
-        body.extend(final_pack_logic)
+        body.append(CodeWriteStream(out_streams, data_pack_var))
 
         return body
 
@@ -2977,126 +2993,167 @@ emconfig:
     ) -> List[HLSCodeLine]:
         """
         Helper to generate the complex logic inside unit_reduce's PE_NUM loop.
-        *** MODIFIED to accept a PE index ***
+        Uses split memory structure (separate valid and data arrays) with partitioned keys.
         """
         key_type = self.type_map[comp.get_port("i_reduce_key_out").data_type]
         accum_type = self.type_map[comp.get_port("i_reduce_transform_out").data_type]
         bool_type = HLSType(HLSBasicType.BOOL)
 
-        # # 1. Get current key and value from the batch using the PE index
-        # key_var = HLSVar("current_key", key_type)
-        # val_var = HLSVar("current_val", accum_type)
-        # logic = [
-        #     CodeVarDecl(key_var.name, key_var.type),
-        #     CodeVarDecl(val_var.name, val_var.type),
-        #     CodeAssign(
-        #         key_var, HLSExpr(HLSExprT.VAR, HLSVar(f"in_key_batch.data[{pe_idx}]", key_type))
-        #     ),
-        #     CodeAssign(
-        #         val_var,
-        #         HLSExpr(HLSExprT.VAR, HLSVar(f"in_transform_batch.data[{pe_idx}]", accum_type)),
-        #     ),
-        # ]
         logic = []
 
-        # *** 关键修改: 所有对内存的访问都使用 pe_idx 作为第一维度 ***
-        # 2. Read old element from this PE's BRAM & buffer
-        old_ele_var = HLSVar("old_ele", bram_elem_type)
-        logic.append(CodeVarDecl(old_ele_var.name, old_ele_var.type))
+        # Apply key partitioning: key_elem = key >> LOG_PE_NUM
+        logic.append(CodeComment("Apply key partitioning"))
+        partitioned_key_var = HLSVar("key_elem", key_type)
         logic.append(
             CodeAssign(
-                old_ele_var,
-                HLSExpr(HLSExprT.VAR, HLSVar(f"key_mem[{pe_idx}][{key_var.name}]", bram_elem_type)),
+                partitioned_key_var,
+                HLSExpr(
+                    HLSExprT.BINOP,
+                    BinOp.SR,
+                    [HLSExpr(HLSExprT.VAR, key_var), HLSExpr(HLSExprT.CONST, "LOG_PE_NUM")],
+                ),
             )
         )
 
-        # 3. Buffer management for this PE
+        # Use the partitioned key for all memory accesses
+        key_for_mem = partitioned_key_var.name
+
+        # **OPTIMIZED**: Separate reads from BRAM and URAM
+        logic.append(CodeComment("**OPTIMIZED**: Separate reads from BRAM and URAM"))
+        old_valid_var = HLSVar("old_valid", bool_type)
+        old_data_var = HLSVar("old_data", accum_type)
+        logic.append(CodeVarDecl(old_valid_var.name, old_valid_var.type))
+        logic.append(CodeVarDecl(old_data_var.name, old_data_var.type))
+        logic.append(
+            CodeAssign(
+                old_valid_var,
+                HLSExpr(HLSExprT.VAR, HLSVar(f"key_mem_valid[{pe_idx}][{key_for_mem}]", bool_type)),
+            )
+        )
+        logic.append(
+            CodeAssign(
+                old_data_var,
+                HLSExpr(HLSExprT.VAR, HLSVar(f"key_mem_data[{pe_idx}][{key_for_mem}]", accum_type)),
+            )
+        )
+
+        # Buffer search for forwarding (using partitioned key)
         buffer_elem_expr = HLSExpr(
             HLSExprT.VAR, HLSVar(f"i_buffer[{pe_idx}][i_search]", HLSType(HLSBasicType.UINT))
         )
-        if_condition = HLSExpr(HLSExprT.BINOP, BinOp.EQ, [HLSExpr(HLSExprT.VAR, key_var), buffer_elem_expr])
-        value_to_assign = HLSExpr(HLSExprT.VAR, HLSVar(f"key_buffer[{pe_idx}][i_search]", bram_elem_type))
+        if_condition = HLSExpr(
+            HLSExprT.BINOP, BinOp.EQ, [HLSExpr(HLSExprT.VAR, partitioned_key_var), buffer_elem_expr]
+        )
+
+        buffer_valid_assign = CodeAssign(
+            old_valid_var, HLSExpr(HLSExprT.VAR, HLSVar(f"key_buffer[{pe_idx}][i_search].ele_1", bool_type))
+        )
+        buffer_data_assign = CodeAssign(
+            old_data_var, HLSExpr(HLSExprT.VAR, HLSVar(f"key_buffer[{pe_idx}][i_search].ele_0", accum_type))
+        )
+
         search_loop = CodeFor(
             [
                 CodePragma("UNROLL"),
-                CodeIf(if_condition, [CodeAssign(old_ele_var, value_to_assign)]),
+                CodeIf(if_condition, [buffer_valid_assign, buffer_data_assign, CodeBreak()]),
             ],
-            "L + 1",
+            iter_start="L",
+            iter_cmp=">=",
+            iter_limit="0",
             iter_name="i_search",
+            iter_step="i_search--",
+            iter_val_type=HLSType(HLSBasicType.INT),
         )
         logic.append(search_loop)
 
-        i_buffer_dest = HLSVar(f"i_buffer[{pe_idx}][i_move]", HLSType(HLSBasicType.UINT))
-        i_buffer_src = HLSExpr(
-            HLSExprT.VAR, HLSVar(f"i_buffer[{pe_idx}][i_move + 1]", HLSType(HLSBasicType.UINT))
+        # Buffer shift logic - move data through temporary arrays
+        tmp_i_assign = CodeAssign(
+            HLSVar(f"tmp_i_buffer[{pe_idx}][i_move]", HLSType(HLSBasicType.UINT)),
+            HLSExpr(HLSExprT.VAR, HLSVar(f"i_buffer[{pe_idx}][i_move + 1]", HLSType(HLSBasicType.UINT))),
         )
-        key_buffer_dest = HLSVar(f"key_buffer[{pe_idx}][i_move]", bram_elem_type)
-        key_buffer_src = HLSExpr(HLSExprT.VAR, HLSVar(f"key_buffer[{pe_idx}][i_move + 1]", bram_elem_type))
-        shift_loop = CodeFor(
-            [
-                CodePragma("UNROLL"),
-                CodeBlock(
-                    [
-                        CodeAssign(i_buffer_dest, i_buffer_src),
-                        CodeAssign(key_buffer_dest, key_buffer_src),
-                    ]
-                ),
-            ],
+        tmp_key_assign = CodeAssign(
+            HLSVar(f"tmp_key_buffer[{pe_idx}][i_move]", bram_elem_type),
+            HLSExpr(HLSExprT.VAR, HLSVar(f"key_buffer[{pe_idx}][i_move + 1]", bram_elem_type)),
+        )
+        move_loop = CodeFor(
+            [CodePragma("UNROLL"), tmp_i_assign, tmp_key_assign],
             "L",
             iter_name="i_move",
         )
-        logic.append(shift_loop)
+        logic.append(move_loop)
 
-        # 4. If/Else logic for aggregation (logic itself is unchanged)
-        new_ele_var = HLSVar("new_ele", bram_elem_type)
-        logic.append(CodeVarDecl(new_ele_var.name, new_ele_var.type))
-        is_valid_expr = HLSExpr(
-            HLSExprT.UOP, (UnaryOp.GET_ATTR, "ele_1"), [HLSExpr(HLSExprT.VAR, old_ele_var)]
+        # Copy back from temporary to actual buffers
+        i_update_assign = CodeAssign(
+            HLSVar(f"i_buffer[{pe_idx}][i_update]", HLSType(HLSBasicType.UINT)),
+            HLSExpr(HLSExprT.VAR, HLSVar(f"tmp_i_buffer[{pe_idx}][i_update]", HLSType(HLSBasicType.UINT))),
         )
-        if_codes = [
-            CodeAssign(HLSVar(f"{new_ele_var.name}.ele_1", bool_type), HLSExpr(HLSExprT.CONST, True)),
-            CodeAssign(HLSVar(f"{new_ele_var.name}.ele_0", accum_type), HLSExpr(HLSExprT.VAR, val_var)),
-        ]
-        old_data_var = HLSVar("old_data", accum_type)
-        unit_res_var = HLSVar(f"{new_ele_var.name}.ele_0", accum_type)
+        key_update_assign = CodeAssign(
+            HLSVar(f"key_buffer[{pe_idx}][i_update]", bram_elem_type),
+            HLSExpr(HLSExprT.VAR, HLSVar(f"tmp_key_buffer[{pe_idx}][i_update]", bram_elem_type)),
+        )
+        update_loop = CodeFor(
+            [CodePragma("UNROLL"), i_update_assign, key_update_assign],
+            "L",
+            iter_name="i_update",
+        )
+        logic.append(update_loop)
+
+        # **OPTIMIZED**: Compute new value
+        logic.append(CodeComment("**OPTIMIZED**: Compute new value"))
+        new_data_var = HLSVar("new_data", accum_type)
+        new_valid_var = HLSVar("new_valid", bool_type)
+        logic.append(CodeVarDecl(new_data_var.name, new_data_var.type))
+        logic.append(CodeVarDecl(new_valid_var.name, new_valid_var.type))
+        logic.append(CodeAssign(new_valid_var, HLSExpr(HLSExprT.CONST, True)))
+
+        # If valid, perform reduction operation
         unit_starts = [
             comp.get_port("o_reduce_unit_start_0"),
             comp.get_port("o_reduce_unit_start_1"),
         ]
         unit_end = comp.get_port("i_reduce_unit_end")
-        io_map = {unit_starts[0]: old_data_var, unit_starts[1]: val_var, unit_end: unit_res_var}
-        else_codes = [
-            CodeVarDecl(old_data_var.name, old_data_var.type),
-            CodeAssign(
-                old_data_var,
-                HLSExpr(
-                    HLSExprT.UOP,
-                    (UnaryOp.GET_ATTR, "ele_0"),
-                    [HLSExpr(HLSExprT.VAR, old_ele_var)],
-                ),
-            ),
-            *self._inline_sub_graph_logic(unit_starts, unit_end, io_map),
-            CodeAssign(HLSVar(f"{new_ele_var.name}.ele_1", bool_type), HLSExpr(HLSExprT.CONST, True)),
-        ]
-        logic.append(CodeIf(is_valid_expr, if_codes=else_codes, else_codes=if_codes))
+        io_map = {unit_starts[0]: old_data_var, unit_starts[1]: val_var, unit_end: new_data_var}
 
-        # 5. Write back to this PE's BRAM and buffer
+        if_valid_codes = self._inline_sub_graph_logic(unit_starts, unit_end, io_map)
+        else_codes = [CodeAssign(new_data_var, HLSExpr(HLSExprT.VAR, val_var))]
+
+        logic.append(
+            CodeIf(HLSExpr(HLSExprT.VAR, old_valid_var), if_codes=if_valid_codes, else_codes=else_codes)
+        )
+
+        # **OPTIMIZED**: Separate writes to BRAM and URAM
+        logic.append(CodeComment("**OPTIMIZED**: Separate writes to BRAM and URAM"))
         logic.append(
             CodeAssign(
-                HLSVar(f"key_mem[{pe_idx}][{key_var.name}]", bram_elem_type),
-                HLSExpr(HLSExprT.VAR, new_ele_var),
+                HLSVar(f"key_mem_valid[{pe_idx}][{key_for_mem}]", bool_type),
+                HLSExpr(HLSExprT.VAR, new_valid_var),
             )
         )
         logic.append(
             CodeAssign(
-                HLSVar(f"key_buffer[{pe_idx}][L]", bram_elem_type),
-                HLSExpr(HLSExprT.VAR, new_ele_var),
+                HLSVar(f"key_mem_data[{pe_idx}][{key_for_mem}]", accum_type),
+                HLSExpr(HLSExprT.VAR, new_data_var),
+            )
+        )
+
+        # Update buffer with new element (stored as tuple)
+        logic.append(CodeComment("Update buffer"))
+        logic.append(
+            CodeAssign(
+                HLSVar(f"key_buffer[{pe_idx}][L].ele_1", bool_type),
+                HLSExpr(HLSExprT.VAR, new_valid_var),
+            )
+        )
+        logic.append(
+            CodeAssign(
+                HLSVar(f"key_buffer[{pe_idx}][L].ele_0", accum_type),
+                HLSExpr(HLSExprT.VAR, new_data_var),
             )
         )
         logic.append(
             CodeAssign(
                 HLSVar(f"i_buffer[{pe_idx}][L]", HLSType(HLSBasicType.UINT)),
-                HLSExpr(HLSExprT.VAR, key_var),
+                HLSExpr(HLSExprT.VAR, partitioned_key_var),
             )
         )
 

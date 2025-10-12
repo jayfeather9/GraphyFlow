@@ -49,10 +49,6 @@ void AlgorithmHost::setup_buffers(const PartitionContainer& container, int start
         OCL_CHECK(err, buffers.src_offsets_buf = cl::Buffer(acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX, (p_graph.num_vertices + 1) * sizeof(int), &hbm_ext_in0, &err));
         
         size_t num_edge_bursts = (p_graph.num_edges + PE_NUM - 1) / PE_NUM;
-        std::vector<edge_des_burst_t, aligned_allocator<edge_des_burst_t>> edge_bursts(num_edge_bursts);
-        for(size_t j=0; j < p_graph.num_edges; ++j) {
-            edge_bursts[j / PE_NUM].edges[j % PE_NUM] = { (uint16_t)p_graph.columns[j], p_graph.weights[j] };
-        }
         OCL_CHECK(err, buffers.edge_props_buf = cl::Buffer(acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX, num_edge_bursts * sizeof(edge_des_burst_t), &hbm_ext_in1, &err));
         
         // Create buffer for dynamic node distances (will be updated each iteration)

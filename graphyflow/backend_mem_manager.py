@@ -632,16 +632,12 @@ class MemoryAndGraphManager:
         pe_loop = CodeFor(
             [
                 CodePragma("UNROLL"),
-                CodeIf(HLSExpr(HLSExprT.VAR, HLSVar("base_idx + pe_idx >= num_nodes", bool)), [CodeBreak()]),
+                CodeComment("Direct indexing with pe_idx to avoid race conditions in UNROLL"),
                 CodeAssign(
-                    HLSVar("dist_batch.data[dist_batch.end_pos]", HLSType(HLSBasicType.INT)),
+                    HLSVar("dist_batch.data[pe_idx]", HLSType(HLSBasicType.INT)),
                     HLSExpr(
                         HLSExprT.VAR, HLSVar("node_distance_burst.data[pe_idx]", HLSType(HLSBasicType.INT))
                     ),
-                ),
-                CodeAssign(
-                    HLSVar("dist_batch.end_pos", HLSType(HLSBasicType.INT)),
-                    HLSExpr(HLSExprT.VAR, HLSVar("dist_batch.end_pos + 1", HLSType(HLSBasicType.INT))),
                 ),
             ],
             "PE_NUM",
@@ -671,10 +667,23 @@ class MemoryAndGraphManager:
                     const=True,
                 ),
                 pe_loop,
-                CodeWriteStream(func.params[2], HLSVar("dist_batch", T["node_dist_batch_t"])),
-                CodeAssign(
-                    HLSVar("dist_batch.end_pos", HLSType(HLSBasicType.INT)), HLSExpr(HLSExprT.CONST, 0)
+                CodeComment("Calculate end_pos as the number of valid nodes in this burst"),
+                CodeVarDecl(
+                    "remaining_nodes",
+                    HLSType(HLSBasicType.INT),
+                    init_val="num_nodes - base_idx",
+                    const=True,
                 ),
+                CodeAssign(
+                    HLSVar("dist_batch.end_pos", HLSType(HLSBasicType.INT)),
+                    HLSExpr(
+                        HLSExprT.VAR,
+                        HLSVar(
+                            "(remaining_nodes < PE_NUM) ? remaining_nodes : PE_NUM", HLSType(HLSBasicType.INT)
+                        ),
+                    ),
+                ),
+                CodeWriteStream(func.params[2], HLSVar("dist_batch", T["node_dist_batch_t"])),
             ],
             max_node_burst_idx_var,
             iter_name="node_burst_idx",
@@ -682,11 +691,11 @@ class MemoryAndGraphManager:
 
         func.codes = [
             CodeVarDecl("dist_batch", T["node_dist_batch_t"]),
-            CodeAssign(HLSVar("dist_batch.end_pos", HLSType(HLSBasicType.INT)), HLSExpr(HLSExprT.CONST, 0)),
             CodeAssign(HLSVar("dist_batch.end_flag", bool), HLSExpr(HLSExprT.CONST, False)),
             max_node_burst_idx_decl,
             main_loop,
             CodeAssign(HLSVar("dist_batch.end_flag", bool), HLSExpr(HLSExprT.CONST, True)),
+            CodeAssign(HLSVar("dist_batch.end_pos", HLSType(HLSBasicType.INT)), HLSExpr(HLSExprT.CONST, 0)),
             CodeWriteStream(func.params[2], HLSVar("dist_batch", T["node_dist_batch_t"])),
         ]
         return func

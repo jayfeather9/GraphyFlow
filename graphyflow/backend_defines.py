@@ -342,6 +342,7 @@ class CodeFor(HLSCodeLine):
         iter_name="i",
         iter_start="0",
         iter_step=None,
+        iter_val_type: HLSType = HLSType(HLSBasicType.UINT),
     ) -> None:
         super().__init__()
         self.i_name = iter_name
@@ -350,6 +351,7 @@ class CodeFor(HLSCodeLine):
         self.i_lim = iter_limit.name if isinstance(iter_limit, HLSVar) else iter_limit
         self.codes = codes
         self.i_step = iter_step if iter_step else f"{self.i_name}++"
+        self.i_type = iter_val_type
         global GLOBAL_LOOP_CNT
         self.loop_id = GLOBAL_LOOP_CNT
         GLOBAL_LOOP_CNT += 1
@@ -358,7 +360,7 @@ class CodeFor(HLSCodeLine):
         oind = indent_lvl * INDENT_UNIT
         return (
             f"{oind}LOOP_FOR_{self.loop_id}:\n"
-            + f"{oind}for (uint32_t {self.i_name} = {self.i_start}; {self.i_name} {self.i_cmp} {self.i_lim}; {self.i_step}) "
+            + f"{oind}for ({self.i_type.name} {self.i_name} = {self.i_start}; {self.i_name} {self.i_cmp} {self.i_lim}; {self.i_step}) "
             + "{\n"
             + "".join(c.gen_code(indent_lvl + 1) for c in self.codes)
             + oind

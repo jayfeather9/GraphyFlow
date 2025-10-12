@@ -25,7 +25,7 @@ g = GlobalGraph(
 )
 edges = g.add_graph_input("edge")
 pdu = edges.map_(map_func=lambda edge: (edge.src.distance, edge.dst, edge.weight))
-pdu = pdu.filter(filter_func=lambda x, y, z: z >= 0.0)
+# pdu = pdu.filter(filter_func=lambda x, y, z: z >= 0.0)
 min_dist = pdu.reduce_by(
     reduce_key=lambda src_dist, dst, edge_w: dst.id,
     reduce_transform=lambda src_dist, dst, edge_w: (src_dist + edge_w, dst),
