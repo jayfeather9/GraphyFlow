@@ -20,14 +20,17 @@
 #define NODE_ID_BITWIDTH 24
 #define DISTANCE_BITWIDTH 24
 #define DISTANCE_INTEGER_PART                                                  \
-    8 // Number of bits for the integer part of distance
+    16 // Number of bits for the integer part of distance
 #define WEIGHT_BITWIDTH 24
-#define WEIGHT_INTEGER_PART 8 // Number of bits for the integer part of weight
+#define WEIGHT_INTEGER_PART 16 // Number of bits for the integer part of weight
 
 // --- Host-side definition for the AXI bus word ---
 #define AXI_BUS_WIDTH 512
 #ifndef __SYNTHESIS__
 typedef ap_uint<AXI_BUS_WIDTH> bus_word_t;
+typedef ap_uint<DISTANCE_BITWIDTH> ap_fixed_pod_t;
+typedef ap_fixed<DISTANCE_BITWIDTH, DISTANCE_INTEGER_PART> distance_t;
+typedef ap_fixed<WEIGHT_BITWIDTH, WEIGHT_INTEGER_PART> weight_t;
 #endif
 
 // A constant representing infinity for distance initialization
@@ -36,7 +39,7 @@ const int INFINITY_DIST = 16384;
 // --- Graph Type Definitions ---
 typedef uint32_t edge_id_t;
 typedef uint32_t node_id_t;
-typedef uint32_t ap_fixed_pod_t;
+// typedef uint32_t ap_fixed_pod_t;
 
 // Structure to hold the graph in Compressed Sparse Row (CSR) format
 struct GraphCSR {

@@ -17,9 +17,9 @@
 // --- New Bitwidth Definitions for HLS Synthesis ---
 #define NODE_ID_BITWIDTH 24
 #define DISTANCE_BITWIDTH 24
-#define DISTANCE_INTEGER_PART 8
+#define DISTANCE_INTEGER_PART 16
 #define WEIGHT_BITWIDTH 24
-#define WEIGHT_INTEGER_PART 8
+#define WEIGHT_INTEGER_PART 16
 
 // --- New Memory Word and Bus Definitions ---
 #define AXI_BUS_WIDTH 512

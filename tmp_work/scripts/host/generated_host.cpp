@@ -1,13 +1,9 @@
 #include "generated_host.h"
+#include <cstring>
 #include <iostream>
 #include <limits>
 #include <map>
 #include <vector>
-
-// Custom ap_fixed type for host-side conversion, matching the kernel's new
-// format.
-typedef ap_fixed<DISTANCE_BITWIDTH, DISTANCE_INTEGER_PART> distance_t;
-typedef ap_fixed<WEIGHT_BITWIDTH, WEIGHT_INTEGER_PART> weight_t;
 
 AlgorithmHost::AlgorithmHost(AccDescriptor &acc) : acc(acc) {}
 
@@ -23,7 +19,7 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container,
 
     // 1.1: Initialize global distance vector on the host
     m_num_vertices = container.num_graph_vertices;
-    h_distances.assign(m_num_vertices, ap_fixed<32, 16>(INFINITY_DIST));
+    h_distances.assign(m_num_vertices, distance_t(INFINITY_DIST));
     if (start_node < m_num_vertices) {
         h_distances[start_node] = 0;
     }
@@ -72,10 +68,6 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container,
         hbm_ext_out.flags = XCL_MEM_TOPOLOGY | acc.big_kernel_hbm_output_id[i];
         hbm_ext_out.obj = nullptr;
         hbm_ext_out.param = 0;
-        printf("[BIG] HBM channel IDs - in0: %d, in1: %d, in2: %d, out: %d\n",
-               acc.big_kernel_hbm_input_id[i], acc.big_kernel_hbm_input_id[i],
-               acc.big_kernel_hbm_input_id[i], acc.big_kernel_hbm_output_id[i]);
-        fflush(NULL);
 
         OCL_CHECK(err,
                   buffers.src_offsets_buf = cl::Buffer(
@@ -89,12 +81,12 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container,
                   buffers.node_props_buf = cl::Buffer(
                       acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,
                       num_dist_words * bytes_per_word, &hbm_ext_in2, &err));
-        printf("[BIG] Allocated buffers - offsets: %zu bytes, edges: %zu "
-               "bytes, dists: %zu bytes\n",
-               num_offset_words * bytes_per_word,
-               num_edge_words * bytes_per_word,
-               num_dist_words * bytes_per_word);
-        fflush(NULL);
+        // printf("[BIG] Allocated buffers - offsets: %zu bytes, edges: %zu "
+        //        "bytes, dists: %zu bytes\n",
+        //        num_offset_words * bytes_per_word,
+        //        num_edge_words * bytes_per_word,
+        //        num_dist_words * bytes_per_word);
+        // fflush(NULL);
 
         big_kernel_host_outputs[i].resize(num_output_words);
         OCL_CHECK(err,
@@ -144,13 +136,6 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container,
             XCL_MEM_TOPOLOGY | acc.little_kernel_hbm_output_id[i];
         hbm_ext_out.obj = nullptr;
         hbm_ext_out.param = 0;
-        printf(
-            "[LITTLE] HBM channel IDs - in0: %d, in1: %d, in2: %d, out: %d\n",
-            acc.little_kernel_hbm_input_id[i],
-            acc.little_kernel_hbm_input_id[i],
-            acc.little_kernel_hbm_input_id[i],
-            acc.little_kernel_hbm_output_id[i]);
-        fflush(NULL);
 
         OCL_CHECK(err,
                   buffers.src_offsets_buf = cl::Buffer(
@@ -188,158 +173,238 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container,
 // --- PHASE 2: DATA TRANSFER TO FPGA ---
 // REWRITTEN: Implements packing logic to convert host data into 512-bit words
 // for the kernel.
+// 请确保在 generated_host.cpp 文件顶部添加此头文件
+#include <cstring>
+
 void AlgorithmHost::transfer_data_to_fpga(const PartitionContainer &container) {
     cl_int err;
     std::cout << "--- [Host] Phase 2: Packing and transferring data to HBM ---"
               << std::endl;
 
-    // 2.1: Transfer data for BIG kernels
+    // 为了保证内存生命周期，在外层定义好所有需要传输的数据容器
+    std::vector<std::vector<bus_word_t, aligned_allocator<bus_word_t>>>
+        big_packed_node_props(big_kernel_buffers.size());
+    std::vector<std::vector<bus_word_t, aligned_allocator<bus_word_t>>>
+        big_packed_edge_props(big_kernel_buffers.size());
+    std::vector<std::vector<bus_word_t, aligned_allocator<bus_word_t>>>
+        big_packed_offsets(big_kernel_buffers.size());
+
+    std::vector<std::vector<bus_word_t, aligned_allocator<bus_word_t>>>
+        little_packed_node_props(little_kernel_buffers.size());
+    std::vector<std::vector<bus_word_t, aligned_allocator<bus_word_t>>>
+        little_packed_edge_props(little_kernel_buffers.size());
+    std::vector<std::vector<bus_word_t, aligned_allocator<bus_word_t>>>
+        little_packed_offsets(little_kernel_buffers.size());
+
+    // --- 2.1: 为 BIG kernels 手动序列化数据 ---
     for (size_t i = 0; i < big_kernel_buffers.size(); ++i) {
         const auto &p_graph = container.SPs[i].partitioned_graph;
+        const size_t bytes_per_word = AXI_BUS_WIDTH / 8;
 
-        // Pack node distances (24-bit each)
-        const int dists_per_word = AXI_BUS_WIDTH / DISTANCE_BITWIDTH;
-        std::vector<bus_word_t> packed_node_props(
-            (p_graph.num_vertices + dists_per_word - 1) / dists_per_word, 0);
+        // --- Pack node distances (ap_fixed<24,8> -> 3 bytes) ---
+        const size_t bytes_per_dist = DISTANCE_BITWIDTH / 8;
+        size_t total_node_bytes = p_graph.num_vertices * bytes_per_dist;
+        big_packed_node_props[i].resize(
+            (total_node_bytes + bytes_per_word - 1) / bytes_per_word, 0);
+        char *node_props_ptr =
+            reinterpret_cast<char *>(big_packed_node_props[i].data());
+
         for (int j = 0; j < p_graph.num_vertices; ++j) {
             int global_id = p_graph.vtx_map_rev.at(j);
-            distance_t dist_24b = h_distances[global_id];
-            ap_uint<DISTANCE_BITWIDTH> dist_pod =
-                *reinterpret_cast<ap_uint<DISTANCE_BITWIDTH> *>(&dist_24b);
-            int word_idx = j / dists_per_word;
-            int bit_offset = (j % dists_per_word) * DISTANCE_BITWIDTH;
-            packed_node_props[word_idx].range(
-                bit_offset + DISTANCE_BITWIDTH - 1, bit_offset) = dist_pod;
+            distance_t dist_val = h_distances[global_id];
+            // 直接将 ap_fixed 的 3 个字节内容拷贝到目标位置
+            std::memcpy(node_props_ptr + (j * bytes_per_dist), &dist_val,
+                        bytes_per_dist);
+            printf("[BIG]Packed node %d with distance %f\n", global_id,
+                   (float)dist_val);
+            fflush(nullptr);
         }
 
-        // Pack edge properties (node_id: 24-bit, weight: 24-bit => 48-bit per
-        // edge)
-        const int bits_per_edge = NODE_ID_BITWIDTH + WEIGHT_BITWIDTH;
-        const int edges_per_word = AXI_BUS_WIDTH / bits_per_edge;
-        std::vector<bus_word_t> packed_edge_props(
-            (p_graph.num_edges + edges_per_word - 1) / edges_per_word, 0);
+        // --- Pack edge properties (node_id<24b> + weight<24b> -> 6 bytes) ---
+        const size_t bytes_per_edge = (NODE_ID_BITWIDTH + WEIGHT_BITWIDTH) / 8;
+        size_t total_edge_bytes = p_graph.num_edges * bytes_per_edge;
+        big_packed_edge_props[i].resize(
+            (total_edge_bytes + bytes_per_word - 1) / bytes_per_word, 0);
+        char *edge_props_ptr =
+            reinterpret_cast<char *>(big_packed_edge_props[i].data());
+
         for (size_t j = 0; j < p_graph.num_edges; ++j) {
-            ap_uint<NODE_ID_BITWIDTH> dest_id = p_graph.columns[j];
+            char edge_bytes[bytes_per_edge]; // 为单个边创建一个临时的 char 数组
+
+            // 1. 手动处理 node_id (int -> 3 bytes)
+            // p_graph.columns 是 std::vector<int>，我们只取低24位
+            uint32_t dest_id = p_graph.columns[j];
+            edge_bytes[0] = (dest_id >> 0) & 0xFF;
+            edge_bytes[1] = (dest_id >> 8) & 0xFF;
+            edge_bytes[2] = (dest_id >> 16) & 0xFF;
+
+            // 2. 处理 weight (ap_fixed<24,8> -> 3 bytes)
             weight_t weight_val = (float)p_graph.weights[j];
-            ap_uint<WEIGHT_BITWIDTH> weight_pod =
-                *reinterpret_cast<ap_uint<WEIGHT_BITWIDTH> *>(&weight_val);
-            ap_uint<bits_per_edge> packed_edge;
-            packed_edge.range(NODE_ID_BITWIDTH - 1, 0) = dest_id;
-            packed_edge.range(bits_per_edge - 1, NODE_ID_BITWIDTH) = weight_pod;
+            std::memcpy(edge_bytes + 3, &weight_val, (WEIGHT_BITWIDTH / 8));
 
-            int word_idx = j / edges_per_word;
-            int bit_offset = (j % edges_per_word) * bits_per_edge;
-            packed_edge_props[word_idx].range(bit_offset + bits_per_edge - 1,
-                                              bit_offset) = packed_edge;
+            // 3. 将临时的 char 数组拷贝到主缓冲区
+            std::memcpy(edge_props_ptr + (j * bytes_per_edge), edge_bytes,
+                        bytes_per_edge);
+
+            // output the edge src dst weight (global id)
+            uint32_t src_global_id = -1;
+            uint32_t dst_global_id = p_graph.vtx_map_rev.at(p_graph.columns[j]);
+            // iterate through offsets to find the src_global_id
+            for (int v = 0; v < p_graph.num_vertices; ++v) {
+                if (p_graph.offsets[v] <= j && j < p_graph.offsets[v + 1]) {
+                    src_global_id = p_graph.vtx_map_rev.at(v);
+                    break;
+                }
+            }
+            printf("[BIG]Packed edge: src=%d, dst=%d, weight=%f\n",
+                   src_global_id, dst_global_id,
+                   (float)*reinterpret_cast<weight_t *>(edge_bytes + 3));
+            fflush(nullptr);
         }
 
-        // Pack offsets (32-bit each)
-        const int offsets_per_word = AXI_BUS_WIDTH / 32;
-        std::vector<bus_word_t> packed_offsets(
-            ((p_graph.num_vertices + 1) + offsets_per_word - 1) /
-                offsets_per_word,
-            0);
+        // --- Pack offsets (int32_t -> 4 bytes) ---
+        const size_t bytes_per_offset = sizeof(int32_t);
+        size_t total_offset_bytes =
+            (p_graph.num_vertices + 1) * bytes_per_offset;
+        big_packed_offsets[i].resize(
+            (total_offset_bytes + bytes_per_word - 1) / bytes_per_word, 0);
+        char *offsets_ptr =
+            reinterpret_cast<char *>(big_packed_offsets[i].data());
+
         for (int j = 0; j < p_graph.num_vertices + 1; ++j) {
-            int word_idx = j / offsets_per_word;
-            int bit_offset = (j % offsets_per_word) * 32;
-            packed_offsets[word_idx].range(bit_offset + 31, bit_offset) =
-                p_graph.offsets[j];
-            printf("[BIG]Packed offset %d into word %d at bit %d.\n",
-                   p_graph.offsets[j], word_idx, bit_offset);
-            fflush(NULL);
-        }
+            int32_t offset_val = p_graph.offsets[j];
+            std::memcpy(offsets_ptr + (j * bytes_per_offset), &offset_val,
+                        bytes_per_offset);
 
-        // Enqueue writes
-        OCL_CHECK(err, err = acc.big_gs_queue[i].enqueueWriteBuffer(
-                           big_kernel_buffers[i].node_props_buf, CL_TRUE, 0,
-                           packed_node_props.size() * sizeof(bus_word_t),
-                           packed_node_props.data()));
-        OCL_CHECK(err, err = acc.big_gs_queue[i].enqueueWriteBuffer(
-                           big_kernel_buffers[i].edge_props_buf, CL_TRUE, 0,
-                           packed_edge_props.size() * sizeof(bus_word_t),
-                           packed_edge_props.data()));
-        OCL_CHECK(err, err = acc.big_gs_queue[i].enqueueWriteBuffer(
-                           big_kernel_buffers[i].src_offsets_buf, CL_TRUE, 0,
-                           packed_offsets.size() * sizeof(bus_word_t),
-                           packed_offsets.data()));
+            // 调试日志
+            int word_idx = (j * bytes_per_offset) / bytes_per_word;
+            int bit_offset = ((j * bytes_per_offset) % bytes_per_word) * 8;
+            // printf("[BIG]Packed offset %d into word %d at bit %d.\n",
+            // offset_val, word_idx, bit_offset); fflush(nullptr);
+        }
     }
 
-    // 2.2: Transfer data for LITTLE kernels (FIXED: UNIFIED PACKING LOGIC)
+    // --- 2.2: 为 LITTLE kernels 手动序列化数据 (逻辑同上) ---
     for (size_t i = 0; i < little_kernel_buffers.size(); ++i) {
         const auto &p_graph = container.DPs[i].partitioned_graph;
+        const size_t bytes_per_word = AXI_BUS_WIDTH / 8;
 
-        // Pack node distances (24-bit each)
-        const int dists_per_word = AXI_BUS_WIDTH / DISTANCE_BITWIDTH;
-        std::vector<bus_word_t> packed_node_props(
-            (p_graph.num_vertices + dists_per_word - 1) / dists_per_word, 0);
+        const size_t bytes_per_dist = DISTANCE_BITWIDTH / 8;
+        size_t total_node_bytes = p_graph.num_vertices * bytes_per_dist;
+        little_packed_node_props[i].resize(
+            (total_node_bytes + bytes_per_word - 1) / bytes_per_word, 0);
+        char *node_props_ptr =
+            reinterpret_cast<char *>(little_packed_node_props[i].data());
+
         for (int j = 0; j < p_graph.num_vertices; ++j) {
             int global_id = p_graph.vtx_map_rev.at(j);
-            distance_t dist_24b = h_distances[global_id];
-            ap_uint<DISTANCE_BITWIDTH> dist_pod =
-                *reinterpret_cast<ap_uint<DISTANCE_BITWIDTH> *>(&dist_24b);
-            int word_idx = j / dists_per_word;
-            int bit_offset = (j % dists_per_word) * DISTANCE_BITWIDTH;
-            packed_node_props[word_idx].range(
-                bit_offset + DISTANCE_BITWIDTH - 1, bit_offset) = dist_pod;
+            distance_t dist_val = h_distances[global_id];
+            std::memcpy(node_props_ptr + (j * bytes_per_dist), &dist_val,
+                        bytes_per_dist);
+            printf("[LITTLE]Packed node %d with distance %f\n", global_id,
+                   (float)dist_val);
+            fflush(nullptr);
         }
 
-        // Pack edge properties (node_id: 24-bit, weight: 24-bit => 48-bit per
-        // edge)
-        const int bits_per_edge = NODE_ID_BITWIDTH + WEIGHT_BITWIDTH;
-        const int edges_per_word = AXI_BUS_WIDTH / bits_per_edge;
-        std::vector<bus_word_t> packed_edge_props(
-            (p_graph.num_edges + edges_per_word - 1) / edges_per_word, 0);
+        const size_t bytes_per_edge = (NODE_ID_BITWIDTH + WEIGHT_BITWIDTH) / 8;
+        size_t total_edge_bytes = p_graph.num_edges * bytes_per_edge;
+        little_packed_edge_props[i].resize(
+            (total_edge_bytes + bytes_per_word - 1) / bytes_per_word, 0);
+        char *edge_props_ptr =
+            reinterpret_cast<char *>(little_packed_edge_props[i].data());
+
         for (size_t j = 0; j < p_graph.num_edges; ++j) {
-            ap_uint<NODE_ID_BITWIDTH> dest_id = p_graph.columns[j];
+            char edge_bytes[bytes_per_edge];
+            uint32_t dest_id = p_graph.columns[j];
+            edge_bytes[0] = (dest_id >> 0) & 0xFF;
+            edge_bytes[1] = (dest_id >> 8) & 0xFF;
+            edge_bytes[2] = (dest_id >> 16) & 0xFF;
             weight_t weight_val = (float)p_graph.weights[j];
-            ap_uint<WEIGHT_BITWIDTH> weight_pod =
-                *reinterpret_cast<ap_uint<WEIGHT_BITWIDTH> *>(&weight_val);
-            ap_uint<bits_per_edge> packed_edge;
-            packed_edge.range(NODE_ID_BITWIDTH - 1, 0) = dest_id;
-            packed_edge.range(bits_per_edge - 1, NODE_ID_BITWIDTH) = weight_pod;
+            std::memcpy(edge_bytes + 3, &weight_val, (WEIGHT_BITWIDTH / 8));
+            std::memcpy(edge_props_ptr + (j * bytes_per_edge), edge_bytes,
+                        bytes_per_edge);
 
-            int word_idx = j / edges_per_word;
-            int bit_offset = (j % edges_per_word) * bits_per_edge;
-            packed_edge_props[word_idx].range(bit_offset + bits_per_edge - 1,
-                                              bit_offset) = packed_edge;
+            uint32_t src_global_id = -1;
+            uint32_t dst_global_id = p_graph.vtx_map_rev.at(p_graph.columns[j]);
+            for (int v = 0; v < p_graph.num_vertices; ++v) {
+                if (p_graph.offsets[v] <= j && j < p_graph.offsets[v + 1]) {
+                    src_global_id = p_graph.vtx_map_rev.at(v);
+                    break;
+                }
+            }
+            printf("[LITTLE]Packed edge: src=%d, dst=%d, weight=%f\n",
+                   src_global_id, dst_global_id,
+                   (float)*reinterpret_cast<weight_t *>(edge_bytes + 3));
+            fflush(nullptr);
         }
 
-        // Pack offsets (32-bit each)
-        const int offsets_per_word = AXI_BUS_WIDTH / 32;
-        std::vector<bus_word_t> packed_offsets(
-            ((p_graph.num_vertices + 1) + offsets_per_word - 1) /
-                offsets_per_word,
-            0);
+        const size_t bytes_per_offset = sizeof(int32_t);
+        size_t total_offset_bytes =
+            (p_graph.num_vertices + 1) * bytes_per_offset;
+        little_packed_offsets[i].resize(
+            (total_offset_bytes + bytes_per_word - 1) / bytes_per_word, 0);
+        char *offsets_ptr =
+            reinterpret_cast<char *>(little_packed_offsets[i].data());
+
         for (int j = 0; j < p_graph.num_vertices + 1; ++j) {
-            int word_idx = j / offsets_per_word;
-            int bit_offset = (j % offsets_per_word) * 32;
-            packed_offsets[word_idx].range(bit_offset + 31, bit_offset) =
-                p_graph.offsets[j];
-            printf("[LITTLE]Packed offset %d into word %d at bit %d.\n",
-                   p_graph.offsets[j], word_idx, bit_offset);
-            fflush(NULL);
-        }
+            int32_t offset_val = p_graph.offsets[j];
+            std::memcpy(offsets_ptr + (j * bytes_per_offset), &offset_val,
+                        bytes_per_offset);
 
-        // Enqueue writes
-        OCL_CHECK(err, err = acc.little_gs_queue[i].enqueueWriteBuffer(
-                           little_kernel_buffers[i].node_props_buf, CL_TRUE, 0,
-                           packed_node_props.size() * sizeof(bus_word_t),
-                           packed_node_props.data()));
-        OCL_CHECK(err, err = acc.little_gs_queue[i].enqueueWriteBuffer(
-                           little_kernel_buffers[i].edge_props_buf, CL_TRUE, 0,
-                           packed_edge_props.size() * sizeof(bus_word_t),
-                           packed_edge_props.data()));
-        OCL_CHECK(err, err = acc.little_gs_queue[i].enqueueWriteBuffer(
-                           little_kernel_buffers[i].src_offsets_buf, CL_TRUE, 0,
-                           packed_offsets.size() * sizeof(bus_word_t),
-                           packed_offsets.data()));
+            int word_idx = (j * bytes_per_offset) / bytes_per_word;
+            int bit_offset = ((j * bytes_per_offset) % bytes_per_word) * 8;
+            // printf("[LITTLE]Packed offset %d into word %d at bit %d.\n",
+            // offset_val, word_idx, bit_offset); fflush(nullptr);
+        }
     }
 
-    // 2.3: Wait for all transfers to complete
+    // --- 2.3: 将所有打包好的数据加入传输队列 ---
+    for (size_t i = 0; i < big_kernel_buffers.size(); ++i) {
+        OCL_CHECK(err, err = acc.big_gs_queue[i].enqueueWriteBuffer(
+                           big_kernel_buffers[i].node_props_buf, CL_FALSE, 0,
+                           big_packed_node_props[i].size() * sizeof(bus_word_t),
+                           big_packed_node_props[i].data()));
+        OCL_CHECK(err, err = acc.big_gs_queue[i].enqueueWriteBuffer(
+                           big_kernel_buffers[i].edge_props_buf, CL_FALSE, 0,
+                           big_packed_edge_props[i].size() * sizeof(bus_word_t),
+                           big_packed_edge_props[i].data()));
+        OCL_CHECK(err, err = acc.big_gs_queue[i].enqueueWriteBuffer(
+                           big_kernel_buffers[i].src_offsets_buf, CL_FALSE, 0,
+                           big_packed_offsets[i].size() * sizeof(bus_word_t),
+                           big_packed_offsets[i].data()));
+        printf("[BIG] Enqueued data transfer for kernel %zu.\n", i);
+        printf("[BIG] Node props size: %zu words, Edge props size: %zu words, "
+               "Offsets size: %zu words.\n",
+               big_packed_node_props[i].size(), big_packed_edge_props[i].size(),
+               big_packed_offsets[i].size());
+        printf("[BIG] bus size: %zu bytes.\n", sizeof(bus_word_t));
+        fflush(NULL);
+    }
+
+    for (size_t i = 0; i < little_kernel_buffers.size(); ++i) {
+        OCL_CHECK(err,
+                  err = acc.little_gs_queue[i].enqueueWriteBuffer(
+                      little_kernel_buffers[i].node_props_buf, CL_FALSE, 0,
+                      little_packed_node_props[i].size() * sizeof(bus_word_t),
+                      little_packed_node_props[i].data()));
+        OCL_CHECK(err,
+                  err = acc.little_gs_queue[i].enqueueWriteBuffer(
+                      little_kernel_buffers[i].edge_props_buf, CL_FALSE, 0,
+                      little_packed_edge_props[i].size() * sizeof(bus_word_t),
+                      little_packed_edge_props[i].data()));
+        OCL_CHECK(err,
+                  err = acc.little_gs_queue[i].enqueueWriteBuffer(
+                      little_kernel_buffers[i].src_offsets_buf, CL_FALSE, 0,
+                      little_packed_offsets[i].size() * sizeof(bus_word_t),
+                      little_packed_offsets[i].data()));
+    }
+
+    // --- 2.4: 在所有命令入队后，执行一次全局同步 ---
     for (auto &q : acc.big_gs_queue)
         q.finish();
     for (auto &q : acc.little_gs_queue)
         q.finish();
+
     std::cout
         << "[SUCCESS] All data packed and transferred for current iteration."
         << std::endl;
@@ -434,7 +499,7 @@ bool AlgorithmHost::check_convergence_and_update(
                  "convergence ---"
               << std::endl;
 
-    std::map<int, ap_fixed<32, 16>> min_distances;
+    std::map<int, distance_t> min_distances;
     const int bits_per_output = NODE_ID_BITWIDTH + DISTANCE_BITWIDTH;
     const int outputs_per_word = AXI_BUS_WIDTH / bits_per_output;
 
@@ -447,12 +512,13 @@ bool AlgorithmHost::check_convergence_and_update(
                 ap_uint<bits_per_output> packed_output =
                     word.range(bit_offset + bits_per_output - 1, bit_offset);
 
+                // TODO: maybe buggy
                 if (packed_output == 0)
                     continue; // Skip padding
 
                 ap_uint<NODE_ID_BITWIDTH> local_id_pod =
                     packed_output.range(NODE_ID_BITWIDTH - 1, 0);
-                ap_uint<DISTANCE_BITWIDTH> dist_pod =
+                ap_fixed_pod_t dist_pod =
                     packed_output.range(bits_per_output - 1, NODE_ID_BITWIDTH);
 
                 int local_id = local_id_pod;
@@ -465,8 +531,12 @@ bool AlgorithmHost::check_convergence_and_update(
 
                 distance_t dist_24b =
                     *reinterpret_cast<distance_t *>(&dist_pod);
-                ap_fixed<32, 16> new_dist =
+                distance_t new_dist =
                     dist_24b; // Widen for host-side master copy
+
+                printf("[BIG] Unpacked result: global_id=%d, new_dist=%f\n",
+                       global_id, (float)new_dist);
+                fflush(nullptr);
 
                 if (min_distances.find(global_id) == min_distances.end() ||
                     new_dist < min_distances[global_id]) {
@@ -490,7 +560,7 @@ bool AlgorithmHost::check_convergence_and_update(
 
                 ap_uint<NODE_ID_BITWIDTH> local_id_pod =
                     packed_output.range(NODE_ID_BITWIDTH - 1, 0);
-                ap_uint<DISTANCE_BITWIDTH> dist_pod =
+                ap_fixed_pod_t dist_pod =
                     packed_output.range(bits_per_output - 1, NODE_ID_BITWIDTH);
 
                 int local_id = local_id_pod;
@@ -503,7 +573,11 @@ bool AlgorithmHost::check_convergence_and_update(
 
                 distance_t dist_24b =
                     *reinterpret_cast<distance_t *>(&dist_pod);
-                ap_fixed<32, 16> new_dist = dist_24b;
+                distance_t new_dist = dist_24b;
+
+                printf("[LITTLE] Unpacked result: global_id=%d, new_dist=%f\n",
+                       global_id, (float)new_dist);
+                fflush(nullptr);
 
                 if (min_distances.find(global_id) == min_distances.end() ||
                     new_dist < min_distances[global_id]) {

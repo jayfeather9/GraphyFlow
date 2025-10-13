@@ -41,7 +41,7 @@ class AlgorithmHost {
     int m_num_vertices;
 
     // Host-side master distance vector using original (global) vertex IDs
-    std::vector<ap_fixed<32, 16>> h_distances;
+    std::vector<distance_t> h_distances;
 
     // Buffer containers for big kernels (one entry per kernel instance)
     std::vector<KernelBuffers> big_kernel_buffers;

@@ -24,12 +24,13 @@ LOOP_NPL_S0_READ:
         for (int j = 0; j < num_dists_per_word; j++) {
 #pragma HLS UNROLL
             if (nodes_read_s0 < num_nodes) {
-                burst.data[burst_idx++] = wide_word.range(
+                burst.data[burst_idx] = wide_word.range(
                     (j + 1) * DISTANCE_BITWIDTH - 1, j * DISTANCE_BITWIDTH);
                 printf("[BIG]Loaded node distance: %f\n",
                        (float)*reinterpret_cast<distance_t *>(
-                           &burst.data[burst_idx - 1]));
+                           &burst.data[burst_idx]));
                 fflush(NULL);
+                burst_idx++;
                 nodes_read_s0++;
                 if (burst_idx == PE_NUM) {
                     node_distance_burst_stream_0.write(burst);
@@ -49,7 +50,6 @@ LOOP_NPL_S1_READ:
     for (int i = 0; i < num_wide_reads; i++) {
 #pragma HLS PIPELINE II = 1
         bus_word_t wide_word = node_distances_ddr[i];
-        node_distance_burst_t burst;
 
     LOOP_NPL_S1_UNPACK:
         for (int j = 0; j < num_dists_per_word; j++) {
@@ -195,8 +195,10 @@ LOOP_FOR_12:
             int32_t src_dist;
             src_dist = node_distance_burst.data[pe_idx];
             end_edge_idx = src_offsets_cache_stream.read();
-            printf("[BIG]Node %d with src_dist=%d has edges from %d to %d.\n",
-                   base_idx + pe_idx, src_dist, start_edge_idx, end_edge_idx);
+            printf("[BIG]Node %d with src_dist=%f has edges from %d to %d.\n",
+                   base_idx + pe_idx,
+                   (float)*reinterpret_cast<distance_t *>(&src_dist),
+                   start_edge_idx, end_edge_idx);
             fflush(NULL);
         LOOP_FOR_10:
             for (uint32_t e_idx = start_edge_idx; e_idx < end_edge_idx;
@@ -216,8 +218,9 @@ LOOP_FOR_12:
                 current_batch.src_distances[current_batch.end_pos] = src_dist;
                 current_batch.dsts[current_batch.end_pos] = edge.node_id;
                 printf(
-                    "[BIG]Dispatching edge: src_dist=%d, dst=%d, weight=%f\n",
-                    src_dist, edge.node_id,
+                    "[BIG]Dispatching edge: src_dist=%f, dst=%d, weight=%f\n",
+                    (float)*reinterpret_cast<distance_t *>(&src_dist),
+                    edge.node_id,
                     (float)*reinterpret_cast<distance_t *>(&edge.prop));
                 fflush(NULL);
 
@@ -276,13 +279,11 @@ static void final_writeback(hls::stream<internal_end_data_batch_t> &in_stream,
     int pack_count = 0;
     int ddr_addr = 0;
 
-    bool done = false;
 LOOP_WRITEBACK_MAIN:
-    while (!done) {
+    while (true) {
 #pragma HLS PIPELINE II = 1
         internal_end_data_batch_t in_batch;
         if (in_stream.read_nb(in_batch)) {
-            done = in_batch.end_flag;
 
         LOOP_WRITEBACK_PACK:
             for (int i = 0; i < in_batch.end_pos; i++) {
@@ -292,6 +293,12 @@ LOOP_WRITEBACK_MAIN:
                 packed_output.range(NODE_ID_BITWIDTH - 1, 0) = item.node_id;
                 packed_output.range(bits_per_output - 1, NODE_ID_BITWIDTH) =
                     item.prop;
+                distance_t tmp_dist =
+                    packed_output.range(bits_per_output - 1, NODE_ID_BITWIDTH);
+                printf("[BIG]Packing output: node_id=%d, distance=%f\n",
+                       (int)packed_output.range(NODE_ID_BITWIDTH - 1, 0),
+                       (float)tmp_dist);
+                fflush(NULL);
 
                 int start_bit = pack_count * bits_per_output;
                 write_word.range(start_bit + bits_per_output - 1, start_bit) =
@@ -299,16 +306,26 @@ LOOP_WRITEBACK_MAIN:
 
                 pack_count++;
                 if (pack_count == outputs_per_word) {
+                    printf("[BIG] Writing packed word to DDR at address %d\n",
+                           ddr_addr);
+                    fflush(NULL);
                     out_ddr[ddr_addr++] = write_word;
                     write_word = 0;
                     pack_count = 0;
                 }
+            }
+
+            if (in_batch.end_flag) {
+                break;
             }
         }
     }
 
     // Write the final partial word if it exists
     if (pack_count > 0) {
+        printf("[BIG] Writing final packed word to DDR at address %d\n",
+               ddr_addr);
+        fflush(NULL);
         out_ddr[ddr_addr++] = write_word;
     }
 }
@@ -796,7 +813,7 @@ LOOP_DRAIN_ADDR:
             for (int pe = 0; pe < PE_NUM; pe++) {
 #pragma HLS UNROLL
                 write_positions[pe] = prefix_sum;
-                prefix_sum = (prefix_sum + (prop_valid[pe] ? 1 : 0));
+                prefix_sum = (prefix_sum + (prop_valid[pe][key] ? 1 : 0));
             }
 
             if (prefix_sum == 0)
