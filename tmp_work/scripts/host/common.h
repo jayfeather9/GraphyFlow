@@ -3,8 +3,12 @@
 
 #include <limits>
 #include <string>
-#include <vector>
 #include <unordered_map>
+#include <vector>
+
+#include <ap_fixed.h>
+#include <ap_int.h>
+#include <stdint.h>
 
 #ifndef __SYNTHESIS__
 #include "xcl2.h"
@@ -15,9 +19,16 @@
 // They are used by the host for data packing and by the kernel for synthesis.
 #define NODE_ID_BITWIDTH 24
 #define DISTANCE_BITWIDTH 24
-#define DISTANCE_INTEGER_PART 8 // Number of bits for the integer part of distance
+#define DISTANCE_INTEGER_PART                                                  \
+    8 // Number of bits for the integer part of distance
 #define WEIGHT_BITWIDTH 24
-#define WEIGHT_INTEGER_PART 8   // Number of bits for the integer part of weight
+#define WEIGHT_INTEGER_PART 8 // Number of bits for the integer part of weight
+
+// --- Host-side definition for the AXI bus word ---
+#define AXI_BUS_WIDTH 512
+#ifndef __SYNTHESIS__
+typedef ap_uint<AXI_BUS_WIDTH> bus_word_t;
+#endif
 
 // A constant representing infinity for distance initialization
 const int INFINITY_DIST = 16384;
@@ -44,9 +55,6 @@ struct GraphCSR {
 #define BATCH_TYPE edge_des_burst_t
 #define EDGE_TYPE edge_t
 #define NODE_TYPE node_t
-
-#include <ap_fixed.h>
-#include <stdint.h>
 
 #define PE_NUM 8
 
