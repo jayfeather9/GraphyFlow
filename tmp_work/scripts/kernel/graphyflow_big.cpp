@@ -192,7 +192,7 @@ LOOP_FOR_12:
             if (base_idx + pe_idx >= num_nodes) {
                 break;
             }
-            int32_t src_dist;
+            ap_fixed_pod_t src_dist;
             src_dist = node_distance_burst.data[pe_idx];
             end_edge_idx = src_offsets_cache_stream.read();
             printf("[BIG]Node %d with src_dist=%f has edges from %d to %d.\n",

@@ -212,6 +212,10 @@ void AlgorithmHost::transfer_data_to_fpga(const PartitionContainer &container) {
                     temp_byte_buffer.insert(temp_byte_buffer.end(),
                                             padding_needed,
                                             0); // 插入0作为 padding
+                    printf(
+                        "[BIG]Inserted %zu bytes of padding before node %d\n",
+                        padding_needed, j);
+                    fflush(nullptr);
                 }
 
                 int global_id = p_graph.vtx_map_rev.at(j);
@@ -224,6 +228,7 @@ void AlgorithmHost::transfer_data_to_fpga(const PartitionContainer &container) {
 
                 printf("[BIG]Packed node %d with distance %f\n", global_id,
                        (float)dist_val);
+                printf("At byte buffer size: %zu\n", temp_byte_buffer.size());
                 fflush(nullptr);
             }
             big_packed_node_props[i].resize(
