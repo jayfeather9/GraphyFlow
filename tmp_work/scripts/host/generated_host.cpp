@@ -170,12 +170,6 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container,
               << std::endl;
 }
 
-// --- PHASE 2: DATA TRANSFER TO FPGA ---
-// REWRITTEN: Implements packing logic to convert host data into 512-bit words
-// for the kernel.
-// 请确保在 generated_host.cpp 文件顶部添加此头文件
-#include <cstring>
-
 void AlgorithmHost::transfer_data_to_fpga(const PartitionContainer &container) {
     cl_int err;
     std::cout << "--- [Host] Phase 2: Packing and transferring data to HBM ---"
@@ -196,165 +190,239 @@ void AlgorithmHost::transfer_data_to_fpga(const PartitionContainer &container) {
     std::vector<std::vector<bus_word_t, aligned_allocator<bus_word_t>>>
         little_packed_offsets(little_kernel_buffers.size());
 
-    // --- 2.1: 为 BIG kernels 手动序列化数据 ---
+    const size_t bytes_per_word = AXI_BUS_WIDTH / 8;
+
+    // --- 2.1: 为 BIG kernels 手动序列化数据 (带 Padding) ---
     for (size_t i = 0; i < big_kernel_buffers.size(); ++i) {
         const auto &p_graph = container.SPs[i].partitioned_graph;
-        const size_t bytes_per_word = AXI_BUS_WIDTH / 8;
 
         // --- Pack node distances (ap_fixed<24,8> -> 3 bytes) ---
-        const size_t bytes_per_dist = DISTANCE_BITWIDTH / 8;
-        size_t total_node_bytes = p_graph.num_vertices * bytes_per_dist;
-        big_packed_node_props[i].resize(
-            (total_node_bytes + bytes_per_word - 1) / bytes_per_word, 0);
-        char *node_props_ptr =
-            reinterpret_cast<char *>(big_packed_node_props[i].data());
+        {
+            const size_t bytes_per_dist = DISTANCE_BITWIDTH / 8;
+            std::vector<char> temp_byte_buffer;
 
-        for (int j = 0; j < p_graph.num_vertices; ++j) {
-            int global_id = p_graph.vtx_map_rev.at(j);
-            distance_t dist_val = h_distances[global_id];
-            // 直接将 ap_fixed 的 3 个字节内容拷贝到目标位置
-            std::memcpy(node_props_ptr + (j * bytes_per_dist), &dist_val,
-                        bytes_per_dist);
-            printf("[BIG]Packed node %d with distance %f\n", global_id,
-                   (float)dist_val);
-            fflush(nullptr);
+            for (int j = 0; j < p_graph.num_vertices; ++j) {
+                // **Padding Logic**: 检查加上新数据后是否会跨越 64 字节边界
+                if ((temp_byte_buffer.size() % bytes_per_word) +
+                        bytes_per_dist >
+                    bytes_per_word) {
+                    size_t padding_needed =
+                        bytes_per_word -
+                        (temp_byte_buffer.size() % bytes_per_word);
+                    temp_byte_buffer.insert(temp_byte_buffer.end(),
+                                            padding_needed,
+                                            0); // 插入0作为 padding
+                }
+
+                int global_id = p_graph.vtx_map_rev.at(j);
+                distance_t dist_val = h_distances[global_id];
+
+                const char *data_ptr =
+                    reinterpret_cast<const char *>(&dist_val);
+                temp_byte_buffer.insert(temp_byte_buffer.end(), data_ptr,
+                                        data_ptr + bytes_per_dist);
+
+                printf("[BIG]Packed node %d with distance %f\n", global_id,
+                       (float)dist_val);
+                fflush(nullptr);
+            }
+            big_packed_node_props[i].resize(
+                (temp_byte_buffer.size() + bytes_per_word - 1) / bytes_per_word,
+                0);
+            std::memcpy(big_packed_node_props[i].data(),
+                        temp_byte_buffer.data(), temp_byte_buffer.size());
         }
 
         // --- Pack edge properties (node_id<24b> + weight<24b> -> 6 bytes) ---
-        const size_t bytes_per_edge = (NODE_ID_BITWIDTH + WEIGHT_BITWIDTH) / 8;
-        size_t total_edge_bytes = p_graph.num_edges * bytes_per_edge;
-        big_packed_edge_props[i].resize(
-            (total_edge_bytes + bytes_per_word - 1) / bytes_per_word, 0);
-        char *edge_props_ptr =
-            reinterpret_cast<char *>(big_packed_edge_props[i].data());
+        {
+            const size_t bytes_per_edge =
+                (NODE_ID_BITWIDTH + WEIGHT_BITWIDTH) / 8;
+            std::vector<char> temp_byte_buffer;
 
-        for (size_t j = 0; j < p_graph.num_edges; ++j) {
-            char edge_bytes[bytes_per_edge]; // 为单个边创建一个临时的 char 数组
-
-            // 1. 手动处理 node_id (int -> 3 bytes)
-            // p_graph.columns 是 std::vector<int>，我们只取低24位
-            uint32_t dest_id = p_graph.columns[j];
-            edge_bytes[0] = (dest_id >> 0) & 0xFF;
-            edge_bytes[1] = (dest_id >> 8) & 0xFF;
-            edge_bytes[2] = (dest_id >> 16) & 0xFF;
-
-            // 2. 处理 weight (ap_fixed<24,8> -> 3 bytes)
-            weight_t weight_val = (float)p_graph.weights[j];
-            std::memcpy(edge_bytes + 3, &weight_val, (WEIGHT_BITWIDTH / 8));
-
-            // 3. 将临时的 char 数组拷贝到主缓冲区
-            std::memcpy(edge_props_ptr + (j * bytes_per_edge), edge_bytes,
-                        bytes_per_edge);
-
-            // output the edge src dst weight (global id)
-            uint32_t src_global_id = -1;
-            uint32_t dst_global_id = p_graph.vtx_map_rev.at(p_graph.columns[j]);
-            // iterate through offsets to find the src_global_id
-            for (int v = 0; v < p_graph.num_vertices; ++v) {
-                if (p_graph.offsets[v] <= j && j < p_graph.offsets[v + 1]) {
-                    src_global_id = p_graph.vtx_map_rev.at(v);
-                    break;
+            for (size_t j = 0; j < p_graph.num_edges; ++j) {
+                // **Padding Logic**
+                if ((temp_byte_buffer.size() % bytes_per_word) +
+                        bytes_per_edge >
+                    bytes_per_word) {
+                    size_t padding_needed =
+                        bytes_per_word -
+                        (temp_byte_buffer.size() % bytes_per_word);
+                    temp_byte_buffer.insert(temp_byte_buffer.end(),
+                                            padding_needed, 0);
                 }
+
+                char edge_bytes[bytes_per_edge];
+                uint32_t dest_id = p_graph.columns[j];
+                edge_bytes[0] = (dest_id >> 0) & 0xFF;
+                edge_bytes[1] = (dest_id >> 8) & 0xFF;
+                edge_bytes[2] = (dest_id >> 16) & 0xFF;
+
+                weight_t weight_val = (float)p_graph.weights[j];
+                std::memcpy(edge_bytes + 3, &weight_val, (WEIGHT_BITWIDTH / 8));
+
+                temp_byte_buffer.insert(temp_byte_buffer.end(), edge_bytes,
+                                        edge_bytes + bytes_per_edge);
+
+                // 调试日志
+                uint32_t src_global_id = 0;
+                uint32_t dst_global_id =
+                    p_graph.vtx_map_rev.at(p_graph.columns[j]);
+                for (int v = 0; v < p_graph.num_vertices; ++v) {
+                    if (p_graph.offsets[v] <= j && j < p_graph.offsets[v + 1]) {
+                        src_global_id = p_graph.vtx_map_rev.at(v);
+                        break;
+                    }
+                }
+                printf("[BIG]Packed edge: src=%d, dst=%d, weight=%f\n",
+                       src_global_id, dst_global_id, (float)weight_val);
+                fflush(nullptr);
             }
-            printf("[BIG]Packed edge: src=%d, dst=%d, weight=%f\n",
-                   src_global_id, dst_global_id,
-                   (float)*reinterpret_cast<weight_t *>(edge_bytes + 3));
-            fflush(nullptr);
+            big_packed_edge_props[i].resize(
+                (temp_byte_buffer.size() + bytes_per_word - 1) / bytes_per_word,
+                0);
+            std::memcpy(big_packed_edge_props[i].data(),
+                        temp_byte_buffer.data(), temp_byte_buffer.size());
         }
 
         // --- Pack offsets (int32_t -> 4 bytes) ---
-        const size_t bytes_per_offset = sizeof(int32_t);
-        size_t total_offset_bytes =
-            (p_graph.num_vertices + 1) * bytes_per_offset;
-        big_packed_offsets[i].resize(
-            (total_offset_bytes + bytes_per_word - 1) / bytes_per_word, 0);
-        char *offsets_ptr =
-            reinterpret_cast<char *>(big_packed_offsets[i].data());
+        {
+            const size_t bytes_per_offset = sizeof(int32_t);
+            std::vector<char> temp_byte_buffer;
 
-        for (int j = 0; j < p_graph.num_vertices + 1; ++j) {
-            int32_t offset_val = p_graph.offsets[j];
-            std::memcpy(offsets_ptr + (j * bytes_per_offset), &offset_val,
-                        bytes_per_offset);
+            for (int j = 0; j < p_graph.num_vertices + 1; ++j) {
+                // **Padding Logic**
+                if ((temp_byte_buffer.size() % bytes_per_word) +
+                        bytes_per_offset >
+                    bytes_per_word) {
+                    size_t padding_needed =
+                        bytes_per_word -
+                        (temp_byte_buffer.size() % bytes_per_word);
+                    temp_byte_buffer.insert(temp_byte_buffer.end(),
+                                            padding_needed, 0);
+                }
 
-            // 调试日志
-            int word_idx = (j * bytes_per_offset) / bytes_per_word;
-            int bit_offset = ((j * bytes_per_offset) % bytes_per_word) * 8;
-            // printf("[BIG]Packed offset %d into word %d at bit %d.\n",
-            // offset_val, word_idx, bit_offset); fflush(nullptr);
+                int32_t offset_val = p_graph.offsets[j];
+                const char *data_ptr =
+                    reinterpret_cast<const char *>(&offset_val);
+                temp_byte_buffer.insert(temp_byte_buffer.end(), data_ptr,
+                                        data_ptr + bytes_per_offset);
+            }
+            big_packed_offsets[i].resize(
+                (temp_byte_buffer.size() + bytes_per_word - 1) / bytes_per_word,
+                0);
+            std::memcpy(big_packed_offsets[i].data(), temp_byte_buffer.data(),
+                        temp_byte_buffer.size());
         }
     }
 
-    // --- 2.2: 为 LITTLE kernels 手动序列化数据 (逻辑同上) ---
+    // --- 2.2: 为 LITTLE kernels 手动序列化数据 (带 Padding) ---
     for (size_t i = 0; i < little_kernel_buffers.size(); ++i) {
         const auto &p_graph = container.DPs[i].partitioned_graph;
-        const size_t bytes_per_word = AXI_BUS_WIDTH / 8;
 
-        const size_t bytes_per_dist = DISTANCE_BITWIDTH / 8;
-        size_t total_node_bytes = p_graph.num_vertices * bytes_per_dist;
-        little_packed_node_props[i].resize(
-            (total_node_bytes + bytes_per_word - 1) / bytes_per_word, 0);
-        char *node_props_ptr =
-            reinterpret_cast<char *>(little_packed_node_props[i].data());
+        // --- Pack node distances (ap_fixed<24,8> -> 3 bytes) ---
+        {
+            const size_t bytes_per_dist = DISTANCE_BITWIDTH / 8;
+            std::vector<char> temp_byte_buffer;
 
-        for (int j = 0; j < p_graph.num_vertices; ++j) {
-            int global_id = p_graph.vtx_map_rev.at(j);
-            distance_t dist_val = h_distances[global_id];
-            std::memcpy(node_props_ptr + (j * bytes_per_dist), &dist_val,
-                        bytes_per_dist);
-            printf("[LITTLE]Packed node %d with distance %f\n", global_id,
-                   (float)dist_val);
-            fflush(nullptr);
-        }
-
-        const size_t bytes_per_edge = (NODE_ID_BITWIDTH + WEIGHT_BITWIDTH) / 8;
-        size_t total_edge_bytes = p_graph.num_edges * bytes_per_edge;
-        little_packed_edge_props[i].resize(
-            (total_edge_bytes + bytes_per_word - 1) / bytes_per_word, 0);
-        char *edge_props_ptr =
-            reinterpret_cast<char *>(little_packed_edge_props[i].data());
-
-        for (size_t j = 0; j < p_graph.num_edges; ++j) {
-            char edge_bytes[bytes_per_edge];
-            uint32_t dest_id = p_graph.columns[j];
-            edge_bytes[0] = (dest_id >> 0) & 0xFF;
-            edge_bytes[1] = (dest_id >> 8) & 0xFF;
-            edge_bytes[2] = (dest_id >> 16) & 0xFF;
-            weight_t weight_val = (float)p_graph.weights[j];
-            std::memcpy(edge_bytes + 3, &weight_val, (WEIGHT_BITWIDTH / 8));
-            std::memcpy(edge_props_ptr + (j * bytes_per_edge), edge_bytes,
-                        bytes_per_edge);
-
-            uint32_t src_global_id = -1;
-            uint32_t dst_global_id = p_graph.vtx_map_rev.at(p_graph.columns[j]);
-            for (int v = 0; v < p_graph.num_vertices; ++v) {
-                if (p_graph.offsets[v] <= j && j < p_graph.offsets[v + 1]) {
-                    src_global_id = p_graph.vtx_map_rev.at(v);
-                    break;
+            for (int j = 0; j < p_graph.num_vertices; ++j) {
+                if ((temp_byte_buffer.size() % bytes_per_word) +
+                        bytes_per_dist >
+                    bytes_per_word) {
+                    size_t padding_needed =
+                        bytes_per_word -
+                        (temp_byte_buffer.size() % bytes_per_word);
+                    temp_byte_buffer.insert(temp_byte_buffer.end(),
+                                            padding_needed, 0);
                 }
+                int global_id = p_graph.vtx_map_rev.at(j);
+                distance_t dist_val = h_distances[global_id];
+                const char *data_ptr =
+                    reinterpret_cast<const char *>(&dist_val);
+                temp_byte_buffer.insert(temp_byte_buffer.end(), data_ptr,
+                                        data_ptr + bytes_per_dist);
+                printf("[LITTLE]Packed node %d with distance %f\n", global_id,
+                       (float)dist_val);
+                fflush(nullptr);
             }
-            printf("[LITTLE]Packed edge: src=%d, dst=%d, weight=%f\n",
-                   src_global_id, dst_global_id,
-                   (float)*reinterpret_cast<weight_t *>(edge_bytes + 3));
-            fflush(nullptr);
+            little_packed_node_props[i].resize(
+                (temp_byte_buffer.size() + bytes_per_word - 1) / bytes_per_word,
+                0);
+            std::memcpy(little_packed_node_props[i].data(),
+                        temp_byte_buffer.data(), temp_byte_buffer.size());
         }
 
-        const size_t bytes_per_offset = sizeof(int32_t);
-        size_t total_offset_bytes =
-            (p_graph.num_vertices + 1) * bytes_per_offset;
-        little_packed_offsets[i].resize(
-            (total_offset_bytes + bytes_per_word - 1) / bytes_per_word, 0);
-        char *offsets_ptr =
-            reinterpret_cast<char *>(little_packed_offsets[i].data());
+        // --- Pack edge properties (node_id<24b> + weight<24b> -> 6 bytes) ---
+        {
+            const size_t bytes_per_edge =
+                (NODE_ID_BITWIDTH + WEIGHT_BITWIDTH) / 8;
+            std::vector<char> temp_byte_buffer;
 
-        for (int j = 0; j < p_graph.num_vertices + 1; ++j) {
-            int32_t offset_val = p_graph.offsets[j];
-            std::memcpy(offsets_ptr + (j * bytes_per_offset), &offset_val,
-                        bytes_per_offset);
+            for (size_t j = 0; j < p_graph.num_edges; ++j) {
+                if ((temp_byte_buffer.size() % bytes_per_word) +
+                        bytes_per_edge >
+                    bytes_per_word) {
+                    size_t padding_needed =
+                        bytes_per_word -
+                        (temp_byte_buffer.size() % bytes_per_word);
+                    temp_byte_buffer.insert(temp_byte_buffer.end(),
+                                            padding_needed, 0);
+                }
+                char edge_bytes[bytes_per_edge];
+                uint32_t dest_id = p_graph.columns[j];
+                edge_bytes[0] = (dest_id >> 0) & 0xFF;
+                edge_bytes[1] = (dest_id >> 8) & 0xFF;
+                edge_bytes[2] = (dest_id >> 16) & 0xFF;
+                weight_t weight_val = (float)p_graph.weights[j];
+                std::memcpy(edge_bytes + 3, &weight_val, (WEIGHT_BITWIDTH / 8));
+                temp_byte_buffer.insert(temp_byte_buffer.end(), edge_bytes,
+                                        edge_bytes + bytes_per_edge);
 
-            int word_idx = (j * bytes_per_offset) / bytes_per_word;
-            int bit_offset = ((j * bytes_per_offset) % bytes_per_word) * 8;
-            // printf("[LITTLE]Packed offset %d into word %d at bit %d.\n",
-            // offset_val, word_idx, bit_offset); fflush(nullptr);
+                uint32_t src_global_id = 0;
+                uint32_t dst_global_id =
+                    p_graph.vtx_map_rev.at(p_graph.columns[j]);
+                for (int v = 0; v < p_graph.num_vertices; ++v) {
+                    if (p_graph.offsets[v] <= j && j < p_graph.offsets[v + 1]) {
+                        src_global_id = p_graph.vtx_map_rev.at(v);
+                        break;
+                    }
+                }
+                printf("[LITTLE]Packed edge: src=%d, dst=%d, weight=%f\n",
+                       src_global_id, dst_global_id, (float)weight_val);
+                fflush(nullptr);
+            }
+            little_packed_edge_props[i].resize(
+                (temp_byte_buffer.size() + bytes_per_word - 1) / bytes_per_word,
+                0);
+            std::memcpy(little_packed_edge_props[i].data(),
+                        temp_byte_buffer.data(), temp_byte_buffer.size());
+        }
+
+        // --- Pack offsets (int32_t -> 4 bytes) ---
+        {
+            const size_t bytes_per_offset = sizeof(int32_t);
+            std::vector<char> temp_byte_buffer;
+
+            for (int j = 0; j < p_graph.num_vertices + 1; ++j) {
+                if ((temp_byte_buffer.size() % bytes_per_word) +
+                        bytes_per_offset >
+                    bytes_per_word) {
+                    size_t padding_needed =
+                        bytes_per_word -
+                        (temp_byte_buffer.size() % bytes_per_word);
+                    temp_byte_buffer.insert(temp_byte_buffer.end(),
+                                            padding_needed, 0);
+                }
+                int32_t offset_val = p_graph.offsets[j];
+                const char *data_ptr =
+                    reinterpret_cast<const char *>(&offset_val);
+                temp_byte_buffer.insert(temp_byte_buffer.end(), data_ptr,
+                                        data_ptr + bytes_per_offset);
+            }
+            little_packed_offsets[i].resize(
+                (temp_byte_buffer.size() + bytes_per_word - 1) / bytes_per_word,
+                0);
+            std::memcpy(little_packed_offsets[i].data(),
+                        temp_byte_buffer.data(), temp_byte_buffer.size());
         }
     }
 
@@ -372,13 +440,6 @@ void AlgorithmHost::transfer_data_to_fpga(const PartitionContainer &container) {
                            big_kernel_buffers[i].src_offsets_buf, CL_FALSE, 0,
                            big_packed_offsets[i].size() * sizeof(bus_word_t),
                            big_packed_offsets[i].data()));
-        printf("[BIG] Enqueued data transfer for kernel %zu.\n", i);
-        printf("[BIG] Node props size: %zu words, Edge props size: %zu words, "
-               "Offsets size: %zu words.\n",
-               big_packed_node_props[i].size(), big_packed_edge_props[i].size(),
-               big_packed_offsets[i].size());
-        printf("[BIG] bus size: %zu bytes.\n", sizeof(bus_word_t));
-        fflush(NULL);
     }
 
     for (size_t i = 0; i < little_kernel_buffers.size(); ++i) {
