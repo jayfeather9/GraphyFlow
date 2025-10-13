@@ -27,6 +27,7 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
 
     for (iter = 0; iter < max_iterations; ++iter) {
 
+        double current_kernel_time_sec = 0;
         algo_host.transfer_data_to_fpga(partition_container);
         std::vector<cl::Event> big_kernel_events(acc.num_big_krnl),
             little_kernel_events(acc.num_little_krnl);
@@ -50,8 +51,8 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
             event.getProfilingInfo(CL_PROFILING_COMMAND_START, &start);
             event.getProfilingInfo(CL_PROFILING_COMMAND_END, &end);
             double iteration_time_ns = end - start;
-            total_kernel_time_sec =
-                std::max(total_kernel_time_sec, iteration_time_ns * 1.0e-9);
+            current_kernel_time_sec =
+                std::max(current_kernel_time_sec, iteration_time_ns * 1.0e-9);
             double mteps = (double)partition_container.SPs[cnt].num_edges /
                            (iteration_time_ns * 1.0e-9) / 1.0e6;
 
@@ -66,8 +67,8 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
             event.getProfilingInfo(CL_PROFILING_COMMAND_START, &start);
             event.getProfilingInfo(CL_PROFILING_COMMAND_END, &end);
             double iteration_time_ns = end - start;
-            total_kernel_time_sec =
-                std::max(total_kernel_time_sec, iteration_time_ns * 1.0e-9);
+            current_kernel_time_sec =
+                std::max(current_kernel_time_sec, iteration_time_ns * 1.0e-9);
             double mteps = (double)partition_container.DPs[cnt].num_edges /
                            (iteration_time_ns * 1.0e-9) / 1.0e6;
 
@@ -77,7 +78,8 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
                       << "Throughput = " << mteps << " MTEPS" << std::endl;
         }
 
-        double iteration_time_ns = total_kernel_time_sec * 1.0e9;
+        double iteration_time_ns = current_kernel_time_sec * 1.0e9;
+        total_kernel_time_sec += current_kernel_time_sec;
         double mteps =
             (double)graph.num_edges / (iteration_time_ns * 1.0e-9) / 1.0e6;
 

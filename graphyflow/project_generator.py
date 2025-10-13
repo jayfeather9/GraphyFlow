@@ -10,16 +10,16 @@ from .backend_manager import BackendManager
 
 # --- CONFIGURATION SECTION ---
 # You can change the number of kernels and their HBM mapping here.
-NUM_BIG_KERNELS = 2
-NUM_LITTLE_KERNELS = 2
+NUM_BIG_KERNELS = 8
+NUM_LITTLE_KERNELS = 0
 
 # HBM channel IDs for Big Kernels. The list length must match NUM_BIG_KERNELS.
-big_kernel_hbm_input_id = [0, 2]
-big_kernel_hbm_output_id = [1, 3]
+big_kernel_hbm_input_id = [0, 2, 4, 6, 8, 10, 12, 14]
+big_kernel_hbm_output_id = [1, 3, 5, 7, 9, 11, 13, 15]
 
 # HBM channel IDs for Little Kernels. The list length must match NUM_LITTLE_KERNELS.
-little_kernel_hbm_input_id = [4, 6]
-little_kernel_hbm_output_id = [5, 7]
+little_kernel_hbm_input_id = []
+little_kernel_hbm_output_id = []
 # --- END CONFIGURATION SECTION ---
 
 
