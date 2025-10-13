@@ -39,3 +39,5 @@ TODO: replace all "struct_ibu_14_t" / "struct_sbu_19_t" in backend_mem_manager.p
 注意：受制于数据结构uint16_t大小，partition被分配的node id最大65535
 
 现在的mem manager相关数据结构基本都是写死的，访问结构也是写死的，看看能不能跑pr和别的图算法吧，不能的话再改
+
+改了kernel，现在还需要叫gemini改一下host

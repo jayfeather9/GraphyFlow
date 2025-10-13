@@ -13,15 +13,36 @@
 #define MAX_NUM 32768
 #define L 4
 
-#define AXI_BUS_WIDTH 512
-#define DATA_TYPE_WIDTH 32
-#define NUM_WORDS_PER_BUS (AXI_BUS_WIDTH / DATA_TYPE_WIDTH)
-// --- Graph Type Definitions ---
-typedef uint32_t edge_id_t;
-typedef uint32_t node_id_t;
-typedef uint32_t ap_fixed_pod_t;
+// --- New Bitwidth Definitions for HLS Synthesis ---
+#define NODE_ID_BITWIDTH 24
+#define DISTANCE_BITWIDTH 24
+#define DISTANCE_INTEGER_PART 8
+#define WEIGHT_BITWIDTH 24
+#define WEIGHT_INTEGER_PART 8
 
-// --- Struct Type Definitions ---
+// --- New Memory Word and Bus Definitions ---
+#define AXI_BUS_WIDTH 512
+#define DATA_TYPE_WIDTH 32 // Kept from original for some legacy calculations, may be removed later.
+#define NUM_WORDS_PER_BUS (AXI_BUS_WIDTH / DATA_TYPE_WIDTH)
+
+#define REDUCE_MEM_WIDTH 72
+typedef ap_uint<AXI_BUS_WIDTH> bus_word_t;
+typedef ap_uint<REDUCE_MEM_WIDTH> reduce_word_t;
+
+// --- New Packing-related Constants ---
+// Number of distances that can be packed into a single reduce memory word.
+#define DISTANCES_PER_REDUCE_WORD (REDUCE_MEM_WIDTH / DISTANCE_BITWIDTH)
+
+
+// --- Redefinition of Core Graph Types for HLS ---
+// These typedefs override the standard integer types from common.h for synthesis.
+typedef ap_uint<NODE_ID_BITWIDTH> node_id_t;
+typedef ap_uint<32> edge_id_t; // edge_id_t is not customized yet, keep as is.
+typedef ap_uint<DISTANCE_BITWIDTH> ap_fixed_pod_t; // Used to hold bit representation of ap_fixed types
+
+// --- Struct Type Definitions (UNCHANGED) ---
+// The definitions of these structs remain the same, but the underlying
+// types (node_id_t, ap_fixed_pod_t) are now custom-width, not uint32_t.
 struct __attribute__((packed)) struct_ana_3_t {
     ap_fixed_pod_t ele_0;
     node_id_t ele_1;

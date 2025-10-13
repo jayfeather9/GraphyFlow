@@ -10,6 +10,15 @@
 #include "xcl2.h"
 #endif
 
+// --- Customizable Bitwidth Macros ---
+// These macros define the bitwidths for core data types.
+// They are used by the host for data packing and by the kernel for synthesis.
+#define NODE_ID_BITWIDTH 24
+#define DISTANCE_BITWIDTH 24
+#define DISTANCE_INTEGER_PART 8 // Number of bits for the integer part of distance
+#define WEIGHT_BITWIDTH 24
+#define WEIGHT_INTEGER_PART 8   // Number of bits for the integer part of weight
+
 // A constant representing infinity for distance initialization
 const int INFINITY_DIST = 16384;
 
