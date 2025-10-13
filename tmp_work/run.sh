@@ -3,9 +3,8 @@
 
 # --- *** 关键修正：使其能够处理不同的目标 *** ---
 TARGET=$1
-DEVICE_NO=${2:-0}  # 默认为设备 0
 EXECUTABLE="graphyflow_host"
-KERNEL="graphyflow"
+XCLBIN_NAME="graphyflow_kernels"
 
 # 默认目标为 sw_emu
 if [ -z "$TARGET" ]; then
@@ -15,7 +14,7 @@ fi
 echo "--- Running for target: $TARGET ---"
 
 # 1. 设置环境变量
-source /home/feiyang/GraphyFlow/output/env.sh
+source /home/feiyang/set_env.sh
 
 if [ "$TARGET" = "sw_emu" ] || [ "$TARGET" = "hw_emu" ]; then
     export XCL_EMULATION_MODE=$TARGET
@@ -30,7 +29,7 @@ fi
 export LD_PRELOAD=/lib/x86_64-linux-gnu/libOpenCL.so.1
 
 # 2. 动态构建 .xclbin 文件路径
-XCLBIN_FILE="./xclbin/${KERNEL}.${TARGET}.xclbin"
+XCLBIN_FILE="./xclbin/${XCLBIN_NAME}.${TARGET}.xclbin"
 if [ ! -f "$XCLBIN_FILE" ]; then
     echo "Error: XCLBIN file not found at '$XCLBIN_FILE'"
     echo "Please make sure the project is built for the target '$TARGET' by running 'make all TARGET=$TARGET'"
@@ -39,4 +38,4 @@ fi
 
 # 3. 运行 host 程序
 DATASET="./graph.txt"
-./${EXECUTABLE} ${XCLBIN_FILE} $DATASET $DEVICE_NO
+./${EXECUTABLE} ${XCLBIN_FILE} $DATASET

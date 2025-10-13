@@ -4,6 +4,7 @@
 #include <limits>
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 #ifndef __SYNTHESIS__
 #include "xcl2.h"
@@ -11,23 +12,11 @@
 
 // A constant representing infinity for distance initialization
 const int INFINITY_DIST = 16384;
-const int PE_NUM = 8;          // Number of Processing Elements
-const int NUM_PARTITIONS = 8; // Number of graph partitions
-const float PARTITION_WEIGHTS[NUM_PARTITIONS] = {1.0, 1.0, 1.0, 1.0, 1.0,
-                                                 1.0, 1.0, 1.0};
 
-typedef uint16_t node_id_t;
-typedef uint16_t edge_id_t;
-
-// Describes a single edge in CSR format for the host and kernel
-struct __attribute__((packed)) edge_descriptor_t {
-    node_id_t dst_id;
-    int32_t weight;
-};
-
-struct __attribute__((packed)) edge_des_burst_t {
-    edge_descriptor_t edges[PE_NUM];
-};
+// --- Graph Type Definitions ---
+typedef uint32_t edge_id_t;
+typedef uint32_t node_id_t;
+typedef uint32_t ap_fixed_pod_t;
 
 // Structure to hold the graph in Compressed Sparse Row (CSR) format
 struct GraphCSR {
@@ -36,9 +25,16 @@ struct GraphCSR {
     std::vector<int> offsets;
     std::vector<int> columns;
     std::vector<int> weights;
-    std::unordered_map<int, int> vtx_map;     // ori id to new id
-    std::unordered_map<int, int> vtx_map_rev; // reverse mapping
+    // Map from original global vertex ID to compressed local ID
+    std::unordered_map<int, int> vtx_map;
+    // Map from compressed local ID to original global vertex ID
+    std::unordered_map<int, int> vtx_map_rev;
 };
+
+#define KERNEL_OUTPUT_BATCH_TYPE KernelOutputBatch
+#define BATCH_TYPE edge_des_burst_t
+#define EDGE_TYPE edge_t
+#define NODE_TYPE node_t
 
 #include <ap_fixed.h>
 #include <stdint.h>
@@ -46,16 +42,22 @@ struct GraphCSR {
 #define PE_NUM 8
 
 // --- Struct Type Definitions ---
-struct __attribute__((packed)) struct_ebu_4_t {
-    edge_id_t data[PE_NUM];
+struct __attribute__((packed)) struct_ana_3_t {
+    ap_fixed_pod_t ele_0;
+    node_id_t ele_1;
+    ap_fixed_pod_t ele_2;
+};
+
+struct __attribute__((packed)) struct_abu_9_t {
+    ap_fixed_pod_t data[PE_NUM];
     bool end_flag;
     uint8_t end_pos;
 };
 
-struct __attribute__((packed)) struct_ini_7_t {
-    int32_t ele_0;
-    node_id_t ele_1;
-    int32_t ele_2;
+struct __attribute__((packed)) struct_nbu_11_t {
+    node_id_t data[PE_NUM];
+    bool end_flag;
+    uint8_t end_pos;
 };
 
 struct __attribute__((packed)) struct_ibu_14_t {
@@ -64,53 +66,80 @@ struct __attribute__((packed)) struct_ibu_14_t {
     uint8_t end_pos;
 };
 
-struct __attribute__((packed)) struct_nbu_16_t {
-    node_id_t data[PE_NUM];
-    bool end_flag;
-    uint8_t end_pos;
-};
-
-struct __attribute__((packed)) struct_in_17_t {
-    int32_t ele_0;
+struct __attribute__((packed)) struct_an_15_t {
+    ap_fixed_pod_t ele_0;
     node_id_t ele_1;
 };
 
-struct __attribute__((packed)) struct_bbu_21_t {
-    bool data[PE_NUM];
+struct __attribute__((packed)) struct_ebu_20_t {
+    edge_id_t data[PE_NUM];
     bool end_flag;
     uint8_t end_pos;
+};
+
+struct __attribute__((packed)) node_with_prop_t {
+    ap_fixed_pod_t prop;
+    node_id_t node_id;
+};
+
+struct __attribute__((packed)) node_distance_burst_t {
+    ap_fixed_pod_t data[PE_NUM];
+};
+
+struct __attribute__((packed)) edge_batch_t {
+    ap_fixed_pod_t weights[PE_NUM];
+    ap_fixed_pod_t src_distances[PE_NUM];
+    node_id_t dsts[PE_NUM];
+    int32_t end_pos;
+    bool end_flag;
+};
+
+struct __attribute__((packed)) node_dist_batch_t {
+    ap_fixed_pod_t data[PE_NUM];
+    uint8_t end_pos;
+    bool end_flag;
 };
 
 struct __attribute__((packed)) KernelOutputData {
     float distance;
-    int32_t id;
+    node_id_t id;
 };
 
-struct __attribute__((packed)) opt_struct_ini_7_t_t {
-    struct_ini_7_t data;
-    bool valid;
-};
-
-struct __attribute__((packed)) struct_sbu_12_t {
-    struct_ini_7_t data[PE_NUM];
+struct __attribute__((packed)) struct_sbu_7_t {
+    struct_ana_3_t data[PE_NUM];
     bool end_flag;
     uint8_t end_pos;
 };
 
-struct __attribute__((packed)) struct_sbu_19_t {
-    struct_in_17_t data[PE_NUM];
+struct __attribute__((packed)) struct_sbu_17_t {
+    struct_an_15_t data[PE_NUM];
     bool end_flag;
     uint8_t end_pos;
 };
 
-struct __attribute__((packed)) kt_pair_141_t {
+struct __attribute__((packed)) internal_end_data_batch_t {
+    node_with_prop_t data[PE_NUM];
+    bool end_flag;
+    uint8_t end_pos;
+};
+
+struct __attribute__((packed)) kt_pair_105_t {
     int32_t key;
-    struct_in_17_t transform;
+    node_with_prop_t transform;
 };
 
-struct __attribute__((packed)) struct_sb_38_t {
-    struct_in_17_t ele_0;
+struct __attribute__((packed)) struct_nb_58_t {
+    node_with_prop_t ele_0;
     bool ele_1;
+};
+
+struct __attribute__((packed)) edge_des_burst_t {
+    node_with_prop_t edges[PE_NUM];
+};
+
+struct __attribute__((packed)) edge_descriptor_batch_t {
+    node_with_prop_t edges[PE_NUM];
+    int32_t end_pos;
 };
 
 struct __attribute__((packed)) KernelOutputBatch {
@@ -119,21 +148,15 @@ struct __attribute__((packed)) KernelOutputBatch {
     uint8_t end_pos;
 };
 
-struct __attribute__((packed)) struct_obu_10_t {
-    opt_struct_ini_7_t_t data[PE_NUM];
+struct __attribute__((packed)) struct_kbu_50_t {
+    kt_pair_105_t data[PE_NUM];
     bool end_flag;
     uint8_t end_pos;
 };
 
-struct __attribute__((packed)) net_wrapper_kt_pair_141_t_t {
-    kt_pair_141_t data;
+struct __attribute__((packed)) net_wrapper_kt_pair_105_t_t {
+    kt_pair_105_t data;
     bool end_flag;
-};
-
-struct __attribute__((packed)) struct_kbu_30_t {
-    kt_pair_141_t data[PE_NUM];
-    bool end_flag;
-    uint8_t end_pos;
 };
 
 #endif // __COMMON_H__
