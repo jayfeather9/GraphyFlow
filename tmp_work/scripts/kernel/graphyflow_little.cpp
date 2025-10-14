@@ -653,7 +653,6 @@ LOOP_AGGREGATE_LITTLE:
 LOOP_DRAIN_LITTLE_KEYS:
     for (int addr = 0; addr < MEM_SIZE; addr++) {
 #pragma HLS PIPELINE II = 1
-        distance_t min_dist;
 
     LOOP_DRAIN_LITTLE_READ:
         for (int pe = 0; pe < PE_NUM; pe++) {
@@ -668,6 +667,7 @@ LOOP_DRAIN_LITTLE_KEYS:
                 break; // Avoid processing out-of-bounds keys
             }
             bool valid_found = false;
+            distance_t min_dist = (distance_t)INFINITY_DIST;
         LOOP_DRAIN_LITTLE_PES:
             for (int pe = 0; pe < PE_NUM; pe++) {
 #pragma HLS UNROLL
@@ -683,7 +683,7 @@ LOOP_DRAIN_LITTLE_KEYS:
                     distance_t dist_fp =
                         *reinterpret_cast<distance_t *>(&dist_pod);
 
-                    if (!valid_found || dist_fp < min_dist) {
+                    if (dist_fp < min_dist) {
                         min_dist = dist_fp;
                         valid_found = true;
                     }

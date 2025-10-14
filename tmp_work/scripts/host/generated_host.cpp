@@ -480,8 +480,8 @@ void AlgorithmHost::update_data(const PartitionContainer &container) {
                 temp_byte_buffer.insert(temp_byte_buffer.end(), data_ptr,
                                         data_ptr + bytes_per_dist);
 
-                // printf("[BIG]Packed node %d with distance %f\n", global_id,
-                //        (float)dist_val);
+                printf("[BIG]Packed node %d with distance %f\n", global_id,
+                       (float)dist_val);
                 // printf("At byte buffer size: %zu\n",
                 // temp_byte_buffer.size()); fflush(nullptr);
             }
@@ -517,9 +517,9 @@ void AlgorithmHost::update_data(const PartitionContainer &container) {
                     reinterpret_cast<const char *>(&dist_val);
                 temp_byte_buffer.insert(temp_byte_buffer.end(), data_ptr,
                                         data_ptr + bytes_per_dist);
-                // printf("[LITTLE]Packed node %d with distance %f\n",
-                // global_id,
-                //        (float)dist_val);
+                printf("[LITTLE]Packed node %d with distance %f\n",
+                global_id,
+                       (float)dist_val);
                 // fflush(nullptr);
             }
             little_kernel_input_buffers[i].packed_node_props.resize(

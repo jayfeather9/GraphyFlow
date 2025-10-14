@@ -32,6 +32,8 @@
 typedef ap_uint<AXI_BUS_WIDTH> bus_word_t;
 typedef ap_uint<REDUCE_MEM_WIDTH> reduce_word_t;
 
+const int INFINITY_DIST = 16384;
+
 // --- New Packing-related Constants ---
 // Number of distances that can be packed into a single reduce memory word.
 #define DISTANCES_PER_REDUCE_WORD (REDUCE_MEM_WIDTH / DISTANCE_BITWIDTH)
