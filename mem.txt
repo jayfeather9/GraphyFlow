@@ -41,3 +41,6 @@ TODO: replace all "struct_ibu_14_t" / "struct_sbu_19_t" in backend_mem_manager.p
 现在的mem manager相关数据结构基本都是写死的，访问结构也是写死的，看看能不能跑pr和别的图算法吧，不能的话再改
 
 改了kernel，现在还需要叫gemini改一下host
+
+TODO: remove KernelOutputBatch
+TODO: 编译器生成的时候，有的地方是会强制转换成int而不是ap fixed pod，需要改掉，也有些地方是写死的转ap fixed，也要改掉

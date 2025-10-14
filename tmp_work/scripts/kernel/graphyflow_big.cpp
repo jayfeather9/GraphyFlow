@@ -17,19 +17,18 @@ static void node_property_loader(
     node_distance_burst_t burst;
 LOOP_NPL_S0_READ:
     for (int i = 0; i < num_wide_reads; i++) {
-#pragma HLS PIPELINE II = 1
+
         bus_word_t wide_word = node_distances_ddr[i];
 
     LOOP_NPL_S0_UNPACK:
         for (int j = 0; j < num_dists_per_word; j++) {
-#pragma HLS UNROLL
+#pragma HLS PIPELINE II = 1
             if (nodes_read_s0 < num_nodes) {
                 burst.data[burst_idx] = wide_word.range(
                     (j + 1) * DISTANCE_BITWIDTH - 1, j * DISTANCE_BITWIDTH);
-                printf("[BIG]Loaded node distance: %f\n",
-                       (float)*reinterpret_cast<distance_t *>(
-                           &burst.data[burst_idx]));
-                fflush(NULL);
+                // printf("[BIG]Loaded node distance: %f\n",
+                // (float)*reinterpret_cast<distance_t
+                // *>(&burst.data[burst_idx])); fflush(NULL);
                 burst_idx++;
                 nodes_read_s0++;
                 if (burst_idx == PE_NUM) {
@@ -48,12 +47,11 @@ LOOP_NPL_S0_READ:
     burst_idx = 0;
 LOOP_NPL_S1_READ:
     for (int i = 0; i < num_wide_reads; i++) {
-#pragma HLS PIPELINE II = 1
         bus_word_t wide_word = node_distances_ddr[i];
 
     LOOP_NPL_S1_UNPACK:
         for (int j = 0; j < num_dists_per_word; j++) {
-#pragma HLS UNROLL
+#pragma HLS PIPELINE II = 1
             if (nodes_read_s1 < num_nodes) {
                 burst.data[burst_idx++] = wide_word.range(
                     (j + 1) * DISTANCE_BITWIDTH - 1, j * DISTANCE_BITWIDTH);
@@ -90,7 +88,7 @@ LOOP_EDL_READ:
     for (int i = 0; i < num_wide_reads; i++) {
 #pragma HLS PIPELINE II = 1
         bus_word_t wide_word = edge_props_ddr[i];
-
+        // printf("Read a new edge.\n");
     LOOP_EDL_UNPACK:
         for (int j = 0; j < edges_per_word; j++) {
 #pragma HLS UNROLL
@@ -102,6 +100,9 @@ LOOP_EDL_READ:
                 edge.node_id = packed_edge.range(NODE_ID_BITWIDTH - 1, 0);
                 edge.prop =
                     packed_edge.range(bits_per_edge - 1, NODE_ID_BITWIDTH);
+                //   printf("[LITTLE]Loaded edge: dst=%d, weight=%f\n",
+                //   edge.node_id, (float)*reinterpret_cast<distance_t
+                //   *>(&edge.prop)); fflush(NULL);
 
                 edge_batch.edges[edge_batch.end_pos++] = edge;
                 edges_read++;
@@ -112,6 +113,51 @@ LOOP_EDL_READ:
                 }
             }
         }
+        //         int loop_start = edge_batch.end_pos;
+        //         int loop_end = loop_start + edges_per_word;
+        //         int loop_step = PE_NUM;
+        //         int edges_read_in_word = 0;
+        //         LOOP_EDL_UNPACK:
+        //         for (int j = loop_start; j < loop_end; ) {
+        // #pragma HLS PIPELINE II = 1
+        //             int inter_end = (j == loop_start) ? (PE_NUM - loop_start)
+        //             : (j - loop_start + PE_NUM); int cur_read = 0; for (int k
+        //             = j - loop_start; k < inter_end; k++) {
+        // #pragma HLS UNROLL
+        //                 if (k < edges_per_word && edges_read < num_edges) {
+        //                     ap_uint<bits_per_edge> packed_edge =
+        //                     wide_word.range(
+        //                         (k + 1) * bits_per_edge - 1, k *
+        //                         bits_per_edge);
+
+        //                     node_with_prop_t edge;
+        //                     edge.node_id = packed_edge.range(NODE_ID_BITWIDTH
+        //                     - 1, 0); edge.prop =
+        //                         packed_edge.range(bits_per_edge - 1,
+        //                         NODE_ID_BITWIDTH);
+        //                     // printf("[LITTLE]Loaded edge: dst=%d,
+        //                     weight=%f\n", edge.node_id,
+        //                     (float)*reinterpret_cast<distance_t
+        //                     *>(&edge.prop));
+        //                     // fflush(NULL);
+
+        //                     edge_batch.edges[edge_batch.end_pos++] = edge;
+        //                     edges_read++;
+        //                     cur_read++;
+        //                     edges_read_in_word++;
+        //                 }
+        //             }
+        //             if (edge_batch.end_pos == PE_NUM) {
+        //                 edge_stream.write(edge_batch);
+        //                 edge_batch.end_pos = 0;
+        //             }
+        //             if (edges_read < num_edges && edges_read_in_word <
+        //             edges_per_word) {
+        //                 j += cur_read;
+        //             } else {
+        //                 break;
+        //             }
+        //         }
     }
 
     // Send any remaining partial batch
@@ -128,22 +174,21 @@ static void src_offset_loader(const bus_word_t *src_offsets_ddr,
     const int num_total_offsets = num_nodes + 1;
     const int num_wide_reads =
         (num_total_offsets + offsets_per_word - 1) / offsets_per_word;
-    printf("[BIG]Loading %d source offsets from DDR (%d wide reads needed).\n",
-           num_total_offsets, num_wide_reads);
-    fflush(NULL);
+    // printf("[BIG]Loading %d source offsets from DDR (%d wide reads
+    // needed).\n", num_total_offsets, num_wide_reads); fflush(NULL);
 
     int offsets_read = 0;
 LOOP_SOL_READ:
     for (int i = 0; i < num_wide_reads; i++) {
-#pragma HLS PIPELINE II = 1
+
         bus_word_t wide_word = src_offsets_ddr[i];
     LOOP_SOL_UNPACK:
         for (int j = 0; j < offsets_per_word; j++) {
-#pragma HLS UNROLL
+#pragma HLS PIPELINE II = 1
             if (offsets_read < num_total_offsets) {
                 int32_t offset = wide_word.range((j + 1) * 32 - 1, j * 32);
-                printf("[BIG]Loaded src offset: %d\n", offset);
-                fflush(NULL);
+                // printf("[BIG]Loaded src offset: %d\n", offset);
+                // fflush(NULL);
                 src_offsets_stream.write(offset);
                 offsets_read++;
             }
@@ -174,18 +219,18 @@ static void edge_property_loader_and_dispatcher(
 #pragma HLS dependence variable = node_distance_burst inter false
     int32_t start_edge_idx;
     int32_t end_edge_idx;
-    printf("[BIG]Starting edge property loader and dispatcher.\n");
-    fflush(NULL);
+    // printf("[BIG]Starting edge property loader and dispatcher.\n");
+    // fflush(NULL);
     start_edge_idx = src_offsets_cache_stream.read();
-    printf("[BIG]Initial start_edge_idx: %d\n", start_edge_idx);
-    fflush(NULL);
+    // printf("[BIG]Initial start_edge_idx: %d\n", start_edge_idx);
+    // fflush(NULL);
     const int32_t max_node_burst_idx = (num_nodes + PE_NUM - 1) / PE_NUM;
 LOOP_FOR_12:
     for (uint32_t node_burst_idx = 0; node_burst_idx < max_node_burst_idx;
          node_burst_idx++) {
         node_distance_burst = node_distance_burst_stream.read();
-        printf("[BIG]Read node distance burst %d.\n", node_burst_idx);
-        fflush(NULL);
+        // printf("[BIG]Read node distance burst %d.\n", node_burst_idx);
+        // fflush(NULL);
         const int32_t base_idx = (node_burst_idx << LOG_PE_NUM);
     LOOP_FOR_11:
         for (uint32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
@@ -195,21 +240,19 @@ LOOP_FOR_12:
             ap_fixed_pod_t src_dist;
             src_dist = node_distance_burst.data[pe_idx];
             end_edge_idx = src_offsets_cache_stream.read();
-            printf("[BIG]Node %d with src_dist=%f has edges from %d to %d.\n",
-                   base_idx + pe_idx,
-                   (float)*reinterpret_cast<distance_t *>(&src_dist),
-                   start_edge_idx, end_edge_idx);
-            fflush(NULL);
+            // printf("[BIG]Node %d with src_dist=%f has edges from %d to
+            // %d.\n", base_idx + pe_idx, (float)*reinterpret_cast<distance_t
+            // *>(&src_dist), start_edge_idx, end_edge_idx); fflush(NULL);
         LOOP_FOR_10:
             for (uint32_t e_idx = start_edge_idx; e_idx < end_edge_idx;
                  e_idx++) {
 #pragma HLS PIPELINE II = 1
                 if (edge_batch_pos == edge_batch.end_pos) {
                     edge_batch = edge_stream.read();
-                    printf("[BIG]Loaded new edge batch for processing.\n");
-                    fflush(NULL);
-                    printf("[BIG]Edge batch end_pos: %d\n", edge_batch.end_pos);
-                    fflush(NULL);
+                    // printf("[BIG]Loaded new edge batch for processing.\n");
+                    // fflush(NULL);
+                    // printf("[BIG]Edge batch end_pos: %d\n",
+                    // edge_batch.end_pos); fflush(NULL);
                     edge_batch_pos = 0;
                 }
                 node_with_prop_t edge;
@@ -217,12 +260,11 @@ LOOP_FOR_12:
                 current_batch.weights[current_batch.end_pos] = edge.prop;
                 current_batch.src_distances[current_batch.end_pos] = src_dist;
                 current_batch.dsts[current_batch.end_pos] = edge.node_id;
-                printf(
-                    "[BIG]Dispatching edge: src_dist=%f, dst=%d, weight=%f\n",
-                    (float)*reinterpret_cast<distance_t *>(&src_dist),
-                    edge.node_id,
-                    (float)*reinterpret_cast<distance_t *>(&edge.prop));
-                fflush(NULL);
+                // printf("[BIG]Dispatching edge: src_dist=%f, dst=%d,
+                // weight=%f\n", (float)*reinterpret_cast<distance_t
+                // *>(&src_dist), edge.node_id,
+                // (float)*reinterpret_cast<distance_t *>(&edge.prop));
+                // fflush(NULL);
 
                 current_batch.end_pos = current_batch.end_pos + 1;
                 if (current_batch.end_pos == PE_NUM) {
@@ -235,8 +277,8 @@ LOOP_FOR_12:
     }
     current_batch.end_flag = true;
     response_stream.write(current_batch);
-    printf("[BIG]Finished edge property loading and dispatching.\n");
-    fflush(NULL);
+    // printf("[BIG]Finished edge property loading and dispatching.\n");
+    // fflush(NULL);
 }
 
 static void node_property_responder(
@@ -272,7 +314,8 @@ LOOP_FOR_14:
 // --- REWRITTEN: New final_writeback function packs results into 512-bit words.
 static void final_writeback(hls::stream<internal_end_data_batch_t> &in_stream,
                             bus_word_t *out_ddr) {
-    const int bits_per_output = NODE_ID_BITWIDTH + DISTANCE_BITWIDTH;
+    const int bits_per_output =
+        NODE_ID_BITWIDTH + DISTANCE_BITWIDTH + OUT_END_MARKER_BITWIDTH;
     const int outputs_per_word = AXI_BUS_WIDTH / bits_per_output;
 
     bus_word_t write_word = 0;
@@ -291,14 +334,19 @@ LOOP_WRITEBACK_MAIN:
                 node_with_prop_t item = in_batch.data[i];
                 ap_uint<bits_per_output> packed_output;
                 packed_output.range(NODE_ID_BITWIDTH - 1, 0) = item.node_id;
-                packed_output.range(bits_per_output - 1, NODE_ID_BITWIDTH) =
-                    item.prop;
-                distance_t tmp_dist =
-                    packed_output.range(bits_per_output - 1, NODE_ID_BITWIDTH);
-                printf("[BIG]Packing output: node_id=%d, distance=%f\n",
-                       (int)packed_output.range(NODE_ID_BITWIDTH - 1, 0),
-                       (float)tmp_dist);
-                fflush(NULL);
+                packed_output.range(NODE_ID_BITWIDTH + DISTANCE_BITWIDTH - 1,
+                                    NODE_ID_BITWIDTH) = item.prop;
+                out_end_marker_t end_marker =
+                    0; // No end marker for regular entries
+                packed_output.range(bits_per_output - 1,
+                                    NODE_ID_BITWIDTH + DISTANCE_BITWIDTH) =
+                    end_marker;
+                // distance_t tmp_dist =
+                //     packed_output.range(NODE_ID_BITWIDTH + DISTANCE_BITWIDTH
+                //     - 1, NODE_ID_BITWIDTH);
+                // printf("[BIG]Packing output: node_id=%d, distance=%f\n",
+                // (int)packed_output.range(NODE_ID_BITWIDTH - 1, 0),
+                // (float)tmp_dist); fflush(NULL);
 
                 int start_bit = pack_count * bits_per_output;
                 write_word.range(start_bit + bits_per_output - 1, start_bit) =
@@ -306,9 +354,8 @@ LOOP_WRITEBACK_MAIN:
 
                 pack_count++;
                 if (pack_count == outputs_per_word) {
-                    printf("[BIG] Writing packed word to DDR at address %d\n",
-                           ddr_addr);
-                    fflush(NULL);
+                    // printf("[BIG] Writing packed word to DDR at address
+                    // %d\n", ddr_addr); fflush(NULL);
                     out_ddr[ddr_addr++] = write_word;
                     write_word = 0;
                     pack_count = 0;
@@ -321,11 +368,23 @@ LOOP_WRITEBACK_MAIN:
         }
     }
 
-    // Write the final partial word if it exists
-    if (pack_count > 0) {
-        printf("[BIG] Writing final packed word to DDR at address %d\n",
-               ddr_addr);
-        fflush(NULL);
+    // if pack_count is 0, write a final end marker word
+    // else, put the end marker in the current write_word and write it
+    ap_uint<bits_per_output> end_marker;
+    end_marker.range(NODE_ID_BITWIDTH - 1, 0) = 0;
+    end_marker.range(NODE_ID_BITWIDTH + DISTANCE_BITWIDTH - 1,
+                     NODE_ID_BITWIDTH) = 0; // Distance = 0
+    end_marker.range(bits_per_output - 1,
+                     NODE_ID_BITWIDTH + DISTANCE_BITWIDTH) =
+        (out_end_marker_t)1; // End marker = 1
+    if (pack_count == 0) {
+        bus_word_t end_word = 0;
+        end_word.range(bits_per_output - 1, 0) = end_marker;
+        out_ddr[ddr_addr++] = end_word;
+    } else {
+        int start_bit = pack_count * bits_per_output;
+        write_word.range(start_bit + bits_per_output - 1, start_bit) =
+            end_marker;
         out_ddr[ddr_addr++] = write_word;
     }
 }
@@ -592,14 +651,14 @@ LOOP_WHILE_26:
             // -- Begin Nested Inline for FusedOp fused_op_185 --
             // Inlining BinOp_68
             ap_fixed_pod_t fused_temp_BinOp_68_o_0;
-            ap_fixed<32, 16> lhs_68 = *reinterpret_cast<ap_fixed<32, 16> *>(
+            distance_t lhs_68 = *reinterpret_cast<distance_t *>(
                 &in_batch_i_global_data_2.data[i]);
-            ap_fixed<32, 16> rhs_68 = *reinterpret_cast<ap_fixed<32, 16> *>(
+            distance_t rhs_68 = *reinterpret_cast<distance_t *>(
                 &in_batch_i_global_data_3.data[i]);
-            ap_fixed<32, 16> temp_BinOp_68_o_0_ap_result;
+            distance_t temp_BinOp_68_o_0_ap_result;
             temp_BinOp_68_o_0_ap_result = (lhs_68 + rhs_68);
-            fused_temp_BinOp_68_o_0 =
-                *reinterpret_cast<int32_t *>(&temp_BinOp_68_o_0_ap_result);
+            fused_temp_BinOp_68_o_0 = *reinterpret_cast<ap_fixed_pod_t *>(
+                &temp_BinOp_68_o_0_ap_result);
             // Inlining Gathe_179
             transform_out_elem.prop = fused_temp_BinOp_68_o_0;
             transform_out_elem.node_id = in_batch_i_global_data_1.data[i];
@@ -1163,15 +1222,15 @@ LOOP_WHILE_59:
             // -- Inlining FusedOp fused_op_294 --
             // Inlining BinOp_128
             ap_fixed_pod_t fused_temp_BinOp_128_o_0;
-            ap_fixed<32, 16> lhs_128 =
-                *reinterpret_cast<ap_fixed<32, 16> *>(&in_batch_i_0.data[i]);
-            ap_fixed<32, 16> rhs_128 =
-                *reinterpret_cast<ap_fixed<32, 16> *>(&in_batch_i_1.data[i]);
-            ap_fixed<32, 16> temp_BinOp_128_o_0_ap_result;
+            distance_t lhs_128 =
+                *reinterpret_cast<distance_t *>(&in_batch_i_0.data[i]);
+            distance_t rhs_128 =
+                *reinterpret_cast<distance_t *>(&in_batch_i_1.data[i]);
+            distance_t temp_BinOp_128_o_0_ap_result;
             temp_BinOp_128_o_0_ap_result =
                 (((lhs_128) < (rhs_128) ? lhs_128 : rhs_128));
-            fused_temp_BinOp_128_o_0 =
-                *reinterpret_cast<int32_t *>(&temp_BinOp_128_o_0_ap_result);
+            fused_temp_BinOp_128_o_0 = *reinterpret_cast<ap_fixed_pod_t *>(
+                &temp_BinOp_128_o_0_ap_result);
             // Inlining Gathe_288
             out_batch_o_0.data[i].prop = fused_temp_BinOp_128_o_0;
             out_batch_o_0.data[i].node_id = in_batch_i_2.data[i];
@@ -1333,35 +1392,33 @@ extern "C" void graphyflow_big(const bus_word_t *src_offsets,
 
     hls::stream<internal_end_data_batch_t> stream_result_data;
 #pragma HLS STREAM variable = stream_result_data depth = 128
-    printf("[BIG]Start graphyflow_big\n");
-    fflush(NULL);
+    // printf("[BIG]Start graphyflow_big\n");
+    // fflush(NULL);
     src_offset_loader(src_offsets, src_offsets_cache_stream, num_nodes);
     node_property_loader(node_props, node_distance_burst_stream_0,
                          node_distance_burst_stream_1, num_nodes);
     edge_descriptor_loader(edge_props, edge_stream, num_edges);
-    printf("[BIG]Data loading complete, entering main processing loop.\n");
-    fflush(NULL);
+    // printf("[BIG]Data loading complete, entering main processing loop.\n");
+    // fflush(NULL);
 
     edge_property_loader_and_dispatcher(src_offsets_cache_stream, edge_stream,
                                         node_distance_burst_stream_0, num_nodes,
                                         stream_edge_data);
-    printf("[BIG]Edge property dispatch complete, entering node property "
-           "response stage.\n");
-    fflush(NULL);
+    // printf("[BIG]Edge property dispatch complete, entering node property
+    // response stage.\n"); fflush(NULL);
     node_property_responder(node_distance_burst_stream_1, num_nodes,
                             stream_node_dist_data);
-    printf("[BIG]Data dispatch complete, entering graph processing stage.\n");
-    fflush(NULL);
+    // printf("[BIG]Data dispatch complete, entering graph processing
+    // stage.\n"); fflush(NULL);
 
     graphyflow_big_dataflow(stream_edge_data, stream_node_dist_data,
                             stream_result_data);
-    printf("[BIG]Main processing loop complete, entering final writeback "
-           "stage.\n");
-    fflush(NULL);
+    // printf("[BIG]Main processing loop complete, entering final writeback
+    // stage.\n"); fflush(NULL);
 
     final_writeback(stream_result_data, output);
-    printf("[BIG]Final writeback stage complete, exiting kernel.\n");
-    fflush(NULL);
-    printf("[BIG]graphyflow_big complete.\n");
-    fflush(NULL);
+    // printf("[BIG]Final writeback stage complete, exiting kernel.\n");
+    // fflush(NULL);
+    // printf("[BIG]graphyflow_big complete.\n");
+    // fflush(NULL);
 }

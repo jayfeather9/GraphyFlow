@@ -5,6 +5,9 @@ import sys
 import random
 import argparse
 
+SEED = 42
+random.seed(SEED)
+
 
 def generate_random_connected_graph(num_nodes, num_edges, has_weight, undirected=1):
     """
@@ -118,6 +121,18 @@ def main():
     for edge_info in graph:
         # 使用 ' '.join() 可以优雅地处理元组中的所有元素
         print(" ".join(map(str, edge_info)))
+
+    # generate a "1 -> 2;" graphviz representation to a file
+    with open("graph.dot", "w") as f:
+        f.write("digraph G {\n")
+        for edge_info in graph:
+            if args.have_weight:
+                u, v, w = edge_info
+                f.write(f"    {u} -> {v} [label={w}];\n")
+            else:
+                u, v = edge_info
+                f.write(f"    {u} -> {v};\n")
+        f.write("}\n")
 
 
 if __name__ == "__main__":

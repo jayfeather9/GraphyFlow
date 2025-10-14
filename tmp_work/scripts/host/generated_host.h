@@ -19,13 +19,21 @@ struct KernelBuffers {
     cl::Buffer output_buf;     // Buffer for kernel results
 };
 
+struct HostInputBuffers {
+    std::vector<bus_word_t, aligned_allocator<bus_word_t>> packed_offsets;
+    std::vector<bus_word_t, aligned_allocator<bus_word_t>> packed_edge_props;
+    std::vector<bus_word_t, aligned_allocator<bus_word_t>> packed_node_props;
+};
+
 class AlgorithmHost {
   public:
     AlgorithmHost(AccDescriptor &acc);
 
     // --- MODIFICATION: Updated function signatures to use new data structures
     // ---
-    void setup_buffers(const PartitionContainer &container, int start_node);
+    void prepare_data(const PartitionContainer &container, int start_node);
+    void setup_buffers(const PartitionContainer &container);
+    void update_data(const PartitionContainer &container);
     void transfer_data_to_fpga(const PartitionContainer &container);
     void execute_kernel_iteration(const PartitionContainer &container,
                                   std::vector<cl::Event> &big_kernel_events,
@@ -44,11 +52,13 @@ class AlgorithmHost {
     std::vector<distance_t> h_distances;
 
     // Buffer containers for big kernels (one entry per kernel instance)
+    std::vector<HostInputBuffers> big_kernel_input_buffers;
     std::vector<KernelBuffers> big_kernel_buffers;
     std::vector<std::vector<bus_word_t, aligned_allocator<bus_word_t>>>
         big_kernel_host_outputs;
 
     // Buffer containers for little kernels (one entry per kernel instance)
+    std::vector<HostInputBuffers> little_kernel_input_buffers;
     std::vector<KernelBuffers> little_kernel_buffers;
     std::vector<std::vector<bus_word_t, aligned_allocator<bus_word_t>>>
         little_kernel_host_outputs;

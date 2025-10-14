@@ -12,6 +12,9 @@ clean:
 	-$(RMDIR) .run
 	-$(RMDIR) makefile_gen
 	-$(RMDIR) .ipcache
+	-$(RMDIR) ./scripts/host/*.o
+	-$(RMDIR) ./scripts/host/acc_setup.o
+	-$(RMDIR) ./scripts/host/graph_preprocess.o
 
 cleanall:
 	-$(RMDIR) $(EXECUTABLE) $(XCLBIN)/{*sw_emu*,*hw_emu*,*hw*} 
@@ -29,3 +32,6 @@ cleanall:
 	-$(RMDIR) .ipcache
 	-$(RMDIR) *.csv
 	-$(RMDIR) *.protoinst
+	-$(RMDIR) ./scripts/host/*.o
+	-$(RMDIR) ./scripts/host/acc_setup.o
+	-$(RMDIR) ./scripts/host/graph_preprocess.o

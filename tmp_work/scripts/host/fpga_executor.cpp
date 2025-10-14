@@ -19,14 +19,15 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
     AccDescriptor acc = initAccelerator(xclbin_path);
 
     AlgorithmHost algo_host(acc);
-    algo_host.setup_buffers(partition_container, start_node);
+    algo_host.prepare_data(partition_container, start_node);
+    algo_host.setup_buffers(partition_container);
     total_kernel_time_sec = 0;
     int max_iterations = graph.num_vertices;
     int iter = 0;
     std::cout << "\nStarting FPGA execution..." << std::endl;
 
     for (iter = 0; iter < max_iterations; ++iter) {
-
+        algo_host.update_data(partition_container);
         algo_host.transfer_data_to_fpga(partition_container);
         std::vector<cl::Event> big_kernel_events(acc.num_big_krnl),
             little_kernel_events(acc.num_little_krnl);

@@ -11,7 +11,7 @@
 
 #define PE_NUM 8
 #define LOG_PE_NUM 3
-#define MAX_NUM 32768
+#define MAX_NUM 256
 #define L 4
 
 // --- New Bitwidth Definitions for HLS Synthesis ---
@@ -20,6 +20,7 @@
 #define DISTANCE_INTEGER_PART 16
 #define WEIGHT_BITWIDTH DISTANCE_BITWIDTH
 #define WEIGHT_INTEGER_PART DISTANCE_INTEGER_PART
+#define OUT_END_MARKER_BITWIDTH 4
 
 // --- New Memory Word and Bus Definitions ---
 #define AXI_BUS_WIDTH 512
@@ -43,6 +44,7 @@ typedef ap_uint<32> edge_id_t; // edge_id_t is not customized yet, keep as is.
 typedef ap_uint<DISTANCE_BITWIDTH>
     ap_fixed_pod_t; // Used to hold bit representation of ap_fixed types
 typedef ap_fixed<DISTANCE_BITWIDTH, DISTANCE_INTEGER_PART> distance_t;
+typedef ap_uint<OUT_END_MARKER_BITWIDTH> out_end_marker_t;
 
 // --- Struct Type Definitions (UNCHANGED) ---
 // The definitions of these structs remain the same, but the underlying
