@@ -472,6 +472,48 @@ LOOP_WHILE_81:
     }
 }
 
+inline distance_t get_val(reduce_word_t word, int idx) {
+#pragma HLS INLINE
+    ap_uint<DISTANCE_BITWIDTH> bits;
+    switch (idx) {
+    case 0:
+        bits = word.range(DISTANCE_BITWIDTH - 1, 0);
+        break;
+    case 1:
+        bits = word.range((DISTANCE_BITWIDTH << 1) - 1, DISTANCE_BITWIDTH);
+        break;
+    case 2:
+        bits =
+            word.range((DISTANCE_BITWIDTH * 3) - 1, (DISTANCE_BITWIDTH << 1));
+        break;
+    default:
+        bits = 0;
+        break;
+    }
+    // Convert bits back to distance_t (floating point)
+    return *reinterpret_cast<distance_t *>(&bits);
+}
+
+inline void set_val(reduce_word_t &word, int idx, distance_t val) {
+#pragma HLS INLINE
+    ap_uint<DISTANCE_BITWIDTH> val_bits =
+        *reinterpret_cast<ap_uint<DISTANCE_BITWIDTH> *>(&val);
+    switch (idx) {
+    case 0:
+        word.range(DISTANCE_BITWIDTH - 1, 0) = val_bits;
+        break;
+    case 1:
+        word.range((DISTANCE_BITWIDTH << 1) - 1, DISTANCE_BITWIDTH) = val_bits;
+        break;
+    case 2:
+        word.range((DISTANCE_BITWIDTH * 3) - 1, (DISTANCE_BITWIDTH << 1)) =
+            val_bits;
+        break;
+    default:
+        break;
+    }
+}
+
 // --- REWRITTEN: High-performance Reduce unit for little kernel using batched
 // input and 72-bit packed URAM.
 static void
@@ -605,13 +647,10 @@ LOOP_AGGREGATE_LITTLE:
                     distance_t new_dist_fp;
                     distance_t incoming_dist_fp =
                         *reinterpret_cast<distance_t *>(&incoming_dist_pod);
-                    int start_bit = pack_idx * DISTANCE_BITWIDTH;
 
                     if (is_valid) {
-                        ap_fixed_pod_t old_dist_pod = current_word.range(
-                            start_bit + DISTANCE_BITWIDTH - 1, start_bit);
                         distance_t old_dist_fp =
-                            *reinterpret_cast<distance_t *>(&old_dist_pod);
+                            get_val(current_word, pack_idx);
                         new_dist_fp = (old_dist_fp < incoming_dist_fp)
                                           ? old_dist_fp
                                           : incoming_dist_fp;
@@ -624,8 +663,7 @@ LOOP_AGGREGATE_LITTLE:
 
                     ap_fixed_pod_t new_dist_pod =
                         *reinterpret_cast<ap_fixed_pod_t *>(&new_dist_fp);
-                    current_word.range(start_bit + DISTANCE_BITWIDTH - 1,
-                                       start_bit) = new_dist_pod;
+                    set_val(current_word, pack_idx, new_dist_fp);
 
                     // Write back to URAM and update cache
                     prop_mem[pe][word_addr] = current_word;
@@ -647,6 +685,8 @@ LOOP_AGGREGATE_LITTLE:
     reduce_word_t words[PE_NUM];
 #pragma HLS ARRAY_PARTITION variable = words complete dim = 0
     int real_addr = 0;
+    data_pack.end_flag = false;
+    data_pack.end_pos = 0;
 
     // printf("[LITTLE]Starting final drain phase.\n");
     // fflush(NULL);

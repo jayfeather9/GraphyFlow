@@ -682,6 +682,48 @@ LOOP_WHILE_26:
     }
 }
 
+inline distance_t get_val(reduce_word_t word, int idx) {
+#pragma HLS INLINE
+    ap_uint<DISTANCE_BITWIDTH> bits;
+    switch (idx) {
+    case 0:
+        bits = word.range(DISTANCE_BITWIDTH - 1, 0);
+        break;
+    case 1:
+        bits = word.range((DISTANCE_BITWIDTH << 1) - 1, DISTANCE_BITWIDTH);
+        break;
+    case 2:
+        bits =
+            word.range((DISTANCE_BITWIDTH * 3) - 1, (DISTANCE_BITWIDTH << 1));
+        break;
+    default:
+        bits = 0;
+        break;
+    }
+    // Convert bits back to distance_t (floating point)
+    return *reinterpret_cast<distance_t *>(&bits);
+}
+
+inline void set_val(reduce_word_t &word, int idx, distance_t val) {
+#pragma HLS INLINE
+    ap_uint<DISTANCE_BITWIDTH> val_bits =
+        *reinterpret_cast<ap_uint<DISTANCE_BITWIDTH> *>(&val);
+    switch (idx) {
+    case 0:
+        word.range(DISTANCE_BITWIDTH - 1, 0) = val_bits;
+        break;
+    case 1:
+        word.range((DISTANCE_BITWIDTH << 1) - 1, DISTANCE_BITWIDTH) = val_bits;
+        break;
+    case 2:
+        word.range((DISTANCE_BITWIDTH * 3) - 1, (DISTANCE_BITWIDTH << 1)) =
+            val_bits;
+        break;
+    default:
+        break;
+    }
+}
+
 static void Reduc_105_unit_reduce(
     hls::stream<net_wrapper_kt_pair_105_t_t> (&kt_wrap_item)[PE_NUM],
     hls::stream<internal_end_data_batch_t> &o_0) {
@@ -801,13 +843,10 @@ LOOP_AGGREGATE:
                     distance_t new_dist_fp;
                     distance_t incoming_dist_fp =
                         *reinterpret_cast<distance_t *>(&incoming_dist_pod);
-                    int start_bit = pack_idx * DISTANCE_BITWIDTH;
 
                     if (is_valid) {
-                        ap_fixed_pod_t old_dist_pod = current_word.range(
-                            start_bit + DISTANCE_BITWIDTH - 1, start_bit);
                         distance_t old_dist_fp =
-                            *reinterpret_cast<distance_t *>(&old_dist_pod);
+                            get_val(current_word, pack_idx);
                         new_dist_fp = (old_dist_fp < incoming_dist_fp)
                                           ? old_dist_fp
                                           : incoming_dist_fp;
@@ -819,8 +858,8 @@ LOOP_AGGREGATE:
 
                     ap_fixed_pod_t new_dist_pod =
                         *reinterpret_cast<ap_fixed_pod_t *>(&new_dist_fp);
-                    current_word.range(start_bit + DISTANCE_BITWIDTH - 1,
-                                       start_bit) = new_dist_pod;
+                    // current_word.range(end_bit, start_bit) = new_dist_pod;
+                    set_val(current_word, pack_idx, new_dist_fp);
 
                     // Write back to URAM and update cache
                     prop_mem[pe][word_addr] = current_word;
@@ -834,8 +873,9 @@ LOOP_AGGREGATE:
 #pragma HLS UNROLL
             end_flag = (end_flag & all_end_flags[i]);
         }
-        if (end_flag)
+        if (end_flag) {
             break;
+        }
     }
 
     // --- Phase 4: High-Performance Drain Loop ---
