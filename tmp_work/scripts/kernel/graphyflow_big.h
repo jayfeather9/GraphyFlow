@@ -15,8 +15,8 @@
 #define L 4
 
 // --- New Bitwidth Definitions for HLS Synthesis ---
-#define NODE_ID_BITWIDTH 24
-#define DISTANCE_BITWIDTH 24
+#define NODE_ID_BITWIDTH 32
+#define DISTANCE_BITWIDTH 32
 #define DISTANCE_INTEGER_PART 16
 #define WEIGHT_BITWIDTH DISTANCE_BITWIDTH
 #define WEIGHT_INTEGER_PART DISTANCE_INTEGER_PART
@@ -28,7 +28,7 @@
     32 // Kept from original for some legacy calculations, may be removed later.
 #define NUM_WORDS_PER_BUS (AXI_BUS_WIDTH / DATA_TYPE_WIDTH)
 
-#define REDUCE_MEM_WIDTH 72
+#define REDUCE_MEM_WIDTH 64
 typedef ap_uint<AXI_BUS_WIDTH> bus_word_t;
 typedef ap_uint<REDUCE_MEM_WIDTH> reduce_word_t;
 

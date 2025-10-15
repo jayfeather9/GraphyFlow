@@ -38,4 +38,5 @@ fi
 
 # 3. 运行 host 程序
 DATASET="./graph.txt"
+# DATASET="./rmat-19-32.txt"
 ./${EXECUTABLE} ${XCLBIN_FILE} $DATASET

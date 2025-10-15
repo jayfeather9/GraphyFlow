@@ -692,10 +692,10 @@ inline distance_t get_val(reduce_word_t word, int idx) {
     case 1:
         bits = word.range((DISTANCE_BITWIDTH << 1) - 1, DISTANCE_BITWIDTH);
         break;
-    case 2:
-        bits =
-            word.range((DISTANCE_BITWIDTH * 3) - 1, (DISTANCE_BITWIDTH << 1));
-        break;
+    // case 2:
+    //     bits =
+    //         word.range((DISTANCE_BITWIDTH * 3) - 1, (DISTANCE_BITWIDTH << 1));
+    //     break;
     default:
         bits = 0;
         break;
@@ -715,10 +715,10 @@ inline void set_val(reduce_word_t &word, int idx, distance_t val) {
     case 1:
         word.range((DISTANCE_BITWIDTH << 1) - 1, DISTANCE_BITWIDTH) = val_bits;
         break;
-    case 2:
-        word.range((DISTANCE_BITWIDTH * 3) - 1, (DISTANCE_BITWIDTH << 1)) =
-            val_bits;
-        break;
+    // case 2:
+    //     word.range((DISTANCE_BITWIDTH * 3) - 1, (DISTANCE_BITWIDTH << 1)) =
+    //         val_bits;
+    //     break;
     default:
         break;
     }

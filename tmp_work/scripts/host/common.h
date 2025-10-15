@@ -17,8 +17,8 @@
 // --- Customizable Bitwidth Macros ---
 // These macros define the bitwidths for core data types.
 // They are used by the host for data packing and by the kernel for synthesis.
-#define NODE_ID_BITWIDTH 24
-#define DISTANCE_BITWIDTH 24
+#define NODE_ID_BITWIDTH 32
+#define DISTANCE_BITWIDTH 32
 #define DISTANCE_INTEGER_PART                                                  \
     16 // Number of bits for the integer part of distance
 #define WEIGHT_BITWIDTH DISTANCE_BITWIDTH

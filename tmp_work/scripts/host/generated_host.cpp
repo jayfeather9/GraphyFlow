@@ -24,6 +24,9 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
     big_kernel_input_buffers.resize(container.SPs.size());
     little_kernel_input_buffers.resize(container.DPs.size());
 
+    auto start_time = std::chrono::system_clock::now();
+    auto current_time = start_time;
+
     // --- 2.1: 为 BIG kernels 手动序列化数据 (带 Padding) ---
     for (size_t i = 0; i < big_kernel_input_buffers.size(); ++i) {
         const auto &p_graph = container.SPs[i].partitioned_graph;
@@ -31,7 +34,11 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
         // --- Pack node distances (ap_fixed<24,8> -> 3 bytes) ---
         {
             const size_t bytes_per_dist = DISTANCE_BITWIDTH / 8;
+            const size_t dist_per_word = bytes_per_word / bytes_per_dist;
+            const size_t word_number = (p_graph.num_vertices + dist_per_word - 1) /
+                                       dist_per_word;
             std::vector<char> temp_byte_buffer;
+            temp_byte_buffer.reserve(word_number * bytes_per_word);
 
             for (int j = 0; j < p_graph.num_vertices; ++j) {
                 // **Padding Logic**: 检查加上新数据后是否会跨越 64 字节边界
@@ -70,11 +77,22 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                         temp_byte_buffer.data(), temp_byte_buffer.size());
         }
 
+        current_time = std::chrono::system_clock::now();
+        std::cout << "--- [Host] Phase 0: Preparing data structures big node dist ("
+                  << std::chrono::duration<double>(current_time - start_time)
+                         .count()
+                  << " sec) ---" << std::endl;
+        start_time = current_time;
+
         // --- Pack edge properties (node_id<24b> + weight<24b> -> 6 bytes) ---
         {
             const size_t bytes_per_edge =
                 (NODE_ID_BITWIDTH + WEIGHT_BITWIDTH) / 8;
+            const size_t edges_per_word = bytes_per_word / bytes_per_edge;
+            const size_t word_number = (p_graph.num_edges + edges_per_word - 1) /
+                                       edges_per_word;
             std::vector<char> temp_byte_buffer;
+            temp_byte_buffer.reserve(word_number * bytes_per_word);
 
             for (size_t j = 0; j < p_graph.num_edges; ++j) {
                 // **Padding Logic**
@@ -100,16 +118,16 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                 temp_byte_buffer.insert(temp_byte_buffer.end(), edge_bytes,
                                         edge_bytes + bytes_per_edge);
 
-                // 调试日志
-                uint32_t src_global_id = 0;
-                uint32_t dst_global_id =
-                    p_graph.vtx_map_rev.at(p_graph.columns[j]);
-                for (int v = 0; v < p_graph.num_vertices; ++v) {
-                    if (p_graph.offsets[v] <= j && j < p_graph.offsets[v + 1]) {
-                        src_global_id = p_graph.vtx_map_rev.at(v);
-                        break;
-                    }
-                }
+                // // 调试日志
+                // uint32_t src_global_id = 0;
+                // uint32_t dst_global_id =
+                //     p_graph.vtx_map_rev.at(p_graph.columns[j]);
+                // for (int v = 0; v < p_graph.num_vertices; ++v) {
+                //     if (p_graph.offsets[v] <= j && j < p_graph.offsets[v + 1]) {
+                //         src_global_id = p_graph.vtx_map_rev.at(v);
+                //         break;
+                //     }
+                // }
                 // printf("[BIG]Packed edge: src=%d, dst=%d, weight=%f\n",
                 //        src_global_id, dst_global_id, (float)weight_val);
                 // fflush(nullptr);
@@ -121,10 +139,21 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                         temp_byte_buffer.data(), temp_byte_buffer.size());
         }
 
+        current_time = std::chrono::system_clock::now();
+        std::cout << "--- [Host] Phase 0: Preparing data structures edge props ("
+                  << std::chrono::duration<double>(current_time - start_time)
+                         .count()
+                  << " sec) ---" << std::endl;
+        start_time = current_time;
+
         // --- Pack offsets (int32_t -> 4 bytes) ---
         {
             const size_t bytes_per_offset = sizeof(int32_t);
+            const size_t offsets_per_word = bytes_per_word / bytes_per_offset;
+            const size_t word_number = (p_graph.num_vertices + 1 + offsets_per_word - 1) /
+                                       offsets_per_word;
             std::vector<char> temp_byte_buffer;
+            temp_byte_buffer.reserve(word_number * bytes_per_word);
 
             for (int j = 0; j < p_graph.num_vertices + 1; ++j) {
                 // **Padding Logic**
@@ -150,6 +179,13 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
             std::memcpy(big_kernel_input_buffers[i].packed_offsets.data(),
                         temp_byte_buffer.data(), temp_byte_buffer.size());
         }
+
+        current_time = std::chrono::system_clock::now();
+        std::cout << "--- [Host] Phase 0: Preparing data structures offsets ("
+                  << std::chrono::duration<double>(current_time - start_time)
+                         .count()
+                  << " sec) ---" << std::endl;
+        start_time = current_time;
     }
 
     // --- 2.2: 为 LITTLE kernels 手动序列化数据 (带 Padding) ---
@@ -159,7 +195,11 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
         // --- Pack node distances (ap_fixed<24,8> -> 3 bytes) ---
         {
             const size_t bytes_per_dist = DISTANCE_BITWIDTH / 8;
+            const size_t dist_per_word = bytes_per_word / bytes_per_dist;
+            const size_t word_number = (p_graph.num_vertices + dist_per_word - 1) /
+                                       dist_per_word;
             std::vector<char> temp_byte_buffer;
+            temp_byte_buffer.reserve(word_number * bytes_per_word);
 
             for (int j = 0; j < p_graph.num_vertices; ++j) {
                 if ((temp_byte_buffer.size() % bytes_per_word) +
@@ -189,11 +229,22 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                         temp_byte_buffer.data(), temp_byte_buffer.size());
         }
 
+        current_time = std::chrono::system_clock::now();
+        std::cout << "--- [Host] Phase 0: Preparing data structures little node dist ("
+                  << std::chrono::duration<double>(current_time - start_time)
+                         .count()
+                  << " sec) ---" << std::endl;
+        start_time = current_time;
+
         // --- Pack edge properties (node_id<24b> + weight<24b> -> 6 bytes) ---
         {
             const size_t bytes_per_edge =
                 (NODE_ID_BITWIDTH + WEIGHT_BITWIDTH) / 8;
+            const size_t edges_per_word = bytes_per_word / bytes_per_edge;
+            const size_t word_number = (p_graph.num_edges + edges_per_word - 1) /
+                                       edges_per_word;
             std::vector<char> temp_byte_buffer;
+            temp_byte_buffer.reserve(word_number * bytes_per_word);
 
             for (size_t j = 0; j < p_graph.num_edges; ++j) {
                 if ((temp_byte_buffer.size() % bytes_per_word) +
@@ -215,15 +266,15 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                 temp_byte_buffer.insert(temp_byte_buffer.end(), edge_bytes,
                                         edge_bytes + bytes_per_edge);
 
-                uint32_t src_global_id = 0;
-                uint32_t dst_global_id =
-                    p_graph.vtx_map_rev.at(p_graph.columns[j]);
-                for (int v = 0; v < p_graph.num_vertices; ++v) {
-                    if (p_graph.offsets[v] <= j && j < p_graph.offsets[v + 1]) {
-                        src_global_id = p_graph.vtx_map_rev.at(v);
-                        break;
-                    }
-                }
+                // uint32_t src_global_id = 0;
+                // uint32_t dst_global_id =
+                //     p_graph.vtx_map_rev.at(p_graph.columns[j]);
+                // for (int v = 0; v < p_graph.num_vertices; ++v) {
+                //     if (p_graph.offsets[v] <= j && j < p_graph.offsets[v + 1]) {
+                //         src_global_id = p_graph.vtx_map_rev.at(v);
+                //         break;
+                //     }
+                // }
                 // printf("[LITTLE]Packed edge: src=%d, dst=%d, weight=%f\n",
                 //        src_global_id, dst_global_id, (float)weight_val);
                 // fflush(nullptr);
@@ -235,10 +286,21 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                         temp_byte_buffer.data(), temp_byte_buffer.size());
         }
 
+        current_time = std::chrono::system_clock::now();
+        std::cout << "--- [Host] Phase 0: Preparing data structures little edge props ("
+                  << std::chrono::duration<double>(current_time - start_time)
+                         .count()
+                  << " sec) ---" << std::endl;
+        start_time = current_time;
+
         // --- Pack offsets (int32_t -> 4 bytes) ---
         {
             const size_t bytes_per_offset = sizeof(int32_t);
+            const size_t offsets_per_word = bytes_per_word / bytes_per_offset;
+            const size_t word_number = (p_graph.num_vertices + 1 + offsets_per_word - 1) /
+                                       offsets_per_word;
             std::vector<char> temp_byte_buffer;
+            temp_byte_buffer.reserve(word_number * bytes_per_word);
 
             for (int j = 0; j < p_graph.num_vertices + 1; ++j) {
                 if ((temp_byte_buffer.size() % bytes_per_word) +
@@ -262,6 +324,13 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
             std::memcpy(little_kernel_input_buffers[i].packed_offsets.data(),
                         temp_byte_buffer.data(), temp_byte_buffer.size());
         }
+
+        current_time = std::chrono::system_clock::now();
+        std::cout << "--- [Host] Phase 0: Preparing data structures little offsets ("
+                  << std::chrono::duration<double>(current_time - start_time)
+                         .count()
+                  << " sec) ---" << std::endl;
+        start_time = current_time;
     }
 }
 
@@ -820,7 +889,7 @@ const std::vector<int> &AlgorithmHost::get_results() const {
 
     for (const auto &dist : h_distances) {
         if (dist >= INFINITY_DIST) {
-            final_distances.push_back(std::numeric_limits<int>::max());
+            final_distances.push_back(INFINITY_DIST);
         } else {
             final_distances.push_back(dist.to_int());
         }
