@@ -11,7 +11,7 @@
 
 #define PE_NUM 8
 #define LOG_PE_NUM 3
-#define MAX_NUM 512
+#define MAX_NUM 524288
 #define L 4
 
 // --- New Bitwidth Definitions for HLS Synthesis ---

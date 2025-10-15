@@ -1,0 +1,372 @@
+scripts/host/host.mk:62: warning: overriding recipe for target 'clean'
+scripts/kernel/kernel.mk:69: warning: ignoring old recipe for target 'clean'
+scripts/clean.mk:5: warning: overriding recipe for target 'clean'
+scripts/host/host.mk:62: warning: ignoring old recipe for target 'clean'
+==> 正在编译内核: scripts/kernel/graphyflow_big.cpp
+v++ -c -t sw_emu --platform /opt/xilinx/platforms/xilinx_u55c_gen3x16_xdma_3_202210_1/xilinx_u55c_gen3x16_xdma_3_202210_1.xpfm -Iscripts/kernel -Iscripts/host -I/opt/xilinx/xrt/include -I/opt/Xilinx2024/Vitis/2024.1/include --kernel graphyflow_big -o xclbin/graphyflow_big.sw_emu.xo scripts/kernel/graphyflow_big.cpp
+Option Map File Used: '/opt/Xilinx2024/Vitis/2024.1/data/vitis/vpp/optMap.xml'
+
+****** v++ v2024.1 (64-bit)
+  **** SW Build 5074859 on 2024-05-20-23:21:20
+  **** Start of session at: Wed Oct 15 00:38:19 2025
+    ** Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.
+    ** Copyright 2022-2024 Advanced Micro Devices, Inc. All Rights Reserved.
+
+INFO: [v++ 60-1306] Additional information associated with this v++ compile can be found at:
+	Reports: /home/feiyang/tmp_GraphyFlow/tmp_work/_x/reports/graphyflow_big.sw_emu
+	Log files: /home/feiyang/tmp_GraphyFlow/tmp_work/_x/logs/graphyflow_big.sw_emu
+Running Dispatch Server on port: 45661
+INFO: [v++ 60-1548] Creating build summary session with primary output /home/feiyang/tmp_GraphyFlow/tmp_work/xclbin/graphyflow_big.sw_emu.xo.compile_summary, at Wed Oct 15 00:38:21 2025
+INFO: [v++ 60-1315] Creating rulecheck session with output '/home/feiyang/tmp_GraphyFlow/tmp_work/_x/reports/graphyflow_big.sw_emu/v++_compile_graphyflow_big.sw_emu_guidance.html', at Wed Oct 15 00:38:21 2025
+INFO: [v++ 60-895]   Target platform: /opt/xilinx/platforms/xilinx_u55c_gen3x16_xdma_3_202210_1/xilinx_u55c_gen3x16_xdma_3_202210_1.xpfm
+INFO: [v++ 60-1578]   This platform contains Xilinx Shell Archive '/opt/xilinx/platforms/xilinx_u55c_gen3x16_xdma_3_202210_1/hw/hw.xsa'
+INFO: [v++ 74-78] Compiler Version string: 2024.1
+INFO: [v++ 60-1302] Platform 'xilinx_u55c_gen3x16_xdma_3_202210_1.xpfm' has been explicitly enabled for this release.
+INFO: [v++ 60-585] Compiling for software emulation target
+INFO: [v++ 60-423]   Target device: xilinx_u55c_gen3x16_xdma_3_202210_1
+INFO: [v++ 60-242] Creating kernel: 'graphyflow_big'
+INFO: [v++ 60-594] Finished kernel compilation
+INFO: [v++ 60-586] Created xclbin/graphyflow_big.sw_emu.xo
+INFO: [v++ 60-2343] Use the Vitis Unified IDE to visualize and navigate the reports. Run the following command. 
+    vitis -a/ --analyze /home/feiyang/tmp_GraphyFlow/tmp_work/xclbin/graphyflow_big.sw_emu.xo.compile_summary 
+INFO: [v++ 60-791] Total elapsed time: 0h 0m 17s
+INFO: [v++ 60-1653] Closing dispatch client.
+==> 正在将所有内核链接到 xclbin 文件: xclbin/graphyflow_kernels.sw_emu.xclbin
+v++ -l -t sw_emu --platform /opt/xilinx/platforms/xilinx_u55c_gen3x16_xdma_3_202210_1/xilinx_u55c_gen3x16_xdma_3_202210_1.xpfm --config ./system.cfg -Iscripts/kernel -Iscripts/host -I/opt/xilinx/xrt/include -I/opt/Xilinx2024/Vitis/2024.1/include -o xclbin/graphyflow_kernels.sw_emu.xclbin xclbin/graphyflow_big.sw_emu.xo
+Option Map File Used: '/opt/Xilinx2024/Vitis/2024.1/data/vitis/vpp/optMap.xml'
+
+****** v++ v2024.1 (64-bit)
+  **** SW Build 5074859 on 2024-05-20-23:21:20
+  **** Start of session at: Wed Oct 15 00:38:37 2025
+    ** Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.
+    ** Copyright 2022-2024 Advanced Micro Devices, Inc. All Rights Reserved.
+
+INFO: [v++ 60-1306] Additional information associated with this v++ link can be found at:
+	Reports: /home/feiyang/tmp_GraphyFlow/tmp_work/_x/reports/link
+	Log files: /home/feiyang/tmp_GraphyFlow/tmp_work/_x/logs/link
+Running Dispatch Server on port: 45053
+INFO: [v++ 60-1548] Creating build summary session with primary output /home/feiyang/tmp_GraphyFlow/tmp_work/xclbin/graphyflow_kernels.sw_emu.xclbin.link_summary, at Wed Oct 15 00:38:39 2025
+INFO: [v++ 60-1315] Creating rulecheck session with output '/home/feiyang/tmp_GraphyFlow/tmp_work/_x/reports/link/v++_link_graphyflow_kernels.sw_emu_guidance.html', at Wed Oct 15 00:38:39 2025
+INFO: [v++ 60-895]   Target platform: /opt/xilinx/platforms/xilinx_u55c_gen3x16_xdma_3_202210_1/xilinx_u55c_gen3x16_xdma_3_202210_1.xpfm
+INFO: [v++ 60-1578]   This platform contains Xilinx Shell Archive '/opt/xilinx/platforms/xilinx_u55c_gen3x16_xdma_3_202210_1/hw/hw.xsa'
+INFO: [v++ 74-78] Compiler Version string: 2024.1
+INFO: [v++ 60-1302] Platform 'xilinx_u55c_gen3x16_xdma_3_202210_1.xpfm' has been explicitly enabled for this release.
+INFO: [v++ 60-629] Linking for software emulation target
+INFO: [v++ 60-423]   Target device: xilinx_u55c_gen3x16_xdma_3_202210_1
+INFO: [v++ 60-645] kernel flags are '-I /home/feiyang/tmp_GraphyFlow/tmp_work/scripts/kernel -I /home/feiyang/tmp_GraphyFlow/tmp_work/scripts/host -I /opt/xilinx/xrt/include -I /opt/Xilinx2024/Vitis/2024.1/include'
+Check POST-VPL, containing 1 checks, has run: 0 errors
+INFO: [v++ 60-586] Created xclbin/graphyflow_kernels.sw_emu.xclbin
+INFO: [v++ 60-1307] Run completed. Additional information can be found in:
+	Guidance: /home/feiyang/tmp_GraphyFlow/tmp_work/_x/reports/link/v++_link_graphyflow_kernels.sw_emu_guidance.html
+	Steps Log File: /home/feiyang/tmp_GraphyFlow/tmp_work/_x/logs/link/link.steps.log
+
+INFO: [v++ 60-2343] Use the Vitis Unified IDE to visualize and navigate the reports. Run the following command. 
+    vitis -a/ --analyze /home/feiyang/tmp_GraphyFlow/tmp_work/xclbin/graphyflow_kernels.sw_emu.xclbin.link_summary 
+INFO: [v++ 60-791] Total elapsed time: 0h 0m 6s
+INFO: [v++ 60-1653] Closing dispatch client.
+==> Compiling: scripts/host/xcl2.cpp
+g++ -Iscripts/host -Iscripts/kernel -I/opt/xilinx/xrt/include -I/opt/Xilinx2024/Vitis/2024.1/include -I/opt/Xilinx2024/Vitis_HLS/2024.1/include -std=c++17 -Wall -g  -c scripts/host/xcl2.cpp -o scripts/host/xcl2.o
+In file included from scripts/host/xcl2.h:34,
+                 from scripts/host/xcl2.cpp:17:
+/usr/include/CL/cl2.hpp:18:151: note: ‘#pragma message: cl2.hpp has been renamed to opencl.hpp to make it clear that it supports all versions of OpenCL. Please include opencl.hpp directly.’
+   18 | #pragma message("cl2.hpp has been renamed to opencl.hpp to make it clear that it supports all versions of OpenCL. Please include opencl.hpp directly.")
+      |                                                                                                                                                       ^
+==> Compiling: scripts/host/host_verifier.cpp
+g++ -Iscripts/host -Iscripts/kernel -I/opt/xilinx/xrt/include -I/opt/Xilinx2024/Vitis/2024.1/include -I/opt/Xilinx2024/Vitis_HLS/2024.1/include -std=c++17 -Wall -g  -c scripts/host/host_verifier.cpp -o scripts/host/host_verifier.o
+In file included from /opt/Xilinx2024/Vitis_HLS/2024.1/include/hls_fpo.h:140,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/etc/hls_half_fpo.h:19,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/hls_half.h:26,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/etc/ap_private.h:68,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/etc/ap_common.h:658,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/ap_fixed.h:9,
+                 from scripts/host/common.h:9,
+                 from scripts/host/host_verifier.h:4,
+                 from scripts/host/host_verifier.cpp:1:
+/opt/Xilinx2024/Vitis_HLS/2024.1/include/floating_point_v7_1_bitacc_cmodel.h:10:1: warning: multi-line comment [-Wcomment]
+   10 | // \   \  /  \
+      | ^
+In file included from scripts/host/xcl2.h:34,
+                 from scripts/host/common.h:14,
+                 from scripts/host/host_verifier.h:4,
+                 from scripts/host/host_verifier.cpp:1:
+/usr/include/CL/cl2.hpp:18:151: note: ‘#pragma message: cl2.hpp has been renamed to opencl.hpp to make it clear that it supports all versions of OpenCL. Please include opencl.hpp directly.’
+   18 | #pragma message("cl2.hpp has been renamed to opencl.hpp to make it clear that it supports all versions of OpenCL. Please include opencl.hpp directly.")
+      |                                                                                                                                                       ^
+==> Compiling: scripts/host/generated_host.cpp
+g++ -Iscripts/host -Iscripts/kernel -I/opt/xilinx/xrt/include -I/opt/Xilinx2024/Vitis/2024.1/include -I/opt/Xilinx2024/Vitis_HLS/2024.1/include -std=c++17 -Wall -g  -c scripts/host/generated_host.cpp -o scripts/host/generated_host.o
+In file included from /opt/Xilinx2024/Vitis_HLS/2024.1/include/hls_fpo.h:140,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/etc/hls_half_fpo.h:19,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/hls_half.h:26,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/etc/ap_private.h:68,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/etc/ap_common.h:658,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/ap_fixed.h:9,
+                 from scripts/host/common.h:9,
+                 from scripts/host/acc_setup/acc_setup.h:4,
+                 from scripts/host/generated_host.h:4,
+                 from scripts/host/generated_host.cpp:1:
+/opt/Xilinx2024/Vitis_HLS/2024.1/include/floating_point_v7_1_bitacc_cmodel.h:10:1: warning: multi-line comment [-Wcomment]
+   10 | // \   \  /  \
+      | ^
+In file included from scripts/host/xcl2.h:34,
+                 from scripts/host/common.h:14,
+                 from scripts/host/acc_setup/acc_setup.h:4,
+                 from scripts/host/generated_host.h:4,
+                 from scripts/host/generated_host.cpp:1:
+/usr/include/CL/cl2.hpp:18:151: note: ‘#pragma message: cl2.hpp has been renamed to opencl.hpp to make it clear that it supports all versions of OpenCL. Please include opencl.hpp directly.’
+   18 | #pragma message("cl2.hpp has been renamed to opencl.hpp to make it clear that it supports all versions of OpenCL. Please include opencl.hpp directly.")
+      |                                                                                                                                                       ^
+scripts/host/generated_host.cpp: In member function ‘void AlgorithmHost::prepare_data(const PartitionContainer&, int)’:
+scripts/host/generated_host.cpp:69:24: warning: ‘void* memcpy(void*, const void*, size_t)’ writing to an object of type ‘struct ap_uint<512>’ with no trivial copy-assignment; use copy-assignment or copy-initialization instead [-Wclass-memaccess]
+   69 |             std::memcpy(big_kernel_input_buffers[i].packed_node_props.data(),
+      |             ~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   70 |                         temp_byte_buffer.data(), temp_byte_buffer.size());
+      |                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from /opt/Xilinx2024/Vitis_HLS/2024.1/include/etc/ap_fixed_base.h:16,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/ap_fixed.h:10,
+                 from scripts/host/common.h:9,
+                 from scripts/host/acc_setup/acc_setup.h:4,
+                 from scripts/host/generated_host.h:4,
+                 from scripts/host/generated_host.cpp:1:
+/opt/Xilinx2024/Vitis_HLS/2024.1/include/ap_int.h:181:8: note: ‘struct ap_uint<512>’ declared here
+  181 | struct ap_uint : ap_int_base<_AP_W, false> {
+      |        ^~~~~~~
+scripts/host/generated_host.cpp:79:34: warning: comparison of integer expressions of different signedness: ‘size_t’ {aka ‘long unsigned int’} and ‘const int’ [-Wsign-compare]
+   79 |             for (size_t j = 0; j < p_graph.num_edges; ++j) {
+      |                                ~~^~~~~~~~~~~~~~~~~~~
+scripts/host/generated_host.cpp:108:44: warning: comparison of integer expressions of different signedness: ‘const value_type’ {aka ‘const int’} and ‘size_t’ {aka ‘long unsigned int’} [-Wsign-compare]
+  108 |                     if (p_graph.offsets[v] <= j && j < p_graph.offsets[v + 1]) {
+scripts/host/generated_host.cpp:108:54: warning: comparison of integer expressions of different signedness: ‘size_t’ {aka ‘long unsigned int’} and ‘const value_type’ {aka ‘const int’} [-Wsign-compare]
+  108 |                     if (p_graph.offsets[v] <= j && j < p_graph.offsets[v + 1]) {
+scripts/host/generated_host.cpp:104:26: warning: variable ‘src_global_id’ set but not used [-Wunused-but-set-variable]
+  104 |                 uint32_t src_global_id = 0;
+      |                          ^~~~~~~~~~~~~
+scripts/host/generated_host.cpp:105:26: warning: unused variable ‘dst_global_id’ [-Wunused-variable]
+  105 |                 uint32_t dst_global_id =
+      |                          ^~~~~~~~~~~~~
+scripts/host/generated_host.cpp:120:24: warning: ‘void* memcpy(void*, const void*, size_t)’ writing to an object of type ‘struct ap_uint<512>’ with no trivial copy-assignment; use copy-assignment or copy-initialization instead [-Wclass-memaccess]
+  120 |             std::memcpy(big_kernel_input_buffers[i].packed_edge_props.data(),
+      |             ~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  121 |                         temp_byte_buffer.data(), temp_byte_buffer.size());
+      |                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from /opt/Xilinx2024/Vitis_HLS/2024.1/include/etc/ap_fixed_base.h:16,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/ap_fixed.h:10,
+                 from scripts/host/common.h:9,
+                 from scripts/host/acc_setup/acc_setup.h:4,
+                 from scripts/host/generated_host.h:4,
+                 from scripts/host/generated_host.cpp:1:
+/opt/Xilinx2024/Vitis_HLS/2024.1/include/ap_int.h:181:8: note: ‘struct ap_uint<512>’ declared here
+  181 | struct ap_uint : ap_int_base<_AP_W, false> {
+      |        ^~~~~~~
+scripts/host/generated_host.cpp:150:24: warning: ‘void* memcpy(void*, const void*, size_t)’ writing to an object of type ‘struct ap_uint<512>’ with no trivial copy-assignment; use copy-assignment or copy-initialization instead [-Wclass-memaccess]
+  150 |             std::memcpy(big_kernel_input_buffers[i].packed_offsets.data(),
+      |             ~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  151 |                         temp_byte_buffer.data(), temp_byte_buffer.size());
+      |                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from /opt/Xilinx2024/Vitis_HLS/2024.1/include/etc/ap_fixed_base.h:16,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/ap_fixed.h:10,
+                 from scripts/host/common.h:9,
+                 from scripts/host/acc_setup/acc_setup.h:4,
+                 from scripts/host/generated_host.h:4,
+                 from scripts/host/generated_host.cpp:1:
+/opt/Xilinx2024/Vitis_HLS/2024.1/include/ap_int.h:181:8: note: ‘struct ap_uint<512>’ declared here
+  181 | struct ap_uint : ap_int_base<_AP_W, false> {
+      |        ^~~~~~~
+scripts/host/generated_host.cpp:188:24: warning: ‘void* memcpy(void*, const void*, size_t)’ writing to an object of type ‘struct ap_uint<512>’ with no trivial copy-assignment; use copy-assignment or copy-initialization instead [-Wclass-memaccess]
+  188 |             std::memcpy(little_kernel_input_buffers[i].packed_node_props.data(),
+      |             ~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  189 |                         temp_byte_buffer.data(), temp_byte_buffer.size());
+      |                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from /opt/Xilinx2024/Vitis_HLS/2024.1/include/etc/ap_fixed_base.h:16,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/ap_fixed.h:10,
+                 from scripts/host/common.h:9,
+                 from scripts/host/acc_setup/acc_setup.h:4,
+                 from scripts/host/generated_host.h:4,
+                 from scripts/host/generated_host.cpp:1:
+/opt/Xilinx2024/Vitis_HLS/2024.1/include/ap_int.h:181:8: note: ‘struct ap_uint<512>’ declared here
+  181 | struct ap_uint : ap_int_base<_AP_W, false> {
+      |        ^~~~~~~
+scripts/host/generated_host.cpp:198:34: warning: comparison of integer expressions of different signedness: ‘size_t’ {aka ‘long unsigned int’} and ‘const int’ [-Wsign-compare]
+  198 |             for (size_t j = 0; j < p_graph.num_edges; ++j) {
+      |                                ~~^~~~~~~~~~~~~~~~~~~
+scripts/host/generated_host.cpp:222:44: warning: comparison of integer expressions of different signedness: ‘const value_type’ {aka ‘const int’} and ‘size_t’ {aka ‘long unsigned int’} [-Wsign-compare]
+  222 |                     if (p_graph.offsets[v] <= j && j < p_graph.offsets[v + 1]) {
+scripts/host/generated_host.cpp:222:54: warning: comparison of integer expressions of different signedness: ‘size_t’ {aka ‘long unsigned int’} and ‘const value_type’ {aka ‘const int’} [-Wsign-compare]
+  222 |                     if (p_graph.offsets[v] <= j && j < p_graph.offsets[v + 1]) {
+scripts/host/generated_host.cpp:218:26: warning: variable ‘src_global_id’ set but not used [-Wunused-but-set-variable]
+  218 |                 uint32_t src_global_id = 0;
+      |                          ^~~~~~~~~~~~~
+scripts/host/generated_host.cpp:219:26: warning: unused variable ‘dst_global_id’ [-Wunused-variable]
+  219 |                 uint32_t dst_global_id =
+      |                          ^~~~~~~~~~~~~
+scripts/host/generated_host.cpp:234:24: warning: ‘void* memcpy(void*, const void*, size_t)’ writing to an object of type ‘struct ap_uint<512>’ with no trivial copy-assignment; use copy-assignment or copy-initialization instead [-Wclass-memaccess]
+  234 |             std::memcpy(little_kernel_input_buffers[i].packed_edge_props.data(),
+      |             ~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  235 |                         temp_byte_buffer.data(), temp_byte_buffer.size());
+      |                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from /opt/Xilinx2024/Vitis_HLS/2024.1/include/etc/ap_fixed_base.h:16,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/ap_fixed.h:10,
+                 from scripts/host/common.h:9,
+                 from scripts/host/acc_setup/acc_setup.h:4,
+                 from scripts/host/generated_host.h:4,
+                 from scripts/host/generated_host.cpp:1:
+/opt/Xilinx2024/Vitis_HLS/2024.1/include/ap_int.h:181:8: note: ‘struct ap_uint<512>’ declared here
+  181 | struct ap_uint : ap_int_base<_AP_W, false> {
+      |        ^~~~~~~
+scripts/host/generated_host.cpp:262:24: warning: ‘void* memcpy(void*, const void*, size_t)’ writing to an object of type ‘struct ap_uint<512>’ with no trivial copy-assignment; use copy-assignment or copy-initialization instead [-Wclass-memaccess]
+  262 |             std::memcpy(little_kernel_input_buffers[i].packed_offsets.data(),
+      |             ~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  263 |                         temp_byte_buffer.data(), temp_byte_buffer.size());
+      |                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from /opt/Xilinx2024/Vitis_HLS/2024.1/include/etc/ap_fixed_base.h:16,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/ap_fixed.h:10,
+                 from scripts/host/common.h:9,
+                 from scripts/host/acc_setup/acc_setup.h:4,
+                 from scripts/host/generated_host.h:4,
+                 from scripts/host/generated_host.cpp:1:
+/opt/Xilinx2024/Vitis_HLS/2024.1/include/ap_int.h:181:8: note: ‘struct ap_uint<512>’ declared here
+  181 | struct ap_uint : ap_int_base<_AP_W, false> {
+      |        ^~~~~~~
+scripts/host/generated_host.cpp: In member function ‘void AlgorithmHost::setup_buffers(const PartitionContainer&)’:
+scripts/host/generated_host.cpp:331:30: warning: comparison of integer expressions of different signedness: ‘size_t’ {aka ‘long unsigned int’} and ‘const int’ [-Wsign-compare]
+  331 |         for (size_t e = 0; e < p_graph.num_edges; ++e) {
+      |                            ~~^~~~~~~~~~~~~~~~~~~
+scripts/host/generated_host.cpp:333:21: warning: comparison of integer expressions of different signedness: ‘int’ and ‘size_t’ {aka ‘long unsigned int’} [-Wsign-compare]
+  333 |             if (dst > max_dst_local_id) {
+      |                 ~~~~^~~~~~~~~~~~~~~~~~
+scripts/host/generated_host.cpp:328:16: warning: unused variable ‘bits_per_output’ [-Wunused-variable]
+  328 |         size_t bits_per_output =
+      |                ^~~~~~~~~~~~~~~
+scripts/host/generated_host.cpp:411:30: warning: comparison of integer expressions of different signedness: ‘size_t’ {aka ‘long unsigned int’} and ‘const int’ [-Wsign-compare]
+  411 |         for (size_t e = 0; e < p_graph.num_edges; ++e) {
+      |                            ~~^~~~~~~~~~~~~~~~~~~
+scripts/host/generated_host.cpp:413:21: warning: comparison of integer expressions of different signedness: ‘int’ and ‘size_t’ {aka ‘long unsigned int’} [-Wsign-compare]
+  413 |             if (dst > max_dst_local_id) {
+      |                 ~~~~^~~~~~~~~~~~~~~~~~
+scripts/host/generated_host.cpp:408:16: warning: unused variable ‘bits_per_output’ [-Wunused-variable]
+  408 |         size_t bits_per_output =
+      |                ^~~~~~~~~~~~~~~
+scripts/host/generated_host.cpp: In member function ‘void AlgorithmHost::update_data(const PartitionContainer&)’:
+scripts/host/generated_host.cpp:492:24: warning: ‘void* memcpy(void*, const void*, size_t)’ writing to an object of type ‘struct ap_uint<512>’ with no trivial copy-assignment; use copy-assignment or copy-initialization instead [-Wclass-memaccess]
+  492 |             std::memcpy(big_kernel_input_buffers[i].packed_node_props.data(),
+      |             ~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  493 |                         temp_byte_buffer.data(), temp_byte_buffer.size());
+      |                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from /opt/Xilinx2024/Vitis_HLS/2024.1/include/etc/ap_fixed_base.h:16,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/ap_fixed.h:10,
+                 from scripts/host/common.h:9,
+                 from scripts/host/acc_setup/acc_setup.h:4,
+                 from scripts/host/generated_host.h:4,
+                 from scripts/host/generated_host.cpp:1:
+/opt/Xilinx2024/Vitis_HLS/2024.1/include/ap_int.h:181:8: note: ‘struct ap_uint<512>’ declared here
+  181 | struct ap_uint : ap_int_base<_AP_W, false> {
+      |        ^~~~~~~
+scripts/host/generated_host.cpp:528:24: warning: ‘void* memcpy(void*, const void*, size_t)’ writing to an object of type ‘struct ap_uint<512>’ with no trivial copy-assignment; use copy-assignment or copy-initialization instead [-Wclass-memaccess]
+  528 |             std::memcpy(little_kernel_input_buffers[i].packed_node_props.data(),
+      |             ~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  529 |                         temp_byte_buffer.data(), temp_byte_buffer.size());
+      |                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from /opt/Xilinx2024/Vitis_HLS/2024.1/include/etc/ap_fixed_base.h:16,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/ap_fixed.h:10,
+                 from scripts/host/common.h:9,
+                 from scripts/host/acc_setup/acc_setup.h:4,
+                 from scripts/host/generated_host.h:4,
+                 from scripts/host/generated_host.cpp:1:
+/opt/Xilinx2024/Vitis_HLS/2024.1/include/ap_int.h:181:8: note: ‘struct ap_uint<512>’ declared here
+  181 | struct ap_uint : ap_int_base<_AP_W, false> {
+      |        ^~~~~~~
+==> Compiling: scripts/host/graph_loader.cpp
+g++ -Iscripts/host -Iscripts/kernel -I/opt/xilinx/xrt/include -I/opt/Xilinx2024/Vitis/2024.1/include -I/opt/Xilinx2024/Vitis_HLS/2024.1/include -std=c++17 -Wall -g  -c scripts/host/graph_loader.cpp -o scripts/host/graph_loader.o
+In file included from /opt/Xilinx2024/Vitis_HLS/2024.1/include/hls_fpo.h:140,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/etc/hls_half_fpo.h:19,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/hls_half.h:26,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/etc/ap_private.h:68,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/etc/ap_common.h:658,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/ap_fixed.h:9,
+                 from scripts/host/common.h:9,
+                 from scripts/host/graph_loader.h:4,
+                 from scripts/host/graph_loader.cpp:1:
+/opt/Xilinx2024/Vitis_HLS/2024.1/include/floating_point_v7_1_bitacc_cmodel.h:10:1: warning: multi-line comment [-Wcomment]
+   10 | // \   \  /  \
+      | ^
+In file included from scripts/host/xcl2.h:34,
+                 from scripts/host/common.h:14,
+                 from scripts/host/graph_loader.h:4,
+                 from scripts/host/graph_loader.cpp:1:
+/usr/include/CL/cl2.hpp:18:151: note: ‘#pragma message: cl2.hpp has been renamed to opencl.hpp to make it clear that it supports all versions of OpenCL. Please include opencl.hpp directly.’
+   18 | #pragma message("cl2.hpp has been renamed to opencl.hpp to make it clear that it supports all versions of OpenCL. Please include opencl.hpp directly.")
+      |                                                                                                                                                       ^
+==> Compiling: scripts/host/fpga_executor.cpp
+g++ -Iscripts/host -Iscripts/kernel -I/opt/xilinx/xrt/include -I/opt/Xilinx2024/Vitis/2024.1/include -I/opt/Xilinx2024/Vitis_HLS/2024.1/include -std=c++17 -Wall -g  -c scripts/host/fpga_executor.cpp -o scripts/host/fpga_executor.o
+In file included from /opt/Xilinx2024/Vitis_HLS/2024.1/include/hls_fpo.h:140,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/etc/hls_half_fpo.h:19,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/hls_half.h:26,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/etc/ap_private.h:68,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/etc/ap_common.h:658,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/ap_fixed.h:9,
+                 from scripts/host/common.h:9,
+                 from scripts/host/fpga_executor.h:4,
+                 from scripts/host/fpga_executor.cpp:2:
+/opt/Xilinx2024/Vitis_HLS/2024.1/include/floating_point_v7_1_bitacc_cmodel.h:10:1: warning: multi-line comment [-Wcomment]
+   10 | // \   \  /  \
+      | ^
+In file included from scripts/host/xcl2.h:34,
+                 from scripts/host/common.h:14,
+                 from scripts/host/fpga_executor.h:4,
+                 from scripts/host/fpga_executor.cpp:2:
+/usr/include/CL/cl2.hpp:18:151: note: ‘#pragma message: cl2.hpp has been renamed to opencl.hpp to make it clear that it supports all versions of OpenCL. Please include opencl.hpp directly.’
+   18 | #pragma message("cl2.hpp has been renamed to opencl.hpp to make it clear that it supports all versions of OpenCL. Please include opencl.hpp directly.")
+      |                                                                                                                                                       ^
+==> Compiling: scripts/host/host.cpp
+g++ -Iscripts/host -Iscripts/kernel -I/opt/xilinx/xrt/include -I/opt/Xilinx2024/Vitis/2024.1/include -I/opt/Xilinx2024/Vitis_HLS/2024.1/include -std=c++17 -Wall -g  -c scripts/host/host.cpp -o scripts/host/host.o
+In file included from /opt/Xilinx2024/Vitis_HLS/2024.1/include/hls_fpo.h:140,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/etc/hls_half_fpo.h:19,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/hls_half.h:26,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/etc/ap_private.h:68,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/etc/ap_common.h:658,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/ap_fixed.h:9,
+                 from scripts/host/common.h:9,
+                 from scripts/host/host.cpp:1:
+/opt/Xilinx2024/Vitis_HLS/2024.1/include/floating_point_v7_1_bitacc_cmodel.h:10:1: warning: multi-line comment [-Wcomment]
+   10 | // \   \  /  \
+      | ^
+In file included from scripts/host/xcl2.h:34,
+                 from scripts/host/common.h:14,
+                 from scripts/host/host.cpp:1:
+/usr/include/CL/cl2.hpp:18:151: note: ‘#pragma message: cl2.hpp has been renamed to opencl.hpp to make it clear that it supports all versions of OpenCL. Please include opencl.hpp directly.’
+   18 | #pragma message("cl2.hpp has been renamed to opencl.hpp to make it clear that it supports all versions of OpenCL. Please include opencl.hpp directly.")
+      |                                                                                                                                                       ^
+==> Compiling: scripts/host/host_bellman_ford.cpp
+g++ -Iscripts/host -Iscripts/kernel -I/opt/xilinx/xrt/include -I/opt/Xilinx2024/Vitis/2024.1/include -I/opt/Xilinx2024/Vitis_HLS/2024.1/include -std=c++17 -Wall -g  -c scripts/host/host_bellman_ford.cpp -o scripts/host/host_bellman_ford.o
+In file included from /opt/Xilinx2024/Vitis_HLS/2024.1/include/hls_fpo.h:140,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/etc/hls_half_fpo.h:19,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/hls_half.h:26,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/etc/ap_private.h:68,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/etc/ap_common.h:658,
+                 from /opt/Xilinx2024/Vitis_HLS/2024.1/include/ap_fixed.h:9,
+                 from scripts/host/common.h:9,
+                 from scripts/host/host_bellman_ford.h:4,
+                 from scripts/host/host_bellman_ford.cpp:1:
+/opt/Xilinx2024/Vitis_HLS/2024.1/include/floating_point_v7_1_bitacc_cmodel.h:10:1: warning: multi-line comment [-Wcomment]
+   10 | // \   \  /  \
+      | ^
+In file included from scripts/host/xcl2.h:34,
+                 from scripts/host/common.h:14,
+                 from scripts/host/host_bellman_ford.h:4,
+                 from scripts/host/host_bellman_ford.cpp:1:
+/usr/include/CL/cl2.hpp:18:151: note: ‘#pragma message: cl2.hpp has been renamed to opencl.hpp to make it clear that it supports all versions of OpenCL. Please include opencl.hpp directly.’
+   18 | #pragma message("cl2.hpp has been renamed to opencl.hpp to make it clear that it supports all versions of OpenCL. Please include opencl.hpp directly.")
+      |                                                                                                                                                       ^
+==> Linking executable: graphyflow_host
+g++ scripts/host/xcl2.o scripts/host/acc_setup/acc_setup.o scripts/host/host_verifier.o scripts/host/generated_host.o scripts/host/graph_loader.o scripts/host/fpga_executor.o scripts/host/host.o scripts/host/graph_preprocess/graph_preprocess.o scripts/host/host_bellman_ford.o -o graphyflow_host -L/opt/xilinx/xrt/lib -lOpenCL -lxrt_coreutil -lstdc++ -lrt -pthread -Wl,--export-dynamic
+emconfigutil --platform /opt/xilinx/platforms/xilinx_u55c_gen3x16_xdma_3_202210_1/xilinx_u55c_gen3x16_xdma_3_202210_1.xpfm --od .
+
+****** configutil v2024.1 (64-bit)
+  **** SW Build 5074859 on 2024-05-20-23:21:20
+  **** Start of session at: Wed Oct 15 00:38:49 2025
+    ** Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.
+    ** Copyright 2022-2024 Advanced Micro Devices, Inc. All Rights Reserved.
+
+INFO: [ConfigUtil 60-895]   Target platform: /opt/xilinx/platforms/xilinx_u55c_gen3x16_xdma_3_202210_1/xilinx_u55c_gen3x16_xdma_3_202210_1.xpfm
+INFO: [ConfigUtil 60-1578]   This platform contains Xilinx Shell Archive '/opt/xilinx/platforms/xilinx_u55c_gen3x16_xdma_3_202210_1/hw/hw.xsa'
+INFO: [ConfigUtil 60-1032] Extracting hardware platform to .
+emulation configuration file `emconfig.json` is created in . directory 

@@ -39,7 +39,8 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
     PartitionContainer container;
     container.num_graph_vertices = graph->num_vertices;
     container.num_graph_edges = graph->num_edges;
-
+    printf("Global graph has %d vertices and %d edges.\n", graph->num_vertices,
+           graph->num_edges);
     const int num_partitions = BIG_KERNEL_NUM + LITTLE_KERNEL_NUM;
     if (num_partitions == 0) {
         std::cerr << "Error: No kernels defined (BIG_KERNEL_NUM and "

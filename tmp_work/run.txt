@@ -1,0 +1,235 @@
+--- Running for target: sw_emu ---
+Autocomplete enabled for the xrt-smi command
+Autocomplete enabled for the xbmgmt command
+XILINX_XRT        : /opt/xilinx/xrt
+PATH              : /opt/xilinx/xrt/bin:/opt/Xilinx2024/Vitis_HLS/2024.1/bin:/opt/Xilinx2024/Vivado/2024.1/bin:/opt/Xilinx2024/Model_Composer/2024.1/bin:/opt/Xilinx2024/Vitis/2024.1/bin:/opt/Xilinx2024/Vitis/2024.1/gnu/microblaze/lin/bin:/opt/Xilinx2024/Vitis/2024.1/gnu/microblaze/linux_toolchain/lin64_le/bin:/opt/Xilinx2024/Vitis/2024.1/gnu/aarch32/lin/gcc-arm-linux-gnueabi/bin:/opt/Xilinx2024/Vitis/2024.1/gnu/aarch32/lin/gcc-arm-none-eabi/bin:/opt/Xilinx2024/Vitis/2024.1/gnu/aarch64/lin/aarch64-linux/bin:/opt/Xilinx2024/Vitis/2024.1/gnu/aarch64/lin/aarch64-none/bin:/opt/Xilinx2024/Vitis/2024.1/gnu/armr5/lin/gcc-arm-none-eabi/bin:/opt/Xilinx2024/Vitis/2024.1/aietools/bin:/opt/Xilinx2024/Vitis/2024.1/gnu/riscv/lin/riscv64-unknown-elf/bin:/opt/xilinx/xrt/bin:/opt/Xilinx2024/Vitis_HLS/2024.1/bin:/opt/Xilinx2024/Vivado/2024.1/bin:/opt/Xilinx2024/Model_Composer/2024.1/bin:/opt/Xilinx2024/Vitis/2024.1/bin:/opt/Xilinx2024/Vitis/2024.1/gnu/microblaze/lin/bin:/opt/Xilinx2024/Vitis/2024.1/gnu/microblaze/linux_toolchain/lin64_le/bin:/opt/Xilinx2024/Vitis/2024.1/gnu/aarch32/lin/gcc-arm-linux-gnueabi/bin:/opt/Xilinx2024/Vitis/2024.1/gnu/aarch32/lin/gcc-arm-none-eabi/bin:/opt/Xilinx2024/Vitis/2024.1/gnu/aarch64/lin/aarch64-linux/bin:/opt/Xilinx2024/Vitis/2024.1/gnu/aarch64/lin/aarch64-none/bin:/opt/Xilinx2024/Vitis/2024.1/gnu/armr5/lin/gcc-arm-none-eabi/bin:/opt/Xilinx2024/Vitis/2024.1/aietools/bin:/opt/Xilinx2024/Vitis/2024.1/gnu/riscv/lin/riscv64-unknown-elf/bin:/home/feiyang/.local/bin:/home/feiyang/Matlab/bin:/home/feiyang/.vscode-server/bin/03c265b1adee71ac88f833e065f7bb956b60550a/bin/remote-cli:/home/feiyang/.local/bin:/home/feiyang/Matlab/bin:/home/feiyang/.local/bin:/home/feiyang/Matlab/bin:/home/feiyang/miniconda3/bin:/home/feiyang/miniconda3/condabin:/home/feiyang/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/usr/lib/wsl/lib:/mnt/c/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.0/bin/x64:/mnt/c/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.0/bin:/mnt/c/windows/system32:/mnt/c/windows:/mnt/c/windows/System32/Wbem:/mnt/c/windows/System32/WindowsPowerShell/v1.0:/mnt/c/windows/System32/OpenSSH:/mnt/c/Program Files/dotnet:/mnt/c/Program Files/Tailscale:/mnt/c/Program Files/NVIDIA Corporation/NVIDIA App/NvDLISR:/mnt/c/Program Files (x86)/NVIDIA Corporation/PhysX/Common:/mnt/c/Program Files/NVIDIA Corporation/Nsight Compute 2025.3.0:/mnt/c/Program Files/Git/cmd:/mnt/c/Program Files/CMake/bin:/mnt/c/Users/13086/AppData/Local/Microsoft/WindowsApps:/mnt/c/Users/13086/AppData/Local/Programs/Microsoft VS Code/bin:/mnt/c/Users/13086/AppData/Local/Programs/Kiro/bin:/mnt/c/MinGW/bin:/snap/bin:/home/feiyang/.vscode-server/data/User/globalStorage/github.copilot-chat/debugCommand
+LD_LIBRARY_PATH   : /opt/xilinx/xrt/lib:/opt/xilinx/xrt/lib
+PYTHONPATH        : /opt/xilinx/xrt/python:/opt/xilinx/xrt/python
+XCL_EMULATION_MODE set to: sw_emu
+--- Step 1: Loading Graph Data ---
+Detected .txt format (0-based indexing).
+Graph loaded: 288 vertices, 776 edges.
+
+--- Step 2: Running on FPGA ---
+--- Starting Graph Partitioning and Preprocessing ---
+Global graph has 288 vertices and 776 edges.
+[INFO] Total partitions to create: 1
+[PHASE 1] Found 288 unique destination vertices.
+[PHASE 2] Partition 0 assigned 288 destination vertices.
+[PHASE 3] All edges have been assigned to their respective partitions.
+[PHASE 4] Processing each partition...
+  - Processed Partition 0: 288 local vertices, 776 edges.
+[SUCCESS] Graph partitioning and preprocessing complete.
+Found Platform
+Platform Name: Xilinx
+INFO: Reading ./xclbin/graphyflow_kernels.sw_emu.xclbin
+Loading: './xclbin/graphyflow_kernels.sw_emu.xclbin'
+Attempting to program device: xilinx_u55c_gen3x16_xdma_3_202210_1
+Device program successful!
+Creating a big kernel [graphyflow_big:{graphyflow_big_1}] for CU(1)
+--- [Host] Phase 0: Preparing data structures ---
+--- [Host] Phase 1: Setting up HBM buffers for all kernels ---
+[SUCCESS] HBM buffers created for 1 big and 0 little kernels.
+
+Starting FPGA execution...
+--- [Host] Phase 2.1: Updating host-side data for new iteration ---
+[SUCCESS] Host-side data updated for new iteration.
+--- [Host] Phase 2: Packing and transferring data to HBM ---
+[SUCCESS] All data packed and transferred for current iteration.
+--- [Host] Phase 3: Enqueuing kernel tasks ---
+[SUCCESS] All kernel tasks enqueued for one iteration.
+--- [Host] Phase 4: Transferring results from HBM ---
+[SUCCESS] All results transferred from HBM.
+FPGA Iteration 0: Big Kernel 0, Time = 21.8167 ms, Throughput = 0.035569 MTEPS
+FPGA Iteration 0: Time = 21.8167 ms, Throughput = 0.035569 MTEPS
+--- [Host] Phase 5: Unpacking results and checking for convergence ---
+[INFO] Distances updated. Preparing for next iteration.
+--- [Host] Phase 2.1: Updating host-side data for new iteration ---
+[SUCCESS] Host-side data updated for new iteration.
+--- [Host] Phase 2: Packing and transferring data to HBM ---
+[SUCCESS] All data packed and transferred for current iteration.
+--- [Host] Phase 3: Enqueuing kernel tasks ---
+[SUCCESS] All kernel tasks enqueued for one iteration.
+--- [Host] Phase 4: Transferring results from HBM ---
+[SUCCESS] All results transferred from HBM.
+FPGA Iteration 1: Big Kernel 0, Time = 19.3412 ms, Throughput = 0.0401217 MTEPS
+FPGA Iteration 1: Time = 21.8167 ms, Throughput = 0.035569 MTEPS
+--- [Host] Phase 5: Unpacking results and checking for convergence ---
+[INFO] Distances updated. Preparing for next iteration.
+--- [Host] Phase 2.1: Updating host-side data for new iteration ---
+[SUCCESS] Host-side data updated for new iteration.
+--- [Host] Phase 2: Packing and transferring data to HBM ---
+[SUCCESS] All data packed and transferred for current iteration.
+--- [Host] Phase 3: Enqueuing kernel tasks ---
+[SUCCESS] All kernel tasks enqueued for one iteration.
+--- [Host] Phase 4: Transferring results from HBM ---
+[SUCCESS] All results transferred from HBM.
+FPGA Iteration 2: Big Kernel 0, Time = 19.5712 ms, Throughput = 0.0396502 MTEPS
+FPGA Iteration 2: Time = 21.8167 ms, Throughput = 0.035569 MTEPS
+--- [Host] Phase 5: Unpacking results and checking for convergence ---
+[INFO] Distances updated. Preparing for next iteration.
+--- [Host] Phase 2.1: Updating host-side data for new iteration ---
+[SUCCESS] Host-side data updated for new iteration.
+--- [Host] Phase 2: Packing and transferring data to HBM ---
+[SUCCESS] All data packed and transferred for current iteration.
+--- [Host] Phase 3: Enqueuing kernel tasks ---
+[SUCCESS] All kernel tasks enqueued for one iteration.
+--- [Host] Phase 4: Transferring results from HBM ---
+[SUCCESS] All results transferred from HBM.
+FPGA Iteration 3: Big Kernel 0, Time = 21.3739 ms, Throughput = 0.0363059 MTEPS
+FPGA Iteration 3: Time = 21.8167 ms, Throughput = 0.035569 MTEPS
+--- [Host] Phase 5: Unpacking results and checking for convergence ---
+[INFO] Distances updated. Preparing for next iteration.
+--- [Host] Phase 2.1: Updating host-side data for new iteration ---
+[SUCCESS] Host-side data updated for new iteration.
+--- [Host] Phase 2: Packing and transferring data to HBM ---
+[SUCCESS] All data packed and transferred for current iteration.
+--- [Host] Phase 3: Enqueuing kernel tasks ---
+[SUCCESS] All kernel tasks enqueued for one iteration.
+--- [Host] Phase 4: Transferring results from HBM ---
+[SUCCESS] All results transferred from HBM.
+FPGA Iteration 4: Big Kernel 0, Time = 19.8859 ms, Throughput = 0.0390227 MTEPS
+FPGA Iteration 4: Time = 21.8167 ms, Throughput = 0.035569 MTEPS
+--- [Host] Phase 5: Unpacking results and checking for convergence ---
+[INFO] Distances updated. Preparing for next iteration.
+--- [Host] Phase 2.1: Updating host-side data for new iteration ---
+[SUCCESS] Host-side data updated for new iteration.
+--- [Host] Phase 2: Packing and transferring data to HBM ---
+[SUCCESS] All data packed and transferred for current iteration.
+--- [Host] Phase 3: Enqueuing kernel tasks ---
+[SUCCESS] All kernel tasks enqueued for one iteration.
+--- [Host] Phase 4: Transferring results from HBM ---
+[SUCCESS] All results transferred from HBM.
+FPGA Iteration 5: Big Kernel 0, Time = 19.6497 ms, Throughput = 0.0394916 MTEPS
+FPGA Iteration 5: Time = 21.8167 ms, Throughput = 0.035569 MTEPS
+--- [Host] Phase 5: Unpacking results and checking for convergence ---
+[INFO] Distances updated. Preparing for next iteration.
+--- [Host] Phase 2.1: Updating host-side data for new iteration ---
+[SUCCESS] Host-side data updated for new iteration.
+--- [Host] Phase 2: Packing and transferring data to HBM ---
+[SUCCESS] All data packed and transferred for current iteration.
+--- [Host] Phase 3: Enqueuing kernel tasks ---
+[SUCCESS] All kernel tasks enqueued for one iteration.
+--- [Host] Phase 4: Transferring results from HBM ---
+[SUCCESS] All results transferred from HBM.
+FPGA Iteration 6: Big Kernel 0, Time = 28.9411 ms, Throughput = 0.0268131 MTEPS
+FPGA Iteration 6: Time = 28.9411 ms, Throughput = 0.0268131 MTEPS
+--- [Host] Phase 5: Unpacking results and checking for convergence ---
+[INFO] Distances updated. Preparing for next iteration.
+--- [Host] Phase 2.1: Updating host-side data for new iteration ---
+[SUCCESS] Host-side data updated for new iteration.
+--- [Host] Phase 2: Packing and transferring data to HBM ---
+[SUCCESS] All data packed and transferred for current iteration.
+--- [Host] Phase 3: Enqueuing kernel tasks ---
+[SUCCESS] All kernel tasks enqueued for one iteration.
+--- [Host] Phase 4: Transferring results from HBM ---
+[SUCCESS] All results transferred from HBM.
+FPGA Iteration 7: Big Kernel 0, Time = 21.3557 ms, Throughput = 0.036337 MTEPS
+FPGA Iteration 7: Time = 28.9411 ms, Throughput = 0.0268131 MTEPS
+--- [Host] Phase 5: Unpacking results and checking for convergence ---
+[INFO] Distances updated. Preparing for next iteration.
+--- [Host] Phase 2.1: Updating host-side data for new iteration ---
+[SUCCESS] Host-side data updated for new iteration.
+--- [Host] Phase 2: Packing and transferring data to HBM ---
+[SUCCESS] All data packed and transferred for current iteration.
+--- [Host] Phase 3: Enqueuing kernel tasks ---
+[SUCCESS] All kernel tasks enqueued for one iteration.
+--- [Host] Phase 4: Transferring results from HBM ---
+[SUCCESS] All results transferred from HBM.
+FPGA Iteration 8: Big Kernel 0, Time = 19.6547 ms, Throughput = 0.0394816 MTEPS
+FPGA Iteration 8: Time = 28.9411 ms, Throughput = 0.0268131 MTEPS
+--- [Host] Phase 5: Unpacking results and checking for convergence ---
+[INFO] Distances updated. Preparing for next iteration.
+--- [Host] Phase 2.1: Updating host-side data for new iteration ---
+[SUCCESS] Host-side data updated for new iteration.
+--- [Host] Phase 2: Packing and transferring data to HBM ---
+[SUCCESS] All data packed and transferred for current iteration.
+--- [Host] Phase 3: Enqueuing kernel tasks ---
+[SUCCESS] All kernel tasks enqueued for one iteration.
+--- [Host] Phase 4: Transferring results from HBM ---
+[SUCCESS] All results transferred from HBM.
+FPGA Iteration 9: Big Kernel 0, Time = 23.9707 ms, Throughput = 0.0323728 MTEPS
+FPGA Iteration 9: Time = 28.9411 ms, Throughput = 0.0268131 MTEPS
+--- [Host] Phase 5: Unpacking results and checking for convergence ---
+[INFO] Distances updated. Preparing for next iteration.
+--- [Host] Phase 2.1: Updating host-side data for new iteration ---
+[SUCCESS] Host-side data updated for new iteration.
+--- [Host] Phase 2: Packing and transferring data to HBM ---
+[SUCCESS] All data packed and transferred for current iteration.
+--- [Host] Phase 3: Enqueuing kernel tasks ---
+[SUCCESS] All kernel tasks enqueued for one iteration.
+--- [Host] Phase 4: Transferring results from HBM ---
+[SUCCESS] All results transferred from HBM.
+FPGA Iteration 10: Big Kernel 0, Time = 20.0352 ms, Throughput = 0.0387318 MTEPS
+FPGA Iteration 10: Time = 28.9411 ms, Throughput = 0.0268131 MTEPS
+--- [Host] Phase 5: Unpacking results and checking for convergence ---
+[INFO] Distances updated. Preparing for next iteration.
+--- [Host] Phase 2.1: Updating host-side data for new iteration ---
+[SUCCESS] Host-side data updated for new iteration.
+--- [Host] Phase 2: Packing and transferring data to HBM ---
+[SUCCESS] All data packed and transferred for current iteration.
+--- [Host] Phase 3: Enqueuing kernel tasks ---
+[SUCCESS] All kernel tasks enqueued for one iteration.
+--- [Host] Phase 4: Transferring results from HBM ---
+[SUCCESS] All results transferred from HBM.
+FPGA Iteration 11: Big Kernel 0, Time = 18.6488 ms, Throughput = 0.0416113 MTEPS
+FPGA Iteration 11: Time = 28.9411 ms, Throughput = 0.0268131 MTEPS
+--- [Host] Phase 5: Unpacking results and checking for convergence ---
+[INFO] No distance updates. Algorithm has converged.
+FPGA computation converged after 12 iteration(s).
+Kernel Name: graphyflow_big_1, CU Number: 0, Thread creation status: success
+Kernel Name: graphyflow_big_2, CU Number: 1, Thread creation status: success
+Kernel Name: graphyflow_big_3, CU Number: 2, Thread creation status: success
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Start
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Running
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Idle
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Start
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Running
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Idle
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Start
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Running
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Idle
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Start
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Running
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Idle
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Start
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Running
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Idle
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Start
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Running
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Idle
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Start
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Running
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Idle
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Start
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Running
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Idle
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Start
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Running
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Idle
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Start
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Running
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Idle
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Start
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Running
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Idle
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Start
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Running
+Kernel Name: graphyflow_big_1, CU Number: 0, State: Idle
+device process sw_emu_device done
+Kernel Name: graphyflow_big_1, CU Number: 0, Status: Shutdown
+Kernel Name: graphyflow_big_2, CU Number: 1, Status: Shutdown
+Kernel Name: graphyflow_big_3, CU Number: 2, Status: Shutdown
+INFO [HLS SIM]: The maximum depth reached by any hls::stream() instance in the design is 289
+
+--- Step 3: Verifying on Host CPU ---
+
+Starting Host verification...
+Host computation converged after 6 iterations.
+
+--- Step 4: Comparing Results ---
+
+--- Final Report ---
+SUCCESS: Results match!
+Total FPGA Kernel Execution Time: 28.9411 ms
+Total MTEPS (Edges / Total Time): 0.321757 MTEPS

@@ -70,18 +70,18 @@ AccDescriptor initAccelerator(const std::string xclbin_path) {
         }
 
         // 创建 acc.num_little_krnl 个 "graphyflow_little" 内核实例 ---
-        for (int i = 0; i < acc.num_little_krnl; i++) {
-            std::string cu_id = std::to_string(i + 1);
-            std::string krnl_name_full = std::string("graphyflow_little:{") +
-                                         "graphyflow_little_" + cu_id + "}";
+        // for (int i = 0; i < acc.num_little_krnl; i++) {
+        //     std::string cu_id = std::to_string(i + 1);
+        //     std::string krnl_name_full = std::string("graphyflow_little:{") +
+        //                                  "graphyflow_little_" + cu_id + "}";
 
-            cl::Kernel tmp_gs_krnl;
-            printf("Creating a little kernel [%s] for CU(%d)\n",
-                   krnl_name_full.c_str(), i + 1);
-            OCL_CHECK(err, tmp_gs_krnl = cl::Kernel(
-                               program, krnl_name_full.c_str(), &err));
-            acc.little_gs_krnls.push_back(tmp_gs_krnl);
-        }
+        //     cl::Kernel tmp_gs_krnl;
+        //     printf("Creating a little kernel [%s] for CU(%d)\n",
+        //            krnl_name_full.c_str(), i + 1);
+        //     OCL_CHECK(err, tmp_gs_krnl = cl::Kernel(
+        //                        program, krnl_name_full.c_str(), &err));
+        //     acc.little_gs_krnls.push_back(tmp_gs_krnl);
+        // }
     }
 
     return acc;
