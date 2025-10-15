@@ -99,13 +99,14 @@ LOOP_EDL_READ:
                 edge.node_id = packed_edge.range(NODE_ID_BITWIDTH - 1, 0);
                 edge.prop =
                     packed_edge.range(bits_per_edge - 1, NODE_ID_BITWIDTH);
-                
+
                 edge_batch.edges[j] = edge;
             }
         }
         edges_read += edges_per_word;
-        edge_batch.end_pos = (edges_read < num_edges) ? edges_per_word
-                                                    : (num_edges % edges_per_word);
+        edge_batch.end_pos = (edges_read < num_edges)
+                                 ? edges_per_word
+                                 : (num_edges % edges_per_word);
         edge_stream.write(edge_batch);
         edge_batch.end_pos = 0;
     }
@@ -708,7 +709,7 @@ LOOP_WHILE_26:
     }
 }
 
-inline distance_t get_val(reduce_word_t word, int idx) {
+inline ap_fixed_pod_t get_raw_val(reduce_word_t word, int idx) {
 #pragma HLS INLINE
     ap_uint<DISTANCE_BITWIDTH> bits;
     switch (idx) {
@@ -726,8 +727,14 @@ inline distance_t get_val(reduce_word_t word, int idx) {
         bits = 0;
         break;
     }
-    // Convert bits back to distance_t (floating point)
-    return *reinterpret_cast<distance_t *>(&bits);
+    return bits;
+}
+
+inline distance_t get_val(reduce_word_t word, int idx) {
+#pragma HLS INLINE
+    ap_fixed_pod_t raw_val = get_raw_val(word, idx);
+    distance_t val = *reinterpret_cast<distance_t *>(&raw_val);
+    return val;
 }
 
 inline void set_val(reduce_word_t &word, int idx, distance_t val) {
@@ -752,8 +759,7 @@ inline void set_val(reduce_word_t &word, int idx, distance_t val) {
 
 static void Reduc_105_unit_reduce(
     hls::stream<net_wrapper_kt_pair_105_t_t> (&kt_wrap_item)[PE_NUM],
-    hls::stream<internal_end_data_batch_t> &o_0,
-    int32_t dst_num) {
+    hls::stream<internal_end_data_batch_t> &o_0, int32_t dst_num) {
     // --- Phase 1: Memory Declaration ---
 
     // URAM for packed distance data (3 distances per 72-bit word)
@@ -870,14 +876,17 @@ LOOP_AGGREGATE:
                     distance_t new_dist_fp;
                     distance_t incoming_dist_fp =
                         *reinterpret_cast<distance_t *>(&incoming_dist_pod);
-                    
-                    // printf("[BIG] PE %d processing key %d (word_addr %d, pack_idx %d) with incoming_dist %f\n", pe, key, word_addr, pack_idx, (float)incoming_dist_fp);
+
+                    // printf("[BIG] PE %d processing key %d (word_addr %d,
+                    // pack_idx %d) with incoming_dist %f\n", pe, key,
+                    // word_addr, pack_idx, (float)incoming_dist_fp);
                     // fflush(NULL);
 
                     if (is_valid) {
                         distance_t old_dist_fp =
                             get_val(current_word, pack_idx);
-                        // printf("[BIG]  Old distance: %f\n", (float)old_dist_fp);
+                        // printf("[BIG]  Old distance: %f\n",
+                        // (float)old_dist_fp);
                         new_dist_fp = (old_dist_fp < incoming_dist_fp)
                                           ? old_dist_fp
                                           : incoming_dist_fp;
@@ -914,11 +923,12 @@ LOOP_AGGREGATE:
 #pragma HLS ARRAY_PARTITION variable = data_pack.data complete dim = 0
     data_pack.end_flag = 0;
 
+    const int32_t num_keys_per_pe = (dst_num + PE_NUM - 1) >> LOG_PE_NUM;
     int real_addr = 0;
 
 LOOP_DRAIN_ADDR:
-    const int32_t mem_real_size = (dst_num + DISTANCES_PER_REDUCE_WORD - 1) /
-                                       DISTANCES_PER_REDUCE_WORD;
+    const int32_t mem_real_size =
+        (dst_num + DISTANCES_PER_REDUCE_WORD - 1) / DISTANCES_PER_REDUCE_WORD;
     for (int addr = 0; addr < mem_real_size; addr++) {
         reduce_word_t words[PE_NUM];
 #pragma HLS ARRAY_PARTITION variable = words complete dim = 0
@@ -932,21 +942,25 @@ LOOP_DRAIN_ADDR:
              pack_idx++) {
 #pragma HLS PIPELINE II = 1
             int key = real_addr + pack_idx;
-            if (key >= (dst_num >> LOG_PE_NUM))
+            if (key >= num_keys_per_pe) {
                 break;
+            }
             const int large_key_base = key << LOG_PE_NUM;
 
-            uint32_t prefix_sum = (key == (dst_num >> LOG_PE_NUM) - 1)
-                                      ? PE_NUM
-                                      : dst_num & (PE_NUM - 1);
         LOOP_DRAIN_PES:
             for (int pe = 0; pe < PE_NUM; pe++) {
 #pragma HLS UNROLL
-                ap_fixed_pod_t dist_pod = get_val(words[pe], pack_idx);
+                ap_fixed_pod_t dist_pod = get_raw_val(words[pe], pack_idx);
                 data_pack.data[pe].node_id = large_key_base | pe;
                 data_pack.data[pe].prop = dist_pod;
+                // printf("[BIG] Outputting node_id %d with distance %f\n",
+                // data_pack.data[pe].node_id,
+                // (float)*reinterpret_cast<distance_t*>(&dist_pod));
+                // fflush(NULL);
             }
-            data_pack.end_pos = prefix_sum;
+            const int remaining_nodes = dst_num - large_key_base;
+            data_pack.end_pos =
+                (remaining_nodes < PE_NUM) ? remaining_nodes : PE_NUM;
             o_0.write(data_pack);
         }
         real_addr += DISTANCES_PER_REDUCE_WORD;
@@ -1143,16 +1157,19 @@ LOOP_WHILE_52:
     for (uint32_t in_node_base_id = 0; in_node_base_id < dst_num;
          in_node_base_id += PE_NUM) {
 #pragma HLS PIPELINE II = 1
-#pragma HLS expression_balance
         in_dist_batch = i_all_node_distances.read();
         for (uint32_t i = 0; i < PE_NUM; i++) {
 #pragma HLS UNROLL
-            out_dist_batch.data[i] =
-                in_dist_batch.data[i]; // Direct copy
+            out_dist_batch.data[i] = in_dist_batch.data[i]; // Direct copy
+            // printf("[BIG] Reading node_id %d with distance %f\n",
+            // in_node_base_id + i,
+            // (float)*reinterpret_cast<distance_t*>(&out_dist_batch.data[i]));
+            // fflush(NULL);
         }
-        out_dist_batch.end_pos = (in_node_base_id + PE_NUM > dst_num)
-                                     ? (dst_num & (PE_NUM - 1))
-                                     : PE_NUM;
+        const int remaining_nodes = dst_num - in_node_base_id;
+        out_dist_batch.end_pos =
+            (remaining_nodes < PE_NUM) ? remaining_nodes : PE_NUM;
+
         o_0_node_distance.write(out_dist_batch);
     }
     // Send the final (empty) output batch with the end flag
@@ -1211,7 +1228,8 @@ LOOP_WHILE_53:
 //             in_dist_batch = i_all_node_distances.read();
 //             uint32_t batch_len = in_dist_batch.end_pos;
 //             in_node_end_id = (in_node_base_id + batch_len);
-// #pragma HLS BIND_OP variable = in_node_end_id op = add impl = fabric latency = 0
+// #pragma HLS BIND_OP variable = in_node_end_id op = add impl = fabric latency
+// = 0
 //             continue;
 //         }
 //         // Target found, calculate index and copy distance
@@ -1224,8 +1242,8 @@ LOOP_WHILE_53:
 //     final_batch.end_flag = true;
 //     final_batch.end_pos = 0;
 //     o_0_node_distance.write(final_batch);
-// // Drain any remaining batches from the all_distances stream to prevent deadlock
-// LOOP_WHILE_53:
+// // Drain any remaining batches from the all_distances stream to prevent
+// deadlock LOOP_WHILE_53:
 //     while ((!in_dist_batch.end_flag)) {
 //         in_dist_batch = i_all_node_distances.read();
 //     }
@@ -1407,14 +1425,14 @@ static void graphyflow_big_dataflow(
 #pragma HLS STREAM variable = stream_o_0_edge_weight_278 depth = 4
     hls::stream<struct_abu_9_t> stream_o_0_node_distance_300;
 #pragma HLS STREAM variable = stream_o_0_node_distance_300 depth = 4
-//     hls::stream<struct_nbu_11_t> stream_o_1_309;
-// #pragma HLS STREAM variable = stream_o_1_309 depth = 4
+    //     hls::stream<struct_nbu_11_t> stream_o_1_309;
+    // #pragma HLS STREAM variable = stream_o_1_309 depth = 4
     hls::stream<struct_abu_9_t> stream_o_0_304;
 #pragma HLS STREAM variable = stream_o_0_304 depth = 4
     hls::stream<struct_nbu_11_t> stream_o_1_305;
 #pragma HLS STREAM variable = stream_o_1_305 depth = 4
-//     hls::stream<struct_nbu_11_t> stream_o_0_308;
-// #pragma HLS STREAM variable = stream_o_0_308 depth = 4
+    //     hls::stream<struct_nbu_11_t> stream_o_0_308;
+    // #pragma HLS STREAM variable = stream_o_0_308 depth = 4
     // --- Function Calls (in topological order) ---
     Memor_274(response_to_318, stream_o_0_edge_src_distance_275,
               stream_o_0_edge_dst_277, stream_o_0_edge_weight_278);
@@ -1435,8 +1453,7 @@ static void graphyflow_big_dataflow(
     // --- End of Reduce Super-Block for Reduc_105 ---
     Scatt_302(stream_o_0_107, stream_o_0_304, stream_o_1_305);
     // CopyC_306(stream_o_1_305, stream_o_0_308, stream_o_1_309);
-    Memor_299(all_node_distances_to_343, stream_o_0_node_distance_300,
-              dst_num);
+    Memor_299(all_node_distances_to_343, stream_o_0_node_distance_300, dst_num);
     fused_op_294(stream_o_0_304, stream_o_0_node_distance_300, stream_o_1_305,
                  internal_end_stream);
 }
@@ -1455,7 +1472,8 @@ static void graphyflow_big_dataflow(
 extern "C" void graphyflow_big(const bus_word_t *src_offsets,
                                const bus_word_t *edge_props,
                                const bus_word_t *node_props, bus_word_t *output,
-                               int32_t num_nodes, int32_t num_edges, int32_t dst_num) {
+                               int32_t num_nodes, int32_t num_edges,
+                               int32_t dst_num) {
 #pragma HLS INTERFACE m_axi port = src_offsets offset = slave bundle = gmem0
 #pragma HLS INTERFACE m_axi port = edge_props offset = slave bundle = gmem1
 #pragma HLS INTERFACE m_axi port = node_props offset = slave bundle = gmem2
