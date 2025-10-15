@@ -24,9 +24,6 @@
 
 // --- New Memory Word and Bus Definitions ---
 #define AXI_BUS_WIDTH 512
-#define DATA_TYPE_WIDTH                                                        \
-    32 // Kept from original for some legacy calculations, may be removed later.
-#define NUM_WORDS_PER_BUS (AXI_BUS_WIDTH / DATA_TYPE_WIDTH)
 
 #define REDUCE_MEM_WIDTH 64
 typedef ap_uint<AXI_BUS_WIDTH> bus_word_t;

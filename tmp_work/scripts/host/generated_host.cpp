@@ -51,10 +51,9 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                     temp_byte_buffer.insert(temp_byte_buffer.end(),
                                             padding_needed,
                                             0); // 插入0作为 padding
-                    // printf(
-                    //     "[BIG]Inserted %zu bytes of padding before node
-                    //     %d\n", padding_needed, j);
-                    // fflush(nullptr);
+                    printf(
+                        "[BIG]Inserted %zu bytes of padding before node %d\n", padding_needed, j);
+                    fflush(nullptr);
                 }
 
                 int global_id = p_graph.vtx_map_rev.at(j);
@@ -108,12 +107,15 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
 
                 char edge_bytes[bytes_per_edge];
                 uint32_t dest_id = p_graph.columns[j];
-                edge_bytes[0] = (dest_id >> 0) & 0xFF;
-                edge_bytes[1] = (dest_id >> 8) & 0xFF;
-                edge_bytes[2] = (dest_id >> 16) & 0xFF;
+                // edge_bytes[0] = (dest_id >> 0) & 0xFF;
+                // edge_bytes[1] = (dest_id >> 8) & 0xFF;
+                // edge_bytes[2] = (dest_id >> 16) & 0xFF;
+                for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
+                    edge_bytes[b] = (dest_id >> (8 * b)) & 0xFF;
+                }
 
                 weight_t weight_val = (float)p_graph.weights[j];
-                std::memcpy(edge_bytes + 3, &weight_val, (WEIGHT_BITWIDTH / 8));
+                std::memcpy(edge_bytes + (NODE_ID_BITWIDTH / 8), &weight_val, (WEIGHT_BITWIDTH / 8));
 
                 temp_byte_buffer.insert(temp_byte_buffer.end(), edge_bytes,
                                         edge_bytes + bytes_per_edge);
@@ -258,11 +260,15 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                 }
                 char edge_bytes[bytes_per_edge];
                 uint32_t dest_id = p_graph.columns[j];
-                edge_bytes[0] = (dest_id >> 0) & 0xFF;
-                edge_bytes[1] = (dest_id >> 8) & 0xFF;
-                edge_bytes[2] = (dest_id >> 16) & 0xFF;
+                // edge_bytes[0] = (dest_id >> 0) & 0xFF;
+                // edge_bytes[1] = (dest_id >> 8) & 0xFF;
+                // edge_bytes[2] = (dest_id >> 16) & 0xFF;
+                for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
+                    edge_bytes[b] = (dest_id >> (8 * b)) & 0xFF;
+                }
                 weight_t weight_val = (float)p_graph.weights[j];
-                std::memcpy(edge_bytes + 3, &weight_val, (WEIGHT_BITWIDTH / 8));
+                // std::memcpy(edge_bytes + 3, &weight_val, (WEIGHT_BITWIDTH / 8));
+                std::memcpy(edge_bytes + (NODE_ID_BITWIDTH / 8), &weight_val, (WEIGHT_BITWIDTH / 8));
                 temp_byte_buffer.insert(temp_byte_buffer.end(), edge_bytes,
                                         edge_bytes + bytes_per_edge);
 

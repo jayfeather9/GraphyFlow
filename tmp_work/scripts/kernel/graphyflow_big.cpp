@@ -100,7 +100,7 @@ LOOP_EDL_READ:
                 edge.node_id = packed_edge.range(NODE_ID_BITWIDTH - 1, 0);
                 edge.prop =
                     packed_edge.range(bits_per_edge - 1, NODE_ID_BITWIDTH);
-                //   printf("[LITTLE]Loaded edge: dst=%d, weight=%f\n",
+                //   printf("[BIG]Loaded edge: dst=%d, weight=%f\n",
                 //   edge.node_id, (float)*reinterpret_cast<distance_t
                 //   *>(&edge.prop)); fflush(NULL);
 
@@ -692,10 +692,10 @@ inline distance_t get_val(reduce_word_t word, int idx) {
     case 1:
         bits = word.range((DISTANCE_BITWIDTH << 1) - 1, DISTANCE_BITWIDTH);
         break;
-    // case 2:
-    //     bits =
-    //         word.range((DISTANCE_BITWIDTH * 3) - 1, (DISTANCE_BITWIDTH << 1));
-    //     break;
+    case 2:
+        bits =
+            word.range((DISTANCE_BITWIDTH * 3) - 1, (DISTANCE_BITWIDTH << 1));
+        break;
     default:
         bits = 0;
         break;
@@ -715,10 +715,10 @@ inline void set_val(reduce_word_t &word, int idx, distance_t val) {
     case 1:
         word.range((DISTANCE_BITWIDTH << 1) - 1, DISTANCE_BITWIDTH) = val_bits;
         break;
-    // case 2:
-    //     word.range((DISTANCE_BITWIDTH * 3) - 1, (DISTANCE_BITWIDTH << 1)) =
-    //         val_bits;
-    //     break;
+    case 2:
+        word.range((DISTANCE_BITWIDTH * 3) - 1, (DISTANCE_BITWIDTH << 1)) =
+            val_bits;
+        break;
     default:
         break;
     }
@@ -843,10 +843,14 @@ LOOP_AGGREGATE:
                     distance_t new_dist_fp;
                     distance_t incoming_dist_fp =
                         *reinterpret_cast<distance_t *>(&incoming_dist_pod);
+                    
+                    // printf("[BIG] PE %d processing key %d (word_addr %d, pack_idx %d) with incoming_dist %f\n", pe, key, word_addr, pack_idx, (float)incoming_dist_fp);
+                    // fflush(NULL);
 
                     if (is_valid) {
                         distance_t old_dist_fp =
                             get_val(current_word, pack_idx);
+                        // printf("[BIG]  Old distance: %f\n", (float)old_dist_fp);
                         new_dist_fp = (old_dist_fp < incoming_dist_fp)
                                           ? old_dist_fp
                                           : incoming_dist_fp;
