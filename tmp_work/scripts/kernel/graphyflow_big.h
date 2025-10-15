@@ -11,7 +11,7 @@
 
 #define PE_NUM 8
 #define LOG_PE_NUM 3
-#define MAX_NUM 524288
+#define MAX_NUM 512
 #define L 4
 
 // --- New Bitwidth Definitions for HLS Synthesis ---
@@ -227,6 +227,6 @@ struct __attribute__((packed)) net_wrapper_kt_pair_105_t_t {
 extern "C" void graphyflow_big(const bus_word_t *src_offsets,
                                const bus_word_t *edge_props,
                                const bus_word_t *node_props, bus_word_t *output,
-                               int32_t num_nodes, int32_t num_edges);
+                               int32_t num_nodes, int32_t num_edges, int32_t dst_num);
 
 #endif // __GRAPHYFLOW_GRAPHYFLOW_BIG_H__

@@ -142,6 +142,7 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
                 p_graph.vtx_map_rev[local_id_counter] = global_id;
                 local_id_counter++;
             }
+            p_graph.num_dsts = partition_dst_nodes.size();
             // Then, map the remaining source vertices
             for (int global_id : local_vertices_set) {
                 if (p_graph.vtx_map.find(global_id) == p_graph.vtx_map.end()) {

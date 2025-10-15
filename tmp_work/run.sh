@@ -13,6 +13,8 @@ fi
 
 echo "--- Running for target: $TARGET ---"
 
+export XRT_INI_PATH="./xrt.ini"
+
 # 1. 设置环境变量
 source /home/feiyang/set_env.sh
 

@@ -46,6 +46,7 @@ typedef uint32_t node_id_t;
 struct GraphCSR {
     int num_vertices;
     int num_edges;
+    int num_dsts;
     std::vector<int> offsets;
     std::vector<int> columns;
     std::vector<int> weights;

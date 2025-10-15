@@ -689,6 +689,7 @@ void AlgorithmHost::execute_kernel_iteration(
         OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.output_buf));
         OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_vertices));
         OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_edges));
+        OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_dsts));
 
         cl::Event *event_ptr = &big_kernel_events[i];
         OCL_CHECK(err, err = acc.big_gs_queue[i].enqueueTask(kernel, nullptr,
