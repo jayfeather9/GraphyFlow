@@ -6,7 +6,7 @@
 #include <ap_int.h>
 #include <hls_stream.h>
 #include <stdint.h>
-// #include <stdio.h>
+#include <stdio.h>
 #include <string.h>
 
 #define PE_NUM 8

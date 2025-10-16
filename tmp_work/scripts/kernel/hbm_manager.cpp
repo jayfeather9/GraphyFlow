@@ -16,6 +16,8 @@ hbm_manager(const bus_word_t *node_distances, int32_t num_nodes,
     cacheline_resp_t cache_resp;
     bool end_flag_get = false;
 
+    // printf("Starting hbm_manager.\n"); fflush(NULL);
+
     // Stream 0
 LOOP_NPL_S0_READ:
     while (true) {
@@ -80,4 +82,11 @@ LOOP_NPL_S1_READ:
         b_burst.data = wide_word.range(511, 256);
         node_dist_stream.write(b_burst);
     }
+    // write last packet
+    b_node_distance_burst_t b_burst;
+    b_burst.last = true;
+    b_burst.dest = 0;
+    b_burst.data = 0;
+    node_dist_stream.write(b_burst);
+    // printf("Finished loading node distances.\n"); fflush(NULL);
 }

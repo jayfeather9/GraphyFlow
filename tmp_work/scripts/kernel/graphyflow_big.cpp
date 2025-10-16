@@ -1,52 +1,54 @@
 #include "graphyflow_big.h"
 
-static void src_id_loader(const bus_word_t *node_ids_ddr,
-                          hls::stream<node_id_burst_t> &src_id_burst_stream_1,
-                          hls::stream<node_id_burst_t> &src_id_burst_stream_2,
-                          int32_t num_nodes) {
-    const int num_ids_per_word = AXI_BUS_WIDTH / NODE_ID_BITWIDTH;
-    const int num_wide_reads =
-        (num_nodes + num_ids_per_word - 1) / num_ids_per_word;
+// static void src_id_loader(const bus_word_t *node_ids_ddr,
+//                           hls::stream<node_id_burst_t>
+//                           &src_id_burst_stream_1,
+//                           hls::stream<node_id_burst_t>
+//                           &src_id_burst_stream_2, int32_t num_nodes) {
+//     const int num_ids_per_word = AXI_BUS_WIDTH / NODE_ID_BITWIDTH;
+//     const int num_wide_reads =
+//         (num_nodes + num_ids_per_word - 1) / num_ids_per_word;
 
-    int nodes_read = 0;
-    int burst_idx = 0;
-    node_id_burst_t burst1, burst2;
-LOOP_SIL_READ:
-    for (int i = 0; i < num_wide_reads; i++) {
-#pragma HLS PIPELINE II = 2
-        bus_word_t wide_word = node_ids_ddr[i];
+//     int nodes_read = 0;
+//     int burst_idx = 0;
+//     node_id_burst_t burst1, burst2;
+// LOOP_SIL_READ:
+//     for (int i = 0; i < num_wide_reads; i++) {
+// #pragma HLS PIPELINE II = 2
+//         bus_word_t wide_word = node_ids_ddr[i];
 
-    LOOP_SIL_UNPACK:
-        for (int j = 0; j < 8; j++) {
-#pragma HLS UNROLL
-            if (nodes_read + j < num_nodes) {
-                node_id_t cur_id = wide_word.range(
-                    (j + 1) * NODE_ID_BITWIDTH - 1, j * NODE_ID_BITWIDTH);
-                burst1.data[j] = cur_id;
-                // printf("Loaded node ID %d at burst %d, position %d\n",
-                // (int)cur_id, burst_idx, j); fflush(NULL);
-            }
-        }
-        bool burst2_valid = false;
-        for (int j = 8; j < 16; j++) {
-#pragma HLS UNROLL
-            if (nodes_read + j < num_nodes) {
-                burst2.data[j - 8] = wide_word.range(
-                    (j + 1) * NODE_ID_BITWIDTH - 1, j * NODE_ID_BITWIDTH);
-                burst2_valid |= true;
-                // printf("Loaded node ID %d at burst %d, position %d\n",
-                // (int)burst2.data[j - 8], burst_idx + 1, j - 8); fflush(NULL);
-            }
-        }
-        src_id_burst_stream_1.write(burst1);
-        src_id_burst_stream_2.write(burst1);
-        if (burst2_valid) {
-            src_id_burst_stream_1.write(burst2);
-            src_id_burst_stream_2.write(burst2);
-        }
-        nodes_read += num_ids_per_word;
-    }
-}
+//     LOOP_SIL_UNPACK:
+//         for (int j = 0; j < 8; j++) {
+// #pragma HLS UNROLL
+//             if (nodes_read + j < num_nodes) {
+//                 node_id_t cur_id = wide_word.range(
+//                     (j + 1) * NODE_ID_BITWIDTH - 1, j * NODE_ID_BITWIDTH);
+//                 burst1.data[j] = cur_id;
+//                 // printf("Loaded node ID %d at burst %d, position %d\n",
+//                 // (int)cur_id, burst_idx, j); fflush(NULL);
+//             }
+//         }
+//         bool burst2_valid = false;
+//         for (int j = 8; j < 16; j++) {
+// #pragma HLS UNROLL
+//             if (nodes_read + j < num_nodes) {
+//                 burst2.data[j - 8] = wide_word.range(
+//                     (j + 1) * NODE_ID_BITWIDTH - 1, j * NODE_ID_BITWIDTH);
+//                 burst2_valid |= true;
+//                 // printf("Loaded node ID %d at burst %d, position %d\n",
+//                 // (int)burst2.data[j - 8], burst_idx + 1, j - 8);
+//                 fflush(NULL);
+//             }
+//         }
+//         src_id_burst_stream_1.write(burst1);
+//         src_id_burst_stream_2.write(burst1);
+//         if (burst2_valid) {
+//             src_id_burst_stream_1.write(burst2);
+//             src_id_burst_stream_2.write(burst2);
+//         }
+//         nodes_read += num_ids_per_word;
+//     }
+// }
 
 static void
 edge_descriptor_loader(const bus_word_t *edge_props_ddr,
@@ -756,39 +758,49 @@ static void switch2x2_2(int32_t i,
     receiver_2(i, out1, out2, l1_1, l1_2, l1_3, l1_4);
 }
 
-static void
-omega_switch_2(hls::stream<net_wrapper_kt_pair_105_t_t> (&in_streams)[8],
-               hls::stream<net_wrapper_kt_pair_105_t_t> (&out_streams)[8]) {
-#pragma HLS DATAFLOW
-    hls::stream<net_wrapper_kt_pair_105_t_t> stream_stage_0[8];
-#pragma HLS STREAM variable = stream_stage_0 depth = 2
-    hls::stream<net_wrapper_kt_pair_105_t_t> stream_stage_1[8];
-#pragma HLS STREAM variable = stream_stage_1 depth = 2
-    switch2x2_2(2, in_streams[0], in_streams[1], stream_stage_0[0],
-                stream_stage_0[1]);
-    switch2x2_2(2, in_streams[2], in_streams[3], stream_stage_0[2],
-                stream_stage_0[3]);
-    switch2x2_2(2, in_streams[4], in_streams[5], stream_stage_0[4],
-                stream_stage_0[5]);
-    switch2x2_2(2, in_streams[6], in_streams[7], stream_stage_0[6],
-                stream_stage_0[7]);
-    switch2x2_2(1, stream_stage_0[0], stream_stage_0[4], stream_stage_1[0],
-                stream_stage_1[1]);
-    switch2x2_2(1, stream_stage_0[1], stream_stage_0[5], stream_stage_1[2],
-                stream_stage_1[3]);
-    switch2x2_2(1, stream_stage_0[2], stream_stage_0[6], stream_stage_1[4],
-                stream_stage_1[5]);
-    switch2x2_2(1, stream_stage_0[3], stream_stage_0[7], stream_stage_1[6],
-                stream_stage_1[7]);
-    switch2x2_2(0, stream_stage_1[0], stream_stage_1[4], out_streams[0],
-                out_streams[1]);
-    switch2x2_2(0, stream_stage_1[1], stream_stage_1[5], out_streams[2],
-                out_streams[3]);
-    switch2x2_2(0, stream_stage_1[2], stream_stage_1[6], out_streams[4],
-                out_streams[5]);
-    switch2x2_2(0, stream_stage_1[3], stream_stage_1[7], out_streams[6],
-                out_streams[7]);
-}
+// static void
+// omega_switch_2(hls::stream<net_wrapper_kt_pair_105_t_t>
+// (&reduce_105_d2o_pair)[8],
+//                hls::stream<net_wrapper_kt_pair_105_t_t>
+//                (&reduce_105_o2u_pair)[8]) {
+// #pragma HLS DATAFLOW
+//     hls::stream<net_wrapper_kt_pair_105_t_t> stream_stage_0[8];
+// #pragma HLS STREAM variable = stream_stage_0 depth = 2
+//     hls::stream<net_wrapper_kt_pair_105_t_t> stream_stage_1[8];
+// #pragma HLS STREAM variable = stream_stage_1 depth = 2
+//     switch2x2_2(2, reduce_105_d2o_pair[0], reduce_105_d2o_pair[1],
+//     stream_stage_0[0],
+//                 stream_stage_0[1]);
+//     switch2x2_2(2, reduce_105_d2o_pair[2], reduce_105_d2o_pair[3],
+//     stream_stage_0[2],
+//                 stream_stage_0[3]);
+//     switch2x2_2(2, reduce_105_d2o_pair[4], reduce_105_d2o_pair[5],
+//     stream_stage_0[4],
+//                 stream_stage_0[5]);
+//     switch2x2_2(2, reduce_105_d2o_pair[6], reduce_105_d2o_pair[7],
+//     stream_stage_0[6],
+//                 stream_stage_0[7]);
+//     switch2x2_2(1, stream_stage_0[0], stream_stage_0[4], stream_stage_1[0],
+//                 stream_stage_1[1]);
+//     switch2x2_2(1, stream_stage_0[1], stream_stage_0[5], stream_stage_1[2],
+//                 stream_stage_1[3]);
+//     switch2x2_2(1, stream_stage_0[2], stream_stage_0[6], stream_stage_1[4],
+//                 stream_stage_1[5]);
+//     switch2x2_2(1, stream_stage_0[3], stream_stage_0[7], stream_stage_1[6],
+//                 stream_stage_1[7]);
+//     switch2x2_2(0, stream_stage_1[0], stream_stage_1[4],
+//     reduce_105_o2u_pair[0],
+//                 reduce_105_o2u_pair[1]);
+//     switch2x2_2(0, stream_stage_1[1], stream_stage_1[5],
+//     reduce_105_o2u_pair[2],
+//                 reduce_105_o2u_pair[3]);
+//     switch2x2_2(0, stream_stage_1[2], stream_stage_1[6],
+//     reduce_105_o2u_pair[4],
+//                 reduce_105_o2u_pair[5]);
+//     switch2x2_2(0, stream_stage_1[3], stream_stage_1[7],
+//     reduce_105_o2u_pair[6],
+//                 reduce_105_o2u_pair[7]);
+// }
 
 // --- 3. DFIR Component Functions ---
 static void Reduc_105_pre_process(
@@ -1536,78 +1548,79 @@ LOOP_WHILE_59:
 //     all_node_distances_to_343);
 // }
 
-static void graphyflow_big_dataflow(
-    hls::stream<edge_batch_t> &response_to_318,
-    hls::stream<node_dist_batch_t> &all_node_distances_to_343,
-    hls::stream<internal_end_data_batch_t> &internal_end_stream,
-    int32_t dst_num) {
-#pragma HLS DATAFLOW
-    hls::stream<struct_kbu_50_t> reduce_105_z2d_pair;
-#pragma HLS STREAM variable = reduce_105_z2d_pair depth = 4
-    hls::stream<net_wrapper_kt_pair_105_t_t> reduce_105_d2o_pair[8];
-#pragma HLS STREAM variable = reduce_105_d2o_pair depth = 4
-    hls::stream<net_wrapper_kt_pair_105_t_t> reduce_105_o2u_pair[8];
-#pragma HLS STREAM variable = reduce_105_o2u_pair depth = 4
-    hls::stream<struct_ibu_14_t> intermediate_key;
-#pragma HLS STREAM variable = intermediate_key depth = 4
-    hls::stream<internal_end_data_batch_t> intermediate_transform;
-#pragma HLS STREAM variable = intermediate_transform depth = 4
-    hls::stream<struct_sbu_7_t> stream_o_0_273;
-#pragma HLS STREAM variable = stream_o_0_273 depth = 4
-    hls::stream<struct_abu_9_t> stream_o_0_236;
-#pragma HLS STREAM variable = stream_o_0_236 depth = 4
-    hls::stream<struct_nbu_11_t> stream_o_1_237;
-#pragma HLS STREAM variable = stream_o_1_237 depth = 4
-    hls::stream<struct_abu_9_t> stream_o_2_238;
-#pragma HLS STREAM variable = stream_o_2_238 depth = 4
-    hls::stream<struct_ibu_14_t> stream_o_0_node_id_232;
-#pragma HLS STREAM variable = stream_o_0_node_id_232 depth = 4
-    hls::stream<struct_nbu_11_t> stream_o_1_250;
-#pragma HLS STREAM variable = stream_o_1_250 depth = 4
-    hls::stream<internal_end_data_batch_t> stream_o_0_107;
-#pragma HLS STREAM variable = stream_o_0_107 depth = 4
-    hls::stream<struct_nbu_11_t> stream_o_0_249;
-#pragma HLS STREAM variable = stream_o_0_249 depth = 4
-    hls::stream<struct_abu_9_t> stream_o_0_edge_src_distance_275;
-#pragma HLS STREAM variable = stream_o_0_edge_src_distance_275 depth = 4
-    hls::stream<struct_nbu_11_t> stream_o_0_edge_dst_277;
-#pragma HLS STREAM variable = stream_o_0_edge_dst_277 depth = 4
-    hls::stream<struct_abu_9_t> stream_o_0_edge_weight_278;
-#pragma HLS STREAM variable = stream_o_0_edge_weight_278 depth = 4
-    hls::stream<struct_abu_9_t> stream_o_0_node_distance_300;
-#pragma HLS STREAM variable = stream_o_0_node_distance_300 depth = 4
-    //     hls::stream<struct_nbu_11_t> stream_o_1_309;
-    // #pragma HLS STREAM variable = stream_o_1_309 depth = 4
-    hls::stream<struct_abu_9_t> stream_o_0_304;
-#pragma HLS STREAM variable = stream_o_0_304 depth = 4
-    hls::stream<struct_nbu_11_t> stream_o_1_305;
-#pragma HLS STREAM variable = stream_o_1_305 depth = 4
-    //     hls::stream<struct_nbu_11_t> stream_o_0_308;
-    // #pragma HLS STREAM variable = stream_o_0_308 depth = 4
-    // --- Function Calls (in topological order) ---
-    Memor_274(response_to_318, stream_o_0_edge_src_distance_275,
-              stream_o_0_edge_dst_277, stream_o_0_edge_weight_278);
-    fused_op_269(stream_o_0_edge_src_distance_275, stream_o_0_edge_dst_277,
-                 stream_o_0_edge_weight_278, stream_o_0_273);
-    Scatt_234(stream_o_0_273, stream_o_0_236, stream_o_1_237, stream_o_2_238);
-    CopyC_247(stream_o_1_237, stream_o_0_249, stream_o_1_250);
-    Memor_231(stream_o_0_node_id_232, stream_o_1_250);
-    // --- Start of Reduce Super-Block for Reduc_105 ---
-    Reduc_105_pre_process(stream_o_0_node_id_232, stream_o_0_249,
-                          stream_o_0_236, stream_o_2_238, intermediate_key,
-                          intermediate_transform);
-    stream_zipper_0(intermediate_key, intermediate_transform,
-                    reduce_105_z2d_pair);
-    demux_1(reduce_105_z2d_pair, reduce_105_d2o_pair);
-    omega_switch_2(reduce_105_d2o_pair, reduce_105_o2u_pair);
-    Reduc_105_unit_reduce(reduce_105_o2u_pair, stream_o_0_107, dst_num);
-    // --- End of Reduce Super-Block for Reduc_105 ---
-    Scatt_302(stream_o_0_107, stream_o_0_304, stream_o_1_305);
-    // CopyC_306(stream_o_1_305, stream_o_0_308, stream_o_1_309);
-    Memor_299(all_node_distances_to_343, stream_o_0_node_distance_300, dst_num);
-    fused_op_294(stream_o_0_304, stream_o_0_node_distance_300, stream_o_1_305,
-                 internal_end_stream);
-}
+// static void graphyflow_big_dataflow(
+//     hls::stream<edge_batch_t> &response_to_318,
+//     hls::stream<node_dist_batch_t> &all_node_distances_to_343,
+//     hls::stream<internal_end_data_batch_t> &internal_end_stream,
+//     int32_t dst_num) {
+// #pragma HLS DATAFLOW
+//     hls::stream<struct_kbu_50_t> reduce_105_z2d_pair;
+// #pragma HLS STREAM variable = reduce_105_z2d_pair depth = 4
+//     hls::stream<net_wrapper_kt_pair_105_t_t> reduce_105_d2o_pair[8];
+// #pragma HLS STREAM variable = reduce_105_d2o_pair depth = 4
+//     hls::stream<net_wrapper_kt_pair_105_t_t> reduce_105_o2u_pair[8];
+// #pragma HLS STREAM variable = reduce_105_o2u_pair depth = 4
+//     hls::stream<struct_ibu_14_t> intermediate_key;
+// #pragma HLS STREAM variable = intermediate_key depth = 4
+//     hls::stream<internal_end_data_batch_t> intermediate_transform;
+// #pragma HLS STREAM variable = intermediate_transform depth = 4
+//     hls::stream<struct_sbu_7_t> stream_o_0_273;
+// #pragma HLS STREAM variable = stream_o_0_273 depth = 4
+//     hls::stream<struct_abu_9_t> stream_o_0_236;
+// #pragma HLS STREAM variable = stream_o_0_236 depth = 4
+//     hls::stream<struct_nbu_11_t> stream_o_1_237;
+// #pragma HLS STREAM variable = stream_o_1_237 depth = 4
+//     hls::stream<struct_abu_9_t> stream_o_2_238;
+// #pragma HLS STREAM variable = stream_o_2_238 depth = 4
+//     hls::stream<struct_ibu_14_t> stream_o_0_node_id_232;
+// #pragma HLS STREAM variable = stream_o_0_node_id_232 depth = 4
+//     hls::stream<struct_nbu_11_t> stream_o_1_250;
+// #pragma HLS STREAM variable = stream_o_1_250 depth = 4
+//     hls::stream<internal_end_data_batch_t> stream_o_0_107;
+// #pragma HLS STREAM variable = stream_o_0_107 depth = 4
+//     hls::stream<struct_nbu_11_t> stream_o_0_249;
+// #pragma HLS STREAM variable = stream_o_0_249 depth = 4
+//     hls::stream<struct_abu_9_t> stream_o_0_edge_src_distance_275;
+// #pragma HLS STREAM variable = stream_o_0_edge_src_distance_275 depth = 4
+//     hls::stream<struct_nbu_11_t> stream_o_0_edge_dst_277;
+// #pragma HLS STREAM variable = stream_o_0_edge_dst_277 depth = 4
+//     hls::stream<struct_abu_9_t> stream_o_0_edge_weight_278;
+// #pragma HLS STREAM variable = stream_o_0_edge_weight_278 depth = 4
+//     hls::stream<struct_abu_9_t> stream_o_0_node_distance_300;
+// #pragma HLS STREAM variable = stream_o_0_node_distance_300 depth = 4
+//     //     hls::stream<struct_nbu_11_t> stream_o_1_309;
+//     // #pragma HLS STREAM variable = stream_o_1_309 depth = 4
+//     hls::stream<struct_abu_9_t> stream_o_0_304;
+// #pragma HLS STREAM variable = stream_o_0_304 depth = 4
+//     hls::stream<struct_nbu_11_t> stream_o_1_305;
+// #pragma HLS STREAM variable = stream_o_1_305 depth = 4
+//     //     hls::stream<struct_nbu_11_t> stream_o_0_308;
+//     // #pragma HLS STREAM variable = stream_o_0_308 depth = 4
+//     // --- Function Calls (in topological order) ---
+//     Memor_274(response_to_318, stream_o_0_edge_src_distance_275,
+//               stream_o_0_edge_dst_277, stream_o_0_edge_weight_278);
+//     fused_op_269(stream_o_0_edge_src_distance_275, stream_o_0_edge_dst_277,
+//                  stream_o_0_edge_weight_278, stream_o_0_273);
+//     Scatt_234(stream_o_0_273, stream_o_0_236, stream_o_1_237,
+//     stream_o_2_238); CopyC_247(stream_o_1_237, stream_o_0_249,
+//     stream_o_1_250); Memor_231(stream_o_0_node_id_232, stream_o_1_250);
+//     // --- Start of Reduce Super-Block for Reduc_105 ---
+//     Reduc_105_pre_process(stream_o_0_node_id_232, stream_o_0_249,
+//                           stream_o_0_236, stream_o_2_238, intermediate_key,
+//                           intermediate_transform);
+//     stream_zipper_0(intermediate_key, intermediate_transform,
+//                     reduce_105_z2d_pair);
+//     demux_1(reduce_105_z2d_pair, reduce_105_d2o_pair);
+//     omega_switch_2(reduce_105_d2o_pair, reduce_105_o2u_pair);
+//     Reduc_105_unit_reduce(reduce_105_o2u_pair, stream_o_0_107, dst_num);
+//     // --- End of Reduce Super-Block for Reduc_105 ---
+//     Scatt_302(stream_o_0_107, stream_o_0_304, stream_o_1_305);
+//     // CopyC_306(stream_o_1_305, stream_o_0_308, stream_o_1_309);
+//     Memor_299(all_node_distances_to_343, stream_o_0_node_distance_300,
+//     dst_num); fused_op_294(stream_o_0_304, stream_o_0_node_distance_300,
+//     stream_o_1_305,
+//                  internal_end_stream);
+// }
 
 // static void final_writeback(int32_t instantiate_idx,
 // hls::stream<internal_end_data_batch_t> &internal_end_stream,
@@ -1665,8 +1678,57 @@ graphyflow_big(const bus_word_t *src_ids, const bus_word_t *edge_props,
     hls::stream<internal_end_data_batch_t> stream_result_data;
 #pragma HLS STREAM variable = stream_result_data depth = 16
 
+    // printf("GraphyFlow Big Kernel Configurations:\n");
+    // printf("  - Number of Nodes: %d\n", num_nodes);
+    // printf("  - Number of Edges: %d\n", num_edges);
+    // printf("  - Destination Number: %d\n", dst_num);
+    // fflush(NULL);
+
     // --- Data Loading ---
-    src_id_loader(src_ids, stream_src_ids_1, stream_src_ids_2, num_edges);
+    // src_id_loader(src_ids, stream_src_ids_1, stream_src_ids_2, num_edges);
+    const int num_ids_per_word = AXI_BUS_WIDTH / NODE_ID_BITWIDTH;
+    const int num_wide_reads =
+        (num_edges + num_ids_per_word - 1) / num_ids_per_word;
+
+    int nodes_read = 0;
+    int burst_idx = 0;
+    node_id_burst_t burst1, burst2;
+LOOP_SIL_READ:
+    for (int i = 0; i < num_wide_reads; i++) {
+        // #pragma HLS PIPELINE II = 2
+        bus_word_t wide_word = src_ids[i];
+
+    LOOP_SIL_UNPACK:
+        for (int j = 0; j < 8; j++) {
+#pragma HLS UNROLL
+            if (nodes_read + j < num_edges) {
+                node_id_t cur_id = wide_word.range(
+                    (j + 1) * NODE_ID_BITWIDTH - 1, j * NODE_ID_BITWIDTH);
+                burst1.data[j] = cur_id;
+                // printf("Loaded node ID %d at burst %d, position %d\n",
+                // (int)cur_id, burst_idx, j); fflush(NULL);
+            }
+        }
+        bool burst2_valid = false;
+        for (int j = 8; j < 16; j++) {
+#pragma HLS UNROLL
+            if (nodes_read + j < num_edges) {
+                burst2.data[j - 8] = wide_word.range(
+                    (j + 1) * NODE_ID_BITWIDTH - 1, j * NODE_ID_BITWIDTH);
+                burst2_valid |= true;
+                // printf("Loaded node ID %d at burst %d, position %d\n",
+                // (int)burst2.data[j - 8], burst_idx + 1, j - 8); fflush(NULL);
+            }
+        }
+        stream_src_ids_1.write(burst1);
+        stream_src_ids_2.write(burst1);
+        if (burst2_valid) {
+            stream_src_ids_1.write(burst2);
+            stream_src_ids_2.write(burst2);
+        }
+        nodes_read += num_ids_per_word;
+    }
+
     edge_descriptor_loader(edge_props, edge_stream, num_edges);
 
     // --- New COO-style Source Property Loading Pipeline ---
@@ -1675,18 +1737,118 @@ graphyflow_big(const bus_word_t *src_ids, const bus_word_t *edge_props,
     stream2axistream(stream_cache_req, stream_outer_cache_req);
     // node_property_loader(node_props, stream_cache_req, stream_cache_resp,
     //                      node_distance_burst_stream_1, num_nodes);
+    // printf("Starting COO-style property loader...\n");
+    // fflush(NULL);
     axistream2stream(stream_outer_cache_resp, stream_cache_resp);
     node_prop_resp_receiver(stream_cache_resp, stream_cachelines);
+    // printf("Cacheline loading done. Starting property extraction...\n");
+    // fflush(NULL);
     merge_node_props(stream_cachelines, edge_stream, stream_src_ids_2,
                      stream_edge_data, num_edges);
-
+    // printf("Property extraction done.\n");
+    // fflush(NULL);
     // --- Node Property Responder for Reduce Operation ---
     node_property_responder(stream_outer_node_dist, num_nodes,
                             stream_node_dist_data);
 
     // --- Main Dataflow Processing ---
-    graphyflow_big_dataflow(stream_edge_data, stream_node_dist_data,
-                            stream_result_data, dst_num);
+    // graphyflow_big_dataflow(stream_edge_data, stream_node_dist_data,
+    //                         stream_result_data, dst_num);
+    hls::stream<struct_kbu_50_t> reduce_105_z2d_pair;
+#pragma HLS STREAM variable = reduce_105_z2d_pair depth = 4
+    hls::stream<net_wrapper_kt_pair_105_t_t> reduce_105_d2o_pair[8];
+#pragma HLS STREAM variable = reduce_105_d2o_pair depth = 4
+    hls::stream<net_wrapper_kt_pair_105_t_t> reduce_105_o2u_pair[8];
+#pragma HLS STREAM variable = reduce_105_o2u_pair depth = 4
+    hls::stream<struct_ibu_14_t> intermediate_key;
+#pragma HLS STREAM variable = intermediate_key depth = 4
+    hls::stream<internal_end_data_batch_t> intermediate_transform;
+#pragma HLS STREAM variable = intermediate_transform depth = 4
+    hls::stream<struct_sbu_7_t> stream_o_0_273;
+#pragma HLS STREAM variable = stream_o_0_273 depth = 4
+    hls::stream<struct_abu_9_t> stream_o_0_236;
+#pragma HLS STREAM variable = stream_o_0_236 depth = 4
+    hls::stream<struct_nbu_11_t> stream_o_1_237;
+#pragma HLS STREAM variable = stream_o_1_237 depth = 4
+    hls::stream<struct_abu_9_t> stream_o_2_238;
+#pragma HLS STREAM variable = stream_o_2_238 depth = 4
+    hls::stream<struct_ibu_14_t> stream_o_0_node_id_232;
+#pragma HLS STREAM variable = stream_o_0_node_id_232 depth = 4
+    hls::stream<struct_nbu_11_t> stream_o_1_250;
+#pragma HLS STREAM variable = stream_o_1_250 depth = 4
+    hls::stream<internal_end_data_batch_t> stream_o_0_107;
+#pragma HLS STREAM variable = stream_o_0_107 depth = 4
+    hls::stream<struct_nbu_11_t> stream_o_0_249;
+#pragma HLS STREAM variable = stream_o_0_249 depth = 4
+    hls::stream<struct_abu_9_t> stream_o_0_edge_src_distance_275;
+#pragma HLS STREAM variable = stream_o_0_edge_src_distance_275 depth = 4
+    hls::stream<struct_nbu_11_t> stream_o_0_edge_dst_277;
+#pragma HLS STREAM variable = stream_o_0_edge_dst_277 depth = 4
+    hls::stream<struct_abu_9_t> stream_o_0_edge_weight_278;
+#pragma HLS STREAM variable = stream_o_0_edge_weight_278 depth = 4
+    hls::stream<struct_abu_9_t> stream_o_0_node_distance_300;
+#pragma HLS STREAM variable = stream_o_0_node_distance_300 depth = 4
+    //     hls::stream<struct_nbu_11_t> stream_o_1_309;
+    // #pragma HLS STREAM variable = stream_o_1_309 depth = 4
+    hls::stream<struct_abu_9_t> stream_o_0_304;
+#pragma HLS STREAM variable = stream_o_0_304 depth = 4
+    hls::stream<struct_nbu_11_t> stream_o_1_305;
+#pragma HLS STREAM variable = stream_o_1_305 depth = 4
+    //     hls::stream<struct_nbu_11_t> stream_o_0_308;
+    // #pragma HLS STREAM variable = stream_o_0_308 depth = 4
+    // --- Function Calls (in topological order) ---
+    Memor_274(stream_edge_data, stream_o_0_edge_src_distance_275,
+              stream_o_0_edge_dst_277, stream_o_0_edge_weight_278);
+    fused_op_269(stream_o_0_edge_src_distance_275, stream_o_0_edge_dst_277,
+                 stream_o_0_edge_weight_278, stream_o_0_273);
+    Scatt_234(stream_o_0_273, stream_o_0_236, stream_o_1_237, stream_o_2_238);
+    CopyC_247(stream_o_1_237, stream_o_0_249, stream_o_1_250);
+    Memor_231(stream_o_0_node_id_232, stream_o_1_250);
+    // --- Start of Reduce Super-Block for Reduc_105 ---
+    Reduc_105_pre_process(stream_o_0_node_id_232, stream_o_0_249,
+                          stream_o_0_236, stream_o_2_238, intermediate_key,
+                          intermediate_transform);
+    stream_zipper_0(intermediate_key, intermediate_transform,
+                    reduce_105_z2d_pair);
+    demux_1(reduce_105_z2d_pair, reduce_105_d2o_pair);
+    // omega_switch_2(reduce_105_d2o_pair, reduce_105_o2u_pair);
+
+    hls::stream<net_wrapper_kt_pair_105_t_t> stream_stage_0[8];
+#pragma HLS STREAM variable = stream_stage_0 depth = 2
+    hls::stream<net_wrapper_kt_pair_105_t_t> stream_stage_1[8];
+#pragma HLS STREAM variable = stream_stage_1 depth = 2
+    switch2x2_2(2, reduce_105_d2o_pair[0], reduce_105_d2o_pair[1],
+                stream_stage_0[0], stream_stage_0[1]);
+    switch2x2_2(2, reduce_105_d2o_pair[2], reduce_105_d2o_pair[3],
+                stream_stage_0[2], stream_stage_0[3]);
+    switch2x2_2(2, reduce_105_d2o_pair[4], reduce_105_d2o_pair[5],
+                stream_stage_0[4], stream_stage_0[5]);
+    switch2x2_2(2, reduce_105_d2o_pair[6], reduce_105_d2o_pair[7],
+                stream_stage_0[6], stream_stage_0[7]);
+    switch2x2_2(1, stream_stage_0[0], stream_stage_0[4], stream_stage_1[0],
+                stream_stage_1[1]);
+    switch2x2_2(1, stream_stage_0[1], stream_stage_0[5], stream_stage_1[2],
+                stream_stage_1[3]);
+    switch2x2_2(1, stream_stage_0[2], stream_stage_0[6], stream_stage_1[4],
+                stream_stage_1[5]);
+    switch2x2_2(1, stream_stage_0[3], stream_stage_0[7], stream_stage_1[6],
+                stream_stage_1[7]);
+    switch2x2_2(0, stream_stage_1[0], stream_stage_1[4], reduce_105_o2u_pair[0],
+                reduce_105_o2u_pair[1]);
+    switch2x2_2(0, stream_stage_1[1], stream_stage_1[5], reduce_105_o2u_pair[2],
+                reduce_105_o2u_pair[3]);
+    switch2x2_2(0, stream_stage_1[2], stream_stage_1[6], reduce_105_o2u_pair[4],
+                reduce_105_o2u_pair[5]);
+    switch2x2_2(0, stream_stage_1[3], stream_stage_1[7], reduce_105_o2u_pair[6],
+                reduce_105_o2u_pair[7]);
+
+    Reduc_105_unit_reduce(reduce_105_o2u_pair, stream_o_0_107, dst_num);
+    // --- End of Reduce Super-Block for Reduc_105 ---
+    Scatt_302(stream_o_0_107, stream_o_0_304, stream_o_1_305);
+    // CopyC_306(stream_o_1_305, stream_o_0_308, stream_o_1_309);
+    Memor_299(stream_node_dist_data, stream_o_0_node_distance_300, dst_num);
+    fused_op_294(stream_o_0_304, stream_o_0_node_distance_300, stream_o_1_305,
+                 stream_result_data);
 
     // --- Final Writeback ---
     final_writeback(stream_result_data, output);
