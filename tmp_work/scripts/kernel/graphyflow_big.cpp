@@ -1,10 +1,9 @@
 #include "graphyflow_big.h"
 
-static void src_id_loader(
-    const bus_word_t *node_ids_ddr,
-    hls::stream<node_id_burst_t> &src_id_burst_stream_1,
-    hls::stream<node_id_burst_t> &src_id_burst_stream_2,
-    int32_t num_nodes) {
+static void src_id_loader(const bus_word_t *node_ids_ddr,
+                          hls::stream<node_id_burst_t> &src_id_burst_stream_1,
+                          hls::stream<node_id_burst_t> &src_id_burst_stream_2,
+                          int32_t num_nodes) {
     const int num_ids_per_word = AXI_BUS_WIDTH / NODE_ID_BITWIDTH;
     const int num_wide_reads =
         (num_nodes + num_ids_per_word - 1) / num_ids_per_word;
@@ -24,8 +23,8 @@ LOOP_SIL_READ:
                 node_id_t cur_id = wide_word.range(
                     (j + 1) * NODE_ID_BITWIDTH - 1, j * NODE_ID_BITWIDTH);
                 burst1.data[j] = cur_id;
-                // printf("Loaded node ID %d at burst %d, position %d\n", (int)cur_id, burst_idx, j);
-                // fflush(NULL);
+                // printf("Loaded node ID %d at burst %d, position %d\n",
+                // (int)cur_id, burst_idx, j); fflush(NULL);
             }
         }
         bool burst2_valid = false;
@@ -35,8 +34,8 @@ LOOP_SIL_READ:
                 burst2.data[j - 8] = wide_word.range(
                     (j + 1) * NODE_ID_BITWIDTH - 1, j * NODE_ID_BITWIDTH);
                 burst2_valid |= true;
-                // printf("Loaded node ID %d at burst %d, position %d\n", (int)burst2.data[j - 8], burst_idx + 1, j - 8);
-                // fflush(NULL);
+                // printf("Loaded node ID %d at burst %d, position %d\n",
+                // (int)burst2.data[j - 8], burst_idx + 1, j - 8); fflush(NULL);
             }
         }
         src_id_burst_stream_1.write(burst1);
@@ -90,8 +89,9 @@ LOOP_EDL_READ:
         edge_batch.end_pos = 0;
     }
 #else
-    // Add support for other bitwidth combinations if needed.
-    #error "edge_descriptor_loader currently only supports 32-bit node_id and 32-bit weight."
+// Add support for other bitwidth combinations if needed.
+#error                                                                         \
+    "edge_descriptor_loader currently only supports 32-bit node_id and 32-bit weight."
 #endif
 }
 
@@ -99,37 +99,59 @@ ap_uint<4> count_end_ones(ap_uint<PE_NUM> valid_mask) {
 #pragma HLS INLINE
     ap_uint<4> count = 0;
     switch (valid_mask) {
-        case 0: count = 0; break;
-        case 1: count = 1; break;
-        case 3: count = 2; break;
-        case 7: count = 3; break;
-        case 15: count = 4; break;
-        case 31: count = 5; break;
-        case 63: count = 6; break;
-        case 127: count = 7; break;
-        case 255: count = 8; break;
-        default: break;
+    case 0:
+        count = 0;
+        break;
+    case 1:
+        count = 1;
+        break;
+    case 3:
+        count = 2;
+        break;
+    case 7:
+        count = 3;
+        break;
+    case 15:
+        count = 4;
+        break;
+    case 31:
+        count = 5;
+        break;
+    case 63:
+        count = 6;
+        break;
+    case 127:
+        count = 7;
+        break;
+    case 255:
+        count = 8;
+        break;
+    default:
+        break;
     }
     return count;
 }
 
-static void dist_req_packer(
-    hls::stream<node_id_burst_t> &src_id_burst_stream,
-    hls::stream<distance_req_pack_t> &distance_req_pack_stream,
-    int32_t num_nodes) {
-    
+static void
+dist_req_packer(hls::stream<node_id_burst_t> &src_id_burst_stream,
+                hls::stream<distance_req_pack_t> &distance_req_pack_stream,
+                int32_t num_nodes) {
+
     const int max_node_burst_idx = (num_nodes + PE_NUM - 1) / PE_NUM;
     ap_uint<NODE_ID_BITWIDTH - LOG_DIST_PER_WORD> last_idx_max = 0;
 
+LOOP_DRP_SEND_REQ:
     for (int32_t node_burst_idx = 0; node_burst_idx < max_node_burst_idx;
          node_burst_idx += 1) {
+#pragma HLS PIPELINE style = frp II = 1
         ap_uint<NODE_ID_BITWIDTH - LOG_DIST_PER_WORD> cache_idx[PE_NUM];
-#pragma HLS ARRAY_PARTITION variable=cache_idx complete dim=0
+#pragma HLS ARRAY_PARTITION variable = cache_idx complete dim = 0
         node_id_burst_t node_id_burst = src_id_burst_stream.read();
         for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
             cache_idx[pe_idx] = node_id_burst.data[pe_idx] >> LOG_DIST_PER_WORD;
-            // printf("PE %d requests node ID %d (cache idx %d)\n", pe_idx, (int)node_id_burst.data[pe_idx], (int)cache_idx[pe_idx]);
+            // printf("PE %d requests node ID %d (cache idx %d)\n", pe_idx,
+            // (int)node_id_burst.data[pe_idx], (int)cache_idx[pe_idx]);
             // fflush(NULL);
         }
 
@@ -137,8 +159,8 @@ static void dist_req_packer(
         for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
             cache_idx_diffs[pe_idx] = cache_idx[pe_idx] - last_idx_max;
-            // printf("PE %d cache idx diff: %d\n", pe_idx, (int)cache_idx_diffs[pe_idx]);
-            // fflush(NULL);
+            // printf("PE %d cache idx diff: %d\n", pe_idx,
+            // (int)cache_idx_diffs[pe_idx]); fflush(NULL);
         }
 
         // if not all diffs are zero, send a req_pack
@@ -164,8 +186,8 @@ static void dist_req_packer(
             for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
                 req_pack.node_ids[pe_idx] = node_id_burst.data[pe_idx];
-                // printf("Req pack PE %d node ID: %d\n", pe_idx, (int)req_pack.node_ids[pe_idx]);
-                // fflush(NULL);
+                // printf("Req pack PE %d node ID: %d\n", pe_idx,
+                // (int)req_pack.node_ids[pe_idx]); fflush(NULL);
             }
 
             distance_req_pack_stream.write(req_pack);
@@ -180,9 +202,9 @@ static void dist_req_packer(
     distance_req_pack_stream.write(end_req_pack);
 }
 
-static void cacheline_req_sender(
-    hls::stream<distance_req_pack_t> &distance_req_pack_stream,
-    hls::stream<cacheline_req_t> &cacheline_req_stream) {
+static void
+cacheline_req_sender(hls::stream<distance_req_pack_t> &distance_req_pack_stream,
+                     hls::stream<cacheline_req_t> &cacheline_req_stream) {
 
     cacheline_req_t cache_req;
     cache_req.end_flag = false;
@@ -195,24 +217,25 @@ static void cacheline_req_sender(
 
 LOOP_SEND_CACHE_REQ:
     while (true) {
-#pragma HLS PIPELINE II=1
+#pragma HLS PIPELINE style = frp II = 1
         distance_req_pack_t req_pack = distance_req_pack_stream.read();
         for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
-            cacheline_idx[pe_idx] = req_pack.node_ids[pe_idx] >> LOG_DIST_PER_WORD;
+            cacheline_idx[pe_idx] =
+                req_pack.node_ids[pe_idx] >> LOG_DIST_PER_WORD;
         }
 
         {
-            LOOP_SEND_CACHE_REQ_INNER:
-            for (ap_uint<4> i = req_pack.offset; i < PE_NUM; i ++){
-#pragma HLS PIPELINE II=1 rewind
-#pragma HLS unroll factor=1
-                cache_req.idx = cacheline_idx[i]; 
+        LOOP_SEND_CACHE_REQ_INNER:
+            for (ap_uint<4> i = req_pack.offset; i < PE_NUM; i++) {
+#pragma HLS PIPELINE style = frp II = 1 rewind
+#pragma HLS unroll factor = 1
+                cache_req.idx = cacheline_idx[i];
                 cache_req.target_pe = i;
                 cache_req.end_flag = req_pack.end_flag;
                 cacheline_req_stream.write(cache_req);
-                // printf("Sent cacheline req for idx %d to PE %d\n", (int)cache_req.idx, (int)cache_req.target_pe);
-                // fflush(NULL);
+                // printf("Sent cacheline req for idx %d to PE %d\n",
+                // (int)cache_req.idx, (int)cache_req.target_pe); fflush(NULL);
             }
         }
 
@@ -241,11 +264,11 @@ static void node_property_loader(
     // Stream 0
 LOOP_NPL_S0_READ:
     while (true) {
-#pragma HLS PIPELINE II = 1
+#pragma HLS PIPELINE style = frp II = 1
         // printf("Waiting for cacheline request...\n");fflush(NULL);
         cacheline_req_t cache_req = cacheline_req_stream.read();
-        // printf("Received cacheline request for idx %d from PE %d\n", (int)cache_req.idx, (int)cache_req.target_pe);
-        // fflush(NULL);
+        // printf("Received cacheline request for idx %d from PE %d\n",
+        // (int)cache_req.idx, (int)cache_req.target_pe); fflush(NULL);
         if (cache_req.end_flag) {
             cache_resp.end_flag = true;
             end_flag_get = true;
@@ -262,12 +285,12 @@ LOOP_NPL_S0_READ:
         last_cache_idx = cache_req.idx;
         cache_resp.target_pe = cache_req.target_pe;
         cacheline_resp_stream.write(cache_resp);
-        // printf("Sent cacheline response for idx %d to PE %d\n", (int)cache_req.idx, (int)cache_req.target_pe);
-        // fflush(NULL);
+        // printf("Sent cacheline response for idx %d to PE %d\n",
+        // (int)cache_req.idx, (int)cache_req.target_pe); fflush(NULL);
         if (end_flag_get) {
             break;
         }
-    }    
+    }
 
     const int num_dists_per_word = AXI_BUS_WIDTH / DISTANCE_BITWIDTH;
     const int num_wide_reads =
@@ -276,8 +299,8 @@ LOOP_NPL_S0_READ:
     // Stream 1
     int nodes_read_s1 = 0;
     int burst_idx1 = 0, burst_idx2 = 0;
-    // printf("Loading node distances for %d nodes (%d wide reads)\n", num_nodes, num_wide_reads);
-    // fflush(NULL);
+    // printf("Loading node distances for %d nodes (%d wide reads)\n",
+    // num_nodes, num_wide_reads); fflush(NULL);
 LOOP_NPL_S1_READ:
     for (int i = 0; i < num_wide_reads; i++) {
 #pragma HLS PIPELINE II = 2
@@ -288,11 +311,12 @@ LOOP_NPL_S1_READ:
         for (int j = 0; j < 8; j++) {
 #pragma HLS UNROLL
             if (nodes_read_s1 + j < num_nodes) {
-                burst.data[j] = wide_word.range(
-                    (j + 1) * DISTANCE_BITWIDTH - 1, j * DISTANCE_BITWIDTH);
+                burst.data[j] = wide_word.range((j + 1) * DISTANCE_BITWIDTH - 1,
+                                                j * DISTANCE_BITWIDTH);
             }
         }
-        nodes_read_s1 = (nodes_read_s1 + 7 < num_nodes) ? nodes_read_s1 + 8 : num_nodes;
+        nodes_read_s1 =
+            (nodes_read_s1 + 7 < num_nodes) ? nodes_read_s1 + 8 : num_nodes;
         node_distance_burst_stream_1.write(burst);
 
         for (int j = 8; j < 16; j++) {
@@ -305,14 +329,15 @@ LOOP_NPL_S1_READ:
         if (nodes_read_s1 < num_nodes) {
             node_distance_burst_stream_1.write(burst);
         }
-        nodes_read_s1 = (nodes_read_s1 + 7 < num_nodes) ? nodes_read_s1 + 8 : num_nodes;
+        nodes_read_s1 =
+            (nodes_read_s1 + 7 < num_nodes) ? nodes_read_s1 + 8 : num_nodes;
     }
 }
 
-static void node_prop_resp_receiver(
-    hls::stream<cacheline_resp_t> &cacheline_resp_stream,
-    hls::stream<bus_word_t> (&cacheline_streams)[PE_NUM]) {
-    
+static void
+node_prop_resp_receiver(hls::stream<cacheline_resp_t> &cacheline_resp_stream,
+                        hls::stream<bus_word_t> (&cacheline_streams)[PE_NUM]) {
+
     cacheline_resp_t cache_resp = cacheline_resp_stream.read();
     bus_word_t first_line = cache_resp.data;
     for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
@@ -320,9 +345,9 @@ static void node_prop_resp_receiver(
         cacheline_streams[pe_idx].write(first_line);
     }
 
-    LOOP_RECEIVE_CACHE_RESP:
+LOOP_RECEIVE_CACHE_RESP:
     while (true) {
-#pragma HLS PIPELINE II=1
+#pragma HLS PIPELINE style = frp II = 1
         cache_resp = cacheline_resp_stream.read();
         if (cache_resp.end_flag) {
             break;
@@ -334,40 +359,56 @@ static void node_prop_resp_receiver(
 ap_fixed_pod_t get_val_from_bus(const bus_word_t bus, int offset) {
 #pragma HLS INLINE
     switch (offset) {
-        case 0: return bus.range(31, 0);
-        case 1: return bus.range(63, 32);
-        case 2: return bus.range(95, 64);
-        case 3: return bus.range(127, 96);
-        case 4: return bus.range(159, 128);
-        case 5: return bus.range(191, 160);
-        case 6: return bus.range(223, 192);
-        case 7: return bus.range(255, 224);
-        case 8: return bus.range(287, 256);
-        case 9: return bus.range(319, 288);
-        case 10: return bus.range(351, 320);
-        case 11: return bus.range(383, 352);
-        case 12: return bus.range(415, 384);
-        case 13: return bus.range(447, 416);
-        case 14: return bus.range(479, 448);
-        case 15: return bus.range(511, 480);
-        default: return 0;
+    case 0:
+        return bus.range(31, 0);
+    case 1:
+        return bus.range(63, 32);
+    case 2:
+        return bus.range(95, 64);
+    case 3:
+        return bus.range(127, 96);
+    case 4:
+        return bus.range(159, 128);
+    case 5:
+        return bus.range(191, 160);
+    case 6:
+        return bus.range(223, 192);
+    case 7:
+        return bus.range(255, 224);
+    case 8:
+        return bus.range(287, 256);
+    case 9:
+        return bus.range(319, 288);
+    case 10:
+        return bus.range(351, 320);
+    case 11:
+        return bus.range(383, 352);
+    case 12:
+        return bus.range(415, 384);
+    case 13:
+        return bus.range(447, 416);
+    case 14:
+        return bus.range(479, 448);
+    case 15:
+        return bus.range(511, 480);
+    default:
+        return 0;
     }
 }
 
-static void merge_node_props(
-    hls::stream<bus_word_t> (&cacheline_streams)[PE_NUM],
-    hls::stream<edge_descriptor_batch_t> &edge_stream,
-    hls::stream<node_id_burst_t> &src_id_burst_stream,
-    hls::stream<edge_batch_t> &edge_batch_stream,
-    uint32_t edge_num
-) {
+static void
+merge_node_props(hls::stream<bus_word_t> (&cacheline_streams)[PE_NUM],
+                 hls::stream<edge_descriptor_batch_t> &edge_stream,
+                 hls::stream<node_id_burst_t> &src_id_burst_stream,
+                 hls::stream<edge_batch_t> &edge_batch_stream,
+                 uint32_t edge_num) {
     bus_word_t last_cacheline[PE_NUM];
 #pragma HLS ARRAY_PARTITION variable = last_cacheline complete dim = 0
     ap_uint<NODE_ID_BITWIDTH - LOG_DIST_PER_WORD> last_cache_idx[PE_NUM];
 #pragma HLS ARRAY_PARTITION variable = last_cache_idx complete dim = 0
 
-    // Init first cacheline for each PE
-    LOOP_INIT_CACHELINE:
+// Init first cacheline for each PE
+LOOP_INIT_CACHELINE:
     for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
         last_cacheline[pe_idx] = cacheline_streams[pe_idx].read();
@@ -375,9 +416,9 @@ static void merge_node_props(
     }
 
     const uint32_t scatter_size = (edge_num + PE_NUM - 1) / PE_NUM;
-    // printf("Merging node properties for %d edges (%d scatter batches)\n", edge_num, scatter_size);
-    // fflush(NULL);
-    LOOP_SCATTER_EDGES:
+// printf("Merging node properties for %d edges (%d scatter batches)\n",
+// edge_num, scatter_size); fflush(NULL);
+LOOP_SCATTER_EDGES:
     for (int32_t edge_batch_idx = 0; edge_batch_idx < scatter_size;
          edge_batch_idx++) {
 #pragma HLS PIPELINE II = 1
@@ -396,7 +437,7 @@ static void merge_node_props(
         ap_uint<NODE_ID_BITWIDTH - LOG_DIST_PER_WORD> cur_last_cache_idx;
         for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
-            ap_uint<NODE_ID_BITWIDTH - LOG_DIST_PER_WORD> cacheline_idx = 
+            ap_uint<NODE_ID_BITWIDTH - LOG_DIST_PER_WORD> cacheline_idx =
                 (src_id_burst.data[pe_idx] >> LOG_DIST_PER_WORD);
             uint32_t offset = (src_id_burst.data[pe_idx] & (DIST_PER_WORD - 1));
             if (pe_idx < edge_batch.end_pos) {
@@ -410,7 +451,7 @@ static void merge_node_props(
                 // ap_fixed_pod_t prop = cacheline.range(
                 //     31 + (offset << 5), offset << 5);
                 ap_fixed_pod_t prop = get_val_from_bus(cacheline, offset);
-                
+
                 out_batch.src_distances[pe_idx] = prop;
                 out_batch.weights[pe_idx] = edge_batch.edges[pe_idx].prop;
                 out_batch.dsts[pe_idx] = edge_batch.edges[pe_idx].node_id;
@@ -1653,7 +1694,8 @@ extern "C" void graphyflow_big(const bus_word_t *src_ids,
     node_property_loader(node_props, stream_cache_req, stream_cache_resp,
                          node_distance_burst_stream_1, num_nodes);
     node_prop_resp_receiver(stream_cache_resp, stream_cachelines);
-    merge_node_props(stream_cachelines, edge_stream, stream_src_ids_2, stream_edge_data, num_edges);
+    merge_node_props(stream_cachelines, edge_stream, stream_src_ids_2,
+                     stream_edge_data, num_edges);
 
     // --- Node Property Responder for Reduce Operation ---
     node_property_responder(node_distance_burst_stream_1, num_nodes,
