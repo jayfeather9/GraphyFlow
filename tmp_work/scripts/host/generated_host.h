@@ -57,6 +57,9 @@ class AlgorithmHost {
     std::vector<std::vector<bus_word_t, aligned_allocator<bus_word_t>>>
         big_kernel_host_outputs;
 
+    std::vector<HostInputBuffers> hbm_manager_host_buffers;
+    std::vector<KernelBuffers> hbm_manager_buffers;
+
     // Buffer containers for little kernels (one entry per kernel instance)
     std::vector<HostInputBuffers> little_kernel_input_buffers;
     std::vector<KernelBuffers> little_kernel_buffers;

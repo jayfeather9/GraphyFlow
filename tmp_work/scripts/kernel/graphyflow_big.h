@@ -21,8 +21,9 @@
 #define WEIGHT_BITWIDTH DISTANCE_BITWIDTH
 #define WEIGHT_INTEGER_PART DISTANCE_INTEGER_PART
 #define OUT_END_MARKER_BITWIDTH 4
-#define DIST_PER_WORD 16  // AXI_BUS_WIDTH / DISTANCE_BITWIDTH = 512 / 32 = 16
-#define LOG_DIST_PER_WORD 4 // log2(AXI_BUS_WIDTH / DISTANCE_BITWIDTH) = log2(512 / 32) = log2(16) = 4
+#define DIST_PER_WORD 16 // AXI_BUS_WIDTH / DISTANCE_BITWIDTH = 512 / 32 = 16
+#define LOG_DIST_PER_WORD                                                      \
+    4 // log2(AXI_BUS_WIDTH / DISTANCE_BITWIDTH) = log2(512 / 32) = log2(16) = 4
 
 // --- New Memory Word and Bus Definitions ---
 #define AXI_BUS_WIDTH 512
@@ -46,6 +47,10 @@ typedef ap_uint<DISTANCE_BITWIDTH>
     ap_fixed_pod_t; // Used to hold bit representation of ap_fixed types
 typedef ap_fixed<DISTANCE_BITWIDTH, DISTANCE_INTEGER_PART> distance_t;
 typedef ap_uint<OUT_END_MARKER_BITWIDTH> out_end_marker_t;
+
+typedef ap_axiu<32, 0, 0, 8> b_cacheline_req_t;
+typedef ap_axiu<512, 0, 0, 8> b_cacheline_resp_t;
+typedef ap_axiu<256, 0, 0, 8> b_node_distance_burst_t;
 
 // --- Struct Type Definitions (UNCHANGED) ---
 // The definitions of these structs remain the same, but the underlying
@@ -110,13 +115,13 @@ struct __attribute__((packed)) distance_req_pack_t {
 
 struct __attribute__((packed)) cacheline_req_t {
     ap_uint<NODE_ID_BITWIDTH - LOG_DIST_PER_WORD> idx;
-    ap_uint<4> target_pe;
+    ap_uint<4> dst;
     bool end_flag;
 };
 
 struct __attribute__((packed)) cacheline_resp_t {
     bus_word_t data;
-    ap_uint<4> target_pe;
+    ap_uint<4> dst;
     bool end_flag;
 };
 
@@ -252,9 +257,18 @@ struct __attribute__((packed)) net_wrapper_kt_pair_105_t_t {
 // KernelOutputBatch* out_o_0_342);
 
 // --- Top-Level Function Prototype ---
-extern "C" void graphyflow_big(const bus_word_t *src_offsets,
-                               const bus_word_t *edge_props,
-                               const bus_word_t *node_props, bus_word_t *output,
-                               int32_t num_nodes, int32_t num_edges, int32_t dst_num);
+extern "C" void
+graphyflow_big(const bus_word_t *src_ids, const bus_word_t *edge_props,
+               bus_word_t *output, int32_t num_nodes, int32_t num_edges,
+               int32_t dst_num,
+               hls::stream<b_cacheline_req_t> &stream_outer_cache_req,
+               hls::stream<b_cacheline_resp_t> &stream_outer_cache_resp,
+               hls::stream<b_node_distance_burst_t> &stream_outer_node_dist);
+
+extern "C" void
+hbm_manager(const bus_word_t *node_distances, int32_t num_nodes,
+            hls::stream<b_cacheline_req_t> &cacheline_req_stream,
+            hls::stream<b_cacheline_resp_t> &cacheline_resp_stream,
+            hls::stream<b_node_distance_burst_t> &node_dist_stream);
 
 #endif // __GRAPHYFLOW_GRAPHYFLOW_BIG_H__

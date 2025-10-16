@@ -44,6 +44,10 @@ AccDescriptor initAccelerator(const std::string xclbin_path) {
         acc.little_gs_queue[k] = tmp_q;
     }
 
+    // hbm_manager_queue
+    OCL_CHECK(err, acc.hbm_manager_queue = cl::CommandQueue(
+                       acc.context, device, CL_QUEUE_PROFILING_ENABLE, &err));
+
     std::cout << "Attempting to program device: "
               << device.getInfo<CL_DEVICE_NAME>() << std::endl;
     cl::Program program(acc.context, {device}, bins, nullptr, &err);
@@ -68,6 +72,10 @@ AccDescriptor initAccelerator(const std::string xclbin_path) {
                                program, krnl_name_full.c_str(), &err));
             acc.big_gs_krnls.push_back(tmp_gs_krnl);
         }
+
+        std::string hbm_manager_krnl_name = "hbm_manager:{hbm_manager_1}";
+        OCL_CHECK(err, acc.hbm_manager_krnl = cl::Kernel(
+                           program, hbm_manager_krnl_name.c_str(), &err));
 
         // 创建 acc.num_little_krnl 个 "graphyflow_little" 内核实例 ---
         // for (int i = 0; i < acc.num_little_krnl; i++) {

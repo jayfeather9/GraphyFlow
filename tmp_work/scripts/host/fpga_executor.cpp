@@ -36,6 +36,7 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
             partition_container, big_kernel_events, little_kernel_events);
         for (auto &q : acc.big_gs_queue)
             q.finish();
+        acc.hbm_manager_queue.finish();
         for (auto &q : acc.little_gs_queue)
             q.finish();
         algo_host.transfer_data_from_fpga();

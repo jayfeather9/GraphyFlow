@@ -10,6 +10,7 @@ typedef struct AccDescriptor {
 
     std::vector<cl::CommandQueue> big_gs_queue;
     std::vector<cl::CommandQueue> little_gs_queue;
+    cl::CommandQueue hbm_manager_queue;
 
     int num_big_krnl = BIG_KERNEL_NUM;
     int num_little_krnl = LITTLE_KERNEL_NUM;
@@ -18,6 +19,7 @@ typedef struct AccDescriptor {
     std::string little_gs_kernel_name = "littleKernel";
 
     std::vector<cl::Kernel> big_gs_krnls;
+    cl::Kernel hbm_manager_krnl;
     std::vector<cl::Kernel> little_gs_krnls;
 
     cl::Context context;
