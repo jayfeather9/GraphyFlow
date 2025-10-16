@@ -51,9 +51,9 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                     temp_byte_buffer.insert(temp_byte_buffer.end(),
                                             padding_needed,
                                             0); // 插入0作为 padding
-                    printf(
-                        "[BIG]Inserted %zu bytes of padding before node %d\n", padding_needed, j);
-                    fflush(nullptr);
+                    // printf(
+                    //     "[BIG]Inserted %zu bytes of padding before node %d\n", padding_needed, j);
+                    // fflush(nullptr);
                 }
 
                 int global_id = p_graph.vtx_map_rev.at(j);
@@ -148,42 +148,37 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                   << " sec) ---" << std::endl;
         start_time = current_time;
 
-        // --- Pack offsets (int32_t -> 4 bytes) ---
+        // --- Pack source IDs (node_id_t -> 4 bytes) ---
         {
-            const size_t bytes_per_offset = sizeof(int32_t);
-            const size_t offsets_per_word = bytes_per_word / bytes_per_offset;
-            const size_t word_number = (p_graph.num_vertices + 1 + offsets_per_word - 1) /
-                                       offsets_per_word;
+            const size_t bytes_per_id = sizeof(node_id_t);
+            const size_t ids_per_word = bytes_per_word / bytes_per_id;
+            const size_t word_number =
+                (p_graph.num_edges + ids_per_word - 1) / ids_per_word;
             std::vector<char> temp_byte_buffer;
             temp_byte_buffer.reserve(word_number * bytes_per_word);
 
-            for (int j = 0; j < p_graph.num_vertices + 1; ++j) {
-                // **Padding Logic**
-                if ((temp_byte_buffer.size() % bytes_per_word) +
-                        bytes_per_offset >
-                    bytes_per_word) {
-                    size_t padding_needed =
-                        bytes_per_word -
-                        (temp_byte_buffer.size() % bytes_per_word);
-                    temp_byte_buffer.insert(temp_byte_buffer.end(),
-                                            padding_needed, 0);
+            for (int j = 0; j < p_graph.num_vertices; ++j) {
+                for (int k = p_graph.offsets[j]; k < p_graph.offsets[j + 1];
+                     ++k) {
+                    node_id_t src_id = j;
+                    const char *id_bytes =
+                        reinterpret_cast<const char *>(&src_id);
+                    for (size_t l = 0; l < bytes_per_id; ++l) {
+                        temp_byte_buffer.push_back(id_bytes[l]);
+                    }
                 }
-
-                int32_t offset_val = p_graph.offsets[j];
-                const char *data_ptr =
-                    reinterpret_cast<const char *>(&offset_val);
-                temp_byte_buffer.insert(temp_byte_buffer.end(), data_ptr,
-                                        data_ptr + bytes_per_offset);
             }
-            big_kernel_input_buffers[i].packed_offsets.resize(
-                (temp_byte_buffer.size() + bytes_per_word - 1) / bytes_per_word,
+
+            big_kernel_input_buffers[i].packed_src_ids.resize(
+                (temp_byte_buffer.size() + bytes_per_word - 1) /
+                    bytes_per_word,
                 0);
-            std::memcpy(big_kernel_input_buffers[i].packed_offsets.data(),
+            std::memcpy(big_kernel_input_buffers[i].packed_src_ids.data(),
                         temp_byte_buffer.data(), temp_byte_buffer.size());
         }
 
         current_time = std::chrono::system_clock::now();
-        std::cout << "--- [Host] Phase 0: Preparing data structures offsets ("
+        std::cout << "--- [Host] Phase 0: Preparing data structures src ids ("
                   << std::chrono::duration<double>(current_time - start_time)
                          .count()
                   << " sec) ---" << std::endl;
@@ -299,40 +294,37 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                   << " sec) ---" << std::endl;
         start_time = current_time;
 
-        // --- Pack offsets (int32_t -> 4 bytes) ---
+        // --- Pack source IDs (node_id_t -> 4 bytes) ---
         {
-            const size_t bytes_per_offset = sizeof(int32_t);
-            const size_t offsets_per_word = bytes_per_word / bytes_per_offset;
-            const size_t word_number = (p_graph.num_vertices + 1 + offsets_per_word - 1) /
-                                       offsets_per_word;
+            const size_t bytes_per_id = sizeof(node_id_t);
+            const size_t ids_per_word = bytes_per_word / bytes_per_id;
+            const size_t word_number =
+                (p_graph.num_edges + ids_per_word - 1) / ids_per_word;
             std::vector<char> temp_byte_buffer;
             temp_byte_buffer.reserve(word_number * bytes_per_word);
 
-            for (int j = 0; j < p_graph.num_vertices + 1; ++j) {
-                if ((temp_byte_buffer.size() % bytes_per_word) +
-                        bytes_per_offset >
-                    bytes_per_word) {
-                    size_t padding_needed =
-                        bytes_per_word -
-                        (temp_byte_buffer.size() % bytes_per_word);
-                    temp_byte_buffer.insert(temp_byte_buffer.end(),
-                                            padding_needed, 0);
+            for (int j = 0; j < p_graph.num_vertices; ++j) {
+                for (int k = p_graph.offsets[j]; k < p_graph.offsets[j + 1];
+                     ++k) {
+                    node_id_t src_id = j;
+                    const char *id_bytes =
+                        reinterpret_cast<const char *>(&src_id);
+                    for (size_t l = 0; l < bytes_per_id; ++l) {
+                        temp_byte_buffer.push_back(id_bytes[l]);
+                    }
                 }
-                int32_t offset_val = p_graph.offsets[j];
-                const char *data_ptr =
-                    reinterpret_cast<const char *>(&offset_val);
-                temp_byte_buffer.insert(temp_byte_buffer.end(), data_ptr,
-                                        data_ptr + bytes_per_offset);
             }
-            little_kernel_input_buffers[i].packed_offsets.resize(
-                (temp_byte_buffer.size() + bytes_per_word - 1) / bytes_per_word,
+
+            little_kernel_input_buffers[i].packed_src_ids.resize(
+                (temp_byte_buffer.size() + bytes_per_word - 1) /
+                    bytes_per_word,
                 0);
-            std::memcpy(little_kernel_input_buffers[i].packed_offsets.data(),
+            std::memcpy(little_kernel_input_buffers[i].packed_src_ids.data(),
                         temp_byte_buffer.data(), temp_byte_buffer.size());
         }
 
         current_time = std::chrono::system_clock::now();
-        std::cout << "--- [Host] Phase 0: Preparing data structures little offsets ("
+        std::cout << "--- [Host] Phase 0: Preparing data structures little src ids ("
                   << std::chrono::duration<double>(current_time - start_time)
                          .count()
                   << " sec) ---" << std::endl;
@@ -379,16 +371,16 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
         hbm_ext_out.param = 0;
 
         // use pre-calculated sizes from Phase 0
-        size_t num_offset_words =
-            (big_kernel_input_buffers[i].packed_offsets.size());
+        size_t num_id_words =
+            (big_kernel_input_buffers[i].packed_src_ids.size());
         size_t num_edge_words =
             (big_kernel_input_buffers[i].packed_edge_props.size());
         size_t num_dist_words =
             (big_kernel_input_buffers[i].packed_node_props.size());
         OCL_CHECK(err,
-                  buffers.src_offsets_buf = cl::Buffer(
+                  buffers.src_ids_buf = cl::Buffer(
                       acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,
-                      num_offset_words * bytes_per_word, &hbm_ext_in0, &err));
+                      num_id_words * bytes_per_word, &hbm_ext_in0, &err));
         OCL_CHECK(err,
                   buffers.edge_props_buf = cl::Buffer(
                       acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,
@@ -452,17 +444,17 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
         hbm_ext_out.param = 0;
 
         // use pre-calculated sizes from Phase 0
-        size_t num_offset_words =
-            (little_kernel_input_buffers[i].packed_offsets.size());
+        size_t num_id_words =
+            (little_kernel_input_buffers[i].packed_src_ids.size());
         size_t num_edge_words =
             (little_kernel_input_buffers[i].packed_edge_props.size());
         size_t num_dist_words =
             (little_kernel_input_buffers[i].packed_node_props.size());
 
         OCL_CHECK(err,
-                  buffers.src_offsets_buf = cl::Buffer(
+                  buffers.src_ids_buf = cl::Buffer(
                       acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,
-                      num_offset_words * bytes_per_word, &hbm_ext_in0, &err));
+                      num_id_words * bytes_per_word, &hbm_ext_in0, &err));
         OCL_CHECK(err,
                   buffers.edge_props_buf = cl::Buffer(
                       acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,
@@ -629,10 +621,10 @@ void AlgorithmHost::transfer_data_to_fpga(const PartitionContainer &container) {
                           sizeof(bus_word_t),
                       big_kernel_input_buffers[i].packed_edge_props.data()));
         OCL_CHECK(err, err = acc.big_gs_queue[i].enqueueWriteBuffer(
-                           big_kernel_buffers[i].src_offsets_buf, CL_FALSE, 0,
-                           big_kernel_input_buffers[i].packed_offsets.size() *
+                           big_kernel_buffers[i].src_ids_buf, CL_FALSE, 0,
+                           big_kernel_input_buffers[i].packed_src_ids.size() *
                                sizeof(bus_word_t),
-                           big_kernel_input_buffers[i].packed_offsets.data()));
+                           big_kernel_input_buffers[i].packed_src_ids.data()));
     }
 
     for (size_t i = 0; i < little_kernel_buffers.size(); ++i) {
@@ -650,10 +642,10 @@ void AlgorithmHost::transfer_data_to_fpga(const PartitionContainer &container) {
                       little_kernel_input_buffers[i].packed_edge_props.data()));
         OCL_CHECK(err,
                   err = acc.little_gs_queue[i].enqueueWriteBuffer(
-                      little_kernel_buffers[i].src_offsets_buf, CL_FALSE, 0,
-                      little_kernel_input_buffers[i].packed_offsets.size() *
+                      little_kernel_buffers[i].src_ids_buf, CL_FALSE, 0,
+                      little_kernel_input_buffers[i].packed_src_ids.size() *
                           sizeof(bus_word_t),
-                      little_kernel_input_buffers[i].packed_offsets.data()));
+                      little_kernel_input_buffers[i].packed_src_ids.data()));
     }
 
     // --- 2.4: 在所有命令入队后，执行一次全局同步 ---
@@ -683,7 +675,7 @@ void AlgorithmHost::execute_kernel_iteration(
         const auto &p_graph = container.SPs[i].partitioned_graph;
 
         int arg_idx = 0;
-        OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.src_offsets_buf));
+        OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.src_ids_buf));
         OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.edge_props_buf));
         OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.node_props_buf));
         OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.output_buf));
@@ -703,7 +695,7 @@ void AlgorithmHost::execute_kernel_iteration(
         const auto &p_graph = container.DPs[i].partitioned_graph;
 
         int arg_idx = 0;
-        OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.src_offsets_buf));
+        OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.src_ids_buf));
         OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.edge_props_buf));
         OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.node_props_buf));
         OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.output_buf));

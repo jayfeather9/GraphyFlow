@@ -21,6 +21,8 @@
 #define WEIGHT_BITWIDTH DISTANCE_BITWIDTH
 #define WEIGHT_INTEGER_PART DISTANCE_INTEGER_PART
 #define OUT_END_MARKER_BITWIDTH 4
+#define DIST_PER_WORD 16  // AXI_BUS_WIDTH / DISTANCE_BITWIDTH = 512 / 32 = 16
+#define LOG_DIST_PER_WORD 4 // log2(AXI_BUS_WIDTH / DISTANCE_BITWIDTH) = log2(512 / 32) = log2(16) = 4
 
 // --- New Memory Word and Bus Definitions ---
 #define AXI_BUS_WIDTH 512
@@ -88,8 +90,34 @@ struct __attribute__((packed)) node_with_prop_t {
     node_id_t node_id;
 };
 
+struct __attribute__((packed)) node_distance_cache_burst_t {
+    ap_fixed_pod_t data[DIST_PER_WORD];
+};
+
 struct __attribute__((packed)) node_distance_burst_t {
     ap_fixed_pod_t data[PE_NUM];
+};
+
+struct __attribute__((packed)) node_id_burst_t {
+    node_id_t data[PE_NUM];
+};
+
+struct __attribute__((packed)) distance_req_pack_t {
+    node_id_t node_ids[PE_NUM];
+    ap_uint<4> offset; // [offset, offset + PE_NUM) are valid
+    bool end_flag;
+};
+
+struct __attribute__((packed)) cacheline_req_t {
+    ap_uint<NODE_ID_BITWIDTH - LOG_DIST_PER_WORD> idx;
+    ap_uint<4> target_pe;
+    bool end_flag;
+};
+
+struct __attribute__((packed)) cacheline_resp_t {
+    bus_word_t data;
+    ap_uint<4> target_pe;
+    bool end_flag;
 };
 
 struct __attribute__((packed)) edge_batch_t {
