@@ -300,7 +300,11 @@ node_prop_resp_receiver(hls::stream<cacheline_resp_t> &cacheline_resp_stream,
 LOOP_RECEIVE_CACHE_RESP:
     while (true) {
 #pragma HLS PIPELINE II = 1
-        cache_resp = cacheline_resp_stream.read();
+        if (!cacheline_resp_stream.empty()) {
+            cache_resp = cacheline_resp_stream.read();
+        } else {
+            continue;
+        }
         if (cache_resp.end_flag) {
             break;
         }
@@ -1654,29 +1658,29 @@ graphyflow_big(const bus_word_t *src_ids, const bus_word_t *edge_props,
 
     // Streams for the new COO-style property loading
     hls::stream<node_id_burst_t> stream_src_ids_1;
-#pragma HLS STREAM variable = stream_src_ids_1 depth = 16
+#pragma HLS STREAM variable = stream_src_ids_1 depth = 32
     hls::stream<node_id_burst_t> stream_src_ids_2;
-#pragma HLS STREAM variable = stream_src_ids_2 depth = 16
+#pragma HLS STREAM variable = stream_src_ids_2 depth = 32
     hls::stream<distance_req_pack_t> stream_dist_req;
-#pragma HLS STREAM variable = stream_dist_req depth = 16
+#pragma HLS STREAM variable = stream_dist_req depth = 32
     hls::stream<cacheline_req_t> stream_cache_req;
-#pragma HLS STREAM variable = stream_cache_req depth = 16
+#pragma HLS STREAM variable = stream_cache_req depth = 32
     hls::stream<cacheline_resp_t> stream_cache_resp;
-#pragma HLS STREAM variable = stream_cache_resp depth = 16
+#pragma HLS STREAM variable = stream_cache_resp depth = 32
     hls::stream<bus_word_t> stream_cachelines[PE_NUM];
-#pragma HLS STREAM variable = stream_cachelines depth = 16
+#pragma HLS STREAM variable = stream_cachelines depth = 32
 
     // Existing streams
     hls::stream<node_distance_burst_t> node_distance_burst_stream_1;
-#pragma HLS STREAM variable = node_distance_burst_stream_1 depth = 16
+#pragma HLS STREAM variable = node_distance_burst_stream_1 depth = 32
     hls::stream<edge_descriptor_batch_t> edge_stream;
-#pragma HLS STREAM variable = edge_stream depth = 16
+#pragma HLS STREAM variable = edge_stream depth = 32
     hls::stream<edge_batch_t> stream_edge_data;
-#pragma HLS STREAM variable = stream_edge_data depth = 16
+#pragma HLS STREAM variable = stream_edge_data depth = 32
     hls::stream<node_dist_batch_t> stream_node_dist_data;
-#pragma HLS STREAM variable = stream_node_dist_data depth = 16
+#pragma HLS STREAM variable = stream_node_dist_data depth = 32
     hls::stream<internal_end_data_batch_t> stream_result_data;
-#pragma HLS STREAM variable = stream_result_data depth = 16
+#pragma HLS STREAM variable = stream_result_data depth = 32
 
     // printf("GraphyFlow Big Kernel Configurations:\n");
     // printf("  - Number of Nodes: %d\n", num_nodes);
@@ -1721,9 +1725,11 @@ LOOP_SIL_READ:
             }
         }
         stream_src_ids_1.write(burst1);
-        stream_src_ids_2.write(burst1);
         if (burst2_valid) {
             stream_src_ids_1.write(burst2);
+        }
+        stream_src_ids_2.write(burst1);
+        if (burst2_valid) {
             stream_src_ids_2.write(burst2);
         }
         nodes_read += num_ids_per_word;
@@ -1748,8 +1754,6 @@ LOOP_SIL_READ:
     // printf("Property extraction done.\n");
     // fflush(NULL);
     // --- Node Property Responder for Reduce Operation ---
-    node_property_responder(stream_outer_node_dist, num_nodes,
-                            stream_node_dist_data);
 
     // --- Main Dataflow Processing ---
     // graphyflow_big_dataflow(stream_edge_data, stream_node_dist_data,
@@ -1846,6 +1850,8 @@ LOOP_SIL_READ:
     // --- End of Reduce Super-Block for Reduc_105 ---
     Scatt_302(stream_o_0_107, stream_o_0_304, stream_o_1_305);
     // CopyC_306(stream_o_1_305, stream_o_0_308, stream_o_1_309);
+    node_property_responder(stream_outer_node_dist, num_nodes,
+                            stream_node_dist_data);
     Memor_299(stream_node_dist_data, stream_o_0_node_distance_300, dst_num);
     fused_op_294(stream_o_0_304, stream_o_0_node_distance_300, stream_o_1_305,
                  stream_result_data);
