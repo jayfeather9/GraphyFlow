@@ -143,7 +143,7 @@ dist_req_packer(hls::stream<node_id_burst_t> &src_id_burst_stream,
 LOOP_DRP_SEND_REQ:
     for (int32_t node_burst_idx = 0; node_burst_idx < max_node_burst_idx;
          node_burst_idx += 1) {
-#pragma HLS PIPELINE style = frp II = 1
+#pragma HLS PIPELINE II = 1
         ap_uint<NODE_ID_BITWIDTH - LOG_DIST_PER_WORD> cache_idx[PE_NUM];
 #pragma HLS ARRAY_PARTITION variable = cache_idx complete dim = 0
         node_id_burst_t node_id_burst = src_id_burst_stream.read();
@@ -217,7 +217,7 @@ cacheline_req_sender(hls::stream<distance_req_pack_t> &distance_req_pack_stream,
 
 LOOP_SEND_CACHE_REQ:
     while (true) {
-#pragma HLS PIPELINE style = frp II = 1
+#pragma HLS PIPELINE II = 1
         distance_req_pack_t req_pack = distance_req_pack_stream.read();
         for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
@@ -228,7 +228,7 @@ LOOP_SEND_CACHE_REQ:
         {
         LOOP_SEND_CACHE_REQ_INNER:
             for (ap_uint<4> i = req_pack.offset; i < PE_NUM; i++) {
-#pragma HLS PIPELINE style = frp II = 1 rewind
+#pragma HLS PIPELINE II = 1 rewind
 #pragma HLS unroll factor = 1
                 cache_req.idx = cacheline_idx[i];
                 cache_req.target_pe = i;
@@ -264,31 +264,33 @@ static void node_property_loader(
     // Stream 0
 LOOP_NPL_S0_READ:
     while (true) {
-#pragma HLS PIPELINE style = frp II = 1
-        // printf("Waiting for cacheline request...\n");fflush(NULL);
-        cacheline_req_t cache_req = cacheline_req_stream.read();
-        // printf("Received cacheline request for idx %d from PE %d\n",
-        // (int)cache_req.idx, (int)cache_req.target_pe); fflush(NULL);
-        if (cache_req.end_flag) {
-            cache_resp.end_flag = true;
-            end_flag_get = true;
-        } else {
-            cache_resp.end_flag = false;
-            if (cache_req.idx == last_cache_idx) {
-                cache_resp.data = last_cacheline;
+#pragma HLS PIPELINE II = 1
+        if (!cacheline_req_stream.empty()) {
+            // printf("Waiting for cacheline request...\n");fflush(NULL);
+            cacheline_req_t cache_req = cacheline_req_stream.read();
+            // printf("Received cacheline request for idx %d from PE %d\n",
+            // (int)cache_req.idx, (int)cache_req.target_pe); fflush(NULL);
+            if (cache_req.end_flag) {
+                cache_resp.end_flag = true;
+                end_flag_get = true;
             } else {
-                cache_resp.data = node_distances_ddr[cache_req.idx];
+                cache_resp.end_flag = false;
+                if (cache_req.idx == last_cache_idx) {
+                    cache_resp.data = last_cacheline;
+                } else {
+                    cache_resp.data = node_distances_ddr[cache_req.idx];
+                }
             }
-        }
 
-        last_cacheline = cache_resp.data;
-        last_cache_idx = cache_req.idx;
-        cache_resp.target_pe = cache_req.target_pe;
-        cacheline_resp_stream.write(cache_resp);
-        // printf("Sent cacheline response for idx %d to PE %d\n",
-        // (int)cache_req.idx, (int)cache_req.target_pe); fflush(NULL);
-        if (end_flag_get) {
-            break;
+            last_cacheline = cache_resp.data;
+            last_cache_idx = cache_req.idx;
+            cache_resp.target_pe = cache_req.target_pe;
+            cacheline_resp_stream.write(cache_resp);
+            // printf("Sent cacheline response for idx %d to PE %d\n",
+            // (int)cache_req.idx, (int)cache_req.target_pe); fflush(NULL);
+            if (end_flag_get) {
+                break;
+            }
         }
     }
 
@@ -347,12 +349,14 @@ node_prop_resp_receiver(hls::stream<cacheline_resp_t> &cacheline_resp_stream,
 
 LOOP_RECEIVE_CACHE_RESP:
     while (true) {
-#pragma HLS PIPELINE style = frp II = 1
-        cache_resp = cacheline_resp_stream.read();
-        if (cache_resp.end_flag) {
-            break;
+#pragma HLS PIPELINE II = 1
+        if (!cacheline_resp_stream.empty()) {
+            cache_resp = cacheline_resp_stream.read();
+            if (cache_resp.end_flag) {
+                break;
+            }
+            cacheline_streams[cache_resp.target_pe].write(cache_resp.data);
         }
-        cacheline_streams[cache_resp.target_pe].write(cache_resp.data);
     }
 }
 
