@@ -11,7 +11,7 @@
 
 #define PE_NUM 8
 #define LOG_PE_NUM 3
-#define MAX_NUM 512
+#define MAX_NUM 131072
 #define L 4
 
 // --- New Bitwidth Definitions for HLS Synthesis ---
@@ -21,8 +21,9 @@
 #define WEIGHT_BITWIDTH DISTANCE_BITWIDTH
 #define WEIGHT_INTEGER_PART DISTANCE_INTEGER_PART
 #define OUT_END_MARKER_BITWIDTH 4
-#define DIST_PER_WORD 16  // AXI_BUS_WIDTH / DISTANCE_BITWIDTH = 512 / 32 = 16
-#define LOG_DIST_PER_WORD 4 // log2(AXI_BUS_WIDTH / DISTANCE_BITWIDTH) = log2(512 / 32) = log2(16) = 4
+#define DIST_PER_WORD 16 // AXI_BUS_WIDTH / DISTANCE_BITWIDTH = 512 / 32 = 16
+#define LOG_DIST_PER_WORD                                                      \
+    4 // log2(AXI_BUS_WIDTH / DISTANCE_BITWIDTH) = log2(512 / 32) = log2(16) = 4
 
 // --- New Memory Word and Bus Definitions ---
 #define AXI_BUS_WIDTH 512
@@ -167,12 +168,13 @@ struct __attribute__((packed)) struct_nb_58_t {
     bool ele_1;
 };
 
-struct __attribute__((packed)) edge_des_burst_t {
-    node_with_prop_t edges[PE_NUM];
+struct __attribute__((packed)) edge_t {
+    node_id_t src_id;
+    node_id_t dst_id;
 };
 
 struct __attribute__((packed)) edge_descriptor_batch_t {
-    node_with_prop_t edges[PE_NUM];
+    edge_t edges[PE_NUM];
     int32_t end_pos;
 };
 
@@ -252,9 +254,9 @@ struct __attribute__((packed)) net_wrapper_kt_pair_105_t_t {
 // KernelOutputBatch* out_o_0_342);
 
 // --- Top-Level Function Prototype ---
-extern "C" void graphyflow_big(const bus_word_t *src_offsets,
-                               const bus_word_t *edge_props,
+extern "C" void graphyflow_big(const bus_word_t *edge_props,
                                const bus_word_t *node_props, bus_word_t *output,
-                               int32_t num_nodes, int32_t num_edges, int32_t dst_num);
+                               int32_t num_nodes, int32_t num_edges,
+                               int32_t dst_num);
 
 #endif // __GRAPHYFLOW_GRAPHYFLOW_BIG_H__

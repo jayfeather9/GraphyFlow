@@ -11,16 +11,14 @@
 // Define a structure to hold all OpenCL buffers for a single kernel instance.
 // This improves code organization and simplifies buffer management.
 struct KernelBuffers {
-    cl::Buffer src_ids_buf;    // Buffer for COO source IDs array
     cl::Buffer edge_props_buf; // Buffer for edge properties (destination ID and
-                               // weight)
+                               // source ID)
     cl::Buffer node_props_buf; // Buffer for node properties (distances),
                                // updated each iteration
     cl::Buffer output_buf;     // Buffer for kernel results
 };
 
 struct HostInputBuffers {
-    std::vector<bus_word_t, aligned_allocator<bus_word_t>> packed_src_ids;
     std::vector<bus_word_t, aligned_allocator<bus_word_t>> packed_edge_props;
     std::vector<bus_word_t, aligned_allocator<bus_word_t>> packed_node_props;
 };

@@ -50,6 +50,7 @@ LOOP_SIL_READ:
 
 static void
 edge_descriptor_loader(const bus_word_t *edge_props_ddr,
+                       hls::stream<node_id_burst_t> &stream_src_ids,
                        hls::stream<edge_descriptor_batch_t> &edge_stream,
                        int32_t num_edges) {
     const int bits_per_edge = NODE_ID_BITWIDTH + WEIGHT_BITWIDTH;
@@ -62,6 +63,9 @@ edge_descriptor_loader(const bus_word_t *edge_props_ddr,
 #pragma HLS ARRAY_PARTITION variable = edge_batch.edges complete dim = 0
     edge_batch.end_pos = 0;
 
+    node_id_burst_t src_id_burst;
+#pragma HLS ARRAY_PARTITION variable = src_id_burst.data complete dim = 0
+
 #if (NODE_ID_BITWIDTH == 32) && (WEIGHT_BITWIDTH == 32)
 LOOP_EDL_READ:
     for (int i = 0; i < num_wide_reads; i++) {
@@ -73,14 +77,18 @@ LOOP_EDL_READ:
             if (edges_read + j < num_edges) {
                 ap_uint<bits_per_edge> packed_edge = wide_word.range(
                     (j + 1) * bits_per_edge - 1, j * bits_per_edge);
-                node_with_prop_t edge;
-                edge.node_id = packed_edge.range(NODE_ID_BITWIDTH - 1, 0);
-                edge.prop =
+                edge_t edge;
+                node_id_t src_id;
+                edge.dst_id = packed_edge.range(NODE_ID_BITWIDTH - 1, 0);
+                edge.src_id =
                     packed_edge.range(bits_per_edge - 1, NODE_ID_BITWIDTH);
+                src_id = edge.src_id;
 
                 edge_batch.edges[j] = edge;
+                src_id_burst.data[j] = src_id;
             }
         }
+        stream_src_ids.write(src_id_burst);
         edges_read += edges_per_word;
         edge_batch.end_pos = (edges_read <= num_edges)
                                  ? edges_per_word
@@ -403,7 +411,7 @@ ap_fixed_pod_t get_val_from_bus(const bus_word_t bus, int offset) {
 static void
 merge_node_props(hls::stream<bus_word_t> (&cacheline_streams)[PE_NUM],
                  hls::stream<edge_descriptor_batch_t> &edge_stream,
-                 hls::stream<node_id_burst_t> &src_id_burst_stream,
+                 //  hls::stream<node_id_burst_t> &src_id_burst_stream,
                  hls::stream<edge_batch_t> &edge_batch_stream,
                  uint32_t edge_num) {
     bus_word_t last_cacheline[PE_NUM];
@@ -429,8 +437,9 @@ LOOP_SCATTER_EDGES:
         edge_descriptor_batch_t edge_batch;
 #pragma HLS ARRAY_PARTITION variable = edge_batch.edges complete dim = 0
         edge_batch = edge_stream.read();
-        node_id_burst_t src_id_burst = src_id_burst_stream.read();
-#pragma HLS ARRAY_PARTITION variable = src_id_burst.data complete dim = 0
+        //         node_id_burst_t src_id_burst = src_id_burst_stream.read();
+        // #pragma HLS ARRAY_PARTITION variable = src_id_burst.data complete dim
+        // = 0
         edge_batch_t out_batch;
 #pragma HLS ARRAY_PARTITION variable = out_batch.src_distances complete dim = 0
 #pragma HLS ARRAY_PARTITION variable = out_batch.weights complete dim = 0
@@ -442,8 +451,9 @@ LOOP_SCATTER_EDGES:
         for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
             ap_uint<NODE_ID_BITWIDTH - LOG_DIST_PER_WORD> cacheline_idx =
-                (src_id_burst.data[pe_idx] >> LOG_DIST_PER_WORD);
-            uint32_t offset = (src_id_burst.data[pe_idx] & (DIST_PER_WORD - 1));
+                (edge_batch.edges[pe_idx].src_id >> LOG_DIST_PER_WORD);
+            uint32_t offset =
+                (edge_batch.edges[pe_idx].src_id & (DIST_PER_WORD - 1));
             if (pe_idx < edge_batch.end_pos) {
                 bus_word_t cacheline;
                 if (cacheline_idx == last_cache_idx[pe_idx]) {
@@ -457,8 +467,10 @@ LOOP_SCATTER_EDGES:
                 ap_fixed_pod_t prop = get_val_from_bus(cacheline, offset);
 
                 out_batch.src_distances[pe_idx] = prop;
-                out_batch.weights[pe_idx] = edge_batch.edges[pe_idx].prop;
-                out_batch.dsts[pe_idx] = edge_batch.edges[pe_idx].node_id;
+                distance_t tmp_dist = 1.0;
+                out_batch.weights[pe_idx] =
+                    (*reinterpret_cast<ap_fixed_pod_t *>(&tmp_dist));
+                out_batch.dsts[pe_idx] = edge_batch.edges[pe_idx].dst_id;
 
                 if (pe_idx == PE_NUM - 1) {
                     cur_last_cacheline = cacheline;
@@ -1534,31 +1546,6 @@ LOOP_WHILE_59:
     }
 }
 
-// --- 4. Top-level Memory/Dataflow Functions ---
-// static void memory_loader(int32_t instantiate_idx, const int32_t*
-// src_offsets, const edge_des_burst_t* edge_des_bursts, const int32_t*
-// node_distances, int32_t num_nodes, int32_t num_edges,
-// hls::stream<edge_batch_t> &response_to_318, hls::stream<node_dist_batch_t>
-// &all_node_distances_to_343) { #pragma HLS function_instantiate
-// variable=instantiate_idx #pragma HLS DATAFLOW
-//     hls::stream<node_distance_burst_t> node_distance_burst_stream_0;
-// #pragma HLS STREAM variable=node_distance_burst_stream_0 depth=12
-//     hls::stream<node_distance_burst_t> node_distance_burst_stream_1;
-// #pragma HLS STREAM variable=node_distance_burst_stream_1 depth=12
-//     hls::stream<edge_descriptor_batch_t> edge_stream;
-// #pragma HLS STREAM variable=edge_stream depth=12
-//     hls::stream<int32_t> src_offsets_cache_stream;
-// #pragma HLS STREAM variable=src_offsets_cache_stream depth=32
-//     src_offset_loader(src_offsets, src_offsets_cache_stream, num_nodes);
-//     node_property_loader(node_distances, node_distance_burst_stream_0,
-//     node_distance_burst_stream_1, num_nodes);
-//     edge_descriptor_loader(edge_des_bursts, edge_stream, num_edges);
-//     edge_property_loader_and_dispatcher(src_offsets_cache_stream,
-//     edge_stream, node_distance_burst_stream_0, num_nodes, response_to_318);
-//     node_property_responder(node_distance_burst_stream_1, num_nodes,
-//     all_node_distances_to_343);
-// }
-
 static void graphyflow_big_dataflow(
     hls::stream<edge_batch_t> &response_to_318,
     hls::stream<node_dist_batch_t> &all_node_distances_to_343,
@@ -1643,16 +1630,13 @@ static void graphyflow_big_dataflow(
 // }
 
 // --- 5. Top-level AXI Kernel Wrapper ---
-extern "C" void graphyflow_big(const bus_word_t *src_ids,
-                               const bus_word_t *edge_props,
+extern "C" void graphyflow_big(const bus_word_t *edge_props,
                                const bus_word_t *node_props, bus_word_t *output,
                                int32_t num_nodes, int32_t num_edges,
                                int32_t dst_num) {
-#pragma HLS INTERFACE m_axi port = src_ids offset = slave bundle = gmem0
-#pragma HLS INTERFACE m_axi port = edge_props offset = slave bundle = gmem1
-#pragma HLS INTERFACE m_axi port = node_props offset = slave bundle = gmem2
-#pragma HLS INTERFACE m_axi port = output offset = slave bundle = gmem3
-#pragma HLS INTERFACE s_axilite port = src_ids
+#pragma HLS INTERFACE m_axi port = edge_props offset = slave bundle = gmem0
+#pragma HLS INTERFACE m_axi port = node_props offset = slave bundle = gmem1
+#pragma HLS INTERFACE m_axi port = output offset = slave bundle = gmem2
 #pragma HLS INTERFACE s_axilite port = edge_props
 #pragma HLS INTERFACE s_axilite port = node_props
 #pragma HLS INTERFACE s_axilite port = output
@@ -1663,10 +1647,10 @@ extern "C" void graphyflow_big(const bus_word_t *src_ids,
 #pragma HLS DATAFLOW
 
     // Streams for the new COO-style property loading
-    hls::stream<node_id_burst_t> stream_src_ids_1;
-#pragma HLS STREAM variable = stream_src_ids_1 depth = 16
-    hls::stream<node_id_burst_t> stream_src_ids_2;
-#pragma HLS STREAM variable = stream_src_ids_2 depth = 16
+    hls::stream<node_id_burst_t> stream_src_ids;
+#pragma HLS STREAM variable = stream_src_ids depth = 16
+    //     hls::stream<node_id_burst_t> stream_src_ids_2;
+    // #pragma HLS STREAM variable = stream_src_ids_2 depth = 16
     hls::stream<distance_req_pack_t> stream_dist_req;
 #pragma HLS STREAM variable = stream_dist_req depth = 16
     hls::stream<cacheline_req_t> stream_cache_req;
@@ -1689,17 +1673,17 @@ extern "C" void graphyflow_big(const bus_word_t *src_ids,
 #pragma HLS STREAM variable = stream_result_data depth = 16
 
     // --- Data Loading ---
-    src_id_loader(src_ids, stream_src_ids_1, stream_src_ids_2, num_edges);
-    edge_descriptor_loader(edge_props, edge_stream, num_edges);
+    // src_id_loader(src_ids, stream_src_ids_1, stream_src_ids_2, num_edges);
+    edge_descriptor_loader(edge_props, stream_src_ids, edge_stream, num_edges);
 
     // --- New COO-style Source Property Loading Pipeline ---
-    dist_req_packer(stream_src_ids_1, stream_dist_req, num_edges);
+    dist_req_packer(stream_src_ids, stream_dist_req, num_edges);
     cacheline_req_sender(stream_dist_req, stream_cache_req);
     node_property_loader(node_props, stream_cache_req, stream_cache_resp,
                          node_distance_burst_stream_1, num_nodes);
     node_prop_resp_receiver(stream_cache_resp, stream_cachelines);
-    merge_node_props(stream_cachelines, edge_stream, stream_src_ids_2,
-                     stream_edge_data, num_edges);
+    merge_node_props(stream_cachelines, edge_stream, stream_edge_data,
+                     num_edges);
 
     // --- Node Property Responder for Reduce Operation ---
     node_property_responder(node_distance_burst_stream_1, num_nodes,
