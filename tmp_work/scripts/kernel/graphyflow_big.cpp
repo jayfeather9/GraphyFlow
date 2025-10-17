@@ -527,48 +527,87 @@ LOOP_FOR_14:
 // --- REWRITTEN: New final_writeback function packs only distances (no node
 // IDs) into 512-bit words. Node IDs are implicit: they are sequential from 0 to
 // num_dsts-1.
-static void final_writeback(hls::stream<internal_end_data_batch_t> &in_stream,
-                            bus_word_t *out_ddr) {
-    const int dists_per_word = AXI_BUS_WIDTH / DISTANCE_BITWIDTH;
+static void
+pack_distances_to_bus_words(hls::stream<internal_end_data_batch_t> &in_stream,
+                            hls::stream<bus_word_t> &out_bus_stream) {
+    const int dists_per_batch = PE_NUM; // 8 distances per batch
+    ap_uint<256> first_half, second_half;
+    bool has_pending_half = false;
 
-    bus_word_t write_word = 0;
-    int pack_count = 0;
-    int ddr_addr = 0;
-
-LOOP_WRITEBACK_MAIN:
+LOOP_PACK_TO_BUS:
     while (true) {
 #pragma HLS PIPELINE II = 1
-        internal_end_data_batch_t in_batch;
-        if (in_stream.read_nb(in_batch)) {
 
-        LOOP_WRITEBACK_PACK:
-            for (int i = 0; i < in_batch.end_pos; i++) {
+        internal_end_data_batch_t in_batch = in_stream.read();
+
+        if (in_batch.end_pos == 0 && in_batch.end_flag) {
+            break;
+        }
+
+        // Pack current batch into 256-bit half
+        ap_uint<256> current_half;
+    LOOP_PACK_BATCH:
+        for (int i = 0; i < PE_NUM; i++) {
 #pragma HLS UNROLL
-                node_with_prop_t item = in_batch.data[i];
-                ap_fixed_pod_t distance = item.prop;
+            ap_fixed_pod_t distance = in_batch.data[i].prop;
+            current_half.range((i + 1) * DISTANCE_BITWIDTH - 1,
+                               i * DISTANCE_BITWIDTH) = distance;
+        }
 
-                // Pack only distance (no node ID needed)
-                int start_bit = pack_count * DISTANCE_BITWIDTH;
-                write_word.range(start_bit + DISTANCE_BITWIDTH - 1, start_bit) =
-                    distance;
+        // Alternate between first_half and second_half
+        if (!has_pending_half) {
+            // Store as first half
+            first_half = current_half;
+            has_pending_half = true;
+        } else {
+            // Combine with first_half to form complete bus_word
+            second_half = current_half;
 
-                pack_count++;
-                if (pack_count == dists_per_word) {
-                    out_ddr[ddr_addr++] = write_word;
-                    write_word = 0;
-                    pack_count = 0;
-                }
-            }
+            bus_word_t word;
+            word.range(255, 0) = first_half;
+            word.range(511, 256) = second_half;
 
-            if (in_batch.end_flag) {
-                break;
-            }
+            out_bus_stream.write(word);
+            has_pending_half = false;
+        }
+
+        if (in_batch.end_flag) {
+            break;
         }
     }
 
-    // Write any remaining packed distances
-    if (pack_count > 0) {
-        out_ddr[ddr_addr++] = write_word;
+    // Handle remaining half (if total_reads is odd)
+    if (has_pending_half) {
+        bus_word_t word;
+        word.range(255, 0) = first_half;
+        word.range(511, 256) = 0; // Zero-padding for the second half
+        out_bus_stream.write(word);
+    }
+    // printf("Finished packing distances to bus words.\n"); fflush(NULL);
+}
+
+// Write bus words from stream to DDR memory
+// Writes exactly the number of words needed to cover dst_num distances
+static void write_bus_words_to_ddr(hls::stream<bus_word_t> &in_bus_stream,
+                                   bus_word_t *out_ddr, int32_t dst_num) {
+    const int dists_per_word =
+        AXI_BUS_WIDTH / DISTANCE_BITWIDTH; // 16 distances per 512-bit word
+    int total_words = (dst_num + dists_per_word - 1) / dists_per_word;
+    int word_idx = 0;
+
+LOOP_WRITE_TO_DDR:
+    while (true) {
+#pragma HLS PIPELINE II = 1
+        if (!in_bus_stream.empty()) {
+            bus_word_t word = in_bus_stream.read();
+            out_ddr[word_idx] = word;
+            // printf("Wrote bus word %d to DDR.\n", word_idx); fflush(NULL);
+            // printf("Total words to write: %d\n", total_words); fflush(NULL);
+            word_idx++;
+            if (word_idx >= total_words) {
+                break;
+            }
+        }
     }
 }
 
@@ -1589,16 +1628,6 @@ static void graphyflow_big_dataflow(
                  internal_end_stream);
 }
 
-// static void final_writeback(int32_t instantiate_idx,
-// hls::stream<internal_end_data_batch_t> &internal_end_stream,
-// KernelOutputBatch* out_o_0_342) { #pragma HLS function_instantiate
-// variable=instantiate_idx #pragma HLS DATAFLOW
-//     hls::stream<KernelOutputBatch> converted_stream;
-// #pragma HLS STREAM variable=converted_stream depth=12
-//     final_convert(internal_end_stream, converted_stream);
-//     final_write(converted_stream, out_o_0_342);
-// }
-
 // --- 5. Top-level AXI Kernel Wrapper ---
 extern "C" void graphyflow_big(const bus_word_t *edge_props,
                                const bus_word_t *node_props, bus_word_t *output,
@@ -1664,5 +1693,9 @@ extern "C" void graphyflow_big(const bus_word_t *edge_props,
                             stream_result_data, dst_num);
 
     // --- Final Writeback ---
-    final_writeback(stream_result_data, output);
+    // final_writeback(stream_result_data, dst_num, output);
+    hls::stream<bus_word_t> bus_word_stream;
+#pragma HLS STREAM variable = bus_word_stream depth = 4
+    pack_distances_to_bus_words(stream_result_data, bus_word_stream);
+    write_bus_words_to_ddr(bus_word_stream, output, dst_num);
 }
