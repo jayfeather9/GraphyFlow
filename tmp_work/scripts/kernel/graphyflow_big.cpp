@@ -27,7 +27,7 @@ src_and_edge_loader(const bus_word_t *coo_data_ddr,
 #if (NODE_ID_BITWIDTH == 32) && (WEIGHT_BITWIDTH == 32)
 LOOP_MERGED_READ:
     for (int group = 0; group < num_id_words; group++) {
-#pragma HLS PIPELINE II = 3
+#pragma HLS PIPELINE II = 4
 
         // Read 1 src_id word
         bus_word_t src_id_word = coo_data_ddr[read_idx++];
@@ -45,6 +45,63 @@ LOOP_MERGED_READ:
             }
         }
 
+        src_id_burst_stream_1.write(burst1);
+        src_id_burst_stream_2.write(burst1);
+
+    // Read 2 edge_prop words
+        if (edges_read < num_edges) {
+            bus_word_t edge_word_data = coo_data_ddr[read_idx++];
+
+            for (int j = 0; j < edges_per_word; j++) {
+#pragma HLS UNROLL
+                if (edges_read + j < num_edges) {
+                    ap_uint<bits_per_edge> packed_edge =
+                        edge_word_data.range((j + 1) * bits_per_edge - 1,
+                                                j * bits_per_edge);
+                    node_with_prop_t edge;
+                    edge.node_id =
+                        packed_edge.range(NODE_ID_BITWIDTH - 1, 0);
+                    edge.prop = packed_edge.range(bits_per_edge - 1,
+                                                    NODE_ID_BITWIDTH);
+                    edge_batch.edges[j] = edge;
+                    // printf("Loaded edge: dest_id=%d, weight=%f\n",
+                    // (int)edge.node_id,
+                    // (float)(*reinterpret_cast<distance_t*>(&edge.prop)));
+                    // fflush(nullptr);
+                }
+            }
+
+            edges_read += edges_per_word;
+            edge_batch.end_pos = (edges_read <= num_edges)
+                                        ? edges_per_word
+                                        : (num_edges % edges_per_word);
+            edge_stream.write(edge_batch);
+            edge_batch.end_pos = 0;
+        }
+
+        if (edges_read < num_edges) {
+            bus_word_t edge_word_data = coo_data_ddr[read_idx++];
+
+            for (int j = 0; j < edges_per_word; j++) {
+#pragma HLS UNROLL
+                if (edges_read + j < num_edges) {
+                    ap_uint<bits_per_edge> packed_edge =
+                        edge_word_data.range((j + 1) * bits_per_edge - 1,
+                                                j * bits_per_edge);
+                    node_with_prop_t edge;
+                    edge.node_id =
+                        packed_edge.range(NODE_ID_BITWIDTH - 1, 0);
+                    edge.prop = packed_edge.range(bits_per_edge - 1,
+                                                    NODE_ID_BITWIDTH);
+                    edge_batch.edges[j] = edge;
+                    // printf("Loaded edge: dest_id=%d, weight=%f\n",
+                    // (int)edge.node_id,
+                    // (float)(*reinterpret_cast<distance_t*>(&edge.prop)));
+                    // fflush(nullptr);
+                }
+            }
+        }
+
         bool burst2_valid = false;
     LOOP_UNPACK_IDS_2:
         for (int j = 8; j < 16; j++) {
@@ -57,49 +114,11 @@ LOOP_MERGED_READ:
                 // fflush(nullptr);
             }
         }
-
-        src_id_burst_stream_1.write(burst1);
-        src_id_burst_stream_2.write(burst1);
         if (burst2_valid) {
             src_id_burst_stream_1.write(burst2);
             src_id_burst_stream_2.write(burst2);
         }
         ids_read += num_ids_per_word;
-
-    // Read 2 edge_prop words
-    LOOP_READ_EDGES:
-        for (int edge_word = 0; edge_word < 2; edge_word++) {
-            if (edges_read < num_edges) {
-                bus_word_t edge_word_data = coo_data_ddr[read_idx++];
-
-            LOOP_UNPACK_EDGES:
-                for (int j = 0; j < edges_per_word; j++) {
-#pragma HLS UNROLL
-                    if (edges_read + j < num_edges) {
-                        ap_uint<bits_per_edge> packed_edge =
-                            edge_word_data.range((j + 1) * bits_per_edge - 1,
-                                                 j * bits_per_edge);
-                        node_with_prop_t edge;
-                        edge.node_id =
-                            packed_edge.range(NODE_ID_BITWIDTH - 1, 0);
-                        edge.prop = packed_edge.range(bits_per_edge - 1,
-                                                      NODE_ID_BITWIDTH);
-                        edge_batch.edges[j] = edge;
-                        // printf("Loaded edge: dest_id=%d, weight=%f\n",
-                        // (int)edge.node_id,
-                        // (float)(*reinterpret_cast<distance_t*>(&edge.prop)));
-                        // fflush(nullptr);
-                    }
-                }
-
-                edges_read += edges_per_word;
-                edge_batch.end_pos = (edges_read <= num_edges)
-                                         ? edges_per_word
-                                         : (num_edges % edges_per_word);
-                edge_stream.write(edge_batch);
-                edge_batch.end_pos = 0;
-            }
-        }
     }
 #else
 #error                                                                         \
