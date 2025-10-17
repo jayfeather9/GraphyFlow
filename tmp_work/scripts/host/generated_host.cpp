@@ -95,44 +95,40 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
             std::vector<char> temp_byte_buffer;
             temp_byte_buffer.reserve(word_number * bytes_per_word);
 
-            // Calculate src_id for each edge
-            for (size_t j = 0; j < p_graph.num_edges; ++j) {
-                // **Padding Logic**
-                if ((temp_byte_buffer.size() % bytes_per_word) +
-                        bytes_per_edge >
-                    bytes_per_word) {
-                    size_t padding_needed =
-                        bytes_per_word -
-                        (temp_byte_buffer.size() % bytes_per_word);
-                    temp_byte_buffer.insert(temp_byte_buffer.end(),
-                                            padding_needed, 0);
-                }
-
-                // Find src_id for this edge using offsets array
-                node_id_t src_id = 0;
-                for (int v = 0; v < p_graph.num_vertices; ++v) {
-                    if (p_graph.offsets[v] <= j && j < p_graph.offsets[v + 1]) {
-                        src_id = v;
-                        break;
+            // Iterate through vertices, then their edges (optimized O(E)
+            // instead of O(V*E))
+            for (int v = 0; v < p_graph.num_vertices; ++v) {
+                node_id_t src_id = v;
+                for (int edge_idx = p_graph.offsets[v];
+                     edge_idx < p_graph.offsets[v + 1]; ++edge_idx) {
+                    // **Padding Logic**
+                    if ((temp_byte_buffer.size() % bytes_per_word) +
+                            bytes_per_edge >
+                        bytes_per_word) {
+                        size_t padding_needed =
+                            bytes_per_word -
+                            (temp_byte_buffer.size() % bytes_per_word);
+                        temp_byte_buffer.insert(temp_byte_buffer.end(),
+                                                padding_needed, 0);
                     }
+
+                    char edge_bytes[bytes_per_edge];
+                    uint32_t dest_id = p_graph.columns[edge_idx];
+
+                    // Pack dst_id (first NODE_ID_BITWIDTH bits)
+                    for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
+                        edge_bytes[b] = (dest_id >> (8 * b)) & 0xFF;
+                    }
+
+                    // Pack src_id (next NODE_ID_BITWIDTH bits)
+                    for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
+                        edge_bytes[(NODE_ID_BITWIDTH / 8) + b] =
+                            (src_id >> (8 * b)) & 0xFF;
+                    }
+
+                    temp_byte_buffer.insert(temp_byte_buffer.end(), edge_bytes,
+                                            edge_bytes + bytes_per_edge);
                 }
-
-                char edge_bytes[bytes_per_edge];
-                uint32_t dest_id = p_graph.columns[j];
-
-                // Pack dst_id (first NODE_ID_BITWIDTH bits)
-                for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
-                    edge_bytes[b] = (dest_id >> (8 * b)) & 0xFF;
-                }
-
-                // Pack src_id (next NODE_ID_BITWIDTH bits)
-                for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
-                    edge_bytes[(NODE_ID_BITWIDTH / 8) + b] =
-                        (src_id >> (8 * b)) & 0xFF;
-                }
-
-                temp_byte_buffer.insert(temp_byte_buffer.end(), edge_bytes,
-                                        edge_bytes + bytes_per_edge);
             }
             big_kernel_input_buffers[i].packed_edge_props.resize(
                 (temp_byte_buffer.size() + bytes_per_word - 1) / bytes_per_word,
@@ -209,43 +205,39 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
             std::vector<char> temp_byte_buffer;
             temp_byte_buffer.reserve(word_number * bytes_per_word);
 
-            // Calculate src_id for each edge
-            for (size_t j = 0; j < p_graph.num_edges; ++j) {
-                if ((temp_byte_buffer.size() % bytes_per_word) +
-                        bytes_per_edge >
-                    bytes_per_word) {
-                    size_t padding_needed =
-                        bytes_per_word -
-                        (temp_byte_buffer.size() % bytes_per_word);
-                    temp_byte_buffer.insert(temp_byte_buffer.end(),
-                                            padding_needed, 0);
-                }
-
-                // Find src_id for this edge using offsets array
-                node_id_t src_id = 0;
-                for (int v = 0; v < p_graph.num_vertices; ++v) {
-                    if (p_graph.offsets[v] <= j && j < p_graph.offsets[v + 1]) {
-                        src_id = v;
-                        break;
+            // Iterate through vertices, then their edges (optimized O(E)
+            // instead of O(V*E))
+            for (int v = 0; v < p_graph.num_vertices; ++v) {
+                node_id_t src_id = v;
+                for (int edge_idx = p_graph.offsets[v];
+                     edge_idx < p_graph.offsets[v + 1]; ++edge_idx) {
+                    if ((temp_byte_buffer.size() % bytes_per_word) +
+                            bytes_per_edge >
+                        bytes_per_word) {
+                        size_t padding_needed =
+                            bytes_per_word -
+                            (temp_byte_buffer.size() % bytes_per_word);
+                        temp_byte_buffer.insert(temp_byte_buffer.end(),
+                                                padding_needed, 0);
                     }
+
+                    char edge_bytes[bytes_per_edge];
+                    uint32_t dest_id = p_graph.columns[edge_idx];
+
+                    // Pack dst_id (first NODE_ID_BITWIDTH bits)
+                    for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
+                        edge_bytes[b] = (dest_id >> (8 * b)) & 0xFF;
+                    }
+
+                    // Pack src_id (next NODE_ID_BITWIDTH bits)
+                    for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
+                        edge_bytes[(NODE_ID_BITWIDTH / 8) + b] =
+                            (src_id >> (8 * b)) & 0xFF;
+                    }
+
+                    temp_byte_buffer.insert(temp_byte_buffer.end(), edge_bytes,
+                                            edge_bytes + bytes_per_edge);
                 }
-
-                char edge_bytes[bytes_per_edge];
-                uint32_t dest_id = p_graph.columns[j];
-
-                // Pack dst_id (first NODE_ID_BITWIDTH bits)
-                for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
-                    edge_bytes[b] = (dest_id >> (8 * b)) & 0xFF;
-                }
-
-                // Pack src_id (next NODE_ID_BITWIDTH bits)
-                for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
-                    edge_bytes[(NODE_ID_BITWIDTH / 8) + b] =
-                        (src_id >> (8 * b)) & 0xFF;
-                }
-
-                temp_byte_buffer.insert(temp_byte_buffer.end(), edge_bytes,
-                                        edge_bytes + bytes_per_edge);
             }
             little_kernel_input_buffers[i].packed_edge_props.resize(
                 (temp_byte_buffer.size() + bytes_per_word - 1) / bytes_per_word,
