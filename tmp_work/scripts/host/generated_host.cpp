@@ -305,10 +305,8 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
                       acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,
                       num_dist_words * bytes_per_word, &hbm_ext_in1, &err));
 
-        // calculate maxinum possible output size as num_dst_vertices * (node_id
-        // + distance) + 1 (for end marker)
-        size_t bits_per_output =
-            NODE_ID_BITWIDTH + DISTANCE_BITWIDTH + OUT_END_MARKER_BITWIDTH;
+        // Calculate output buffer size: only distances (no node IDs or end
+        // markers) Output is num_dst_vertices * DISTANCE_BITWIDTH
         size_t max_dst_local_id = 0;
         for (size_t e = 0; e < p_graph.num_edges; ++e) {
             int dst = p_graph.columns[e];
@@ -317,14 +315,10 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
             }
         }
         size_t num_dst_vertices = max_dst_local_id + 1;
-        // calculate how much vertices in one 512-bit word (each word has
-        // padding)
-        size_t vert_num_in_word =
-            (AXI_BUS_WIDTH) /
-            (NODE_ID_BITWIDTH + DISTANCE_BITWIDTH + OUT_END_MARKER_BITWIDTH);
+        // Calculate how many distances fit in one 512-bit word
+        size_t dists_per_word = AXI_BUS_WIDTH / DISTANCE_BITWIDTH;
         size_t num_output_words =
-            (num_dst_vertices + vert_num_in_word - 1) / vert_num_in_word +
-            1; // +1 for end marker
+            (num_dst_vertices + dists_per_word - 1) / dists_per_word;
 
         big_kernel_host_outputs[i].resize(num_output_words);
         OCL_CHECK(err,
@@ -377,8 +371,8 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
 
         // calculate maxinum possible output size as num_dst_vertices * (node_id
         // + distance) + 1 (for end marker)
-        size_t bits_per_output =
-            NODE_ID_BITWIDTH + DISTANCE_BITWIDTH + OUT_END_MARKER_BITWIDTH;
+        // Calculate output buffer size: only distances (no node IDs or end
+        // markers) Output is num_dst_vertices * DISTANCE_BITWIDTH
         size_t max_dst_local_id = 0;
         for (size_t e = 0; e < p_graph.num_edges; ++e) {
             int dst = p_graph.columns[e];
@@ -387,19 +381,12 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
             }
         }
         size_t num_dst_vertices = max_dst_local_id + 1;
-        // calculate how much vertices in one 512-bit word (each word has
-        // padding)
-        size_t vert_num_in_word =
-            (AXI_BUS_WIDTH) /
-            (NODE_ID_BITWIDTH + DISTANCE_BITWIDTH + OUT_END_MARKER_BITWIDTH);
+        // Calculate how many distances fit in one 512-bit word
+        size_t dists_per_word = AXI_BUS_WIDTH / DISTANCE_BITWIDTH;
         size_t num_output_words =
-            (num_dst_vertices + vert_num_in_word - 1) / vert_num_in_word +
-            1; // +1 for end marker
+            (num_dst_vertices + dists_per_word - 1) / dists_per_word;
 
         little_kernel_host_outputs[i].resize(num_output_words);
-        // printf("[LITTLE] Allocated host output buffer for %zu words.\n",
-        //        num_output_words);
-        // fflush(NULL);
         OCL_CHECK(err,
                   buffers.output_buf = cl::Buffer(
                       acc.context, CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX,
@@ -640,114 +627,78 @@ bool AlgorithmHost::check_convergence_and_update(
               << std::endl;
 
     std::map<int, distance_t> min_distances;
-    const int bits_per_output =
-        NODE_ID_BITWIDTH + DISTANCE_BITWIDTH + OUT_END_MARKER_BITWIDTH;
-    const int outputs_per_word = AXI_BUS_WIDTH / bits_per_output;
-    // printf("Each output word contains %d outputs.\n", outputs_per_word);
-    // fflush(nullptr);
+    const int dists_per_word = AXI_BUS_WIDTH / DISTANCE_BITWIDTH;
 
     // 5.1: Unpack and gather results from BIG kernels
+    // Node IDs are implicit: they are sequential from 0 to num_dsts-1
     for (size_t i = 0; i < big_kernel_host_outputs.size(); ++i) {
         const auto &p_graph = container.SPs[i].partitioned_graph;
+        int local_id = 0; // Implicit node ID counter
+
         for (const auto &word : big_kernel_host_outputs[i]) {
-            out_end_marker_t end_flag = 0;
-            for (int k = 0; k < outputs_per_word; ++k) {
-                int bit_offset = k * bits_per_output;
-                ap_uint<bits_per_output> packed_output =
-                    word.range(bit_offset + bits_per_output - 1, bit_offset);
+            for (int k = 0; k < dists_per_word && local_id < p_graph.num_dsts;
+                 ++k, ++local_id) {
+                int bit_offset = k * DISTANCE_BITWIDTH;
+                ap_fixed_pod_t dist_pod =
+                    word.range(bit_offset + DISTANCE_BITWIDTH - 1, bit_offset);
 
-                ap_uint<NODE_ID_BITWIDTH> local_id_pod =
-                    packed_output.range(NODE_ID_BITWIDTH - 1, 0);
-                ap_fixed_pod_t dist_pod = packed_output.range(
-                    NODE_ID_BITWIDTH + DISTANCE_BITWIDTH - 1, NODE_ID_BITWIDTH);
-                end_flag = packed_output.range(
-                    bits_per_output - 1, NODE_ID_BITWIDTH + DISTANCE_BITWIDTH);
-
-                if (end_flag != 0) {
-                    // printf("[BIG] Detected end marker in output.\n");
-                    break; // Reached end marker
-                }
-
-                int local_id = local_id_pod;
                 if (p_graph.vtx_map_rev.count(local_id) == 0) {
                     continue; // Invalid local ID
                 }
 
                 int global_id = p_graph.vtx_map_rev.at(local_id);
                 if (global_id >= m_num_vertices) {
-                    continue; // Skip if ID is out of bounds (padding)
+                    continue; // Skip if ID is out of bounds
                 }
 
-                distance_t dist_24b =
-                    *reinterpret_cast<distance_t *>(&dist_pod);
                 distance_t new_dist =
-                    dist_24b; // Widen for host-side master copy
-
-                // printf("[BIG] Unpacked result: global_id=%d, new_dist=%f\n",
-                //        global_id, (float)new_dist);
-                // fflush(nullptr);
+                    *reinterpret_cast<distance_t *>(&dist_pod);
 
                 if (min_distances.find(global_id) == min_distances.end() ||
                     new_dist < min_distances[global_id]) {
                     min_distances[global_id] = new_dist;
                 }
             }
-            if (end_flag != 0)
-                break;
+
+            if (local_id >= p_graph.num_dsts) {
+                break; // All outputs processed
+            }
         }
     }
 
     // 5.2: Unpack and gather results from LITTLE kernels (identical logic)
     for (size_t i = 0; i < little_kernel_host_outputs.size(); ++i) {
         const auto &p_graph = container.DPs[i].partitioned_graph;
-        // printf("[LITTLE] Processing outputs from LITTLE kernel %zu\n", i);
+        int local_id = 0; // Implicit node ID counter
+
         for (const auto &word : little_kernel_host_outputs[i]) {
-            out_end_marker_t end_flag = 0;
-            // printf("[LITTLE] Processing word.\n");
-            for (int k = 0; k < outputs_per_word; ++k) {
-                int bit_offset = k * bits_per_output;
-                ap_uint<bits_per_output> packed_output =
-                    word.range(bit_offset + bits_per_output - 1, bit_offset);
+            for (int k = 0; k < dists_per_word && local_id < p_graph.num_dsts;
+                 ++k, ++local_id) {
+                int bit_offset = k * DISTANCE_BITWIDTH;
+                ap_fixed_pod_t dist_pod =
+                    word.range(bit_offset + DISTANCE_BITWIDTH - 1, bit_offset);
 
-                ap_uint<NODE_ID_BITWIDTH> local_id_pod =
-                    packed_output.range(NODE_ID_BITWIDTH - 1, 0);
-                ap_fixed_pod_t dist_pod = packed_output.range(
-                    NODE_ID_BITWIDTH + DISTANCE_BITWIDTH - 1, NODE_ID_BITWIDTH);
-                end_flag = packed_output.range(
-                    bits_per_output - 1, NODE_ID_BITWIDTH + DISTANCE_BITWIDTH);
-
-                if (end_flag != 0) {
-                    // printf("[LITTLE] Detected end marker in output.\n");
-                    break; // Reached end marker
-                }
-
-                int local_id = local_id_pod;
                 if (p_graph.vtx_map_rev.count(local_id) == 0) {
-                    // printf("[LITTLE] Invalid local ID: %d\n", local_id);
                     continue;
                 }
 
                 int global_id = p_graph.vtx_map_rev.at(local_id);
                 if (global_id >= m_num_vertices) {
                     continue;
-                } // Skip if ID is out of bounds (padding)
+                }
 
-                distance_t dist_24b =
+                distance_t new_dist =
                     *reinterpret_cast<distance_t *>(&dist_pod);
-                distance_t new_dist = dist_24b;
-
-                // printf("[LITTLE] Unpacked result: global_id=%d,
-                // new_dist=%f\n",
-                //        global_id, (float)new_dist);
-                // fflush(nullptr);
 
                 if (min_distances.find(global_id) == min_distances.end() ||
                     new_dist < min_distances[global_id]) {
                     min_distances[global_id] = new_dist;
                 }
             }
-            if (end_flag != 0)
-                break;
+
+            if (local_id >= p_graph.num_dsts) {
+                break; // All outputs processed
+            }
         }
     }
 

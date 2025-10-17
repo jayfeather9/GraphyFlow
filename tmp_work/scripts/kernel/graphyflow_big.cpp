@@ -524,12 +524,12 @@ LOOP_FOR_14:
     all_distances_stream.write(dist_batch);
 }
 
-// --- REWRITTEN: New final_writeback function packs results into 512-bit words.
+// --- REWRITTEN: New final_writeback function packs only distances (no node
+// IDs) into 512-bit words. Node IDs are implicit: they are sequential from 0 to
+// num_dsts-1.
 static void final_writeback(hls::stream<internal_end_data_batch_t> &in_stream,
                             bus_word_t *out_ddr) {
-    const int bits_per_output =
-        NODE_ID_BITWIDTH + DISTANCE_BITWIDTH + OUT_END_MARKER_BITWIDTH;
-    const int outputs_per_word = AXI_BUS_WIDTH / bits_per_output;
+    const int dists_per_word = AXI_BUS_WIDTH / DISTANCE_BITWIDTH;
 
     bus_word_t write_word = 0;
     int pack_count = 0;
@@ -545,30 +545,15 @@ LOOP_WRITEBACK_MAIN:
             for (int i = 0; i < in_batch.end_pos; i++) {
 #pragma HLS UNROLL
                 node_with_prop_t item = in_batch.data[i];
-                ap_uint<bits_per_output> packed_output;
-                packed_output.range(NODE_ID_BITWIDTH - 1, 0) = item.node_id;
-                packed_output.range(NODE_ID_BITWIDTH + DISTANCE_BITWIDTH - 1,
-                                    NODE_ID_BITWIDTH) = item.prop;
-                out_end_marker_t end_marker =
-                    0; // No end marker for regular entries
-                packed_output.range(bits_per_output - 1,
-                                    NODE_ID_BITWIDTH + DISTANCE_BITWIDTH) =
-                    end_marker;
-                // distance_t tmp_dist =
-                //     packed_output.range(NODE_ID_BITWIDTH + DISTANCE_BITWIDTH
-                //     - 1, NODE_ID_BITWIDTH);
-                // printf("[BIG]Packing output: node_id=%d, distance=%f\n",
-                // (int)packed_output.range(NODE_ID_BITWIDTH - 1, 0),
-                // (float)tmp_dist); fflush(NULL);
+                ap_fixed_pod_t distance = item.prop;
 
-                int start_bit = pack_count * bits_per_output;
-                write_word.range(start_bit + bits_per_output - 1, start_bit) =
-                    packed_output;
+                // Pack only distance (no node ID needed)
+                int start_bit = pack_count * DISTANCE_BITWIDTH;
+                write_word.range(start_bit + DISTANCE_BITWIDTH - 1, start_bit) =
+                    distance;
 
                 pack_count++;
-                if (pack_count == outputs_per_word) {
-                    // printf("[BIG] Writing packed word to DDR at address
-                    // %d\n", ddr_addr); fflush(NULL);
+                if (pack_count == dists_per_word) {
                     out_ddr[ddr_addr++] = write_word;
                     write_word = 0;
                     pack_count = 0;
@@ -581,23 +566,8 @@ LOOP_WRITEBACK_MAIN:
         }
     }
 
-    // if pack_count is 0, write a final end marker word
-    // else, put the end marker in the current write_word and write it
-    ap_uint<bits_per_output> end_marker;
-    end_marker.range(NODE_ID_BITWIDTH - 1, 0) = 0;
-    end_marker.range(NODE_ID_BITWIDTH + DISTANCE_BITWIDTH - 1,
-                     NODE_ID_BITWIDTH) = 0; // Distance = 0
-    end_marker.range(bits_per_output - 1,
-                     NODE_ID_BITWIDTH + DISTANCE_BITWIDTH) =
-        (out_end_marker_t)1; // End marker = 1
-    if (pack_count == 0) {
-        bus_word_t end_word = 0;
-        end_word.range(bits_per_output - 1, 0) = end_marker;
-        out_ddr[ddr_addr++] = end_word;
-    } else {
-        int start_bit = pack_count * bits_per_output;
-        write_word.range(start_bit + bits_per_output - 1, start_bit) =
-            end_marker;
+    // Write any remaining packed distances
+    if (pack_count > 0) {
         out_ddr[ddr_addr++] = write_word;
     }
 }
