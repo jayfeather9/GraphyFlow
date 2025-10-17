@@ -1,97 +1,109 @@
 #include "graphyflow_big.h"
 
-static void src_id_loader(const bus_word_t *node_ids_ddr,
-                          hls::stream<node_id_burst_t> &src_id_burst_stream_1,
-                          hls::stream<node_id_burst_t> &src_id_burst_stream_2,
-                          int32_t num_nodes) {
-    const int num_ids_per_word = AXI_BUS_WIDTH / NODE_ID_BITWIDTH;
-    const int num_wide_reads =
-        (num_nodes + num_ids_per_word - 1) / num_ids_per_word;
+// Merged loader: reads pattern of 1 src_id word + 2 edge_prop words
+static void
+src_and_edge_loader(const bus_word_t *coo_data_ddr,
+                    hls::stream<node_id_burst_t> &src_id_burst_stream_1,
+                    hls::stream<node_id_burst_t> &src_id_burst_stream_2,
+                    hls::stream<edge_descriptor_batch_t> &edge_stream,
+                    int32_t num_edges) {
+    const int num_ids_per_word = AXI_BUS_WIDTH / NODE_ID_BITWIDTH; // 16
+    const int bits_per_edge = NODE_ID_BITWIDTH + WEIGHT_BITWIDTH;  // 64
+    const int edges_per_word = AXI_BUS_WIDTH / bits_per_edge;      // 8
 
-    int nodes_read = 0;
-    int burst_idx = 0;
+    // Calculate total number of 3-word groups needed
+    const int num_id_words =
+        (num_edges + num_ids_per_word - 1) / num_ids_per_word;
+
+    int edges_read = 0;
+    int ids_read = 0;
+    int read_idx = 0;
+
     node_id_burst_t burst1, burst2;
-LOOP_SIL_READ:
-    for (int i = 0; i < num_wide_reads; i++) {
-#pragma HLS PIPELINE II = 2
-        bus_word_t wide_word = node_ids_ddr[i];
+    edge_descriptor_batch_t edge_batch;
+#pragma HLS ARRAY_PARTITION variable = edge_batch.edges complete dim = 0
+    edge_batch.end_pos = 0;
 
-    LOOP_SIL_UNPACK:
+#if (NODE_ID_BITWIDTH == 32) && (WEIGHT_BITWIDTH == 32)
+LOOP_MERGED_READ:
+    for (int group = 0; group < num_id_words; group++) {
+#pragma HLS PIPELINE II = 3
+
+        // Read 1 src_id word
+        bus_word_t src_id_word = coo_data_ddr[read_idx++];
+
+    // Unpack src_ids into two bursts
+    LOOP_UNPACK_IDS_1:
         for (int j = 0; j < 8; j++) {
 #pragma HLS UNROLL
-            if (nodes_read + j < num_nodes) {
-                node_id_t cur_id = wide_word.range(
+            if (ids_read + j < num_edges) {
+                node_id_t cur_id = src_id_word.range(
                     (j + 1) * NODE_ID_BITWIDTH - 1, j * NODE_ID_BITWIDTH);
                 burst1.data[j] = cur_id;
-                // printf("Loaded node ID %d at burst %d, position %d\n",
-                // (int)cur_id, burst_idx, j); fflush(NULL);
+                // printf("Loaded src_id %d\n", (int)cur_id);
+                // fflush(nullptr);
             }
         }
+
         bool burst2_valid = false;
+    LOOP_UNPACK_IDS_2:
         for (int j = 8; j < 16; j++) {
 #pragma HLS UNROLL
-            if (nodes_read + j < num_nodes) {
-                burst2.data[j - 8] = wide_word.range(
+            if (ids_read + j < num_edges) {
+                burst2.data[j - 8] = src_id_word.range(
                     (j + 1) * NODE_ID_BITWIDTH - 1, j * NODE_ID_BITWIDTH);
-                burst2_valid |= true;
-                // printf("Loaded node ID %d at burst %d, position %d\n",
-                // (int)burst2.data[j - 8], burst_idx + 1, j - 8); fflush(NULL);
+                burst2_valid = true;
+                // printf("Loaded src_id %d\n", (int)burst2.data[j - 8]);
+                // fflush(nullptr);
             }
         }
+
         src_id_burst_stream_1.write(burst1);
         src_id_burst_stream_2.write(burst1);
         if (burst2_valid) {
             src_id_burst_stream_1.write(burst2);
             src_id_burst_stream_2.write(burst2);
         }
-        nodes_read += num_ids_per_word;
-    }
-}
+        ids_read += num_ids_per_word;
 
-static void
-edge_descriptor_loader(const bus_word_t *edge_props_ddr,
-                       hls::stream<edge_descriptor_batch_t> &edge_stream,
-                       int32_t num_edges) {
-    const int bits_per_edge = NODE_ID_BITWIDTH + WEIGHT_BITWIDTH;
-    const int edges_per_word = AXI_BUS_WIDTH / bits_per_edge;
-    const int num_wide_reads =
-        (num_edges + edges_per_word - 1) / edges_per_word;
+    // Read 2 edge_prop words
+    LOOP_READ_EDGES:
+        for (int edge_word = 0; edge_word < 2; edge_word++) {
+            if (edges_read < num_edges) {
+                bus_word_t edge_word_data = coo_data_ddr[read_idx++];
 
-    int edges_read = 0;
-    edge_descriptor_batch_t edge_batch;
-#pragma HLS ARRAY_PARTITION variable = edge_batch.edges complete dim = 0
-    edge_batch.end_pos = 0;
-
-#if (NODE_ID_BITWIDTH == 32) && (WEIGHT_BITWIDTH == 32)
-LOOP_EDL_READ:
-    for (int i = 0; i < num_wide_reads; i++) {
-#pragma HLS PIPELINE II = 1
-        bus_word_t wide_word = edge_props_ddr[i];
-    LOOP_EDL_UNPACK:
-        for (int j = 0; j < edges_per_word; j++) {
+            LOOP_UNPACK_EDGES:
+                for (int j = 0; j < edges_per_word; j++) {
 #pragma HLS UNROLL
-            if (edges_read + j < num_edges) {
-                ap_uint<bits_per_edge> packed_edge = wide_word.range(
-                    (j + 1) * bits_per_edge - 1, j * bits_per_edge);
-                node_with_prop_t edge;
-                edge.node_id = packed_edge.range(NODE_ID_BITWIDTH - 1, 0);
-                edge.prop =
-                    packed_edge.range(bits_per_edge - 1, NODE_ID_BITWIDTH);
+                    if (edges_read + j < num_edges) {
+                        ap_uint<bits_per_edge> packed_edge =
+                            edge_word_data.range((j + 1) * bits_per_edge - 1,
+                                                 j * bits_per_edge);
+                        node_with_prop_t edge;
+                        edge.node_id =
+                            packed_edge.range(NODE_ID_BITWIDTH - 1, 0);
+                        edge.prop = packed_edge.range(bits_per_edge - 1,
+                                                      NODE_ID_BITWIDTH);
+                        edge_batch.edges[j] = edge;
+                        // printf("Loaded edge: dest_id=%d, weight=%f\n",
+                        // (int)edge.node_id,
+                        // (float)(*reinterpret_cast<distance_t*>(&edge.prop)));
+                        // fflush(nullptr);
+                    }
+                }
 
-                edge_batch.edges[j] = edge;
+                edges_read += edges_per_word;
+                edge_batch.end_pos = (edges_read <= num_edges)
+                                         ? edges_per_word
+                                         : (num_edges % edges_per_word);
+                edge_stream.write(edge_batch);
+                edge_batch.end_pos = 0;
             }
         }
-        edges_read += edges_per_word;
-        edge_batch.end_pos = (edges_read <= num_edges)
-                                 ? edges_per_word
-                                 : (num_edges % edges_per_word);
-        edge_stream.write(edge_batch);
-        edge_batch.end_pos = 0;
     }
 #else
-// Add support for other bitwidth combinations if needed.
 #error                                                                         \
-    "edge_descriptor_loader currently only supports 32-bit node_id and 32-bit weight."
+    "src_and_edge_loader currently only supports 32-bit node_id and 32-bit weight."
 #endif
 }
 
@@ -1643,18 +1655,15 @@ static void graphyflow_big_dataflow(
 // }
 
 // --- 5. Top-level AXI Kernel Wrapper ---
-extern "C" void graphyflow_big(const bus_word_t *src_ids,
-                               const bus_word_t *edge_props,
-                               const bus_word_t *node_props, bus_word_t *output,
-                               int32_t num_nodes, int32_t num_edges,
-                               int32_t dst_num) {
-#pragma HLS INTERFACE m_axi port = src_ids offset = slave bundle = gmem0
-#pragma HLS INTERFACE m_axi port = edge_props offset = slave bundle = gmem1
-#pragma HLS INTERFACE m_axi port = node_props offset = slave bundle = gmem2
-#pragma HLS INTERFACE m_axi port = output offset = slave bundle = gmem3
-#pragma HLS INTERFACE s_axilite port = src_ids
-#pragma HLS INTERFACE s_axilite port = edge_props
-#pragma HLS INTERFACE s_axilite port = node_props
+extern "C" void graphyflow_big(const bus_word_t *coo_data_ptr,
+                               const bus_word_t *node_props_ptr,
+                               bus_word_t *output, int32_t num_nodes,
+                               int32_t num_edges, int32_t dst_num) {
+#pragma HLS INTERFACE m_axi port = coo_data_ptr offset = slave bundle = gmem0
+#pragma HLS INTERFACE m_axi port = node_props_ptr offset = slave bundle = gmem1
+#pragma HLS INTERFACE m_axi port = output offset = slave bundle = gmem2
+#pragma HLS INTERFACE s_axilite port = coo_data_ptr
+#pragma HLS INTERFACE s_axilite port = node_props_ptr
 #pragma HLS INTERFACE s_axilite port = output
 #pragma HLS INTERFACE s_axilite port = num_nodes
 #pragma HLS INTERFACE s_axilite port = num_edges
@@ -1688,14 +1697,14 @@ extern "C" void graphyflow_big(const bus_word_t *src_ids,
     hls::stream<internal_end_data_batch_t> stream_result_data;
 #pragma HLS STREAM variable = stream_result_data depth = 16
 
-    // --- Data Loading ---
-    src_id_loader(src_ids, stream_src_ids_1, stream_src_ids_2, num_edges);
-    edge_descriptor_loader(edge_props, edge_stream, num_edges);
+    // --- Merged Data Loading (src_ids + edge_props in COO format) ---
+    src_and_edge_loader(coo_data_ptr, stream_src_ids_1, stream_src_ids_2,
+                        edge_stream, num_edges);
 
     // --- New COO-style Source Property Loading Pipeline ---
     dist_req_packer(stream_src_ids_1, stream_dist_req, num_edges);
     cacheline_req_sender(stream_dist_req, stream_cache_req);
-    node_property_loader(node_props, stream_cache_req, stream_cache_resp,
+    node_property_loader(node_props_ptr, stream_cache_req, stream_cache_resp,
                          node_distance_burst_stream_1, num_nodes);
     node_prop_resp_receiver(stream_cache_resp, stream_cachelines);
     merge_node_props(stream_cachelines, edge_stream, stream_src_ids_2,

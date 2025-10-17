@@ -21,8 +21,9 @@
 #define WEIGHT_BITWIDTH DISTANCE_BITWIDTH
 #define WEIGHT_INTEGER_PART DISTANCE_INTEGER_PART
 #define OUT_END_MARKER_BITWIDTH 4
-#define DIST_PER_WORD 16  // AXI_BUS_WIDTH / DISTANCE_BITWIDTH = 512 / 32 = 16
-#define LOG_DIST_PER_WORD 4 // log2(AXI_BUS_WIDTH / DISTANCE_BITWIDTH) = log2(512 / 32) = log2(16) = 4
+#define DIST_PER_WORD 16 // AXI_BUS_WIDTH / DISTANCE_BITWIDTH = 512 / 32 = 16
+#define LOG_DIST_PER_WORD                                                      \
+    4 // log2(AXI_BUS_WIDTH / DISTANCE_BITWIDTH) = log2(512 / 32) = log2(16) = 4
 
 // --- New Memory Word and Bus Definitions ---
 #define AXI_BUS_WIDTH 512
@@ -252,9 +253,9 @@ struct __attribute__((packed)) net_wrapper_kt_pair_105_t_t {
 // KernelOutputBatch* out_o_0_342);
 
 // --- Top-Level Function Prototype ---
-extern "C" void graphyflow_big(const bus_word_t *src_offsets,
-                               const bus_word_t *edge_props,
-                               const bus_word_t *node_props, bus_word_t *output,
-                               int32_t num_nodes, int32_t num_edges, int32_t dst_num);
+extern "C" void graphyflow_big(const bus_word_t *coo_data_ptr,
+                               const bus_word_t *node_props_ptr,
+                               bus_word_t *output, int32_t num_nodes,
+                               int32_t num_edges, int32_t dst_num);
 
 #endif // __GRAPHYFLOW_GRAPHYFLOW_BIG_H__

@@ -27,21 +27,21 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
     auto start_time = std::chrono::system_clock::now();
     auto current_time = start_time;
 
-    // --- 2.1: 为 BIG kernels 手动序列化数据 (带 Padding) ---
+    // --- 2.1: 为 BIG kernels 手动序列化数据 (COO格式: 1个src_id word +
+    // 2个edge_prop words循环) ---
     for (size_t i = 0; i < big_kernel_input_buffers.size(); ++i) {
         const auto &p_graph = container.SPs[i].partitioned_graph;
 
-        // --- Pack node distances (ap_fixed<24,8> -> 3 bytes) ---
+        // --- Pack node distances (node properties, separate buffer) ---
         {
             const size_t bytes_per_dist = DISTANCE_BITWIDTH / 8;
             const size_t dist_per_word = bytes_per_word / bytes_per_dist;
-            const size_t word_number = (p_graph.num_vertices + dist_per_word - 1) /
-                                       dist_per_word;
+            const size_t word_number =
+                (p_graph.num_vertices + dist_per_word - 1) / dist_per_word;
             std::vector<char> temp_byte_buffer;
             temp_byte_buffer.reserve(word_number * bytes_per_word);
 
             for (int j = 0; j < p_graph.num_vertices; ++j) {
-                // **Padding Logic**: 检查加上新数据后是否会跨越 64 字节边界
                 if ((temp_byte_buffer.size() % bytes_per_word) +
                         bytes_per_dist >
                     bytes_per_word) {
@@ -49,25 +49,15 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                         bytes_per_word -
                         (temp_byte_buffer.size() % bytes_per_word);
                     temp_byte_buffer.insert(temp_byte_buffer.end(),
-                                            padding_needed,
-                                            0); // 插入0作为 padding
-                    // printf(
-                    //     "[BIG]Inserted %zu bytes of padding before node %d\n", padding_needed, j);
-                    // fflush(nullptr);
+                                            padding_needed, 0);
                 }
 
                 int global_id = p_graph.vtx_map_rev.at(j);
                 distance_t dist_val = h_distances[global_id];
-
                 const char *data_ptr =
                     reinterpret_cast<const char *>(&dist_val);
                 temp_byte_buffer.insert(temp_byte_buffer.end(), data_ptr,
                                         data_ptr + bytes_per_dist);
-
-                // printf("[BIG]Packed node %d with distance %f\n", global_id,
-                //        (float)dist_val);
-                // printf("At byte buffer size: %zu\n",
-                // temp_byte_buffer.size()); fflush(nullptr);
             }
             big_kernel_input_buffers[i].packed_node_props.resize(
                 (temp_byte_buffer.size() + bytes_per_word - 1) / bytes_per_word,
@@ -77,259 +67,247 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
         }
 
         current_time = std::chrono::system_clock::now();
-        std::cout << "--- [Host] Phase 0: Preparing data structures big node dist ("
-                  << std::chrono::duration<double>(current_time - start_time)
-                         .count()
-                  << " sec) ---" << std::endl;
+        std::cout
+            << "--- [Host] Phase 0: Preparing data structures big node dist ("
+            << std::chrono::duration<double>(current_time - start_time).count()
+            << " sec) ---" << std::endl;
         start_time = current_time;
 
-        // --- Pack edge properties (node_id<24b> + weight<24b> -> 6 bytes) ---
-        {
-            const size_t bytes_per_edge =
-                (NODE_ID_BITWIDTH + WEIGHT_BITWIDTH) / 8;
-            const size_t edges_per_word = bytes_per_word / bytes_per_edge;
-            const size_t word_number = (p_graph.num_edges + edges_per_word - 1) /
-                                       edges_per_word;
-            std::vector<char> temp_byte_buffer;
-            temp_byte_buffer.reserve(word_number * bytes_per_word);
-
-            for (size_t j = 0; j < p_graph.num_edges; ++j) {
-                // **Padding Logic**
-                if ((temp_byte_buffer.size() % bytes_per_word) +
-                        bytes_per_edge >
-                    bytes_per_word) {
-                    size_t padding_needed =
-                        bytes_per_word -
-                        (temp_byte_buffer.size() % bytes_per_word);
-                    temp_byte_buffer.insert(temp_byte_buffer.end(),
-                                            padding_needed, 0);
-                }
-
-                char edge_bytes[bytes_per_edge];
-                uint32_t dest_id = p_graph.columns[j];
-                // edge_bytes[0] = (dest_id >> 0) & 0xFF;
-                // edge_bytes[1] = (dest_id >> 8) & 0xFF;
-                // edge_bytes[2] = (dest_id >> 16) & 0xFF;
-                for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
-                    edge_bytes[b] = (dest_id >> (8 * b)) & 0xFF;
-                }
-
-                weight_t weight_val = (float)p_graph.weights[j];
-                std::memcpy(edge_bytes + (NODE_ID_BITWIDTH / 8), &weight_val, (WEIGHT_BITWIDTH / 8));
-
-                temp_byte_buffer.insert(temp_byte_buffer.end(), edge_bytes,
-                                        edge_bytes + bytes_per_edge);
-
-                // // 调试日志
-                // uint32_t src_global_id = 0;
-                // uint32_t dst_global_id =
-                //     p_graph.vtx_map_rev.at(p_graph.columns[j]);
-                // for (int v = 0; v < p_graph.num_vertices; ++v) {
-                //     if (p_graph.offsets[v] <= j && j < p_graph.offsets[v + 1]) {
-                //         src_global_id = p_graph.vtx_map_rev.at(v);
-                //         break;
-                //     }
-                // }
-                // printf("[BIG]Packed edge: src=%d, dst=%d, weight=%f\n",
-                //        src_global_id, dst_global_id, (float)weight_val);
-                // fflush(nullptr);
-            }
-            big_kernel_input_buffers[i].packed_edge_props.resize(
-                (temp_byte_buffer.size() + bytes_per_word - 1) / bytes_per_word,
-                0);
-            std::memcpy(big_kernel_input_buffers[i].packed_edge_props.data(),
-                        temp_byte_buffer.data(), temp_byte_buffer.size());
-        }
-
-        current_time = std::chrono::system_clock::now();
-        std::cout << "--- [Host] Phase 0: Preparing data structures edge props ("
-                  << std::chrono::duration<double>(current_time - start_time)
-                         .count()
-                  << " sec) ---" << std::endl;
-        start_time = current_time;
-
-        // --- Pack source IDs (node_id_t -> 4 bytes) ---
+        // --- Pack COO data: src_id + edge_props (1 src_id word, 2 edge_prop
+        // words循环) ---
         {
             const size_t bytes_per_id = sizeof(node_id_t);
-            const size_t ids_per_word = bytes_per_word / bytes_per_id;
-            const size_t word_number =
-                (p_graph.num_edges + ids_per_word - 1) / ids_per_word;
-            std::vector<char> temp_byte_buffer;
-            temp_byte_buffer.reserve(word_number * bytes_per_word);
+            const size_t ids_per_word = bytes_per_word / bytes_per_id; // 16
+            const size_t bytes_per_edge =
+                (NODE_ID_BITWIDTH + WEIGHT_BITWIDTH) / 8;
+            const size_t edges_per_word = bytes_per_word / bytes_per_edge; // 8
 
-            for (int j = 0; j < p_graph.num_vertices; ++j) {
-                for (int k = p_graph.offsets[j]; k < p_graph.offsets[j + 1];
-                     ++k) {
-                    node_id_t src_id = j;
-                    const char *id_bytes =
-                        reinterpret_cast<const char *>(&src_id);
-                    for (size_t l = 0; l < bytes_per_id; ++l) {
-                        temp_byte_buffer.push_back(id_bytes[l]);
-                    }
+            // Calculate total words needed: for every ids_per_word edges, we
+            // need 1 id word + 2 edge words
+            const size_t num_id_words =
+                (p_graph.num_edges + ids_per_word - 1) / ids_per_word;
+            const size_t num_edge_words =
+                (p_graph.num_edges + edges_per_word - 1) / edges_per_word;
+            const size_t total_words = num_id_words + num_edge_words;
+
+            std::vector<bus_word_t, aligned_allocator<bus_word_t>> &coo_buffer =
+                big_kernel_input_buffers[i].packed_coo_data;
+            coo_buffer.resize(total_words, 0);
+
+            size_t write_idx = 0;
+            size_t edge_idx = 0;
+
+            // Build src_id array from CSR format
+            std::vector<node_id_t> src_ids;
+            src_ids.reserve(p_graph.num_edges);
+            for (int v = 0; v < p_graph.num_vertices; ++v) {
+                for (int e = p_graph.offsets[v]; e < p_graph.offsets[v + 1];
+                     ++e) {
+                    src_ids.push_back(v);
                 }
             }
 
-            big_kernel_input_buffers[i].packed_src_ids.resize(
-                (temp_byte_buffer.size() + bytes_per_word - 1) /
-                    bytes_per_word,
-                0);
-            std::memcpy(big_kernel_input_buffers[i].packed_src_ids.data(),
-                        temp_byte_buffer.data(), temp_byte_buffer.size());
+            // Pack in groups: 1 src_id word + 2 edge_prop words
+            for (size_t group = 0; group < num_id_words; group++) {
+                // Pack 1 src_id word (16 src_ids)
+                bus_word_t src_id_word = 0;
+                for (int j = 0; j < ids_per_word &&
+                                (group * ids_per_word + j) < p_graph.num_edges;
+                     ++j) {
+                    node_id_t src_id = src_ids[group * ids_per_word + j];
+                    src_id_word.range((j + 1) * NODE_ID_BITWIDTH - 1,
+                                      j * NODE_ID_BITWIDTH) = src_id;
+                }
+                coo_buffer[write_idx++] = src_id_word;
+
+                // Pack 2 edge_prop words (16 edges total)
+                for (int edge_word = 0;
+                     edge_word < 2 && edge_idx < p_graph.num_edges;
+                     edge_word++) {
+                    bus_word_t edge_prop_word = 0;
+                    for (int j = 0;
+                         j < edges_per_word && edge_idx < p_graph.num_edges;
+                         ++j) {
+                        uint32_t dest_id = p_graph.columns[edge_idx];
+                        weight_t weight_val = (float)p_graph.weights[edge_idx];
+
+                        uint64_t packed_edge = 0;
+                        packed_edge = (uint64_t)dest_id |
+                                      (((uint64_t)*reinterpret_cast<uint32_t *>(
+                                           &weight_val))
+                                       << NODE_ID_BITWIDTH);
+
+                        edge_prop_word.range((j + 1) * bytes_per_edge * 8 - 1,
+                                             j * bytes_per_edge * 8) =
+                            packed_edge;
+                        edge_idx++;
+                    }
+                    coo_buffer[write_idx++] = edge_prop_word;
+                }
+            }
         }
 
         current_time = std::chrono::system_clock::now();
-        std::cout << "--- [Host] Phase 0: Preparing data structures src ids ("
-                  << std::chrono::duration<double>(current_time - start_time)
-                         .count()
-                  << " sec) ---" << std::endl;
+        std::cout
+            << "--- [Host] Phase 0: Preparing data structures COO data ("
+            << std::chrono::duration<double>(current_time - start_time).count()
+            << " sec) ---" << std::endl;
         start_time = current_time;
     }
 
-    // --- 2.2: 为 LITTLE kernels 手动序列化数据 (带 Padding) ---
-    for (size_t i = 0; i < little_kernel_input_buffers.size(); ++i) {
-        const auto &p_graph = container.DPs[i].partitioned_graph;
+    // // --- 2.2: 为 LITTLE kernels 手动序列化数据 (带 Padding) ---
+    // for (size_t i = 0; i < little_kernel_input_buffers.size(); ++i) {
+    //     const auto &p_graph = container.DPs[i].partitioned_graph;
 
-        // --- Pack node distances (ap_fixed<24,8> -> 3 bytes) ---
-        {
-            const size_t bytes_per_dist = DISTANCE_BITWIDTH / 8;
-            const size_t dist_per_word = bytes_per_word / bytes_per_dist;
-            const size_t word_number = (p_graph.num_vertices + dist_per_word - 1) /
-                                       dist_per_word;
-            std::vector<char> temp_byte_buffer;
-            temp_byte_buffer.reserve(word_number * bytes_per_word);
+    //     // --- Pack node distances (ap_fixed<24,8> -> 3 bytes) ---
+    //     {
+    //         const size_t bytes_per_dist = DISTANCE_BITWIDTH / 8;
+    //         const size_t dist_per_word = bytes_per_word / bytes_per_dist;
+    //         const size_t word_number = (p_graph.num_vertices + dist_per_word
+    //         - 1) /
+    //                                    dist_per_word;
+    //         std::vector<char> temp_byte_buffer;
+    //         temp_byte_buffer.reserve(word_number * bytes_per_word);
 
-            for (int j = 0; j < p_graph.num_vertices; ++j) {
-                if ((temp_byte_buffer.size() % bytes_per_word) +
-                        bytes_per_dist >
-                    bytes_per_word) {
-                    size_t padding_needed =
-                        bytes_per_word -
-                        (temp_byte_buffer.size() % bytes_per_word);
-                    temp_byte_buffer.insert(temp_byte_buffer.end(),
-                                            padding_needed, 0);
-                }
-                int global_id = p_graph.vtx_map_rev.at(j);
-                distance_t dist_val = h_distances[global_id];
-                const char *data_ptr =
-                    reinterpret_cast<const char *>(&dist_val);
-                temp_byte_buffer.insert(temp_byte_buffer.end(), data_ptr,
-                                        data_ptr + bytes_per_dist);
-                // printf("[LITTLE]Packed node %d with distance %f\n",
-                // global_id,
-                //        (float)dist_val);
-                // fflush(nullptr);
-            }
-            little_kernel_input_buffers[i].packed_node_props.resize(
-                (temp_byte_buffer.size() + bytes_per_word - 1) / bytes_per_word,
-                0);
-            std::memcpy(little_kernel_input_buffers[i].packed_node_props.data(),
-                        temp_byte_buffer.data(), temp_byte_buffer.size());
-        }
+    //         for (int j = 0; j < p_graph.num_vertices; ++j) {
+    //             if ((temp_byte_buffer.size() % bytes_per_word) +
+    //                     bytes_per_dist >
+    //                 bytes_per_word) {
+    //                 size_t padding_needed =
+    //                     bytes_per_word -
+    //                     (temp_byte_buffer.size() % bytes_per_word);
+    //                 temp_byte_buffer.insert(temp_byte_buffer.end(),
+    //                                         padding_needed, 0);
+    //             }
+    //             int global_id = p_graph.vtx_map_rev.at(j);
+    //             distance_t dist_val = h_distances[global_id];
+    //             const char *data_ptr =
+    //                 reinterpret_cast<const char *>(&dist_val);
+    //             temp_byte_buffer.insert(temp_byte_buffer.end(), data_ptr,
+    //                                     data_ptr + bytes_per_dist);
+    //             // printf("[LITTLE]Packed node %d with distance %f\n",
+    //             // global_id,
+    //             //        (float)dist_val);
+    //             // fflush(nullptr);
+    //         }
+    //         little_kernel_input_buffers[i].packed_node_props.resize(
+    //             (temp_byte_buffer.size() + bytes_per_word - 1) /
+    //             bytes_per_word, 0);
+    //         std::memcpy(little_kernel_input_buffers[i].packed_node_props.data(),
+    //                     temp_byte_buffer.data(), temp_byte_buffer.size());
+    //     }
 
-        current_time = std::chrono::system_clock::now();
-        std::cout << "--- [Host] Phase 0: Preparing data structures little node dist ("
-                  << std::chrono::duration<double>(current_time - start_time)
-                         .count()
-                  << " sec) ---" << std::endl;
-        start_time = current_time;
+    //     current_time = std::chrono::system_clock::now();
+    //     std::cout << "--- [Host] Phase 0: Preparing data structures little
+    //     node dist ("
+    //               << std::chrono::duration<double>(current_time - start_time)
+    //                      .count()
+    //               << " sec) ---" << std::endl;
+    //     start_time = current_time;
 
-        // --- Pack edge properties (node_id<24b> + weight<24b> -> 6 bytes) ---
-        {
-            const size_t bytes_per_edge =
-                (NODE_ID_BITWIDTH + WEIGHT_BITWIDTH) / 8;
-            const size_t edges_per_word = bytes_per_word / bytes_per_edge;
-            const size_t word_number = (p_graph.num_edges + edges_per_word - 1) /
-                                       edges_per_word;
-            std::vector<char> temp_byte_buffer;
-            temp_byte_buffer.reserve(word_number * bytes_per_word);
+    //     // --- Pack edge properties (node_id<24b> + weight<24b> -> 6 bytes)
+    //     ---
+    //     {
+    //         const size_t bytes_per_edge =
+    //             (NODE_ID_BITWIDTH + WEIGHT_BITWIDTH) / 8;
+    //         const size_t edges_per_word = bytes_per_word / bytes_per_edge;
+    //         const size_t word_number = (p_graph.num_edges + edges_per_word -
+    //         1) /
+    //                                    edges_per_word;
+    //         std::vector<char> temp_byte_buffer;
+    //         temp_byte_buffer.reserve(word_number * bytes_per_word);
 
-            for (size_t j = 0; j < p_graph.num_edges; ++j) {
-                if ((temp_byte_buffer.size() % bytes_per_word) +
-                        bytes_per_edge >
-                    bytes_per_word) {
-                    size_t padding_needed =
-                        bytes_per_word -
-                        (temp_byte_buffer.size() % bytes_per_word);
-                    temp_byte_buffer.insert(temp_byte_buffer.end(),
-                                            padding_needed, 0);
-                }
-                char edge_bytes[bytes_per_edge];
-                uint32_t dest_id = p_graph.columns[j];
-                // edge_bytes[0] = (dest_id >> 0) & 0xFF;
-                // edge_bytes[1] = (dest_id >> 8) & 0xFF;
-                // edge_bytes[2] = (dest_id >> 16) & 0xFF;
-                for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
-                    edge_bytes[b] = (dest_id >> (8 * b)) & 0xFF;
-                }
-                weight_t weight_val = (float)p_graph.weights[j];
-                // std::memcpy(edge_bytes + 3, &weight_val, (WEIGHT_BITWIDTH / 8));
-                std::memcpy(edge_bytes + (NODE_ID_BITWIDTH / 8), &weight_val, (WEIGHT_BITWIDTH / 8));
-                temp_byte_buffer.insert(temp_byte_buffer.end(), edge_bytes,
-                                        edge_bytes + bytes_per_edge);
+    //         for (size_t j = 0; j < p_graph.num_edges; ++j) {
+    //             if ((temp_byte_buffer.size() % bytes_per_word) +
+    //                     bytes_per_edge >
+    //                 bytes_per_word) {
+    //                 size_t padding_needed =
+    //                     bytes_per_word -
+    //                     (temp_byte_buffer.size() % bytes_per_word);
+    //                 temp_byte_buffer.insert(temp_byte_buffer.end(),
+    //                                         padding_needed, 0);
+    //             }
+    //             char edge_bytes[bytes_per_edge];
+    //             uint32_t dest_id = p_graph.columns[j];
+    //             // edge_bytes[0] = (dest_id >> 0) & 0xFF;
+    //             // edge_bytes[1] = (dest_id >> 8) & 0xFF;
+    //             // edge_bytes[2] = (dest_id >> 16) & 0xFF;
+    //             for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
+    //                 edge_bytes[b] = (dest_id >> (8 * b)) & 0xFF;
+    //             }
+    //             weight_t weight_val = (float)p_graph.weights[j];
+    //             // std::memcpy(edge_bytes + 3, &weight_val, (WEIGHT_BITWIDTH
+    //             / 8)); std::memcpy(edge_bytes + (NODE_ID_BITWIDTH / 8),
+    //             &weight_val, (WEIGHT_BITWIDTH / 8));
+    //             temp_byte_buffer.insert(temp_byte_buffer.end(), edge_bytes,
+    //                                     edge_bytes + bytes_per_edge);
 
-                // uint32_t src_global_id = 0;
-                // uint32_t dst_global_id =
-                //     p_graph.vtx_map_rev.at(p_graph.columns[j]);
-                // for (int v = 0; v < p_graph.num_vertices; ++v) {
-                //     if (p_graph.offsets[v] <= j && j < p_graph.offsets[v + 1]) {
-                //         src_global_id = p_graph.vtx_map_rev.at(v);
-                //         break;
-                //     }
-                // }
-                // printf("[LITTLE]Packed edge: src=%d, dst=%d, weight=%f\n",
-                //        src_global_id, dst_global_id, (float)weight_val);
-                // fflush(nullptr);
-            }
-            little_kernel_input_buffers[i].packed_edge_props.resize(
-                (temp_byte_buffer.size() + bytes_per_word - 1) / bytes_per_word,
-                0);
-            std::memcpy(little_kernel_input_buffers[i].packed_edge_props.data(),
-                        temp_byte_buffer.data(), temp_byte_buffer.size());
-        }
+    //             // uint32_t src_global_id = 0;
+    //             // uint32_t dst_global_id =
+    //             //     p_graph.vtx_map_rev.at(p_graph.columns[j]);
+    //             // for (int v = 0; v < p_graph.num_vertices; ++v) {
+    //             //     if (p_graph.offsets[v] <= j && j < p_graph.offsets[v +
+    //             1]) {
+    //             //         src_global_id = p_graph.vtx_map_rev.at(v);
+    //             //         break;
+    //             //     }
+    //             // }
+    //             // printf("[LITTLE]Packed edge: src=%d, dst=%d, weight=%f\n",
+    //             //        src_global_id, dst_global_id, (float)weight_val);
+    //             // fflush(nullptr);
+    //         }
+    //         little_kernel_input_buffers[i].packed_edge_props.resize(
+    //             (temp_byte_buffer.size() + bytes_per_word - 1) /
+    //             bytes_per_word, 0);
+    //         std::memcpy(little_kernel_input_buffers[i].packed_edge_props.data(),
+    //                     temp_byte_buffer.data(), temp_byte_buffer.size());
+    //     }
 
-        current_time = std::chrono::system_clock::now();
-        std::cout << "--- [Host] Phase 0: Preparing data structures little edge props ("
-                  << std::chrono::duration<double>(current_time - start_time)
-                         .count()
-                  << " sec) ---" << std::endl;
-        start_time = current_time;
+    //     current_time = std::chrono::system_clock::now();
+    //     std::cout << "--- [Host] Phase 0: Preparing data structures little
+    //     edge props ("
+    //               << std::chrono::duration<double>(current_time - start_time)
+    //                      .count()
+    //               << " sec) ---" << std::endl;
+    //     start_time = current_time;
 
-        // --- Pack source IDs (node_id_t -> 4 bytes) ---
-        {
-            const size_t bytes_per_id = sizeof(node_id_t);
-            const size_t ids_per_word = bytes_per_word / bytes_per_id;
-            const size_t word_number =
-                (p_graph.num_edges + ids_per_word - 1) / ids_per_word;
-            std::vector<char> temp_byte_buffer;
-            temp_byte_buffer.reserve(word_number * bytes_per_word);
+    //     // --- Pack source IDs (node_id_t -> 4 bytes) ---
+    //     {
+    //         const size_t bytes_per_id = sizeof(node_id_t);
+    //         const size_t ids_per_word = bytes_per_word / bytes_per_id;
+    //         const size_t word_number =
+    //             (p_graph.num_edges + ids_per_word - 1) / ids_per_word;
+    //         std::vector<char> temp_byte_buffer;
+    //         temp_byte_buffer.reserve(word_number * bytes_per_word);
 
-            for (int j = 0; j < p_graph.num_vertices; ++j) {
-                for (int k = p_graph.offsets[j]; k < p_graph.offsets[j + 1];
-                     ++k) {
-                    node_id_t src_id = j;
-                    const char *id_bytes =
-                        reinterpret_cast<const char *>(&src_id);
-                    for (size_t l = 0; l < bytes_per_id; ++l) {
-                        temp_byte_buffer.push_back(id_bytes[l]);
-                    }
-                }
-            }
+    //         for (int j = 0; j < p_graph.num_vertices; ++j) {
+    //             for (int k = p_graph.offsets[j]; k < p_graph.offsets[j + 1];
+    //                  ++k) {
+    //                 node_id_t src_id = j;
+    //                 const char *id_bytes =
+    //                     reinterpret_cast<const char *>(&src_id);
+    //                 for (size_t l = 0; l < bytes_per_id; ++l) {
+    //                     temp_byte_buffer.push_back(id_bytes[l]);
+    //                 }
+    //             }
+    //         }
 
-            little_kernel_input_buffers[i].packed_src_ids.resize(
-                (temp_byte_buffer.size() + bytes_per_word - 1) /
-                    bytes_per_word,
-                0);
-            std::memcpy(little_kernel_input_buffers[i].packed_src_ids.data(),
-                        temp_byte_buffer.data(), temp_byte_buffer.size());
-        }
+    //         little_kernel_input_buffers[i].packed_src_ids.resize(
+    //             (temp_byte_buffer.size() + bytes_per_word - 1) /
+    //                 bytes_per_word,
+    //             0);
+    //         std::memcpy(little_kernel_input_buffers[i].packed_src_ids.data(),
+    //                     temp_byte_buffer.data(), temp_byte_buffer.size());
+    //     }
 
-        current_time = std::chrono::system_clock::now();
-        std::cout << "--- [Host] Phase 0: Preparing data structures little src ids ("
-                  << std::chrono::duration<double>(current_time - start_time)
-                         .count()
-                  << " sec) ---" << std::endl;
-        start_time = current_time;
-    }
+    //     current_time = std::chrono::system_clock::now();
+    //     std::cout << "--- [Host] Phase 0: Preparing data structures little
+    //     src ids ("
+    //               << std::chrono::duration<double>(current_time - start_time)
+    //                      .count()
+    //               << " sec) ---" << std::endl;
+    //     start_time = current_time;
+    // }
 }
 
 // --- PHASE 1: BUFFER SETUP ---
@@ -356,42 +334,36 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
         const auto &p_graph = container.SPs[i].partitioned_graph;
         KernelBuffers buffers;
 
-        cl_mem_ext_ptr_t hbm_ext_in0, hbm_ext_in1, hbm_ext_in2, hbm_ext_out;
-        hbm_ext_in0.flags = XCL_MEM_TOPOLOGY | acc.big_kernel_hbm_input_id[i];
-        hbm_ext_in0.obj = nullptr;
-        hbm_ext_in0.param = 0;
-        hbm_ext_in1.flags = XCL_MEM_TOPOLOGY | acc.big_kernel_hbm_input_id[i];
-        hbm_ext_in1.obj = nullptr;
-        hbm_ext_in1.param = 0;
-        hbm_ext_in2.flags = XCL_MEM_TOPOLOGY | acc.big_kernel_hbm_input_id[i];
-        hbm_ext_in2.obj = nullptr;
-        hbm_ext_in2.param = 0;
+        cl_mem_ext_ptr_t hbm_ext_coo, hbm_ext_node_props, hbm_ext_out;
+        hbm_ext_coo.flags = XCL_MEM_TOPOLOGY | acc.big_kernel_hbm_input_id[i];
+        hbm_ext_coo.obj = nullptr;
+        hbm_ext_coo.param = 0;
+        hbm_ext_node_props.flags =
+            XCL_MEM_TOPOLOGY | acc.big_kernel_hbm_input_id[i];
+        hbm_ext_node_props.obj = nullptr;
+        hbm_ext_node_props.param = 0;
         hbm_ext_out.flags = XCL_MEM_TOPOLOGY | acc.big_kernel_hbm_output_id[i];
         hbm_ext_out.obj = nullptr;
         hbm_ext_out.param = 0;
 
-        // use pre-calculated sizes from Phase 0
-        size_t num_id_words =
-            (big_kernel_input_buffers[i].packed_src_ids.size());
-        size_t num_edge_words =
-            (big_kernel_input_buffers[i].packed_edge_props.size());
-        size_t num_dist_words =
-            (big_kernel_input_buffers[i].packed_node_props.size());
+        // COO data buffer (src_ids + edge_props merged)
+        size_t num_coo_words =
+            big_kernel_input_buffers[i].packed_coo_data.size();
         OCL_CHECK(err,
-                  buffers.src_ids_buf = cl::Buffer(
+                  buffers.coo_data_buf = cl::Buffer(
                       acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,
-                      num_id_words * bytes_per_word, &hbm_ext_in0, &err));
-        OCL_CHECK(err,
-                  buffers.edge_props_buf = cl::Buffer(
-                      acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,
-                      num_edge_words * bytes_per_word, &hbm_ext_in1, &err));
-        OCL_CHECK(err,
-                  buffers.node_props_buf = cl::Buffer(
-                      acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,
-                      num_dist_words * bytes_per_word, &hbm_ext_in2, &err));
+                      num_coo_words * bytes_per_word, &hbm_ext_coo, &err));
 
-        // calculate maxinum possible output size as num_dst_vertices * (node_id
-        // + distance) + 1 (for end marker)
+        // Node properties buffer (separate)
+        size_t num_node_prop_words =
+            big_kernel_input_buffers[i].packed_node_props.size();
+        OCL_CHECK(err, buffers.node_props_buf =
+                           cl::Buffer(acc.context,
+                                      CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,
+                                      num_node_prop_words * bytes_per_word,
+                                      &hbm_ext_node_props, &err));
+
+        // Output buffer
         size_t bits_per_output =
             NODE_ID_BITWIDTH + DISTANCE_BITWIDTH + OUT_END_MARKER_BITWIDTH;
         size_t max_dst_local_id = 0;
@@ -402,8 +374,6 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
             }
         }
         size_t num_dst_vertices = max_dst_local_id + 1;
-        // calculate how much vertices in one 512-bit word (each word has
-        // padding)
         size_t vert_num_in_word =
             (AXI_BUS_WIDTH) /
             (NODE_ID_BITWIDTH + DISTANCE_BITWIDTH + OUT_END_MARKER_BITWIDTH);
@@ -421,87 +391,90 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
     }
 
     // --- 1.4: Setup buffers for LITTLE kernels (Dense Partitions) ---
-    for (size_t i = 0; i < container.DPs.size(); ++i) {
-        const auto &p_graph = container.DPs[i].partitioned_graph;
-        KernelBuffers buffers;
+    // for (size_t i = 0; i < container.DPs.size(); ++i) {
+    //     const auto &p_graph = container.DPs[i].partitioned_graph;
+    //     KernelBuffers buffers;
 
-        cl_mem_ext_ptr_t hbm_ext_in0, hbm_ext_in1, hbm_ext_in2, hbm_ext_out;
-        hbm_ext_in0.flags =
-            XCL_MEM_TOPOLOGY | acc.little_kernel_hbm_input_id[i];
-        hbm_ext_in0.obj = nullptr;
-        hbm_ext_in0.param = 0;
-        hbm_ext_in1.flags =
-            XCL_MEM_TOPOLOGY | acc.little_kernel_hbm_input_id[i];
-        hbm_ext_in1.obj = nullptr;
-        hbm_ext_in1.param = 0;
-        hbm_ext_in2.flags =
-            XCL_MEM_TOPOLOGY | acc.little_kernel_hbm_input_id[i];
-        hbm_ext_in2.obj = nullptr;
-        hbm_ext_in2.param = 0;
-        hbm_ext_out.flags =
-            XCL_MEM_TOPOLOGY | acc.little_kernel_hbm_output_id[i];
-        hbm_ext_out.obj = nullptr;
-        hbm_ext_out.param = 0;
+    //     cl_mem_ext_ptr_t hbm_ext_in0, hbm_ext_in1, hbm_ext_in2, hbm_ext_out;
+    //     hbm_ext_in0.flags =
+    //         XCL_MEM_TOPOLOGY | acc.little_kernel_hbm_input_id[i];
+    //     hbm_ext_in0.obj = nullptr;
+    //     hbm_ext_in0.param = 0;
+    //     hbm_ext_in1.flags =
+    //         XCL_MEM_TOPOLOGY | acc.little_kernel_hbm_input_id[i];
+    //     hbm_ext_in1.obj = nullptr;
+    //     hbm_ext_in1.param = 0;
+    //     hbm_ext_in2.flags =
+    //         XCL_MEM_TOPOLOGY | acc.little_kernel_hbm_input_id[i];
+    //     hbm_ext_in2.obj = nullptr;
+    //     hbm_ext_in2.param = 0;
+    //     hbm_ext_out.flags =
+    //         XCL_MEM_TOPOLOGY | acc.little_kernel_hbm_output_id[i];
+    //     hbm_ext_out.obj = nullptr;
+    //     hbm_ext_out.param = 0;
 
-        // use pre-calculated sizes from Phase 0
-        size_t num_id_words =
-            (little_kernel_input_buffers[i].packed_src_ids.size());
-        size_t num_edge_words =
-            (little_kernel_input_buffers[i].packed_edge_props.size());
-        size_t num_dist_words =
-            (little_kernel_input_buffers[i].packed_node_props.size());
+    //     // use pre-calculated sizes from Phase 0
+    //     size_t num_id_words =
+    //         (little_kernel_input_buffers[i].packed_src_ids.size());
+    //     size_t num_edge_words =
+    //         (little_kernel_input_buffers[i].packed_edge_props.size());
+    //     size_t num_dist_words =
+    //         (little_kernel_input_buffers[i].packed_node_props.size());
 
-        OCL_CHECK(err,
-                  buffers.src_ids_buf = cl::Buffer(
-                      acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,
-                      num_id_words * bytes_per_word, &hbm_ext_in0, &err));
-        OCL_CHECK(err,
-                  buffers.edge_props_buf = cl::Buffer(
-                      acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,
-                      num_edge_words * bytes_per_word, &hbm_ext_in1, &err));
-        OCL_CHECK(err,
-                  buffers.node_props_buf = cl::Buffer(
-                      acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,
-                      num_dist_words * bytes_per_word, &hbm_ext_in2, &err));
-        // printf("[LITTLE] Allocated buffers - offsets: %zu bytes, edges: %zu "
-        //        "bytes, dists: %zu bytes\n",
-        //        num_offset_words * bytes_per_word,
-        //        num_edge_words * bytes_per_word,
-        //        num_dist_words * bytes_per_word);
-        // fflush(NULL);
+    //     OCL_CHECK(err,
+    //               buffers.src_ids_buf = cl::Buffer(
+    //                   acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,
+    //                   num_id_words * bytes_per_word, &hbm_ext_in0, &err));
+    //     OCL_CHECK(err,
+    //               buffers.edge_props_buf = cl::Buffer(
+    //                   acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,
+    //                   num_edge_words * bytes_per_word, &hbm_ext_in1, &err));
+    //     OCL_CHECK(err,
+    //               buffers.node_props_buf = cl::Buffer(
+    //                   acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,
+    //                   num_dist_words * bytes_per_word, &hbm_ext_in2, &err));
+    //     // printf("[LITTLE] Allocated buffers - offsets: %zu bytes, edges:
+    //     %zu "
+    //     //        "bytes, dists: %zu bytes\n",
+    //     //        num_offset_words * bytes_per_word,
+    //     //        num_edge_words * bytes_per_word,
+    //     //        num_dist_words * bytes_per_word);
+    //     // fflush(NULL);
 
-        // calculate maxinum possible output size as num_dst_vertices * (node_id
-        // + distance) + 1 (for end marker)
-        size_t bits_per_output =
-            NODE_ID_BITWIDTH + DISTANCE_BITWIDTH + OUT_END_MARKER_BITWIDTH;
-        size_t max_dst_local_id = 0;
-        for (size_t e = 0; e < p_graph.num_edges; ++e) {
-            int dst = p_graph.columns[e];
-            if (dst > max_dst_local_id) {
-                max_dst_local_id = dst;
-            }
-        }
-        size_t num_dst_vertices = max_dst_local_id + 1;
-        // calculate how much vertices in one 512-bit word (each word has
-        // padding)
-        size_t vert_num_in_word =
-            (AXI_BUS_WIDTH) /
-            (NODE_ID_BITWIDTH + DISTANCE_BITWIDTH + OUT_END_MARKER_BITWIDTH);
-        size_t num_output_words =
-            (num_dst_vertices + vert_num_in_word - 1) / vert_num_in_word +
-            1; // +1 for end marker
+    //     // calculate maxinum possible output size as num_dst_vertices *
+    //     (node_id
+    //     // + distance) + 1 (for end marker)
+    //     size_t bits_per_output =
+    //         NODE_ID_BITWIDTH + DISTANCE_BITWIDTH + OUT_END_MARKER_BITWIDTH;
+    //     size_t max_dst_local_id = 0;
+    //     for (size_t e = 0; e < p_graph.num_edges; ++e) {
+    //         int dst = p_graph.columns[e];
+    //         if (dst > max_dst_local_id) {
+    //             max_dst_local_id = dst;
+    //         }
+    //     }
+    //     size_t num_dst_vertices = max_dst_local_id + 1;
+    //     // calculate how much vertices in one 512-bit word (each word has
+    //     // padding)
+    //     size_t vert_num_in_word =
+    //         (AXI_BUS_WIDTH) /
+    //         (NODE_ID_BITWIDTH + DISTANCE_BITWIDTH + OUT_END_MARKER_BITWIDTH);
+    //     size_t num_output_words =
+    //         (num_dst_vertices + vert_num_in_word - 1) / vert_num_in_word +
+    //         1; // +1 for end marker
 
-        little_kernel_host_outputs[i].resize(num_output_words);
-        // printf("[LITTLE] Allocated host output buffer for %zu words.\n",
-        //        num_output_words);
-        // fflush(NULL);
-        OCL_CHECK(err,
-                  buffers.output_buf = cl::Buffer(
-                      acc.context, CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX,
-                      num_output_words * bytes_per_word, &hbm_ext_out, &err));
+    //     little_kernel_host_outputs[i].resize(num_output_words);
+    //     // printf("[LITTLE] Allocated host output buffer for %zu words.\n",
+    //     //        num_output_words);
+    //     // fflush(NULL);
+    //     OCL_CHECK(err,
+    //               buffers.output_buf = cl::Buffer(
+    //                   acc.context, CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX,
+    //                   num_output_words * bytes_per_word, &hbm_ext_out,
+    //                   &err));
 
-        little_kernel_buffers.push_back(buffers);
-    }
+    //     little_kernel_buffers.push_back(buffers);
+    // }
 
     std::cout << "[SUCCESS] HBM buffers created for " << container.SPs.size()
               << " big and " << container.DPs.size() << " little kernels."
@@ -606,46 +579,22 @@ void AlgorithmHost::transfer_data_to_fpga(const PartitionContainer &container) {
     std::cout << "--- [Host] Phase 2: Packing and transferring data to HBM ---"
               << std::endl;
 
-    // --- 2.3: 将所有打包好的数据加入传输队列 ---
+    // Transfer data for all BIG kernels
     for (size_t i = 0; i < big_kernel_buffers.size(); ++i) {
+        // Transfer COO data (src_ids + edge_props merged)
+        OCL_CHECK(err, err = acc.big_gs_queue[i].enqueueWriteBuffer(
+                           big_kernel_buffers[i].coo_data_buf, CL_FALSE, 0,
+                           big_kernel_input_buffers[i].packed_coo_data.size() *
+                               sizeof(bus_word_t),
+                           big_kernel_input_buffers[i].packed_coo_data.data()));
+
+        // Transfer node properties
         OCL_CHECK(err,
                   err = acc.big_gs_queue[i].enqueueWriteBuffer(
                       big_kernel_buffers[i].node_props_buf, CL_FALSE, 0,
                       big_kernel_input_buffers[i].packed_node_props.size() *
                           sizeof(bus_word_t),
                       big_kernel_input_buffers[i].packed_node_props.data()));
-        OCL_CHECK(err,
-                  err = acc.big_gs_queue[i].enqueueWriteBuffer(
-                      big_kernel_buffers[i].edge_props_buf, CL_FALSE, 0,
-                      big_kernel_input_buffers[i].packed_edge_props.size() *
-                          sizeof(bus_word_t),
-                      big_kernel_input_buffers[i].packed_edge_props.data()));
-        OCL_CHECK(err, err = acc.big_gs_queue[i].enqueueWriteBuffer(
-                           big_kernel_buffers[i].src_ids_buf, CL_FALSE, 0,
-                           big_kernel_input_buffers[i].packed_src_ids.size() *
-                               sizeof(bus_word_t),
-                           big_kernel_input_buffers[i].packed_src_ids.data()));
-    }
-
-    for (size_t i = 0; i < little_kernel_buffers.size(); ++i) {
-        OCL_CHECK(err,
-                  err = acc.little_gs_queue[i].enqueueWriteBuffer(
-                      little_kernel_buffers[i].node_props_buf, CL_FALSE, 0,
-                      little_kernel_input_buffers[i].packed_node_props.size() *
-                          sizeof(bus_word_t),
-                      little_kernel_input_buffers[i].packed_node_props.data()));
-        OCL_CHECK(err,
-                  err = acc.little_gs_queue[i].enqueueWriteBuffer(
-                      little_kernel_buffers[i].edge_props_buf, CL_FALSE, 0,
-                      little_kernel_input_buffers[i].packed_edge_props.size() *
-                          sizeof(bus_word_t),
-                      little_kernel_input_buffers[i].packed_edge_props.data()));
-        OCL_CHECK(err,
-                  err = acc.little_gs_queue[i].enqueueWriteBuffer(
-                      little_kernel_buffers[i].src_ids_buf, CL_FALSE, 0,
-                      little_kernel_input_buffers[i].packed_src_ids.size() *
-                          sizeof(bus_word_t),
-                      little_kernel_input_buffers[i].packed_src_ids.data()));
     }
 
     // --- 2.4: 在所有命令入队后，执行一次全局同步 ---
@@ -675,8 +624,7 @@ void AlgorithmHost::execute_kernel_iteration(
         const auto &p_graph = container.SPs[i].partitioned_graph;
 
         int arg_idx = 0;
-        OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.src_ids_buf));
-        OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.edge_props_buf));
+        OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.coo_data_buf));
         OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.node_props_buf));
         OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.output_buf));
         OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_vertices));
@@ -689,23 +637,25 @@ void AlgorithmHost::execute_kernel_iteration(
     }
 
     // 3.2: Enqueue LITTLE kernels
-    for (size_t i = 0; i < little_kernel_buffers.size(); ++i) {
-        auto &kernel = acc.little_gs_krnls[i];
-        auto &buffers = little_kernel_buffers[i];
-        const auto &p_graph = container.DPs[i].partitioned_graph;
+    // for (size_t i = 0; i < little_kernel_buffers.size(); ++i) {
+    //     auto &kernel = acc.little_gs_krnls[i];
+    //     auto &buffers = little_kernel_buffers[i];
+    //     const auto &p_graph = container.DPs[i].partitioned_graph;
 
-        int arg_idx = 0;
-        OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.src_ids_buf));
-        OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.edge_props_buf));
-        OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.node_props_buf));
-        OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.output_buf));
-        OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_vertices));
-        OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_edges));
+    //     int arg_idx = 0;
+    //     OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.src_ids_buf));
+    //     OCL_CHECK(err, err = kernel.setArg(arg_idx++,
+    //     buffers.edge_props_buf)); OCL_CHECK(err, err =
+    //     kernel.setArg(arg_idx++, buffers.node_props_buf)); OCL_CHECK(err, err
+    //     = kernel.setArg(arg_idx++, buffers.output_buf)); OCL_CHECK(err, err =
+    //     kernel.setArg(arg_idx++, p_graph.num_vertices)); OCL_CHECK(err, err =
+    //     kernel.setArg(arg_idx++, p_graph.num_edges));
 
-        cl::Event *event_ptr = &little_kernel_events[i];
-        OCL_CHECK(err, err = acc.little_gs_queue[i].enqueueTask(kernel, nullptr,
-                                                                event_ptr));
-    }
+    //     cl::Event *event_ptr = &little_kernel_events[i];
+    //     OCL_CHECK(err, err = acc.little_gs_queue[i].enqueueTask(kernel,
+    //     nullptr,
+    //                                                             event_ptr));
+    // }
     std::cout << "[SUCCESS] All kernel tasks enqueued for one iteration."
               << std::endl;
 }
