@@ -1,321 +1,642 @@
-// --- REPLACE THE ENTIRE CONTENT OF THE FILE ---
 #include "generated_host.h"
-#include <cstring> // For memcpy
+#include <cstring>
 #include <iostream>
 #include <limits>
 #include <map>
+#include <vector>
 
-// Constructor
-AlgorithmHost::AlgorithmHost(cl::Context &context, cl::Kernel &kernel_glb,
-                             std::vector<cl::Kernel> &kernels_graphyflow,
-                             cl::CommandQueue &q, cl::CommandQueue &q_glb,
-                             std::vector<cl::CommandQueue> &q_graphyflow,
-                             std::vector<GraphCSR> &graphs)
-    : m_context(context), m_kernel_glb(kernel_glb),
-      m_kernels_graphyflow(kernels_graphyflow), m_q(q), m_q_glb(q_glb),
-      m_q_graphyflow(q_graphyflow), m_graphs(graphs) {}
+AlgorithmHost::AlgorithmHost(AccDescriptor &acc) : acc(acc) {}
 
-// Helper function to convert float to int32_t by reinterpreting its bits
-// This aligns with ap_fixed<32,16> representation in the kernel.
-static int32_t float_to_int32_bits(ap_fixed<32, 16> val) {
-    return *reinterpret_cast<int32_t *>(&val);
-}
+void AlgorithmHost::prepare_data(const PartitionContainer &container,
+                                 int start_node) {
+    std::cout << "--- [Host] Phase 0: Preparing data structures ---"
+              << std::endl;
 
-// Helper function to convert int32_t bits back to float
-static ap_fixed<32, 16> int32_bits_to_float(int32_t val) {
-    return *reinterpret_cast<ap_fixed<32, 16> *>(&val);
-}
+    // 1. Initialize algorithm state
+    m_num_vertices = container.num_graph_vertices;
+    h_distances.assign(m_num_vertices, distance_t(INFINITY_DIST));
+    if (start_node >= 0 && start_node < m_num_vertices) {
+        h_distances[start_node] = 0;
+    }
 
-void AlgorithmHost::setup_buffers(int start_node) {
-    cl_int err;
-    printf("Setting up buffers for %zu partitions...\n", m_graphs.size());
-    // HBM layout (per system.cfg): each partition uses 3 consecutive HBM
-    // channels: base = i*3 -> src_offsets: HBM[base], edge_desc: HBM[base+1],
-    // node_distances: HBM[base+2], outputs mapped to HBM[base].
+    // 2. Prepare host-side input buffers for each kernel
+    const size_t bytes_per_word = AXI_BUS_WIDTH / 8;
+    big_kernel_input_buffers.resize(container.SPs.size());
+    little_kernel_input_buffers.resize(container.DPs.size());
+    hbm_manager_host_buffers.resize(1);
 
-    for (int i = 0; i < NUM_PARTITIONS; i++) {
-        printf(" Setting up partition %d...\n", i);
-        h_memory_buffers.emplace_back();
-        d_memory_buffers.emplace_back();
-        GraphCSR graph = m_graphs[i];
-        int m_num_vertices = graph.num_vertices;
-        int m_num_edges = graph.num_edges;
+    auto start_time = std::chrono::system_clock::now();
+    auto current_time = start_time;
 
-        // --- PHASE 1: Prepare host-side CSR buffers ---
 
-        // 1.1 Source Offsets
-        h_memory_buffers[i].h_src_offsets.assign(graph.offsets.begin(),
-                                                 graph.offsets.end());
+    std::cout<<"DEBUG big:"<<big_kernel_input_buffers.size()<<"little :"<<little_kernel_input_buffers.size()<<std::endl;
+    // --- 2.1: 为 BIG kernels 手动序列化数据 (带 Padding) ---
+    // DISABLED FOR LITTLE KERNEL TESTING
+    /*
+    for (size_t i = 0; i < big_kernel_input_buffers.size(); ++i) {
+        const auto &p_graph = container.SPs[i].partitioned_graph;
 
-        // 1.2 Edge Descriptors (Destination and Weight)
-        int bursts_num = (m_num_edges + PE_NUM - 1) / PE_NUM;
-        h_memory_buffers[i].h_edge_desc_bursts.resize(bursts_num);
-        for (int edge_idx = 0; edge_idx < graph.num_edges; ++edge_idx) {
-            h_memory_buffers[i]
-                .h_edge_desc_bursts[edge_idx / PE_NUM]
-                .edges[edge_idx % PE_NUM]
-                .dst_id = graph.columns[edge_idx];
-            // The kernel expects ap_fixed<32,16> stored as int32_t.
-            // We can treat host-side weights as floats for this conversion.
-            ap_fixed<32, 16> weight_fp =
-                static_cast<ap_fixed<32, 16>>(graph.weights[edge_idx]);
-            h_memory_buffers[i]
-                .h_edge_desc_bursts[edge_idx / PE_NUM]
-                .edges[edge_idx % PE_NUM]
-                .weight = float_to_int32_bits(weight_fp);
+        // --- Pack node distances (ap_fixed<24,8> -> 3 bytes) ---
+        {
+            const size_t bytes_per_dist = DISTANCE_BITWIDTH / 8;
+            const size_t dist_per_word = bytes_per_word / bytes_per_dist;
+            const size_t word_number =
+                (p_graph.num_vertices + dist_per_word - 1) / dist_per_word;
+            std::vector<char> temp_byte_buffer;
+            temp_byte_buffer.reserve(word_number * bytes_per_word);
+
+            for (int j = 0; j < p_graph.num_vertices; ++j) {
+                if ((temp_byte_buffer.size() % bytes_per_word) +
+                        bytes_per_dist >
+                    bytes_per_word) {
+                    size_t padding_needed =
+                        bytes_per_word -
+                        (temp_byte_buffer.size() % bytes_per_word);
+                    temp_byte_buffer.insert(temp_byte_buffer.end(),
+                                            padding_needed,
+                                            0); 
+                }
+
+                int global_id = p_graph.vtx_map_rev.at(j);
+                distance_t dist_val = h_distances[global_id];
+
+                const char *data_ptr =
+                    reinterpret_cast<const char *>(&dist_val);
+                temp_byte_buffer.insert(temp_byte_buffer.end(), data_ptr,
+                                        data_ptr + bytes_per_dist);
+            }
+            // 关键修正点：原big kernel的hbm_manager索引也应为0，因为它的大小是1
+            hbm_manager_host_buffers[0].packed_node_props.resize(
+                (temp_byte_buffer.size() + bytes_per_word - 1) / bytes_per_word,
+                0);
+            std::memcpy(hbm_manager_host_buffers[0].packed_node_props.data(),
+                        temp_byte_buffer.data(), temp_byte_buffer.size());
         }
 
-        // 1.3 Node Distances (initial state for Bellman-Ford)
-        h_memory_buffers[i].h_node_distances.assign(
-            m_num_vertices,
-            float_to_int32_bits(static_cast<ap_fixed<32, 16>>(INFINITY_DIST)));
-        // Check if ori idx for start_node is in the graph.vtx_map
-        if (graph.vtx_map.find(start_node) != graph.vtx_map.end()) {
-            int mapped_start_node = graph.vtx_map[start_node];
-            h_memory_buffers[i].h_node_distances[mapped_start_node] =
-                float_to_int32_bits(0.0f);
+        current_time = std::chrono::system_clock::now();
+        std::cout
+            << "--- [Host] Phase 0: Preparing data structures big node dist ("
+            << std::chrono::duration<double>(current_time - start_time).count()
+            << " sec) ---" << std::endl;
+        start_time = current_time;
+
+        // --- Pack edge properties (node_id<24b> + weight<24b> -> 6 bytes) ---
+        {
+            const size_t bytes_per_edge =
+                (NODE_ID_BITWIDTH + WEIGHT_BITWIDTH) / 8;
+            const size_t edges_per_word = bytes_per_word / bytes_per_edge;
+            const size_t word_number =
+                (p_graph.num_edges + edges_per_word - 1) / edges_per_word;
+            std::vector<char> temp_byte_buffer;
+            temp_byte_buffer.reserve(word_number * bytes_per_word);
+
+            for (size_t j = 0; j < p_graph.num_edges; ++j) {
+                if ((temp_byte_buffer.size() % bytes_per_word) +
+                        bytes_per_edge >
+                    bytes_per_word) {
+                    size_t padding_needed =
+                        bytes_per_word -
+                        (temp_byte_buffer.size() % bytes_per_word);
+                    temp_byte_buffer.insert(temp_byte_buffer.end(),
+                                            padding_needed, 0);
+                }
+
+                char edge_bytes[bytes_per_edge];
+                uint32_t dest_id = p_graph.columns[j];
+                for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
+                    edge_bytes[b] = (dest_id >> (8 * b)) & 0xFF;
+                }
+
+                weight_t weight_val = (float)p_graph.weights[j];
+                std::memcpy(edge_bytes + (NODE_ID_BITWIDTH / 8), &weight_val,
+                            (WEIGHT_BITWIDTH / 8));
+
+                temp_byte_buffer.insert(temp_byte_buffer.end(), edge_bytes,
+                                        edge_bytes + bytes_per_edge);
+            }
+            big_kernel_input_buffers[i].packed_edge_props.resize(
+                (temp_byte_buffer.size() + bytes_per_word - 1) / bytes_per_word,
+                0);
+            std::memcpy(big_kernel_input_buffers[i].packed_edge_props.data(),
+                        temp_byte_buffer.data(), temp_byte_buffer.size());
         }
 
-        // 1.4 Kernel output buffer
-        // The number of output batches depends on the kernel's internal logic.
-        // We estimate a sufficient size. A safe upper bound is num_vertices.
-        size_t max_output_batches = (m_num_vertices + PE_NUM - 1) / PE_NUM;
-        h_memory_buffers[i].h_outputs.resize(max_output_batches);
+        current_time = std::chrono::system_clock::now();
+        std::cout
+            << "--- [Host] Phase 0: Preparing data structures edge props ("
+            << std::chrono::duration<double>(current_time - start_time).count()
+            << " sec) ---" << std::endl;
+        start_time = current_time;
 
-        int hbm_base = i * 3;
+        // --- Pack source IDs (node_id_t -> 4 bytes) ---
+        {
+            const size_t bytes_per_id = sizeof(node_id_t);
+            const size_t ids_per_word = bytes_per_word / bytes_per_id;
+            const size_t word_number =
+                (p_graph.num_edges + ids_per_word - 1) / ids_per_word;
+            std::vector<char> temp_byte_buffer;
+            temp_byte_buffer.reserve(word_number * bytes_per_word);
 
-        cl_mem_ext_ptr_t h_src_offsets_ext;
-        h_src_offsets_ext.obj = h_memory_buffers[i].h_src_offsets.data();
-        h_src_offsets_ext.param = 0;
-        h_src_offsets_ext.flags = ((hbm_base) | XCL_MEM_TOPOLOGY);
+            for (int j = 0; j < p_graph.num_vertices; ++j) {
+                for (int k = p_graph.offsets[j]; k < p_graph.offsets[j + 1];
+                     ++k) {
+                    node_id_t src_id = j;
+                    const char *id_bytes =
+                        reinterpret_cast<const char *>(&src_id);
+                    for (size_t l = 0; l < bytes_per_id; ++l) {
+                        temp_byte_buffer.push_back(id_bytes[l]);
+                    }
+                }
+            }
 
-        cl_mem_ext_ptr_t h_edge_desc_bursts_ext;
-        h_edge_desc_bursts_ext.obj =
-            h_memory_buffers[i].h_edge_desc_bursts.data();
-        h_edge_desc_bursts_ext.param = 0;
-        h_edge_desc_bursts_ext.flags = ((hbm_base + 1) | XCL_MEM_TOPOLOGY);
+            big_kernel_input_buffers[i].packed_src_ids.resize(
+                (temp_byte_buffer.size() + bytes_per_word - 1) / bytes_per_word,
+                0);
+            std::memcpy(big_kernel_input_buffers[i].packed_src_ids.data(),
+                        temp_byte_buffer.data(), temp_byte_buffer.size());
+        }
 
-        cl_mem_ext_ptr_t h_node_distances_ext;
-        h_node_distances_ext.obj = h_memory_buffers[i].h_node_distances.data();
-        h_node_distances_ext.param = 0;
-        h_node_distances_ext.flags = ((hbm_base + 2) | XCL_MEM_TOPOLOGY);
+        current_time = std::chrono::system_clock::now();
+        std::cout
+            << "--- [Host] Phase 0: Preparing data structures src ids ("
+            << std::chrono::duration<double>(current_time - start_time).count()
+            << " sec) ---" << std::endl;
+        start_time = current_time;
+    }
+    */
+    
+    // --- 2.2: 为 LITTLE kernels 手动序列化数据 (带 Padding) ---
+    // ENABLED AND CORRECTED FOR LITTLE KERNEL TESTING
+    for (size_t i = 0; i < little_kernel_input_buffers.size(); ++i) {
+        const auto &p_graph = container.DPs[i].partitioned_graph;
 
-        cl_mem_ext_ptr_t h_outputs_ext;
-        h_outputs_ext.obj = h_memory_buffers[i].h_outputs.data();
-        h_outputs_ext.param = 0;
-        h_outputs_ext.flags = ((hbm_base) | XCL_MEM_TOPOLOGY);
+        // --- Pack node distances (ap_fixed<24,8> -> 3 bytes) ---
+        // 关键修正: 完全复制big kernel的逻辑，为HBM Manager准备数据
+        {
+            const size_t bytes_per_dist = DISTANCE_BITWIDTH / 8;
+            const size_t dist_per_word = bytes_per_word / bytes_per_dist;
+            const size_t word_number =
+                (p_graph.num_vertices + dist_per_word - 1) / dist_per_word;
+            std::vector<char> temp_byte_buffer;
+            temp_byte_buffer.reserve(word_number * bytes_per_word);
 
-        // --- PHASE 2: Create OpenCL device buffers ---
-        OCL_CHECK(
-            err,
-            d_memory_buffers[i].d_src_offsets = cl::Buffer(
-                m_context,
-                CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_USE_HOST_PTR,
-                h_memory_buffers[i].h_src_offsets.size() * sizeof(int),
-                &h_src_offsets_ext, &err));
-        OCL_CHECK(err, d_memory_buffers[i].d_edge_desc_bursts = cl::Buffer(
-                           m_context,
-                           CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX |
-                               CL_MEM_USE_HOST_PTR,
-                           h_memory_buffers[i].h_edge_desc_bursts.size() *
-                               sizeof(edge_des_burst_t),
-                           &h_edge_desc_bursts_ext, &err));
-        OCL_CHECK(
-            err,
-            d_memory_buffers[i].d_node_distances = cl::Buffer(
-                m_context,
-                CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_USE_HOST_PTR,
-                h_memory_buffers[i].h_node_distances.size() * sizeof(int),
-                &h_node_distances_ext, &err));
-        OCL_CHECK(err, d_memory_buffers[i].d_outputs = cl::Buffer(
-                           m_context,
-                           CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX |
-                               CL_MEM_USE_HOST_PTR,
-                           h_memory_buffers[i].h_outputs.size() *
-                               sizeof(KernelOutputBatch),
-                           &h_outputs_ext, &err));
+            for (int j = 0; j < p_graph.num_vertices; ++j) {
+                if ((temp_byte_buffer.size() % bytes_per_word) +
+                        bytes_per_dist >
+                    bytes_per_word) {
+                    size_t padding_needed =
+                        bytes_per_word -
+                        (temp_byte_buffer.size() % bytes_per_word);
+                    temp_byte_buffer.insert(temp_byte_buffer.end(),
+                                            padding_needed,
+                                            0); 
+                }
+
+                int global_id = p_graph.vtx_map_rev.at(j);
+                distance_t dist_val = h_distances[global_id];
+
+                const char *data_ptr =
+                    reinterpret_cast<const char *>(&dist_val);
+                temp_byte_buffer.insert(temp_byte_buffer.end(), data_ptr,
+                                        data_ptr + bytes_per_dist);
+            }
+            // 关键修正点：目标是hbm_manager_host_buffers[0]，因为只有一个HBM manager
+            hbm_manager_host_buffers[0].packed_node_props.resize(
+                (temp_byte_buffer.size() + bytes_per_word - 1) / bytes_per_word,
+                0);
+            std::memcpy(hbm_manager_host_buffers[0].packed_node_props.data(),
+                        temp_byte_buffer.data(), temp_byte_buffer.size());
+        }
+
+        current_time = std::chrono::system_clock::now();
+        std::cout << "--- [Host] Phase 0: Preparing data structures little node dist ("
+                  << std::chrono::duration<double>(current_time - start_time).count()
+                  << " sec) ---" << std::endl;
+        start_time = current_time;
+
+        // --- Pack edge properties (node_id<24b> + weight<24b> -> 6 bytes) ---
+        // 关键修正: 完全复制big kernel的逻辑
+        {
+            const size_t bytes_per_edge =
+                (NODE_ID_BITWIDTH + WEIGHT_BITWIDTH) / 8;
+            const size_t edges_per_word = bytes_per_word / bytes_per_edge;
+            const size_t word_number = (p_graph.num_edges + edges_per_word - 1) /
+                                       edges_per_word;
+            std::vector<char> temp_byte_buffer;
+            temp_byte_buffer.reserve(word_number * bytes_per_word);
+
+            for (size_t j = 0; j < p_graph.num_edges; ++j) {
+                if ((temp_byte_buffer.size() % bytes_per_word) +
+                        bytes_per_edge >
+                    bytes_per_word) {
+                    size_t padding_needed =
+                        bytes_per_word -
+                        (temp_byte_buffer.size() % bytes_per_word);
+                    temp_byte_buffer.insert(temp_byte_buffer.end(),
+                                            padding_needed, 0);
+                }
+                char edge_bytes[bytes_per_edge];
+                uint32_t dest_id = p_graph.columns[j];
+                for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
+                    edge_bytes[b] = (dest_id >> (8 * b)) & 0xFF;
+                }
+                weight_t weight_val = (float)p_graph.weights[j];
+                std::memcpy(edge_bytes + (NODE_ID_BITWIDTH / 8), &weight_val, (WEIGHT_BITWIDTH / 8));
+                temp_byte_buffer.insert(temp_byte_buffer.end(), edge_bytes,
+                                        edge_bytes + bytes_per_edge);
+            }
+            little_kernel_input_buffers[i].packed_edge_props.resize(
+                (temp_byte_buffer.size() + bytes_per_word - 1) /
+                bytes_per_word, 0);
+            std::memcpy(little_kernel_input_buffers[i].packed_edge_props.data(),
+                        temp_byte_buffer.data(), temp_byte_buffer.size());
+        }
+
+        current_time = std::chrono::system_clock::now();
+        std::cout << "--- [Host] Phase 0: Preparing data structures little edge props ("
+                  << std::chrono::duration<double>(current_time - start_time).count()
+                  << " sec) ---" << std::endl;
+        start_time = current_time;
+
+        // --- Pack source IDs (node_id_t -> 4 bytes) ---
+        // 关键修正: 完全复制big kernel的逻辑
+        {
+            const size_t bytes_per_id = sizeof(node_id_t);
+            const size_t ids_per_word = bytes_per_word / bytes_per_id;
+            const size_t word_number =
+                (p_graph.num_edges + ids_per_word - 1) / ids_per_word;
+            std::vector<char> temp_byte_buffer;
+            temp_byte_buffer.reserve(word_number * bytes_per_word);
+
+            for (int j = 0; j < p_graph.num_vertices; ++j) {
+                for (int k = p_graph.offsets[j]; k < p_graph.offsets[j + 1];
+                     ++k) {
+                    node_id_t src_id = j;
+                    const char *id_bytes =
+                        reinterpret_cast<const char *>(&src_id);
+                    for (size_t l = 0; l < bytes_per_id; ++l) {
+                        temp_byte_buffer.push_back(id_bytes[l]);
+                    }
+                }
+            }
+
+            little_kernel_input_buffers[i].packed_src_ids.resize(
+                (temp_byte_buffer.size() + bytes_per_word - 1) /
+                    bytes_per_word,
+                0);
+            std::memcpy(little_kernel_input_buffers[i].packed_src_ids.data(),
+                        temp_byte_buffer.data(), temp_byte_buffer.size());
+        }
+
+        current_time = std::chrono::system_clock::now();
+        std::cout << "--- [Host] Phase 0: Preparing data structures little src ids ("
+                  << std::chrono::duration<double>(current_time - start_time).count()
+                  << " sec) ---" << std::endl;
+        start_time = current_time;
     }
 }
 
-void AlgorithmHost::transfer_data_to_fpga() {
+void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
     cl_int err;
-    // For Bellman-Ford, node_distances must be updated each iteration.
-    // The other buffers are read-only and can be transferred just once if
-    // desired, but transferring them all simplifies the logic.
-    // OCL_CHECK(err, err = m_q.enqueueMigrateMemObjects(
-    //                    {d_src_offsets, d_edge_desc_bursts, d_node_distances},
-    //                    0 /* 0 means from host to device */));
-    for (int i = 0; i < NUM_PARTITIONS; i++) {
-        OCL_CHECK(err, err = m_q.enqueueMigrateMemObjects(
-                           {d_memory_buffers[i].d_src_offsets,
-                            d_memory_buffers[i].d_edge_desc_bursts,
-                            d_memory_buffers[i].d_node_distances},
-                           0 /* 0 means from host to device */));
+    std::cout << "--- [Host] Phase 1: Setting up HBM buffers for all kernels ---" << std::endl;
+
+    big_kernel_buffers.clear();
+    little_kernel_buffers.clear();
+    hbm_manager_buffers.clear(); // Clear HBM manager buffers as well
+    big_kernel_host_outputs.resize(container.SPs.size());
+    little_kernel_host_outputs.resize(container.DPs.size());
+
+    const size_t bytes_per_word = AXI_BUS_WIDTH / 8;
+
+    // --- 1.3: Setup buffers for BIG kernels (Sparse Partitions) ---
+    // DISABLED FOR LITTLE KERNEL TESTING
+    /*
+    for (size_t i = 0; i < container.SPs.size(); ++i) {
+        // ... (BIG KERNEL LOGIC IS COMMENTED OUT)
     }
-    m_q.finish();
+    */
+    
+    // --- Setup buffer for HBM Manager Kernel (Now for Little Kernels) ---
+    // Assuming we have at least one little kernel to test
+    if (!container.DPs.empty()) {
+        KernelBuffers hbm_buffers;
+        cl_mem_ext_ptr_t hbm_ext_in2;
+        // This HBM bank should be accessible by the little kernels
+        hbm_ext_in2.flags = XCL_MEM_TOPOLOGY | 2; // Example HBM bank
+        hbm_ext_in2.obj = nullptr;
+        hbm_ext_in2.param = 0;
+        
+        size_t num_dist_words = hbm_manager_host_buffers[0].packed_node_props.size();
+        OCL_CHECK(err,
+                  hbm_buffers.node_props_buf = cl::Buffer(
+                      acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,
+                      num_dist_words * bytes_per_word, &hbm_ext_in2, &err));
+        hbm_manager_buffers.push_back(hbm_buffers);
+    }
+
+
+    // --- 1.4: Setup buffers for LITTLE kernels (Dense Partitions) ---
+    // ENABLED FOR LITTLE KERNEL TESTING
+    for (size_t i = 0; i < container.DPs.size(); ++i) {
+        const auto &p_graph = container.DPs[i].partitioned_graph;
+        KernelBuffers buffers;
+
+        cl_mem_ext_ptr_t hbm_ext_in0, hbm_ext_in1, hbm_ext_out;
+        hbm_ext_in0.flags = XCL_MEM_TOPOLOGY | acc.little_kernel_hbm_input_id[i];
+        hbm_ext_in0.obj = nullptr;
+        hbm_ext_in0.param = 0;
+        hbm_ext_in1.flags = XCL_MEM_TOPOLOGY | acc.little_kernel_hbm_input_id[i];
+        hbm_ext_in1.obj = nullptr;
+        hbm_ext_in1.param = 0;
+        hbm_ext_out.flags = XCL_MEM_TOPOLOGY | acc.little_kernel_hbm_output_id[i];
+        hbm_ext_out.obj = nullptr;
+        hbm_ext_out.param = 0;
+
+        size_t num_id_words = little_kernel_input_buffers[i].packed_src_ids.size();
+        size_t num_edge_words = little_kernel_input_buffers[i].packed_edge_props.size();
+
+        OCL_CHECK(err,
+                  buffers.src_ids_buf = cl::Buffer(
+                      acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,
+                      num_id_words * bytes_per_word, &hbm_ext_in0, &err));
+        OCL_CHECK(err,
+                  buffers.edge_props_buf = cl::Buffer(
+                      acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,
+                      num_edge_words * bytes_per_word, &hbm_ext_in1, &err));
+        
+        // Note: node_props_buf is no longer set here, it's handled by the HBM manager
+
+        size_t bits_per_output = NODE_ID_BITWIDTH + DISTANCE_BITWIDTH + OUT_END_MARKER_BITWIDTH;
+        size_t max_dst_local_id = 0;
+        for (size_t e = 0; e < p_graph.num_edges; ++e) {
+            int dst = p_graph.columns[e];
+            if (dst > max_dst_local_id) {
+                max_dst_local_id = dst;
+            }
+        }
+        size_t num_dst_vertices = max_dst_local_id + 1;
+        size_t vert_num_in_word = AXI_BUS_WIDTH / bits_per_output;
+        size_t num_output_words = (num_dst_vertices + vert_num_in_word - 1) / vert_num_in_word + 1;
+
+        little_kernel_host_outputs[i].resize(num_output_words);
+        OCL_CHECK(err,
+                  buffers.output_buf = cl::Buffer(
+                      acc.context, CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX,
+                      num_output_words * bytes_per_word, &hbm_ext_out, &err));
+
+        little_kernel_buffers.push_back(buffers);
+    }
+
+    std::cout << "[SUCCESS] HBM buffers created for " << container.DPs.size() << " little kernels and 1 HBM manager." << std::endl;
+}
+
+void AlgorithmHost::update_data(const PartitionContainer &container) {
+    std::cout << "--- [Host] Phase 2.1: Updating host-side data for new iteration ---" << std::endl;
+
+    const size_t bytes_per_word = AXI_BUS_WIDTH / 8;
+
+    // DISABLED FOR LITTLE KERNEL TESTING
+    /*
+    for (size_t i = 0; i < big_kernel_buffers.size(); ++i) {
+        // ... (BIG KERNEL LOGIC IS COMMENTED OUT)
+    }
+    */
+
+    // ENABLED for LITTLE KERNEL TESTING
+    // This loop now only updates the HBM manager's buffer, which is correct for subsequent iterations.
+    for (size_t i = 0; i < little_kernel_buffers.size(); ++i) {
+        const auto &p_graph = container.DPs[i].partitioned_graph;
+        {
+            const size_t bytes_per_dist = DISTANCE_BITWIDTH / 8;
+            std::vector<char> temp_byte_buffer;
+            for (int j = 0; j < p_graph.num_vertices; ++j) {
+                if ((temp_byte_buffer.size() % bytes_per_word) + bytes_per_dist > bytes_per_word) {
+                    size_t padding_needed = bytes_per_word - (temp_byte_buffer.size() % bytes_per_word);
+                    temp_byte_buffer.insert(temp_byte_buffer.end(), padding_needed, 0);
+                }
+                int global_id = p_graph.vtx_map_rev.at(j);
+                distance_t dist_val = h_distances[global_id];
+                const char *data_ptr = reinterpret_cast<const char *>(&dist_val);
+                temp_byte_buffer.insert(temp_byte_buffer.end(), data_ptr, data_ptr + bytes_per_dist);
+            }
+            hbm_manager_host_buffers[0].packed_node_props.resize(
+                (temp_byte_buffer.size() + bytes_per_word - 1) / bytes_per_word, 0);
+            std::memcpy(hbm_manager_host_buffers[0].packed_node_props.data(),
+                        temp_byte_buffer.data(), temp_byte_buffer.size());
+        }
+    }
+
+    std::cout << "[SUCCESS] Host-side data updated for new iteration." << std::endl;
+}
+
+void AlgorithmHost::transfer_data_to_fpga(const PartitionContainer &container) {
+    cl_int err;
+    std::cout << "--- [Host] Phase 2: Packing and transferring data to HBM ---" << std::endl;
+
+    // DISABLED FOR LITTLE KERNEL TESTING
+    /*
+    for (size_t i = 0; i < big_kernel_buffers.size(); ++i) {
+        // ... (BIG KERNEL LOGIC IS COMMENTED OUT)
+    }
+    */
+    
+    // Transfer data for HBM Manager (for little kernels)
+    if (!hbm_manager_buffers.empty()) {
+        OCL_CHECK(err,
+              err = acc.hbm_manager_queue.enqueueWriteBuffer(
+                  hbm_manager_buffers[0].node_props_buf, CL_FALSE, 0,
+                  hbm_manager_host_buffers[0].packed_node_props.size() * sizeof(bus_word_t),
+                  hbm_manager_host_buffers[0].packed_node_props.data()));
+    }
+
+    // ENABLED FOR LITTLE KERNEL TESTING
+    for (size_t i = 0; i < little_kernel_buffers.size(); ++i) {
+        // Note: node_props_buf is no longer transferred here.
+        OCL_CHECK(err,
+                  err = acc.little_gs_queue[i].enqueueWriteBuffer(
+                      little_kernel_buffers[i].edge_props_buf, CL_FALSE, 0,
+                      little_kernel_input_buffers[i].packed_edge_props.size() * sizeof(bus_word_t),
+                      little_kernel_input_buffers[i].packed_edge_props.data()));
+        OCL_CHECK(err,
+                  err = acc.little_gs_queue[i].enqueueWriteBuffer(
+                      little_kernel_buffers[i].src_ids_buf, CL_FALSE, 0,
+                      little_kernel_input_buffers[i].packed_src_ids.size() * sizeof(bus_word_t),
+                      little_kernel_input_buffers[i].packed_src_ids.data()));
+    }
+
+    // --- 2.4: 在所有命令入队后，执行一次全局同步 ---
+    for (auto &q : acc.big_gs_queue) q.finish(); // Stays for safety, though should be empty
+    acc.hbm_manager_queue.finish();
+    for (auto &q : acc.little_gs_queue) q.finish();
+
+    std::cout << "[SUCCESS] All data packed and transferred for current iteration." << std::endl;
 }
 
 void AlgorithmHost::execute_kernel_iteration(
-    cl::Event &event_glb, std::vector<cl::Event> &events_graphyflow) {
+    const PartitionContainer &container,
+    std::vector<cl::Event> &big_kernel_events,
+    std::vector<cl::Event> &little_kernel_events) {
     cl_int err;
-    int arg_idx = 0;
+    std::cout << "--- [Host] Phase 3: Enqueuing kernel tasks ---" << std::endl;
 
-    // Set the new kernel arguments in the correct order
-    for (int i = 0; i < NUM_PARTITIONS; i++) {
-        OCL_CHECK(err, err = m_kernel_glb.setArg(
-                           arg_idx++, d_memory_buffers[i].d_src_offsets));
+    // DISABLED FOR LITTLE KERNEL TESTING
+    /*
+    for (size_t i = 0; i < big_kernel_buffers.size(); ++i) {
+        // ... (BIG KERNEL LOGIC IS COMMENTED OUT)
     }
-    for (int i = 0; i < NUM_PARTITIONS; i++) {
-        OCL_CHECK(err, err = m_kernel_glb.setArg(
-                           arg_idx++, d_memory_buffers[i].d_edge_desc_bursts));
-    }
-    for (int i = 0; i < NUM_PARTITIONS; i++) {
-        OCL_CHECK(err, err = m_kernel_glb.setArg(
-                           arg_idx++, d_memory_buffers[i].d_node_distances));
-    }
-    for (int i = 0; i < NUM_PARTITIONS; i++) {
-        OCL_CHECK(err, err = m_kernel_glb.setArg(
-                           arg_idx++, d_memory_buffers[i].d_outputs));
-    }
-    for (int i = 0; i < NUM_PARTITIONS; i++) {
-        OCL_CHECK(err, err = m_kernel_glb.setArg(arg_idx++,
-                                                 m_graphs[i].num_vertices));
-    }
-    for (int i = 0; i < NUM_PARTITIONS; i++) {
-        OCL_CHECK(err,
-                  err = m_kernel_glb.setArg(arg_idx++, m_graphs[i].num_edges));
+    */
+
+    // Enqueue HBM Manager (for little kernels)
+    if (!hbm_manager_buffers.empty()) {
+        auto &kernel = acc.hbm_manager_krnl;
+        auto &buffers = hbm_manager_buffers[0];
+        
+        // This assumes the number of vertices for the manager is the total number
+        // or a relevant subset for all little kernels. Using m_num_vertices for now.
+        int num_nodes_for_manager = m_num_vertices;
+
+        int arg_idx = 0;
+        OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.node_props_buf));
+        OCL_CHECK(err, err = kernel.setArg(arg_idx++, num_nodes_for_manager));
+
+        // Use the first little kernel's event to chain the manager
+        cl::Event *event_ptr = &little_kernel_events[0];
+        OCL_CHECK(err, err = acc.hbm_manager_queue.enqueueTask(kernel, nullptr, event_ptr));
     }
 
-    OCL_CHECK(err, err = m_q_glb.enqueueTask(m_kernel_glb, NULL, &event_glb));
-    for (int i = 0; i < NUM_PARTITIONS; i++) {
-        OCL_CHECK(err,
-                  err = m_q_graphyflow[i].enqueueTask(
-                      m_kernels_graphyflow[i], NULL, &events_graphyflow[i]));
+
+    // ENABLED AND CORRECTED FOR LITTLE KERNEL TESTING
+    for (size_t i = 0; i < little_kernel_buffers.size(); ++i) {
+        auto &kernel = acc.little_gs_krnls[i];
+        auto &buffers = little_kernel_buffers[i];
+        const auto &p_graph = container.DPs[i].partitioned_graph;
+
+        int arg_idx = 0;
+        OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.src_ids_buf));
+        OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.edge_props_buf));
+        // 关键修正: little kernel不再直接接收node_props_buf
+        // OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.node_props_buf));
+        OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.output_buf));
+        OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_vertices));
+        OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_edges));
+        // Assuming dst_num is required, using num_vertices as a placeholder.
+        // You might need to calculate the actual number of destination vertices.
+        size_t max_dst_local_id = 0;
+        for (size_t e = 0; e < p_graph.num_edges; ++e) {
+            if (p_graph.columns[e] > max_dst_local_id) max_dst_local_id = p_graph.columns[e];
+        }
+        OCL_CHECK(err, err = kernel.setArg(arg_idx++, (int)(max_dst_local_id + 1)));
+
+
+        cl::Event *event_ptr = &little_kernel_events[i];
+        OCL_CHECK(err, err = acc.little_gs_queue[i].enqueueTask(kernel, nullptr, event_ptr));
     }
+    std::cout << "[SUCCESS] All kernel tasks enqueued for one iteration." << std::endl;
 }
 
 void AlgorithmHost::transfer_data_from_fpga() {
     cl_int err;
-    // Migrate the results and the (potentially updated) distances back to the
-    // host
-    for (int i = 0; i < NUM_PARTITIONS; i++) {
-        OCL_CHECK(err, err = m_q.enqueueMigrateMemObjects(
-                           {d_memory_buffers[i].d_outputs},
-                           CL_MIGRATE_MEM_OBJECT_HOST));
+    std::cout << "--- [Host] Phase 4: Transferring results from HBM ---" << std::endl;
+    
+    // DISABLED
+    /*
+    for (size_t i = 0; i < big_kernel_buffers.size(); ++i) {
+        OCL_CHECK(err,
+                  err = acc.big_gs_queue[i].enqueueReadBuffer(
+                      big_kernel_buffers[i].output_buf, CL_FALSE, 0,
+                      big_kernel_host_outputs[i].size() * sizeof(bus_word_t),
+                      big_kernel_host_outputs[i].data()));
     }
-    m_q.finish();
+    */
+
+    // ENABLED
+    for (size_t i = 0; i < little_kernel_buffers.size(); ++i) {
+        OCL_CHECK(err,
+                  err = acc.little_gs_queue[i].enqueueReadBuffer(
+                      little_kernel_buffers[i].output_buf, CL_FALSE, 0,
+                      little_kernel_host_outputs[i].size() * sizeof(bus_word_t),
+                      little_kernel_host_outputs[i].data()));
+    }
+
+    // Wait for all transfers to complete
+    for (auto &q : acc.big_gs_queue) q.finish();
+    for (auto &q : acc.little_gs_queue) q.finish();
+    std::cout << "[SUCCESS] All results transferred from HBM." << std::endl;
 }
 
-bool AlgorithmHost::check_convergence_and_update() {
+bool AlgorithmHost::check_convergence_and_update(const PartitionContainer &container) {
     bool changed = false;
-    // This map stores the minimum distance found for each original node ID in
-    // this iteration's output.
-    std::map<int, float> min_distances;
+    std::cout << "--- [Host] Phase 5: Unpacking results and checking for convergence ---" << std::endl;
 
-    // --- PHASE 1: Process all kernel outputs to find new minimum distances for
-    // original node IDs ---
-    for (int i = 0; i < NUM_PARTITIONS; i++) {
-        const auto &graph = m_graphs[i];
-        const auto &vtx_map_rev = graph.vtx_map_rev;
-        const auto &kernel_output = h_memory_buffers[i].h_outputs;
+    std::map<int, distance_t> min_distances;
+    const int bits_per_output = NODE_ID_BITWIDTH + DISTANCE_BITWIDTH + OUT_END_MARKER_BITWIDTH;
+    const int outputs_per_word = AXI_BUS_WIDTH / bits_per_output;
 
-        for (const auto &batch : kernel_output) {
-            for (int j = 0; j < batch.end_pos; ++j) {
-                int local_node_id = batch.data[j].id;
-                float dist = batch.data[j].distance;
+    // DISABLED
+    /*
+    for (size_t i = 0; i < big_kernel_host_outputs.size(); ++i) {
+        // ... (BIG KERNEL LOGIC IS COMMENTED OUT)
+    }
+    */
 
-                // Convert local ID back to original ID
-                int original_node_id = vtx_map_rev.at(local_node_id);
+    // ENABLED
+    for (size_t i = 0; i < little_kernel_host_outputs.size(); ++i) {
+        const auto &p_graph = container.DPs[i].partitioned_graph;
+        for (const auto &word : little_kernel_host_outputs[i]) {
+            out_end_marker_t end_flag = 0;
+            for (int k = 0; k < outputs_per_word; ++k) {
+                int bit_offset = k * bits_per_output;
+                ap_uint<bits_per_output> packed_output = word.range(bit_offset + bits_per_output - 1, bit_offset);
 
-                if (min_distances.find(original_node_id) ==
-                        min_distances.end() ||
-                    dist < min_distances[original_node_id]) {
-                    min_distances[original_node_id] = dist;
+                ap_uint<NODE_ID_BITWIDTH> local_id_pod = packed_output.range(NODE_ID_BITWIDTH - 1, 0);
+                ap_fixed_pod_t dist_pod = packed_output.range(NODE_ID_BITWIDTH + DISTANCE_BITWIDTH - 1, NODE_ID_BITWIDTH);
+                end_flag = packed_output.range(bits_per_output - 1, NODE_ID_BITWIDTH + DISTANCE_BITWIDTH);
+
+                if (end_flag != 0) break;
+
+                int local_id = local_id_pod;
+                if (p_graph.vtx_map_rev.count(local_id) == 0) continue;
+
+                int global_id = p_graph.vtx_map_rev.at(local_id);
+                if (global_id >= m_num_vertices) continue;
+
+                distance_t new_dist = *reinterpret_cast<distance_t *>(&dist_pod);
+
+                if (min_distances.find(global_id) == min_distances.end() || new_dist < min_distances[global_id]) {
+                    min_distances[global_id] = new_dist;
                 }
             }
-            if (batch.end_flag)
-                break;
+            if (end_flag != 0) break;
         }
     }
 
-    // --- PHASE 2: Compare with current distances and update if a shorter path
-    // is found ---
-    for (int i = 0; i < NUM_PARTITIONS; i++) {
-        auto &graph = m_graphs[i];
-        auto &node_distances = h_memory_buffers[i].h_node_distances;
-
-        for (auto const &[original_node_id, new_dist] : min_distances) {
-            // Check if this original node ID exists in the current partition's
-            // graph
-            if (graph.vtx_map.count(original_node_id)) {
-                int local_node_id = graph.vtx_map[original_node_id];
-
-                ap_fixed<32, 16> current_dist =
-                    int32_bits_to_float(node_distances[local_node_id]);
-                ap_fixed<32, 16> new_dist_apf =
-                    static_cast<ap_fixed<32, 16>>(new_dist);
-
-                if (new_dist_apf < current_dist) {
-                    node_distances[local_node_id] =
-                        float_to_int32_bits(new_dist_apf);
-                    changed = true;
-                }
-            }
+    for (auto const &[global_id, new_dist] : min_distances) {
+        if (global_id < m_num_vertices && new_dist < h_distances[global_id]) {
+            h_distances[global_id] = new_dist;
+            changed = true;
         }
     }
 
-    // The function returns 'true' if no values were changed, indicating
-    // convergence.
+    if (changed) {
+        std::cout << "[INFO] Distances updated. Preparing for next iteration." << std::endl;
+    } else {
+        std::cout << "[INFO] No distance updates. Algorithm has converged." << std::endl;
+    }
+
     return !changed;
 }
 
 const std::vector<int> &AlgorithmHost::get_results() const {
-    // This map will store the final distance for each original node ID.
-    std::map<int, ap_fixed<32, 16>> original_distances;
-    int max_node_id = -1;
-
-    // --- PHASE 1: Collect final distances from all partitions ---
-    for (int i = 0; i < NUM_PARTITIONS; i++) {
-        const auto &graph = m_graphs[i];
-        const auto &node_distances = h_memory_buffers[i].h_node_distances;
-
-        for (size_t local_id = 0; local_id < node_distances.size();
-             ++local_id) {
-            if (graph.vtx_map_rev.count(local_id)) {
-                int original_id = graph.vtx_map_rev.at(local_id);
-                ap_fixed<32, 16> dist =
-                    int32_bits_to_float(node_distances[local_id]);
-
-                // Store the distance for the original node ID.
-                // Since destination nodes do not overlap between partitions,
-                // we don't need to check for minimums here.
-                original_distances[original_id] = dist;
-
-                if (original_id > max_node_id) {
-                    max_node_id = original_id;
-                }
-            }
-        }
-    }
-
-    // --- PHASE 2: Prepare the final flat vector of distances ---
     static std::vector<int> final_distances;
     final_distances.clear();
-    if (max_node_id >= 0) {
-        final_distances.resize(max_node_id + 1,
-                               std::numeric_limits<int>::max());
-    }
+    final_distances.reserve(h_distances.size());
 
-    for (const auto &pair : original_distances) {
-        int original_id = pair.first;
-        ap_fixed<32, 16> dist_fp = pair.second;
-
-        if (dist_fp >= INFINITY_DIST) {
-            final_distances[original_id] = std::numeric_limits<int>::max();
+    for (const auto &dist : h_distances) {
+        if (dist >= INFINITY_DIST) {
+            final_distances.push_back(std::numeric_limits<int>::max());
         } else {
-            final_distances[original_id] = static_cast<int>(dist_fp);
+            final_distances.push_back(dist.to_int());
         }
     }
-
     return final_distances;
 }

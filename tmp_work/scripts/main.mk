@@ -13,7 +13,7 @@ include $(SCRIPTS_PATH)/utils.mk
 include global_para.mk
 
 # Use SCRIPTS_PATH for consistency
-include $(SCRIPTS_PATH)/host/host.mk 
+
 # Remove non-existent makefiles
 # include autogen/autogen.mk
 # include acc_template/acc.mk
@@ -21,15 +21,13 @@ include $(SCRIPTS_PATH)/host/host.mk
 # Include our new kernel makefile
 include $(SCRIPTS_PATH)/kernel/kernel.mk
 
+include $(SCRIPTS_PATH)/host/host.mk 
+
 # This include seems to be for Vitis 1.0 examples, not needed here
 # include $(SCRIPTS_PATH)/bitstream.mk
 include $(SCRIPTS_PATH)/clean.mk
 
 # Update the 'all' rule to depend on the .xclbin file, the host executable, and emconfig
-all: $(XCLBIN_FILES) $(EXECUTABLE) emconfig
+all: $(XCLBIN_FILE) $(EXECUTABLE) emconfig
 
-# The executable depends on the xclbin file to ensure correct build order
-$(EXECUTABLE): $(XCLBIN_FILES)
-
-# Target to build only the executable
 exe: $(EXECUTABLE)

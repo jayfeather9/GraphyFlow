@@ -1,58 +1,70 @@
 #ifndef __GENERATED_HOST_H__
 #define __GENERATED_HOST_H__
 
+#include "acc_setup/acc_setup.h"
 #include "common.h"
-#include "xcl2.h"
-#include <ap_fixed.h>
+#include "graph_preprocess/graph_preprocess.h"
 #include <vector>
 
-class MemoryBufferHost {
-  public:
-      std::vector<int, aligned_allocator<int>> h_src_offsets;
-      std::vector<edge_des_burst_t, aligned_allocator<edge_des_burst_t>>
-          h_edge_desc_bursts;
-      std::vector<int, aligned_allocator<int>> h_node_distances;
-      std::vector<KernelOutputBatch, aligned_allocator<KernelOutputBatch>> h_outputs;
+#include <vector>
+
+// Define a structure to hold all OpenCL buffers for a single kernel instance.
+// This improves code organization and simplifies buffer management.
+struct KernelBuffers {
+    cl::Buffer src_ids_buf;    // Buffer for COO source IDs array
+    cl::Buffer edge_props_buf; // Buffer for edge properties (destination ID and
+                               // weight)
+    cl::Buffer node_props_buf; // Buffer for node properties (distances),
+                               // updated each iteration
+    cl::Buffer output_buf;     // Buffer for kernel results
 };
 
-class MemoryBufferDevice {
-  public:
-      cl::Buffer d_src_offsets;
-      cl::Buffer d_edge_desc_bursts;
-      cl::Buffer d_node_distances;
-      cl::Buffer d_outputs;
+struct HostInputBuffers {
+    std::vector<bus_word_t, aligned_allocator<bus_word_t>> packed_src_ids;
+    std::vector<bus_word_t, aligned_allocator<bus_word_t>> packed_edge_props;
+    std::vector<bus_word_t, aligned_allocator<bus_word_t>> packed_node_props;
 };
 
 class AlgorithmHost {
   public:
-    AlgorithmHost(cl::Context &context,
-                  cl::Kernel &kernel_glb,
-                  std::vector<cl::Kernel> &kernels_graphyflow,
-                  cl::CommandQueue &q,
-                  cl::CommandQueue &q_glb,
-                  std::vector<cl::CommandQueue> &q_graphyflow,
-                  std::vector<GraphCSR> &graphs);
-    void setup_buffers(int start_node);
-    void transfer_data_to_fpga();
-    void execute_kernel_iteration(cl::Event &event_glb, std::vector<cl::Event> &events_graphyflow);
+    AlgorithmHost(AccDescriptor &acc);
+
+    // --- MODIFICATION: Updated function signatures to use new data structures
+    // ---
+    void prepare_data(const PartitionContainer &container, int start_node);
+    void setup_buffers(const PartitionContainer &container);
+    void update_data(const PartitionContainer &container);
+    void transfer_data_to_fpga(const PartitionContainer &container);
+    void execute_kernel_iteration(const PartitionContainer &container,
+                                  std::vector<cl::Event> &big_kernel_events,
+                                  std::vector<cl::Event> &little_kernel_events);
     void transfer_data_from_fpga();
-    bool check_convergence_and_update();
+    bool check_convergence_and_update(const PartitionContainer &container);
     const std::vector<int> &get_results() const;
 
-    // OpenCL-related objects
-    cl::Context &m_context;
-    cl::Kernel &m_kernel_glb;
-    std::vector<cl::Kernel> &m_kernels_graphyflow;
-    cl::CommandQueue &m_q;
-    cl::CommandQueue &m_q_glb;
-    std::vector<cl::CommandQueue> &m_q_graphyflow;
-    std::vector<GraphCSR> &m_graphs;
+  private:
+    AccDescriptor &acc;
 
-    // Host-side memory buffers for CSR graph representation & outputs
-    std::vector<MemoryBufferHost> h_memory_buffers;
+    // Algorithm state
+    int m_num_vertices;
 
-    // Device-side OpenCL buffer handles
-    std::vector<MemoryBufferDevice> d_memory_buffers;
+    // Host-side master distance vector using original (global) vertex IDs
+    std::vector<distance_t> h_distances;
+
+    // Buffer containers for big kernels (one entry per kernel instance)
+    std::vector<HostInputBuffers> big_kernel_input_buffers;
+    std::vector<KernelBuffers> big_kernel_buffers;
+    std::vector<std::vector<bus_word_t, aligned_allocator<bus_word_t>>>
+        big_kernel_host_outputs;
+
+    std::vector<HostInputBuffers> hbm_manager_host_buffers;
+    std::vector<KernelBuffers> hbm_manager_buffers;
+
+    // Buffer containers for little kernels (one entry per kernel instance)
+    std::vector<HostInputBuffers> little_kernel_input_buffers;
+    std::vector<KernelBuffers> little_kernel_buffers;
+    std::vector<std::vector<bus_word_t, aligned_allocator<bus_word_t>>>
+        little_kernel_host_outputs;
 };
 
 #endif // __GENERATED_HOST_H__
