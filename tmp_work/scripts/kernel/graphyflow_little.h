@@ -284,29 +284,21 @@ typedef ap_axiu<32, 0, 0, 8> b_cacheline_req_t;
 typedef ap_axiu<512, 0, 0, 8> b_cacheline_resp_t;
 typedef ap_axiu<256, 0, 0, 8> b_node_distance_burst_t;
 
-
-
-
-
 // new
 
-typedef ap_axiu<32, 0, 0, 0>   l_ppb_request_pkt;
+typedef ap_axiu<32, 0, 0, 0> l_ppb_request_pkt;
 typedef ap_axiu<512, 0, 0, 32> l_ppb_response_pkt;
 
-typedef 
-struct ppbResponse{
+typedef struct ppbResponse {
     ap_uint<32> addr;
     ap_uint<512> data;
     bool end_flag;
-    }
-ppb_response_dt; 
+} ppb_response_dt;
 
-typedef   
-struct ppbRequest{
+typedef struct ppbRequest {
     ap_uint<32> request_round;
     bool end_flag;
-    }
-ppb_request_dt; 
+} ppb_request_dt;
 
 #define LOG_AXI_BUS_WIDTH 9
 #define SCATTER_PE_NUM 8
@@ -528,12 +520,9 @@ graphyflow_big(const bus_word_t *src_ids, const bus_word_t *edge_props,
                hls::stream<b_node_distance_burst_t> &stream_outer_node_dist);
 
 extern "C" void
-hbm_manager(
-    const bus_word_t *node_distances,           
-    int32_t num_nodes,                        
-    
-    hls::stream<l_ppb_request_pkt> &l_ppb_request_stm,   
-    hls::stream<l_ppb_response_pkt> &l_ppb_response_stm);
+hbm_manager(const bus_word_t *node_distances, int32_t num_nodes,
+            hls::stream<l_ppb_request_pkt> &l_ppb_request_stm,
+            hls::stream<l_ppb_response_pkt> &l_ppb_response_stm,
+            hls::stream<b_node_distance_burst_t> &node_dist_stream);
 
-            
 #endif // __GRAPHYFLOW_GRAPHYFLOW_LITTLE_H__
