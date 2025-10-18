@@ -965,12 +965,12 @@ static void Reduc_105_unit_reduce(
 #pragma HLS dependence variable = prop_mem inter false direction = WAW
 #pragma HLS dependence variable = prop_mem inter false direction = RAW
 
-    // BRAM for individual validity flags (fast access)
-    bool prop_valid[PE_NUM][MAX_NUM >> LOG_PE_NUM];
-#pragma HLS BIND_STORAGE variable = prop_valid type = RAM_2P impl = BRAM
-#pragma HLS ARRAY_PARTITION variable = prop_valid complete dim = 1
-#pragma HLS dependence variable = prop_valid inter false direction = WAW
-#pragma HLS dependence variable = prop_valid inter false direction = RAW
+//     // BRAM for individual validity flags (fast access)
+//     bool prop_valid[PE_NUM][MAX_NUM >> LOG_PE_NUM];
+// #pragma HLS BIND_STORAGE variable = prop_valid type = RAM_2P impl = BRAM
+// #pragma HLS ARRAY_PARTITION variable = prop_valid complete dim = 1
+// #pragma HLS dependence variable = prop_valid inter false direction = WAW
+// #pragma HLS dependence variable = prop_valid inter false direction = RAW
 
     // BRAM for pre-calculated address mapping (avoids division/modulo)
     // 16 bits: 14 for word_addr, 2 for pack_idx
@@ -989,6 +989,13 @@ static void Reduc_105_unit_reduce(
     int tmp_cache_addr_buffer[PE_NUM][L];
 #pragma HLS ARRAY_PARTITION variable = tmp_cache_addr_buffer complete dim = 0
 
+    const distance_t MAX_DISTANCE = (distance_t)(16384.0);
+    const ap_fixed_pod_t MAX_DISTANCE_POD =
+        *reinterpret_cast<ap_fixed_pod_t *>(&MAX_DISTANCE);
+    const reduce_word_t MAX_REDUCE_WORD =
+        (((reduce_word_t)MAX_DISTANCE_POD << DISTANCE_BITWIDTH) |
+        ((reduce_word_t)MAX_DISTANCE_POD));
+
 // --- Phase 2: Initialization ---
 LOOP_INIT_VALID:
     for (int i = 0; i < (MAX_NUM >> LOG_PE_NUM); i++) {
@@ -1001,12 +1008,17 @@ LOOP_INIT_VALID:
 #pragma HLS UNROLL
             key_to_addr_map[pe][i] = map_val;
         }
-        // Initialize valid flags
+    }
+
+LOOP_INIT_MEM:
+    for (int i = 0; i < MEM_SIZE; i++) {
+#pragma HLS PIPELINE II = 1
         for (int pe = 0; pe < PE_NUM; pe++) {
 #pragma HLS UNROLL
-            prop_valid[pe][i] = false;
+            prop_mem[pe][i] = MAX_REDUCE_WORD; // Initialize distances to max
         }
     }
+
 LOOP_INIT_CACHE_ADDR:
     for (int i = 0; i < L + 1; i++) {
         for (int pe = 0; pe < PE_NUM; pe++) {
@@ -1052,20 +1064,10 @@ LOOP_AGGREGATE:
                         }
                     }
 
-                    bool is_valid = prop_valid[pe][key];
-
                     for (int i = 0; i < L; i++) {
 #pragma HLS UNROLL
-                        tmp_cache_addr_buffer[pe][i] =
-                            cache_addr_buffer[pe][i + 1];
-                        tmp_cache_data_buffer[pe][i] =
-                            cache_data_buffer[pe][i + 1];
-                    }
-
-                    for (int i = 0; i < L; i++) {
-#pragma HLS UNROLL
-                        cache_addr_buffer[pe][i] = tmp_cache_addr_buffer[pe][i];
-                        cache_data_buffer[pe][i] = tmp_cache_data_buffer[pe][i];
+                        cache_addr_buffer[pe][i] = cache_addr_buffer[pe][i + 1];
+                        cache_data_buffer[pe][i] = cache_data_buffer[pe][i + 1];
                     }
 
                     distance_t new_dist_fp;
@@ -1077,19 +1079,13 @@ LOOP_AGGREGATE:
                     // word_addr, pack_idx, (float)incoming_dist_fp);
                     // fflush(NULL);
 
-                    if (is_valid) {
-                        distance_t old_dist_fp =
-                            get_val(current_word, pack_idx);
-                        // printf("[BIG]  Old distance: %f\n",
-                        // (float)old_dist_fp);
-                        new_dist_fp = (old_dist_fp < incoming_dist_fp)
-                                          ? old_dist_fp
-                                          : incoming_dist_fp;
-                    } else {
-                        new_dist_fp = incoming_dist_fp;
-                    }
-
-                    prop_valid[pe][key] = true;
+                    distance_t old_dist_fp =
+                        get_val(current_word, pack_idx);
+                    // printf("[BIG]  Old distance: %f\n",
+                    // (float)old_dist_fp);
+                    new_dist_fp = (old_dist_fp < incoming_dist_fp)
+                                        ? old_dist_fp
+                                        : incoming_dist_fp;
 
                     ap_fixed_pod_t new_dist_pod =
                         *reinterpret_cast<ap_fixed_pod_t *>(&new_dist_fp);
