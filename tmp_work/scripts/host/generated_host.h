@@ -15,7 +15,13 @@ struct KernelBuffers {
                                // source ID)
     cl::Buffer node_props_buf; // Buffer for node properties (distances),
                                // updated each iteration
-    cl::Buffer output_buf;     // Buffer for kernel results
+    cl::Buffer output_buf; // Buffer for kernel results (only for hbm_writer)
+};
+
+// Structure to hold buffers for HBM writer kernel
+struct WriterKernelBuffers {
+    cl::Buffer node_distances_buf; // Buffer for node distances input
+    cl::Buffer output_buf;         // Buffer for final output
 };
 
 struct HostInputBuffers {
@@ -60,6 +66,12 @@ class AlgorithmHost {
     std::vector<KernelBuffers> little_kernel_buffers;
     std::vector<std::vector<bus_word_t, aligned_allocator<bus_word_t>>>
         little_kernel_host_outputs;
+
+    // Buffer containers for HBM writer kernels (one entry per writer kernel
+    // instance)
+    std::vector<WriterKernelBuffers> writer_kernel_buffers;
+    std::vector<std::vector<bus_word_t, aligned_allocator<bus_word_t>>>
+        writer_kernel_host_outputs;
 };
 
 #endif // __GENERATED_HOST_H__

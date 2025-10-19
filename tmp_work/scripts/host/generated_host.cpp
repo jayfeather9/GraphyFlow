@@ -1,4 +1,5 @@
 #include "generated_host.h"
+#include <chrono>
 #include <cstring>
 #include <iostream>
 #include <limits>
@@ -270,8 +271,10 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
     // 1.2: Clear old buffer handles and resize host-side result vectors
     big_kernel_buffers.clear();
     little_kernel_buffers.clear();
+    writer_kernel_buffers.clear();
     big_kernel_host_outputs.resize(container.SPs.size());
     little_kernel_host_outputs.resize(container.DPs.size());
+    writer_kernel_host_outputs.resize(container.SPs.size());
 
     const size_t bytes_per_word = AXI_BUS_WIDTH / 8;
 
@@ -281,13 +284,13 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
         KernelBuffers buffers;
 
         cl_mem_ext_ptr_t hbm_ext_in0, hbm_ext_in1, hbm_ext_out;
-        hbm_ext_in0.flags = XCL_MEM_TOPOLOGY | acc.big_kernel_hbm_input_id[i];
+        hbm_ext_in0.flags = XCL_MEM_TOPOLOGY | 0;
         hbm_ext_in0.obj = nullptr;
         hbm_ext_in0.param = 0;
-        hbm_ext_in1.flags = XCL_MEM_TOPOLOGY | acc.big_kernel_hbm_input_id[i];
+        hbm_ext_in1.flags = XCL_MEM_TOPOLOGY | 1;
         hbm_ext_in1.obj = nullptr;
         hbm_ext_in1.param = 0;
-        hbm_ext_out.flags = XCL_MEM_TOPOLOGY | acc.big_kernel_hbm_output_id[i];
+        hbm_ext_out.flags = XCL_MEM_TOPOLOGY | 2;
         hbm_ext_out.obj = nullptr;
         hbm_ext_out.param = 0;
 
@@ -320,13 +323,33 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
         size_t num_output_words =
             (num_dst_vertices + dists_per_word - 1) / dists_per_word;
 
-        big_kernel_host_outputs[i].resize(num_output_words);
+        // Big kernel no longer has output buffer (it's handled by hbm_writer)
+        big_kernel_buffers.push_back(buffers);
+
+        // Create buffers for corresponding hbm_writer kernel
+        WriterKernelBuffers writer_buffers;
+
+        // Setup HBM extension for writer kernel input (node distances)
+        cl_mem_ext_ptr_t hbm_ext_writer_in;
+        hbm_ext_writer_in.flags = XCL_MEM_TOPOLOGY | 3;
+        hbm_ext_writer_in.obj = nullptr;
+        hbm_ext_writer_in.param = 0;
+
+        // Create node_distances_buf for writer kernel (same size as node_props)
+        num_dist_words = big_kernel_input_buffers[i].packed_node_props.size();
+        OCL_CHECK(err, writer_buffers.node_distances_buf =
+                           cl::Buffer(acc.context,
+                                      CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,
+                                      num_dist_words * bytes_per_word,
+                                      &hbm_ext_writer_in, &err));
+
+        // Create output buffer for writer kernel
+        writer_kernel_host_outputs[i].resize(num_output_words);
         OCL_CHECK(err,
-                  buffers.output_buf = cl::Buffer(
+                  writer_buffers.output_buf = cl::Buffer(
                       acc.context, CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX,
                       num_output_words * bytes_per_word, &hbm_ext_out, &err));
-
-        big_kernel_buffers.push_back(buffers);
+        writer_kernel_buffers.push_back(writer_buffers);
     }
 
     // --- 1.4: Setup buffers for LITTLE kernels (Dense Partitions) ---
@@ -527,10 +550,24 @@ void AlgorithmHost::transfer_data_to_fpga(const PartitionContainer &container) {
                       little_kernel_input_buffers[i].packed_edge_props.size() *
                           sizeof(bus_word_t),
                       little_kernel_input_buffers[i].packed_edge_props.data()));
-    } // --- 2.4: 在所有命令入队后，执行一次全局同步 ---
+    }
+
+    // --- 2.5: Transfer node distances to writer kernel buffers ---
+    for (size_t i = 0; i < writer_kernel_buffers.size(); ++i) {
+        OCL_CHECK(err,
+                  err = acc.writer_queue[i].enqueueWriteBuffer(
+                      writer_kernel_buffers[i].node_distances_buf, CL_FALSE, 0,
+                      big_kernel_input_buffers[i].packed_node_props.size() *
+                          sizeof(bus_word_t),
+                      big_kernel_input_buffers[i].packed_node_props.data()));
+    }
+
+    // --- 2.6: 在所有命令入队后，执行一次全局同步 ---
     for (auto &q : acc.big_gs_queue)
         q.finish();
     for (auto &q : acc.little_gs_queue)
+        q.finish();
+    for (auto &q : acc.writer_queue)
         q.finish();
 
     std::cout
@@ -545,9 +582,12 @@ void AlgorithmHost::execute_kernel_iteration(
     std::vector<cl::Event> &big_kernel_events,
     std::vector<cl::Event> &little_kernel_events) {
     cl_int err;
-    std::cout << "--- [Host] Phase 3: Enqueuing kernel tasks ---" << std::endl;
+    // std::cout << "--- [Host] Phase 3: Enqueuing kernel tasks ---" <<
+    // std::endl;
 
-    // 3.1: Enqueue BIG kernels
+    auto enqueue_start = std::chrono::high_resolution_clock::now();
+
+    // 3.1: Enqueue BIG kernels (no output parameter, streams to hbm_writer)
     for (size_t i = 0; i < big_kernel_buffers.size(); ++i) {
         auto &kernel = acc.big_gs_krnls[i];
         auto &buffers = big_kernel_buffers[i];
@@ -556,7 +596,8 @@ void AlgorithmHost::execute_kernel_iteration(
         int arg_idx = 0;
         OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.edge_props_buf));
         OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.node_props_buf));
-        OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.output_buf));
+        // Note: output_stream is NOT a kernel argument - it's a stream
+        // connection
         OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_vertices));
         OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_edges));
         OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_dsts));
@@ -566,7 +607,27 @@ void AlgorithmHost::execute_kernel_iteration(
                                                              event_ptr));
     }
 
-    // 3.2: Enqueue LITTLE kernels
+    // 3.2: Enqueue HBM_WRITER kernels (receive from big kernels via stream)
+    std::vector<cl::Event> writer_kernel_events(writer_kernel_buffers.size());
+    for (size_t i = 0; i < writer_kernel_buffers.size(); ++i) {
+        auto &kernel = acc.writer_krnls[i];
+        auto &buffers = writer_kernel_buffers[i];
+        const auto &p_graph = container.SPs[i].partitioned_graph;
+
+        int arg_idx = 0;
+        OCL_CHECK(err,
+                  err = kernel.setArg(arg_idx++, buffers.node_distances_buf));
+        OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.output_buf));
+        OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_vertices));
+        // Note: node_dist_stream and write_burst_stm are NOT kernel arguments -
+        // they're stream connections
+
+        cl::Event *event_ptr = &writer_kernel_events[i];
+        OCL_CHECK(err, err = acc.writer_queue[i].enqueueTask(kernel, nullptr,
+                                                             event_ptr));
+    }
+
+    // 3.3: Enqueue LITTLE kernels
     for (size_t i = 0; i < little_kernel_buffers.size(); ++i) {
         auto &kernel = acc.little_gs_krnls[i];
         auto &buffers = little_kernel_buffers[i];
@@ -583,8 +644,12 @@ void AlgorithmHost::execute_kernel_iteration(
         OCL_CHECK(err, err = acc.little_gs_queue[i].enqueueTask(kernel, nullptr,
                                                                 event_ptr));
     }
-    std::cout << "[SUCCESS] All kernel tasks enqueued for one iteration."
-              << std::endl;
+
+    auto enqueue_end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> enqueue_time = enqueue_end - enqueue_start;
+    // std::cout << "[SUCCESS] All kernel tasks enqueued for one iteration
+    // (Time: "
+    //           << enqueue_time.count() << " seconds)" << std::endl;
 }
 
 // --- PHASE 4: DATA TRANSFER FROM FPGA ---
@@ -593,12 +658,15 @@ void AlgorithmHost::transfer_data_from_fpga() {
     std::cout << "--- [Host] Phase 4: Transferring results from HBM ---"
               << std::endl;
 
-    for (size_t i = 0; i < big_kernel_buffers.size(); ++i) {
+    auto transfer_start = std::chrono::high_resolution_clock::now();
+
+    // Read from hbm_writer kernel output buffers instead of big kernel buffers
+    for (size_t i = 0; i < writer_kernel_buffers.size(); ++i) {
         OCL_CHECK(err,
-                  err = acc.big_gs_queue[i].enqueueReadBuffer(
-                      big_kernel_buffers[i].output_buf, CL_FALSE, 0,
-                      big_kernel_host_outputs[i].size() * sizeof(bus_word_t),
-                      big_kernel_host_outputs[i].data()));
+                  err = acc.writer_queue[i].enqueueReadBuffer(
+                      writer_kernel_buffers[i].output_buf, CL_FALSE, 0,
+                      writer_kernel_host_outputs[i].size() * sizeof(bus_word_t),
+                      writer_kernel_host_outputs[i].data()));
     }
 
     for (size_t i = 0; i < little_kernel_buffers.size(); ++i) {
@@ -614,7 +682,13 @@ void AlgorithmHost::transfer_data_from_fpga() {
         q.finish();
     for (auto &q : acc.little_gs_queue)
         q.finish();
-    std::cout << "[SUCCESS] All results transferred from HBM." << std::endl;
+    for (auto &q : acc.writer_queue)
+        q.finish();
+
+    auto transfer_end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> transfer_time = transfer_end - transfer_start;
+    std::cout << "[SUCCESS] All results transferred from HBM (Time: "
+              << transfer_time.count() << " seconds)" << std::endl;
 }
 
 // --- PHASE 5: CONVERGENCE CHECK AND GLOBAL STATE UPDATE ---
@@ -629,13 +703,13 @@ bool AlgorithmHost::check_convergence_and_update(
     std::map<int, distance_t> min_distances;
     const int dists_per_word = AXI_BUS_WIDTH / DISTANCE_BITWIDTH;
 
-    // 5.1: Unpack and gather results from BIG kernels
+    // 5.1: Unpack and gather results from BIG kernels (via HBM writer)
     // Node IDs are implicit: they are sequential from 0 to num_dsts-1
-    for (size_t i = 0; i < big_kernel_host_outputs.size(); ++i) {
+    for (size_t i = 0; i < writer_kernel_host_outputs.size(); ++i) {
         const auto &p_graph = container.SPs[i].partitioned_graph;
         int local_id = 0; // Implicit node ID counter
 
-        for (const auto &word : big_kernel_host_outputs[i]) {
+        for (const auto &word : writer_kernel_host_outputs[i]) {
             for (int k = 0; k < dists_per_word && local_id < p_graph.num_dsts;
                  ++k, ++local_id) {
                 int bit_offset = k * DISTANCE_BITWIDTH;

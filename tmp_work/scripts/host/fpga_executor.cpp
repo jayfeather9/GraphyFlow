@@ -3,6 +3,7 @@
 #include "acc_setup/acc_setup.h"
 #include "generated_host.h"
 #include "graph_preprocess/graph_preprocess.h"
+#include <chrono>
 #include <iostream>
 
 #define KERNEL_NAME "graphyflow"
@@ -28,16 +29,32 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
     std::cout << "\nStarting FPGA execution..." << std::endl;
 
     for (iter = 0; iter < max_iterations; ++iter) {
+        auto iteration_start = std::chrono::high_resolution_clock::now();
+
         algo_host.update_data(partition_container);
         algo_host.transfer_data_to_fpga(partition_container);
         std::vector<cl::Event> big_kernel_events(acc.num_big_krnl),
             little_kernel_events(acc.num_little_krnl);
+
+        std::cout << "--- [Host] Phase 3: Enqueuing kernel tasks ---"
+                  << std::endl;
+
         algo_host.execute_kernel_iteration(
             partition_container, big_kernel_events, little_kernel_events);
+        auto kernel_enqueue_start = std::chrono::high_resolution_clock::now();
+
+        // Wait for all kernels to finish
         for (auto &q : acc.big_gs_queue)
             q.finish();
         for (auto &q : acc.little_gs_queue)
             q.finish();
+        for (auto &q : acc.writer_queue)
+            q.finish();
+
+        auto kernel_finish = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> end_to_end_time =
+            kernel_finish - kernel_enqueue_start;
+
         algo_host.transfer_data_from_fpga();
 
         // iv. 性能统计
@@ -88,6 +105,11 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
         std::cout << "FPGA Iteration " << iter << ": "
                   << "Time = " << (iteration_time_ns * 1.0e-6) << " ms, "
                   << "Throughput = " << mteps << " MTEPS" << std::endl;
+
+        // Print end-to-end timing for the iteration
+        std::cout << "FPGA Iteration " << iter
+                  << " End-to-End Time: " << (end_to_end_time.count() * 1000.0)
+                  << " ms" << std::endl;
 
         // v. 检查是否收敛。如果未收敛，此函数会更新 partition_container
         // 为下次迭代做准备
