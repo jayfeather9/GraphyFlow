@@ -37,7 +37,7 @@ CLFLAGS += -Iscripts/kernel
 CLFLAGS += -Iscripts/host
 CLFLAGS += -I$(XILINX_XRT)/include
 CLFLAGS += -I$(XILINX_VITIS)/include
-# CLFLAGS += --verbose
+CLFLAGS += -O3
 
 # VPP 在链接 .xclbin 文件时使用的参数。
 LDFLAGS_VPP += --config ./system.cfg
@@ -45,7 +45,7 @@ LDFLAGS_VPP += -Iscripts/kernel
 LDFLAGS_VPP += -Iscripts/host
 LDFLAGS_VPP += -I$(XILINX_XRT)/include
 LDFLAGS_VPP += -I$(XILINX_VITIS)/include
-# LDFLAGS_VPP += --verbose
+LDFLAGS_VPP += --xp prop:solution.kernel_compiler_margin=10%
 
 
 # --- 构建规则 ---
