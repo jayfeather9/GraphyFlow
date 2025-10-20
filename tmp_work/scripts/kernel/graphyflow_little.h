@@ -241,9 +241,24 @@ extern "C" void graphyflow_little(const bus_word_t *src_offsets,
 #include <stdio.h>
 #include <string.h>
 
+#ifdef DEBUG
+    // DEBUG 已定义：宏展开为 printf + fflush
+    // 使用 do-while(0) 是一个标准技巧，
+    // 确保宏在任何语法结构中（如 if/else）都能安全地作为单条语句使用。
+    #define DBGPRINTF(...) \
+        do { \
+            printf(__VA_ARGS__); \
+            fflush(NULL); \
+        } while (0)
+#else
+    // DEBUG 未定义：宏展开为空语句
+    // 宏仍然会“接受”参数，但编译器会将其优化掉，不产生任何代码。
+    #define DBGPRINTF(...) do { } while (0)
+#endif
+
 #define PE_NUM 8
 #define LOG_PE_NUM 3
-#define MAX_NUM 512
+#define MAX_NUM 32768
 #define L 4
 
 // --- New Bitwidth Definitions for HLS Synthesis ---
@@ -280,25 +295,28 @@ typedef ap_uint<DISTANCE_BITWIDTH>
 typedef ap_fixed<DISTANCE_BITWIDTH, DISTANCE_INTEGER_PART> distance_t;
 typedef ap_uint<OUT_END_MARKER_BITWIDTH> out_end_marker_t;
 
-typedef ap_axiu<32, 0, 0, 8> b_cacheline_req_t;
-typedef ap_axiu<512, 0, 0, 8> b_cacheline_resp_t;
 typedef ap_axiu<256, 0, 0, 8> b_node_distance_burst_t;
+
 
 // new
 
-typedef ap_axiu<32, 0, 0, 0> l_ppb_request_pkt;
+typedef ap_axiu<32, 0, 0, 0>   l_ppb_request_pkt;
 typedef ap_axiu<512, 0, 0, 32> l_ppb_response_pkt;
-
-typedef struct ppbResponse {
+typedef ap_uint<256> node_distance_pack_t;
+typedef 
+struct ppbResponse{
     ap_uint<32> addr;
     ap_uint<512> data;
     bool end_flag;
-} ppb_response_dt;
+    }
+ppb_response_dt; 
 
-typedef struct ppbRequest {
+typedef   
+struct ppbRequest{
     ap_uint<32> request_round;
     bool end_flag;
-} ppb_request_dt;
+    }
+ppb_request_dt; 
 
 #define LOG_AXI_BUS_WIDTH 9
 #define SCATTER_PE_NUM 8
@@ -511,18 +529,23 @@ struct __attribute__((packed)) net_wrapper_kt_pair_105_t_t {
 // KernelOutputBatch* out_o_0_342);
 
 // --- Top-Level Function Prototype ---
-extern "C" void
-graphyflow_big(const bus_word_t *src_ids, const bus_word_t *edge_props,
-               bus_word_t *output, int32_t num_nodes, int32_t num_edges,
-               int32_t dst_num,
-               hls::stream<b_cacheline_req_t> &stream_outer_cache_req,
-               hls::stream<b_cacheline_resp_t> &stream_outer_cache_resp,
-               hls::stream<b_node_distance_burst_t> &stream_outer_node_dist);
+extern "C" void graphyflow_little( 
+                                    const bus_word_t *src_ids, 
+                                    const bus_word_t *edge_props,
+                                    bus_word_t *output, 
+                                    int32_t num_nodes, 
+                                    int32_t num_edges,
+                                    int32_t dst_num,
 
-extern "C" void
-hbm_manager(const bus_word_t *node_distances, int32_t num_nodes,
-            hls::stream<l_ppb_request_pkt> &l_ppb_request_stm,
-            hls::stream<l_ppb_response_pkt> &l_ppb_response_stm,
-            hls::stream<b_node_distance_burst_t> &node_dist_stream);
+                                    const bus_word_t *node_distances);
 
+// extern "C" void
+// hbm_manager(
+//     const bus_word_t *node_distances,           
+//     int32_t num_nodes,                        
+//     
+//     hls::stream<l_ppb_request_pkt> &l_ppb_request_stm,   
+//     hls::stream<l_ppb_response_pkt> &l_ppb_response_stm);
+
+            
 #endif // __GRAPHYFLOW_GRAPHYFLOW_LITTLE_H__

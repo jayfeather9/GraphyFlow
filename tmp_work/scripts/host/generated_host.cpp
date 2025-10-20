@@ -331,6 +331,7 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
                   hbm_buffers.node_props_buf = cl::Buffer(
                       acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,
                       num_dist_words * bytes_per_word, &hbm_ext_in2, &err));
+
         hbm_manager_buffers.push_back(hbm_buffers);
     }
 
@@ -443,7 +444,7 @@ void AlgorithmHost::transfer_data_to_fpga(const PartitionContainer &container) {
     // Transfer data for HBM Manager (for little kernels)
     if (!hbm_manager_buffers.empty()) {
         OCL_CHECK(err,
-              err = acc.hbm_manager_queue.enqueueWriteBuffer(
+              err = acc.little_gs_queue[0].enqueueWriteBuffer(//只有一个little kernel
                   hbm_manager_buffers[0].node_props_buf, CL_FALSE, 0,
                   hbm_manager_host_buffers[0].packed_node_props.size() * sizeof(bus_word_t),
                   hbm_manager_host_buffers[0].packed_node_props.data()));
@@ -487,22 +488,22 @@ void AlgorithmHost::execute_kernel_iteration(
     */
 
     // Enqueue HBM Manager (for little kernels)
-    if (!hbm_manager_buffers.empty()) {
-        auto &kernel = acc.hbm_manager_krnl;
-        auto &buffers = hbm_manager_buffers[0];
-        
-        // This assumes the number of vertices for the manager is the total number
-        // or a relevant subset for all little kernels. Using m_num_vertices for now.
-        int num_nodes_for_manager = m_num_vertices;
-
-        int arg_idx = 0;
-        OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.node_props_buf));
-        OCL_CHECK(err, err = kernel.setArg(arg_idx++, num_nodes_for_manager));
-
-        // Use the first little kernel's event to chain the manager
-        cl::Event *event_ptr = &little_kernel_events[0];
-        OCL_CHECK(err, err = acc.hbm_manager_queue.enqueueTask(kernel, nullptr, event_ptr));
-    }
+    // if (!hbm_manager_buffers.empty()) {
+    //     auto &kernel = acc.hbm_manager_krnl;
+    //     auto &buffers = hbm_manager_buffers[0];
+    //     
+    //     // This assumes the number of vertices for the manager is the total number
+    //     // or a relevant subset for all little kernels. Using m_num_vertices for now.
+    //     int num_nodes_for_manager = m_num_vertices;
+// 
+    //     int arg_idx = 0;
+    //     OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.node_props_buf));
+    //     OCL_CHECK(err, err = kernel.setArg(arg_idx++, num_nodes_for_manager));
+// 
+    //     // Use the first little kernel's event to chain the manager
+    //     cl::Event *event_ptr = &little_kernel_events[0];
+    //     OCL_CHECK(err, err = acc.hbm_manager_queue.enqueueTask(kernel, nullptr, event_ptr));
+    // }
 
 
     // ENABLED AND CORRECTED FOR LITTLE KERNEL TESTING
@@ -510,6 +511,9 @@ void AlgorithmHost::execute_kernel_iteration(
         auto &kernel = acc.little_gs_krnls[i];
         auto &buffers = little_kernel_buffers[i];
         const auto &p_graph = container.DPs[i].partitioned_graph;
+
+        auto &hbm_buffers = hbm_manager_buffers[0];
+        int num_nodes_for_manager = m_num_vertices;
 
         int arg_idx = 0;
         OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.src_ids_buf));
@@ -519,6 +523,9 @@ void AlgorithmHost::execute_kernel_iteration(
         OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.output_buf));
         OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_vertices));
         OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_edges));
+
+
+
         // Assuming dst_num is required, using num_vertices as a placeholder.
         // You might need to calculate the actual number of destination vertices.
         size_t max_dst_local_id = 0;
@@ -526,10 +533,12 @@ void AlgorithmHost::execute_kernel_iteration(
             if (p_graph.columns[e] > max_dst_local_id) max_dst_local_id = p_graph.columns[e];
         }
         OCL_CHECK(err, err = kernel.setArg(arg_idx++, (int)(max_dst_local_id + 1)));
-
+        OCL_CHECK(err, err = kernel.setArg(arg_idx++, hbm_buffers.node_props_buf));
 
         cl::Event *event_ptr = &little_kernel_events[i];
         OCL_CHECK(err, err = acc.little_gs_queue[i].enqueueTask(kernel, nullptr, event_ptr));
+
+        
     }
     std::cout << "[SUCCESS] All kernel tasks enqueued for one iteration." << std::endl;
 }

@@ -74,8 +74,8 @@ AccDescriptor initAccelerator(const std::string xclbin_path) {
         //}
 
         std::string hbm_manager_krnl_name = "hbm_manager:{hbm_manager_1}";
-        OCL_CHECK(err, acc.hbm_manager_krnl = cl::Kernel(
-                           program, hbm_manager_krnl_name.c_str(), &err));
+        //OCL_CHECK(err, acc.hbm_manager_krnl = cl::Kernel(
+        //                   program, hbm_manager_krnl_name.c_str(), &err));
 
         //创建 acc.num_little_krnl 个 "graphyflow_little" 内核实例 ---
         for (int i = 0; i < acc.num_little_krnl; i++) {
