@@ -927,23 +927,23 @@ static void Reduc_105_unit_reduce_single_pe(
     int cache_addr_buffer[L + 1];
 #pragma HLS ARRAY_PARTITION variable = cache_addr_buffer complete dim = 0
 
-    distance_t MAX_DISTANCE = (distance_t)(16384.0);
-    const ap_fixed_pod_t MAX_DISTANCE_POD =
-        *reinterpret_cast<ap_fixed_pod_t *>(&MAX_DISTANCE);
-    const reduce_word_t MAX_REDUCE_WORD =
-        (((reduce_word_t)MAX_DISTANCE_POD << DISTANCE_BITWIDTH) |
-         ((reduce_word_t)MAX_DISTANCE_POD));
+    // distance_t MAX_DISTANCE = (distance_t)(16384.0);
+    // const ap_fixed_pod_t MAX_DISTANCE_POD =
+    //     *reinterpret_cast<ap_fixed_pod_t *>(&MAX_DISTANCE);
+    // const reduce_word_t MAX_REDUCE_WORD =
+    //     (((reduce_word_t)MAX_DISTANCE_POD << DISTANCE_BITWIDTH) |
+    //      ((reduce_word_t)MAX_DISTANCE_POD));
         
     const int32_t num_words = (dst_num + DISTANCES_PER_REDUCE_WORD - 1) /
                                   DISTANCES_PER_REDUCE_WORD;
     const int32_t num_word_per_pe = (num_words + PE_NUM - 1) / PE_NUM;
 
     // --- Phase 2: Initialization ---
-LOOP_INIT_MEM:
-    for (int i = 0; i < MEM_SIZE; i++) {
-#pragma HLS PIPELINE II = 1
-        prop_mem[i] = MAX_REDUCE_WORD; // Initialize distances to max
-    }
+// LOOP_INIT_MEM:
+//     for (int i = 0; i < MEM_SIZE; i++) {
+// #pragma HLS PIPELINE II = 1
+//         prop_mem[i] = MAX_REDUCE_WORD; // Initialize distances to max
+//     }
 
 LOOP_INIT_CACHE_ADDR:
     for (int i = 0; i < L + 1; i++) {
@@ -971,11 +971,10 @@ LOOP_AGGREGATE:
         reduce_word_t current_word = prop_mem[word_addr];
 
         // Check cache first
-        for (int i = L; i >= 0; --i) {
+        for (int i = 0; i < L + 1; i++) {
 #pragma HLS UNROLL
             if (cache_addr_buffer[i] == word_addr) {
                 current_word = cache_data_buffer[i];
-                break;
             }
         }
 
@@ -986,17 +985,34 @@ LOOP_AGGREGATE:
             cache_data_buffer[i] = cache_data_buffer[i + 1];
         }
 
-        ap_fixed_pod_t old_dist_pod = get_raw_val(current_word, pack_idx);
-        ap_fixed_pod_t new_dist_pod = (old_dist_pod < incoming_dist_pod)
-                            ? old_dist_pod
-                            : incoming_dist_pod;
+        // ap_fixed_pod_t old_dist_pod = get_raw_val(current_word, pack_idx);
+        ap_fixed_pod_t lower_val = current_word.range(31, 0);
+        ap_fixed_pod_t upper_val = current_word.range(63, 32);
+        ap_fixed_pod_t lower_new_val =
+            (lower_val < incoming_dist_pod && lower_val != 0x0)
+                ? lower_val
+                : incoming_dist_pod;
+        ap_fixed_pod_t upper_new_val =
+            (upper_val < incoming_dist_pod && upper_val != 0x0)
+                ? upper_val
+                : incoming_dist_pod;
+        
+        reduce_word_t new_lower_word, new_upper_word;
 
-        set_raw_val(current_word, pack_idx, new_dist_pod);
+        new_lower_word.range(31, 0) = lower_new_val;
+        new_lower_word.range(63, 32) = current_word.range(63, 32);
 
-        // Write back to URAM and update cache
-        prop_mem[word_addr] = current_word;
+        new_upper_word.range(31, 0) = current_word.range(31, 0);
+        new_upper_word.range(63, 32) = upper_new_val;
+
+        if (pack_idx) {
+            prop_mem[word_addr] = new_upper_word;
+            cache_data_buffer[L] = new_upper_word;
+        } else {
+            prop_mem[word_addr] = new_lower_word;
+            cache_data_buffer[L] = new_lower_word;
+        }
         cache_addr_buffer[L] = word_addr;
-        cache_data_buffer[L] = current_word;
     }
 
     // --- Phase 4: Stream out aggregated memory ---
