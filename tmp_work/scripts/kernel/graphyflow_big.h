@@ -10,6 +10,7 @@
 #include <string.h>
 
 #define PE_NUM 8
+#define DBL_PE_NUM 16
 #define LOG_PE_NUM 3
 // #define MAX_NUM 512
 #define MAX_NUM 524288
@@ -99,7 +100,7 @@ struct __attribute__((packed)) node_distance_cache_burst_t {
 };
 
 struct __attribute__((packed)) node_distance_burst_t {
-    ap_fixed_pod_t data[PE_NUM];
+    ap_fixed_pod_t data[DBL_PE_NUM];
 };
 
 struct __attribute__((packed)) node_id_burst_t {
@@ -133,7 +134,7 @@ struct __attribute__((packed)) edge_batch_t {
 };
 
 struct __attribute__((packed)) node_dist_batch_t {
-    ap_fixed_pod_t data[PE_NUM];
+    ap_fixed_pod_t data[DBL_PE_NUM];
     uint8_t end_pos;
     bool end_flag;
 };
@@ -156,7 +157,7 @@ struct __attribute__((packed)) struct_sbu_17_t {
 };
 
 struct __attribute__((packed)) internal_end_data_batch_t {
-    node_with_prop_t data[PE_NUM];
+    node_with_prop_t data[DBL_PE_NUM];
     bool end_flag;
     uint8_t end_pos;
 };
