@@ -20,7 +20,6 @@ struct KernelBuffers {
 
 // Structure to hold buffers for HBM writer kernel
 struct WriterKernelBuffers {
-    cl::Buffer node_distances_buf; // Buffer for node distances input
     cl::Buffer output_buf;         // Buffer for final output
 };
 

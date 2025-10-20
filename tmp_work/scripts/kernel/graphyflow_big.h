@@ -11,7 +11,8 @@
 
 #define PE_NUM 8
 #define LOG_PE_NUM 3
-#define MAX_NUM 524288
+#define MAX_NUM 512
+// #define MAX_NUM 524288
 #define L 4
 
 // --- New Bitwidth Definitions for HLS Synthesis ---
@@ -261,11 +262,8 @@ extern "C" void graphyflow_big(const bus_word_t *edge_props,
                                //    bus_word_t *output,
                                int32_t num_nodes, int32_t num_edges,
                                int32_t dst_num,
-                               hls::stream<node_dist_pkt_t> &node_dist_stream,
                                hls::stream<write_burst_pkt_t> &output_stream);
 
-extern "C" void hbm_writer(const bus_word_t *node_distances_ddr,
-                           bus_word_t *output, int32_t num_nodes,
-                           hls::stream<node_dist_pkt_t> &node_dist_stream,
+extern "C" void hbm_writer(bus_word_t *output,
                            hls::stream<write_burst_pkt_t> &write_burst_stm);
 #endif // __GRAPHYFLOW_GRAPHYFLOW_BIG_H__

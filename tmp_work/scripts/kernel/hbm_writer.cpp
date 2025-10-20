@@ -26,9 +26,7 @@ write_out:
 
 extern "C" void hbm_writer(bus_word_t *output,
                            hls::stream<write_burst_pkt_t> &write_burst_stm) {
-#pragma HLS INTERFACE m_axi port = node_distances_ddr offset = slave bundle =  \
-    gmem0
-#pragma HLS INTERFACE m_axi port = output offset = slave bundle = gmem1
+#pragma HLS INTERFACE m_axi port = output offset = slave bundle = gmem0
 #pragma HLS INTERFACE s_axilite port = output bundle = control
 #pragma HLS INTERFACE s_axilite port = return bundle = control
 #pragma HLS DATAFLOW

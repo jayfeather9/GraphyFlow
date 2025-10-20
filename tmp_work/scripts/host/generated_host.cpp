@@ -336,12 +336,12 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
         hbm_ext_writer_in.param = 0;
 
         // Create node_distances_buf for writer kernel (same size as node_props)
-        num_dist_words = big_kernel_input_buffers[i].packed_node_props.size();
-        OCL_CHECK(err, writer_buffers.node_distances_buf =
-                           cl::Buffer(acc.context,
-                                      CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,
-                                      num_dist_words * bytes_per_word,
-                                      &hbm_ext_writer_in, &err));
+        // num_dist_words = big_kernel_input_buffers[i].packed_node_props.size();
+        // OCL_CHECK(err, writer_buffers.node_distances_buf =
+        //                    cl::Buffer(acc.context,
+        //                               CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,
+        //                               num_dist_words * bytes_per_word,
+        //                               &hbm_ext_writer_in, &err));
 
         // Create output buffer for writer kernel
         writer_kernel_host_outputs[i].resize(num_output_words);
@@ -553,14 +553,14 @@ void AlgorithmHost::transfer_data_to_fpga(const PartitionContainer &container) {
     }
 
     // --- 2.5: Transfer node distances to writer kernel buffers ---
-    for (size_t i = 0; i < writer_kernel_buffers.size(); ++i) {
-        OCL_CHECK(err,
-                  err = acc.writer_queue[i].enqueueWriteBuffer(
-                      writer_kernel_buffers[i].node_distances_buf, CL_FALSE, 0,
-                      big_kernel_input_buffers[i].packed_node_props.size() *
-                          sizeof(bus_word_t),
-                      big_kernel_input_buffers[i].packed_node_props.data()));
-    }
+    // for (size_t i = 0; i < writer_kernel_buffers.size(); ++i) {
+    //     OCL_CHECK(err,
+    //               err = acc.writer_queue[i].enqueueWriteBuffer(
+    //                   writer_kernel_buffers[i].node_distances_buf, CL_FALSE, 0,
+    //                   big_kernel_input_buffers[i].packed_node_props.size() *
+    //                       sizeof(bus_word_t),
+    //                   big_kernel_input_buffers[i].packed_node_props.data()));
+    // }
 
     // --- 2.6: 在所有命令入队后，执行一次全局同步 ---
     for (auto &q : acc.big_gs_queue)
@@ -615,10 +615,10 @@ void AlgorithmHost::execute_kernel_iteration(
         const auto &p_graph = container.SPs[i].partitioned_graph;
 
         int arg_idx = 0;
-        OCL_CHECK(err,
-                  err = kernel.setArg(arg_idx++, buffers.node_distances_buf));
+        // OCL_CHECK(err,
+        //           err = kernel.setArg(arg_idx++, buffers.node_distances_buf));
         OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.output_buf));
-        OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_vertices));
+        // OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_vertices));
         // Note: node_dist_stream and write_burst_stm are NOT kernel arguments -
         // they're stream connections
 
