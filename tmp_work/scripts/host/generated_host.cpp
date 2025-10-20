@@ -170,8 +170,11 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
     for (size_t i = 0; i < little_kernel_input_buffers.size(); ++i) {
         const auto &p_graph = container.DPs[i].partitioned_graph;
 
+
+        
         // --- Pack node distances (ap_fixed<24,8> -> 3 bytes) ---
         // 关键修正: 完全复制big kernel的逻辑，为HBM Manager准备数据
+        //要加入4096 边界检查
         {
             const size_t bytes_per_dist = DISTANCE_BITWIDTH / 8;
             const size_t dist_per_word = bytes_per_word / bytes_per_dist;
@@ -214,8 +217,152 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                   << " sec) ---" << std::endl;
         start_time = current_time;
 
+
+    
+        /* [!!] REVISED AND MERGED PACKING LOGIC [!!]                     */
+        /***********************************************************************************/
+
+        // --- 1. 定义对齐和填充常量 ---
+        const int BURST_SIZE = 8; 
+        const uint32_t SRC_BUFFER_SIZE = 4096;
+        
+        const node_id_t PSEUDO_SRC_ID = (node_id_t)-1;   // 0xFFFFFFFF, MSB is set
+        const uint32_t PSEUDO_DST_ID = (uint32_t)-1;     // 0xFFFFFFFF, MSB is set
+        const weight_t PSEUDO_WEIGHT = 0.0f;           // Value doesn't matter, kernel ignores it
+
+        const size_t bytes_per_word = AXI_BUS_WIDTH / 8;
+
+        // --- 2. 准备临时缓冲区 ---
+        // 边属性 (dst, weight)
+        const size_t bytes_per_edge_prop = (NODE_ID_BITWIDTH + WEIGHT_BITWIDTH) / 8;
+        std::vector<char> temp_props_buffer;
+        temp_props_buffer.reserve((p_graph.num_edges + p_graph.num_vertices * BURST_SIZE) * bytes_per_edge_prop); 
+
+        // 源ID (src)
+        const size_t bytes_per_src_id = sizeof(node_id_t);
+        std::vector<char> temp_src_buffer;
+        temp_src_buffer.reserve((p_graph.num_edges + p_graph.num_vertices * BURST_SIZE) * bytes_per_src_id);
+
+        // --- 状态跟踪变量 ---
+        uint32_t last_src_buffer_idx = 0xFFFFFFFF; // 初始为无效值
+        uint64_t total_edges_packed = 0; // 跟踪已打包的边总数
+
+        // --- 预先序列化“伪边”以提高效率 ---
+        char pseudo_edge_bytes[bytes_per_edge_prop];
+        for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
+            pseudo_edge_bytes[b] = (PSEUDO_DST_ID >> (8 * b)) & 0xFF;
+        }
+        std::memcpy(pseudo_edge_bytes + (NODE_ID_BITWIDTH / 8), &PSEUDO_WEIGHT, (WEIGHT_BITWIDTH / 8));
+        const char *pseudo_src_bytes = reinterpret_cast<const char *>(&PSEUDO_SRC_ID);
+
+        // --- 3. 合并的打包循环 (遍历CSR图) ---
+        for (int j = 0; j < p_graph.num_vertices; ++j) {
+            node_id_t src_id = j; // 'j' 是本地源ID
+
+            // 仅当该顶点有出边时才进行边界检查
+            if (p_graph.offsets[j] < p_graph.offsets[j + 1]) {
+                uint32_t current_src_buffer_idx = src_id / SRC_BUFFER_SIZE;
+                if (last_src_buffer_idx == 0xFFFFFFFF) { // 第一次遇到有边的顶点
+                    last_src_buffer_idx = current_src_buffer_idx;
+                }
+
+                // 如果 src_id 跨越了4096边界...
+                if (current_src_buffer_idx != last_src_buffer_idx) {
+                    // ...检查是否需要填充以对齐burst
+                    int mod_burst = total_edges_packed % BURST_SIZE;
+                    if (mod_burst != 0) {
+                        int padding_needed = BURST_SIZE - mod_burst;
+                        
+                        for (int p = 0; p < padding_needed; ++p) {
+                            // 填充 src_ids 缓冲区 (带字节对齐)
+                            if ((temp_src_buffer.size() % bytes_per_word) + bytes_per_src_id > bytes_per_word) {
+                                temp_src_buffer.insert(temp_src_buffer.end(), bytes_per_word - (temp_src_buffer.size() % bytes_per_word), 0);
+                            }
+                            temp_src_buffer.insert(temp_src_buffer.end(), pseudo_src_bytes, pseudo_src_bytes + bytes_per_src_id);
+
+                            // 填充 edge_props 缓冲区 (带字节对齐)
+                            if ((temp_props_buffer.size() % bytes_per_word) + bytes_per_edge_prop > bytes_per_word) {
+                                temp_props_buffer.insert(temp_props_buffer.end(), bytes_per_word - (temp_props_buffer.size() % bytes_per_word), 0);
+                            }
+                            temp_props_buffer.insert(temp_props_buffer.end(), pseudo_edge_bytes, pseudo_edge_bytes + bytes_per_edge_prop);
+                        }
+                        total_edges_packed += padding_needed;
+                    }
+                    last_src_buffer_idx = current_src_buffer_idx;
+                }
+            }
+
+            // 4. 打包该顶点的所有真实边
+            for (int k = p_graph.offsets[j]; k < p_graph.offsets[j + 1]; ++k) {
+                // --- A. 打包 src_id (带字节对齐) ---
+                if ((temp_src_buffer.size() % bytes_per_word) + bytes_per_src_id > bytes_per_word) {
+                    temp_src_buffer.insert(temp_src_buffer.end(), bytes_per_word - (temp_src_buffer.size() % bytes_per_word), 0);
+                }
+                const char *id_bytes = reinterpret_cast<const char *>(&src_id);
+                temp_src_buffer.insert(temp_src_buffer.end(), id_bytes, id_bytes + bytes_per_src_id);
+
+                // --- B. 打包 edge_prop (dst, weight) (带字节对齐) ---
+                if ((temp_props_buffer.size() % bytes_per_word) + bytes_per_edge_prop > bytes_per_word) {
+                    temp_props_buffer.insert(temp_props_buffer.end(), bytes_per_word - (temp_props_buffer.size() % bytes_per_word), 0);
+                }
+                
+                char edge_bytes[bytes_per_edge_prop];
+                uint32_t dest_id = p_graph.columns[k];
+                for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
+                    edge_bytes[b] = (dest_id >> (8 * b)) & 0xFF;
+                }
+                weight_t weight_val = (float)p_graph.weights[k];
+                std::memcpy(edge_bytes + (NODE_ID_BITWIDTH / 8), &weight_val, (WEIGHT_BITWIDTH / 8));
+                temp_props_buffer.insert(temp_props_buffer.end(), edge_bytes, edge_bytes + bytes_per_edge_prop);
+
+                total_edges_packed++;
+            }
+        }
+
+        // --- 5. 最终填充 (修复 size==0 错误) ---
+        int padding_needed = 0;
+        if (total_edges_packed == 0) {
+            padding_needed = BURST_SIZE; 
+        } else if (total_edges_packed % BURST_SIZE != 0) {
+            padding_needed = BURST_SIZE - (total_edges_packed % BURST_SIZE);
+        }
+
+        if (padding_needed > 0) {
+            for (int p = 0; p < padding_needed; ++p) {
+                // 填充 src_ids 缓冲区 (带字节对齐)
+                if ((temp_src_buffer.size() % bytes_per_word) + bytes_per_src_id > bytes_per_word) {
+                    temp_src_buffer.insert(temp_src_buffer.end(), bytes_per_word - (temp_src_buffer.size() % bytes_per_word), 0);
+                }
+                temp_src_buffer.insert(temp_src_buffer.end(), pseudo_src_bytes, pseudo_src_bytes + bytes_per_src_id);
+
+                // 填充 edge_props 缓冲区 (带字节对齐)
+                if ((temp_props_buffer.size() % bytes_per_word) + bytes_per_edge_prop > bytes_per_word) {
+                    temp_props_buffer.insert(temp_props_buffer.end(), bytes_per_word - (temp_props_buffer.size() % bytes_per_word), 0);
+                }
+                temp_props_buffer.insert(temp_props_buffer.end(), pseudo_edge_bytes, pseudo_edge_bytes + bytes_per_edge_prop);
+            }
+        }
+
+        // --- 6. 将数据从temp缓冲区复制到最终的主机缓冲区 ---
+        little_kernel_input_buffers[i].packed_edge_props.resize(
+            (temp_props_buffer.size() + bytes_per_word - 1) / bytes_per_word, 0);
+        std::memcpy(little_kernel_input_buffers[i].packed_edge_props.data(),
+                    temp_props_buffer.data(), temp_props_buffer.size());
+        
+        little_kernel_input_buffers[i].packed_src_ids.resize(
+            (temp_src_buffer.size() + bytes_per_word - 1) / bytes_per_word, 0);
+        std::memcpy(little_kernel_input_buffers[i].packed_src_ids.data(),
+                    temp_src_buffer.data(), temp_src_buffer.size());
+        
+        /***********************************************************************************/
+        /* [!!] END OF REVISION [!!]                            */
+
+
+
+        /*
         // --- Pack edge properties (node_id<24b> + weight<24b> -> 6 bytes) ---
         // 关键修正: 完全复制big kernel的逻辑
+        // 要加入4096边界检查
         {
             const size_t bytes_per_edge =
                 (NODE_ID_BITWIDTH + WEIGHT_BITWIDTH) / 8;
@@ -236,10 +383,12 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                                             padding_needed, 0);
                 }
                 char edge_bytes[bytes_per_edge];
+
                 uint32_t dest_id = p_graph.columns[j];
                 for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
                     edge_bytes[b] = (dest_id >> (8 * b)) & 0xFF;
                 }
+
                 weight_t weight_val = (float)p_graph.weights[j];
                 std::memcpy(edge_bytes + (NODE_ID_BITWIDTH / 8), &weight_val, (WEIGHT_BITWIDTH / 8));
                 temp_byte_buffer.insert(temp_byte_buffer.end(), edge_bytes,
@@ -260,6 +409,7 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
 
         // --- Pack source IDs (node_id_t -> 4 bytes) ---
         // 关键修正: 完全复制big kernel的逻辑
+        // 要加入4096边界检查
         {
             const size_t bytes_per_id = sizeof(node_id_t);
             const size_t ids_per_word = bytes_per_word / bytes_per_id;
@@ -288,12 +438,19 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                         temp_byte_buffer.data(), temp_byte_buffer.size());
         }
 
+
+
         current_time = std::chrono::system_clock::now();
         std::cout << "--- [Host] Phase 0: Preparing data structures little src ids ("
                   << std::chrono::duration<double>(current_time - start_time).count()
                   << " sec) ---" << std::endl;
         start_time = current_time;
+        */
+
+
+
     }
+        
 }
 
 void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
@@ -422,6 +579,7 @@ void AlgorithmHost::update_data(const PartitionContainer &container) {
             }
             hbm_manager_host_buffers[0].packed_node_props.resize(
                 (temp_byte_buffer.size() + bytes_per_word - 1) / bytes_per_word, 0);
+                
             std::memcpy(hbm_manager_host_buffers[0].packed_node_props.data(),
                         temp_byte_buffer.data(), temp_byte_buffer.size());
         }

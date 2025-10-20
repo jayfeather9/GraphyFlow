@@ -1,6 +1,7 @@
 #include "graphyflow_little.h"
 #include <stdio.h>
 
+#define uINF 4294967295u
 
 using uint = unsigned int;
 #define DEBUG
@@ -454,9 +455,13 @@ static void ping_pong_buffer_manager(
                 
                 edge_batch_t output_batch;
                 
+                int end = 0;
+                
                 for (int u = 0; u < PE_NUM; u ++){ 
                 #pragma HLS UNROLL
                     node_id_t src_id = a_src_id_burst.data[u];
+
+                    if((uint) src_id != uINF){
                     ap_uint<31> idx = (src_id.range(30, 0) % SRC_BUFFER_SIZE);
                     ap_uint<30> uram_row_idx = idx >> 4; 
                     ap_uint<30> uram_row_offset = (idx & 0xf);
@@ -467,12 +472,22 @@ static void ping_pong_buffer_manager(
                     output_batch.src_distances[u] = src_prop;
                     output_batch.dsts[u] = an_edge_desc_batch.edges[u].node_id;
                     output_batch.weights[u] = an_edge_desc_batch.edges[u].prop;
+                    
+                    end = end+1;
+                    DBGPRINTF("DEBUG src_id:%u src_prop :%f\n", src_id, (double)src_prop / 65536.0);
+                    }
+                    else{
+                    output_batch.src_distances[u] = 16384;
+                    output_batch.dsts[u] = -1;
+                    output_batch.weights[u] = 0;
+                    DBGPRINTF("DEBUG Find pseudo edge\n");
+                    }
 
-                    DBGPRINTF("DEBUG id:%d prop :%d\n", src_id,src_prop);
+                    
                 }
                 
-                output_batch.end_pos = an_edge_desc_batch.end_pos;
-                DBGPRINTF("DEBUG: endpos at :%d",an_edge_desc_batch.end_pos);
+                output_batch.end_pos = end;//an_edge_desc_batch.end_pos;
+                DBGPRINTF("DEBUG: endpos at :%d\n",an_edge_desc_batch.end_pos);
                 output_batch.end_flag = false; 
                 stream_edge_data.write(output_batch);
                 
@@ -898,8 +913,15 @@ LOOP_AGGREGATE_LITTLE:
 #pragma HLS UNROLL
                 if (pe < in_batch.end_pos) {
                     int key = in_batch.data[pe].key;
-                    ap_fixed_pod_t incoming_dist_pod =
-                        in_batch.data[pe].transform.prop;
+
+                    // if((uint) key == uINF){
+                    //     DBGPRINTF("DEBUG REDUCE find pseudo edge\n");
+                    //         continue;
+                    // }
+                    // 
+                    // DBGPRINTF("DEBUG REDUCE key : %d\n",key);
+                    // ap_fixed_pod_t incoming_dist_pod =
+                    //     in_batch.data[pe].transform.prop;
                     
                     // Note: In the original code, key_to_addr_map was PE-specific.
                     // It's more efficient to have a single shared map if the mapping is the same.
@@ -1389,6 +1411,8 @@ extern "C" void graphyflow_little(
 
 
 // new COO loader
+
+// edge based ok
     const int num_ids_per_word = AXI_BUS_WIDTH / NODE_ID_BITWIDTH;
     const int num_wide_reads =
         (num_edges + num_ids_per_word - 1) / num_ids_per_word;
@@ -1400,7 +1424,7 @@ LOOP_SIL_READ:
 
     //DBGPRINTF("DEBUG num_wide_reads: %d", num_wide_reads);
     for (int i = 0; i < num_wide_reads; i++) {
-        // #pragma HLS PIPELINE II = 2
+        #pragma HLS PIPELINE II = 2
         bus_word_t wide_word = src_ids[i];
 //DBGPRINTF("DEBUG current: %d\n", i);
     LOOP_SIL_UNPACK:
@@ -1436,6 +1460,52 @@ LOOP_SIL_READ:
         nodes_read += num_ids_per_word;
     }
 
+/*
+/ node based:
+    const int num_ids_per_word = AXI_BUS_WIDTH / NODE_ID_BITWIDTH;
+    const int num_wide_reads =
+        (num_nodes + num_ids_per_word - 1) / num_ids_per_word;
+
+    int nodes_read = 0;
+    int burst_idx = 0;
+    node_id_burst_t burst1, burst2;
+LOOP_SIL_READ:
+    for (int i = 0; i < num_wide_reads; i++) {
+#pragma HLS PIPELINE II = 2
+        bus_word_t wide_word = src_ids[i];
+
+    LOOP_SIL_UNPACK:
+        for (int j = 0; j < 8; j++) {
+#pragma HLS UNROLL
+            if (nodes_read + j < num_nodes) {
+                node_id_t cur_id = wide_word.range(
+                    (j + 1) * NODE_ID_BITWIDTH - 1, j * NODE_ID_BITWIDTH);
+                burst1.data[j] = cur_id;
+                DBGPRINTF("Loaded node ID %d at burst %d, position %d\n",
+                (int)cur_id, burst_idx, j);
+            }
+        }
+        bool burst2_valid = false;
+        for (int j = 8; j < 16; j++) {
+#pragma HLS UNROLL
+            if (nodes_read + j < num_nodes) {
+                burst2.data[j - 8] = wide_word.range(
+                    (j + 1) * NODE_ID_BITWIDTH - 1, j * NODE_ID_BITWIDTH);
+                burst2_valid |= true;
+                DBGPRINTF("Loaded node ID %d at burst %d, position %d\n",
+                (int)burst2.data[j - 8], burst_idx + 1, j - 8);
+            }
+        }
+        stream_src_ids_1.write(burst1);
+
+        if (burst2_valid) {
+            stream_src_ids_1.write(burst2);
+
+        }
+        nodes_read += num_ids_per_word;
+    }
+*/
+    
     DBGPRINTF("DEBUG:load done\n");
     edge_descriptor_loader(edge_props, edge_stream, num_edges);
 
