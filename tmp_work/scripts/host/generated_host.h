@@ -13,14 +13,19 @@
 struct KernelBuffers {
     cl::Buffer edge_props_buf; // Buffer for edge properties (destination ID and
                                // source ID)
-    cl::Buffer node_props_buf; // Buffer for node properties (distances),
-                               // updated each iteration
+    // cl::Buffer node_props_buf; // Buffer for node properties (distances),
+    //                            // updated each iteration
     cl::Buffer output_buf; // Buffer for kernel results (only for hbm_writer)
 };
 
 // Structure to hold buffers for HBM writer kernel
 struct WriterKernelBuffers {
-    cl::Buffer output_buf;         // Buffer for final output
+    cl::Buffer node_props_buf; // Buffer for node properties (distances)
+    cl::Buffer output_buf;     // Buffer for final output
+};
+
+struct ApplyKernelBuffers {
+    cl::Buffer node_props_buf; // Buffer for node properties (distances)
 };
 
 struct HostInputBuffers {
@@ -57,14 +62,16 @@ class AlgorithmHost {
     // Buffer containers for big kernels (one entry per kernel instance)
     std::vector<HostInputBuffers> big_kernel_input_buffers;
     std::vector<KernelBuffers> big_kernel_buffers;
-    std::vector<std::vector<bus_word_t, aligned_allocator<bus_word_t>>>
-        big_kernel_host_outputs;
+    // std::vector<std::vector<bus_word_t, aligned_allocator<bus_word_t>>>
+    //     big_kernel_host_outputs;
 
-    // Buffer containers for little kernels (one entry per kernel instance)
-    std::vector<HostInputBuffers> little_kernel_input_buffers;
-    std::vector<KernelBuffers> little_kernel_buffers;
-    std::vector<std::vector<bus_word_t, aligned_allocator<bus_word_t>>>
-        little_kernel_host_outputs;
+    // // Buffer containers for little kernels (one entry per kernel instance)
+    // std::vector<HostInputBuffers> little_kernel_input_buffers;
+    // std::vector<KernelBuffers> little_kernel_buffers;
+    // std::vector<std::vector<bus_word_t, aligned_allocator<bus_word_t>>>
+    //     little_kernel_host_outputs;
+
+    ApplyKernelBuffers apply_kernel_buffers;
 
     // Buffer containers for HBM writer kernels (one entry per writer kernel
     // instance)

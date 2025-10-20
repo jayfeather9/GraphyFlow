@@ -14,7 +14,7 @@
 #define LOG_PE_NUM 3
 // #define MAX_NUM 512
 #define MAX_NUM 524288
-#define L 3
+#define L 4
 
 // --- New Bitwidth Definitions for HLS Synthesis ---
 #define NODE_ID_BITWIDTH 32
@@ -51,6 +51,8 @@ typedef ap_fixed<DISTANCE_BITWIDTH, DISTANCE_INTEGER_PART> distance_t;
 typedef ap_uint<OUT_END_MARKER_BITWIDTH> out_end_marker_t;
 typedef ap_axiu<256, 0, 0, 0> node_dist_pkt_t;
 typedef ap_axiu<512, 0, 0, 32> write_burst_pkt_t;
+typedef ap_axiu<32, 0, 0, 8> cacheline_request_pkt_t;
+typedef ap_axiu<512, 0, 0, 8> cacheline_response_pkt_t;
 
 // --- Struct Type Definitions (UNCHANGED) ---
 // The definitions of these structs remain the same, but the underlying
@@ -258,13 +260,23 @@ struct __attribute__((packed)) net_wrapper_kt_pair_105_t_t {
 // KernelOutputBatch* out_o_0_342);
 
 // --- Top-Level Function Prototype ---
-extern "C" void graphyflow_big(const bus_word_t *edge_props,
-                               const bus_word_t *node_props,
-                               //    bus_word_t *output,
-                               int32_t num_nodes, int32_t num_edges,
-                               int32_t dst_num,
-                               hls::stream<write_burst_pkt_t> &output_stream);
+extern "C" void
+graphyflow_big(const bus_word_t *edge_props,
+               //    const bus_word_t *node_props,
+               //    bus_word_t *output,
+               int32_t num_nodes, int32_t num_edges, int32_t dst_num,
+               hls::stream<cacheline_request_pkt_t> &cacheline_req_stream,
+               hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream,
+               hls::stream<write_burst_pkt_t> &kernel_out_stream);
 
-extern "C" void hbm_writer(bus_word_t *output,
-                           hls::stream<write_burst_pkt_t> &write_burst_stm);
+extern "C" void
+hbm_writer(bus_word_t *node_props, bus_word_t *output,
+           hls::stream<cacheline_request_pkt_t> &cacheline_req_stream,
+           hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream,
+           hls::stream<write_burst_pkt_t> &write_burst_stream);
+
+extern "C" void
+apply_kernel(const bus_word_t *node_props,
+             hls::stream<write_burst_pkt_t> &kernel_out_stream,
+             hls::stream<write_burst_pkt_t> &write_burst_stream);
 #endif // __GRAPHYFLOW_GRAPHYFLOW_BIG_H__

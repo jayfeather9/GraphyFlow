@@ -54,6 +54,10 @@ AccDescriptor initAccelerator(const std::string xclbin_path) {
         acc.writer_queue[k] = tmp_q;
     }
 
+    // 为 apply 内核创建一个专用的命令队列 ---
+    OCL_CHECK(err, acc.apply_queue = cl::CommandQueue(
+                       acc.context, device, CL_QUEUE_PROFILING_ENABLE, &err));
+
     std::cout << "Attempting to program device: "
               << device.getInfo<CL_DEVICE_NAME>() << std::endl;
     cl::Program program(acc.context, {device}, bins, nullptr, &err);
@@ -105,6 +109,18 @@ AccDescriptor initAccelerator(const std::string xclbin_path) {
             OCL_CHECK(err, tmp_writer_krnl = cl::Kernel(
                                program, krnl_name_full.c_str(), &err));
             acc.writer_krnls.push_back(tmp_writer_krnl);
+        }
+
+        // 创建 apply 内核实例 ---
+        {
+            std::string krnl_name_full =
+                std::string("apply_kernel:{") + "apply_kernel_1}";
+
+            cl::Kernel tmp_apply_krnl;
+            printf("Creating an apply kernel [%s]\n", krnl_name_full.c_str());
+            OCL_CHECK(err, tmp_apply_krnl = cl::Kernel(
+                               program, krnl_name_full.c_str(), &err));
+            acc.apply_krnl = tmp_apply_krnl;
         }
     }
 

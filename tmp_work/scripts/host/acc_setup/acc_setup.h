@@ -11,18 +11,21 @@ typedef struct AccDescriptor {
     std::vector<cl::CommandQueue> big_gs_queue;
     std::vector<cl::CommandQueue> little_gs_queue;
     std::vector<cl::CommandQueue> writer_queue;
+    cl::CommandQueue apply_queue;
 
     int num_big_krnl = BIG_KERNEL_NUM;
     int num_little_krnl = LITTLE_KERNEL_NUM;
     int num_writer_krnl = BIG_KERNEL_NUM; // One writer per big kernel
 
-    std::string big_gs_kernel_name = "bigKernel";
-    std::string little_gs_kernel_name = "littleKernel";
-    std::string writer_kernel_name = "hbm_writer";
+    // std::string big_gs_kernel_name = "bigKernel";
+    // std::string little_gs_kernel_name = "littleKernel";
+    // std::string writer_kernel_name = "hbm_writer";
+    // std::string apply_kernel_name = "applyKernel";
 
     std::vector<cl::Kernel> big_gs_krnls;
     std::vector<cl::Kernel> little_gs_krnls;
     std::vector<cl::Kernel> writer_krnls;
+    cl::Kernel apply_krnl;
 
     cl::Context context;
 
