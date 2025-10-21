@@ -110,7 +110,7 @@ struct __attribute__((packed)) node_id_burst_t {
 };
 
 struct __attribute__((packed)) distance_req_pack_t {
-    node_id_t node_ids[PE_NUM];
+    node_id_t idx[PE_NUM];
     ap_uint<4> offset; // [offset, offset + PE_NUM) are valid
     bool end_flag;
 };

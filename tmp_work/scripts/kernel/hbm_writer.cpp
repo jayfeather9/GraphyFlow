@@ -61,8 +61,7 @@ LOOP_NPL_S0_READ:
 void write_out(bus_word_t *output, uint32_t dst_num,
                hls::stream<write_burst_pkt_t> &write_burst_stream) {
     uint32_t write_idx = 0;
-    uint32_t target_writes =
-        (dst_num + DBL_PE_NUM - 1) / DBL_PE_NUM; // Total number of write bursts
+    uint32_t target_writes = ((dst_num + DBL_PE_NUM - 1) / DBL_PE_NUM) - 1; // Total number of write bursts
 write_out:
     while (true) {
 #pragma HLS PIPELINE II = 1
@@ -70,13 +69,12 @@ write_out:
         write_burst_pkt_t one_write_burst;
 
         if (write_burst_stream.read_nb(one_write_burst)) {
-            bus_word_t new_prop = one_write_burst.data;
-            output[write_idx] = new_prop;
+            output[write_idx] = one_write_burst.data;
 
-            write_idx++;
             if (write_idx >= target_writes) {
                 break;
             }
+            write_idx = write_idx + 1;
         }
     }
 }

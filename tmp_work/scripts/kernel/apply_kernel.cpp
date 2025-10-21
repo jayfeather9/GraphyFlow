@@ -18,8 +18,7 @@ LOOP_APPLY:
 
         bus_word_t node_prop = node_props[write_idx];
         bus_word_t new_node_prop;
-        write_idx++;
-
+        
         for (int i = 0; i < DBL_PE_NUM; i++) {
 #pragma HLS UNROLL
             ap_fixed_pod_t update_dist =
@@ -41,6 +40,7 @@ LOOP_APPLY:
         out_pkt.data = new_node_prop;
         out_pkt.last = false;
         write_burst_stream.write(out_pkt);
+        write_idx++;
     }
 }
 
