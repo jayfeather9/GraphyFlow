@@ -36,6 +36,7 @@ GraphCSR load_graph_from_file(const std::string &file_path) {
 
     std::vector<Edge> edges;
     int max_vertex_id = -1;
+    int min_vertex_id = 1;
     std::string line;
     long line_num = 0;
 
@@ -81,8 +82,19 @@ GraphCSR load_graph_from_file(const std::string &file_path) {
 
         edges.push_back(edge);
         max_vertex_id = std::max({max_vertex_id, edge.src, edge.dest});
+        min_vertex_id = std::min({min_vertex_id, edge.src, edge.dest});
     }
     file.close();
+
+    if (min_vertex_id == 1 && !is_one_based) {
+        // modify to 0-based
+        std::cout << "Converting graph from 1-based to 0-based indexing."
+                  << std::endl;
+        for (auto &edge : edges) {
+            edge.src--;
+            edge.dest--;
+        }
+    }
 
     // ---- 3. 将边列表转换为 CSR 格式 ----
     GraphCSR graph;

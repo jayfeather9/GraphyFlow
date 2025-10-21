@@ -118,21 +118,26 @@ def main():
     # --- 生成并打印图 ---
     graph = generate_random_connected_graph(num_nodes, num_edges, args.have_weight)
 
-    for edge_info in graph:
-        # 使用 ' '.join() 可以优雅地处理元组中的所有元素
-        print(" ".join(map(str, edge_info)))
-
-    # generate a "1 -> 2;" graphviz representation to a file
-    with open("graph.dot", "w") as f:
-        f.write("digraph G {\n")
+    # for edge_info in graph:
+    #     # 使用 ' '.join() 可以优雅地处理元组中的所有元素
+    #     print(" ".join(map(str, edge_info)))
+    
+    # write to graph.txt
+    with open("graph.txt", "w") as f:
         for edge_info in graph:
-            if args.have_weight:
-                u, v, w = edge_info
-                f.write(f"    {u} -> {v} [label={w}];\n")
-            else:
-                u, v = edge_info
-                f.write(f"    {u} -> {v};\n")
-        f.write("}\n")
+            f.write(" ".join(map(str, edge_info)) + "\n")
+
+    # generate a "1 -> 2;" graphviz representation to a file 524289 vertices, 15483988 edges.
+    # with open("graph.dot", "w") as f:
+    #     f.write("digraph G {\n")
+    #     for edge_info in graph:
+    #         if args.have_weight:
+    #             u, v, w = edge_info
+    #             f.write(f"    {u} -> {v} [label={w}];\n")
+    #         else:
+    #             u, v = edge_info
+    #             f.write(f"    {u} -> {v};\n")
+    #     f.write("}\n")
 
 
 if __name__ == "__main__":

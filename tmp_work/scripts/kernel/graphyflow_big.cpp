@@ -405,7 +405,7 @@ static void
 merge_node_props(hls::stream<bus_word_t> (&cacheline_streams)[PE_NUM],
                  hls::stream<edge_descriptor_batch_t> &edge_stream,
                  //  hls::stream<node_id_burst_t> &src_id_burst_stream,
-                 hls::stream<edge_batch_t> &edge_batch_stream,
+                 hls::stream<struct_kbu_50_t> &edge_batch_stream,
                  uint32_t edge_num) {
     bus_word_t last_cacheline[PE_NUM];
 #pragma HLS ARRAY_PARTITION variable = last_cacheline complete dim = 0
@@ -437,10 +437,8 @@ LOOP_SCATTER_EDGES:
         //         node_id_burst_t src_id_burst = src_id_burst_stream.read();
         // #pragma HLS ARRAY_PARTITION variable = src_id_burst.data complete dim
         // = 0
-        edge_batch_t out_batch;
-#pragma HLS ARRAY_PARTITION variable = out_batch.src_distances complete dim = 0
-#pragma HLS ARRAY_PARTITION variable = out_batch.weights complete dim = 0
-#pragma HLS ARRAY_PARTITION variable = out_batch.dsts complete dim = 0
+        struct_kbu_50_t out_batch;
+#pragma HLS ARRAY_PARTITION variable = out_batch.data complete dim = 0
         out_batch.end_flag = false;
         out_batch.end_pos = edge_batch.end_pos;
         bus_word_t cur_last_cacheline;
@@ -463,9 +461,12 @@ LOOP_SCATTER_EDGES:
                 //     31 + (offset << 5), offset << 5);
                 ap_fixed_pod_t prop = get_val_from_bus(cacheline, offset);
 
-                out_batch.src_distances[pe_idx] = prop;
-                out_batch.weights[pe_idx] = edge_weight;
-                out_batch.dsts[pe_idx] = edge_batch.edges[pe_idx].dst_id;
+                // out_batch.src_distances[pe_idx] = prop;
+                // out_batch.weights[pe_idx] = edge_weight;
+                // out_batch.dsts[pe_idx] = edge_batch.edges[pe_idx].dst_id;
+                out_batch.data[pe_idx].key = edge_batch.edges[pe_idx].dst_id;
+                out_batch.data[pe_idx].transform.node_id = edge_batch.edges[pe_idx].dst_id;
+                out_batch.data[pe_idx].transform.prop = (prop + edge_weight);
 
                 if (pe_idx == PE_NUM - 1) {
                     cur_last_cacheline = cacheline;
@@ -483,7 +484,7 @@ LOOP_SCATTER_EDGES:
         }
     }
     // Send end marker
-    edge_batch_t end_batch;
+    struct_kbu_50_t end_batch;
     end_batch.end_flag = true;
     end_batch.end_pos = 0;
     edge_batch_stream.write(end_batch);
@@ -767,8 +768,10 @@ omega_switch_2(hls::stream<net_wrapper_kt_pair_105_t_t> (&in_streams)[8],
 #pragma HLS DATAFLOW
     hls::stream<net_wrapper_kt_pair_105_t_t> stream_stage_0[8];
 #pragma HLS STREAM variable = stream_stage_0 depth = 2
+#pragma HLS ARRAY_PARTITION variable = stream_stage_0 complete dim = 0
     hls::stream<net_wrapper_kt_pair_105_t_t> stream_stage_1[8];
 #pragma HLS STREAM variable = stream_stage_1 depth = 2
+#pragma HLS ARRAY_PARTITION variable = stream_stage_1 complete dim = 0
     switch2x2_2(2, in_streams[0], in_streams[1], stream_stage_0[0],
                 stream_stage_0[1]);
     switch2x2_2(2, in_streams[2], in_streams[3], stream_stage_0[2],
@@ -1099,16 +1102,18 @@ LOOP_DRAIN_ADDR:
 // }
 
 static void graphyflow_big_dataflow(
-    hls::stream<edge_batch_t> &response_to_318,
+    hls::stream<struct_kbu_50_t> &input_to_demux,
     // hls::stream<node_dist_batch_t> &all_node_distances_to_343,
     hls::stream<write_burst_pkt_t> &kernel_out_stream, int32_t dst_num) {
 #pragma HLS DATAFLOW
-    hls::stream<struct_kbu_50_t> reduce_105_z2d_pair;
-#pragma HLS STREAM variable = reduce_105_z2d_pair depth = 4
+//     hls::stream<struct_kbu_50_t> reduce_105_z2d_pair;
+// #pragma HLS STREAM variable = reduce_105_z2d_pair depth = 4
     hls::stream<net_wrapper_kt_pair_105_t_t> reduce_105_d2o_pair[8];
-#pragma HLS STREAM variable = reduce_105_d2o_pair depth = 4
+#pragma HLS STREAM variable = reduce_105_d2o_pair depth = 16
+#pragma HLS ARRAY_PARTITION variable = reduce_105_d2o_pair complete dim = 0
     hls::stream<net_wrapper_kt_pair_105_t_t> reduce_105_o2u_pair[8];
-#pragma HLS STREAM variable = reduce_105_o2u_pair depth = 4
+#pragma HLS STREAM variable = reduce_105_o2u_pair depth = 2
+#pragma HLS ARRAY_PARTITION variable = reduce_105_o2u_pair complete dim = 0
     //     hls::stream<struct_ibu_14_t> intermediate_key;
     // #pragma HLS STREAM variable = intermediate_key depth = 4
     //     hls::stream<internal_end_data_batch_t> intermediate_transform;
@@ -1125,8 +1130,8 @@ static void graphyflow_big_dataflow(
     // #pragma HLS STREAM variable = stream_o_0_node_id_232 depth = 4
     //     hls::stream<struct_nbu_11_t> stream_o_1_250;
     // #pragma HLS STREAM variable = stream_o_1_250 depth = 4
-    hls::stream<internal_end_data_batch_t> stream_o_0_107;
-#pragma HLS STREAM variable = stream_o_0_107 depth = 4
+//     hls::stream<internal_end_data_batch_t> stream_o_0_107;
+// #pragma HLS STREAM variable = stream_o_0_107 depth = 4
     //     hls::stream<struct_nbu_11_t> stream_o_0_249;
     // #pragma HLS STREAM variable = stream_o_0_249 depth = 4
     //     hls::stream<struct_abu_9_t> stream_o_0_edge_src_distance_275;
@@ -1135,14 +1140,14 @@ static void graphyflow_big_dataflow(
     // #pragma HLS STREAM variable = stream_o_0_edge_dst_277 depth = 4
     //     hls::stream<struct_abu_9_t> stream_o_0_edge_weight_278;
     // #pragma HLS STREAM variable = stream_o_0_edge_weight_278 depth = 4
-    hls::stream<struct_abu_9_t> stream_o_0_node_distance_300;
-#pragma HLS STREAM variable = stream_o_0_node_distance_300 depth = 4
+//     hls::stream<struct_abu_9_t> stream_o_0_node_distance_300;
+// #pragma HLS STREAM variable = stream_o_0_node_distance_300 depth = 4
     //     hls::stream<struct_nbu_11_t> stream_o_1_309;
     // #pragma HLS STREAM variable = stream_o_1_309 depth = 4
-    hls::stream<struct_abu_9_t> stream_o_0_304;
-#pragma HLS STREAM variable = stream_o_0_304 depth = 4
-    hls::stream<struct_nbu_11_t> stream_o_1_305;
-#pragma HLS STREAM variable = stream_o_1_305 depth = 4
+//     hls::stream<struct_abu_9_t> stream_o_0_304;
+// #pragma HLS STREAM variable = stream_o_0_304 depth = 4
+//     hls::stream<struct_nbu_11_t> stream_o_1_305;
+// #pragma HLS STREAM variable = stream_o_1_305 depth = 4
     //     hls::stream<struct_nbu_11_t> stream_o_0_308;
     // #pragma HLS STREAM variable = stream_o_0_308 depth = 4
     // --- Function Calls (in topological order) ---
@@ -1154,14 +1159,15 @@ static void graphyflow_big_dataflow(
     // stream_o_2_238); CopyC_247(stream_o_1_237, stream_o_0_249,
     // stream_o_1_250); Memor_231(stream_o_0_node_id_232, stream_o_1_250);
     // --- Start of Reduce Super-Block for Reduc_105 ---
-    Reduc_105_pre_process(response_to_318, reduce_105_z2d_pair);
+    // Reduc_105_pre_process(response_to_318, reduce_105_z2d_pair);
     // stream_zipper_0(intermediate_key, intermediate_transform,
     //                 reduce_105_z2d_pair);
-    demux_1(reduce_105_z2d_pair, reduce_105_d2o_pair);
+    demux_1(input_to_demux, reduce_105_d2o_pair);
     omega_switch_2(reduce_105_d2o_pair, reduce_105_o2u_pair);
     // Reduc_105_unit_reduce(reduce_105_o2u_pair, stream_o_0_107, dst_num);
     hls::stream<reduce_word_t> pe_mem_out_streams[PE_NUM];
 #pragma HLS STREAM variable = pe_mem_out_streams depth = 4
+#pragma HLS ARRAY_PARTITION variable = pe_mem_out_streams complete dim = 0
 LOOP_FOR_60:
     for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
@@ -1206,20 +1212,21 @@ graphyflow_big(const bus_word_t *edge_props,
     //     hls::stream<node_id_burst_t> stream_src_ids_2;
     // #pragma HLS STREAM variable = stream_src_ids_2 depth = 16
     hls::stream<distance_req_pack_t> stream_dist_req;
-#pragma HLS STREAM variable = stream_dist_req depth = 16
+#pragma HLS STREAM variable = stream_dist_req depth = 32
     //     hls::stream<cacheline_req_t> stream_cache_req;
     // #pragma HLS STREAM variable = stream_cache_req depth = 16
     //     hls::stream<cacheline_resp_t> stream_cache_resp;
     // #pragma HLS STREAM variable = stream_cache_resp depth = 16
     hls::stream<bus_word_t> stream_cachelines[PE_NUM];
-#pragma HLS STREAM variable = stream_cachelines depth = 16
+#pragma HLS STREAM variable = stream_cachelines depth = 32
+#pragma HLS ARRAY_PARTITION variable = stream_cachelines complete dim = 0
 
     // Existing streams
-    hls::stream<node_distance_burst_t> node_distance_burst_stream;
-#pragma HLS STREAM variable = node_distance_burst_stream depth = 16
+//     hls::stream<node_distance_burst_t> node_distance_burst_stream;
+// #pragma HLS STREAM variable = node_distance_burst_stream depth = 16
     hls::stream<edge_descriptor_batch_t> edge_stream;
-#pragma HLS STREAM variable = edge_stream depth = 16
-    hls::stream<edge_batch_t> stream_edge_data;
+#pragma HLS STREAM variable = edge_stream depth = 32
+    hls::stream<struct_kbu_50_t> stream_edge_data;
 #pragma HLS STREAM variable = stream_edge_data depth = 16
     //     hls::stream<node_dist_batch_t> stream_node_dist_data;
     // #pragma HLS STREAM variable = stream_node_dist_data depth = 16
