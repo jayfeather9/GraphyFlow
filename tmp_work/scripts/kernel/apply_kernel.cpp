@@ -2,16 +2,13 @@
 
 static void
 apply_kernel_inter(const bus_word_t *node_props,
+                   uint32_t dst_num,
                    hls::stream<write_burst_pkt_t> &node_distance_burst_stream,
                    hls::stream<write_burst_pkt_t> &write_burst_stream) {
 LOOP_APPLY:
-    while (true) {
+    for (uint32_t addr = 0; addr < dst_num; addr += (PE_NUM << 1)) {
 #pragma HLS PIPELINE II = 1
         write_burst_pkt_t pkt = node_distance_burst_stream.read();
-
-        if (pkt.last) {
-            break;
-        }
 
         bus_word_t wide_word = pkt.data;
         uint32_t write_idx = pkt.dest;
@@ -36,14 +33,11 @@ LOOP_APPLY:
         out_pkt.last = false;
         write_burst_stream.write(out_pkt);
     }
-
-    write_burst_pkt_t end_pkt;
-    end_pkt.last = true;
-    write_burst_stream.write(end_pkt);
 }
 
 extern "C" void
 apply_kernel(const bus_word_t *node_props,
+             uint32_t dst_num,
              hls::stream<write_burst_pkt_t> &kernel_out_stream,
              hls::stream<write_burst_pkt_t> &write_burst_stream) {
 #pragma HLS INTERFACE m_axi port = node_props offset = slave bundle = gmem0
@@ -51,5 +45,5 @@ apply_kernel(const bus_word_t *node_props,
 #pragma HLS INTERFACE s_axilite port = return bundle = control
 #pragma HLS DATAFLOW
 
-    apply_kernel_inter(node_props, kernel_out_stream, write_burst_stream);
+    apply_kernel_inter(node_props, dst_num, kernel_out_stream, write_burst_stream);
 }

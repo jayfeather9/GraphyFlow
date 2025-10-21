@@ -548,7 +548,7 @@ LOOP_PACK_TO_BUS:
     LOOP_PACK_BATCH:
         for (int i = 0; i < DBL_PE_NUM; i++) {
 #pragma HLS UNROLL
-            ap_fixed_pod_t distance = in_batch.data[i].prop;
+            ap_fixed_pod_t distance = in_batch.data[i];
             word.range((i + 1) * DISTANCE_BITWIDTH - 1, i * DISTANCE_BITWIDTH) =
                 distance;
         }
@@ -1013,13 +1013,12 @@ LOOP_STREAM_OUT:
 // Collects aggregated data from all PEs and outputs final results
 static void
 Reduc_105_drain_multi_pe(hls::stream<reduce_word_t> (&pe_mem_in)[PE_NUM],
-                         hls::stream<internal_end_data_batch_t> &o_0,
+                         hls::stream<write_burst_pkt_t> &kernel_out_stream,
                          int32_t dst_num) {
 
     // --- Phase 2: High-Performance Drain Loop ---
-    internal_end_data_batch_t data_pack;
-#pragma HLS ARRAY_PARTITION variable = data_pack.data complete dim = 0
-    data_pack.end_flag = 0;
+    write_burst_pkt_t one_write_burst;
+    one_write_burst.last = 0;
 
 LOOP_DRAIN_ADDR:
     for (int32_t base_addr = 0; base_addr < dst_num;
@@ -1031,75 +1030,65 @@ LOOP_DRAIN_ADDR:
             reduce_word_t word = pe_mem_in[pe_idx].read();
             ap_fixed_pod_t dist0 = get_raw_val(word, 0);
             ap_fixed_pod_t dist1 = get_raw_val(word, 1);
-            data_pack.data[pe_idx].node_id = (base_addr | pe_idx);
-            data_pack.data[pe_idx].prop = dist0;
-            data_pack.data[pe_idx + PE_NUM].node_id =
-                (base_addr | pe_idx) + PE_NUM;
-            data_pack.data[pe_idx + PE_NUM].prop = dist1;
+            
+            one_write_burst.data.range(31 + (pe_idx << 5), (pe_idx << 5)) = word.range(31, 0);
+            one_write_burst.data.range(31 + (pe_idx << 5) + 256, (pe_idx << 5) + 256) = word.range(63, 32);
         }
-        data_pack.end_flag = false;
-        uint32_t remain_nodes = dst_num - base_addr;
-        uint32_t cur_batch_size =
-            (remain_nodes < (PE_NUM << 1)) ? remain_nodes : (PE_NUM << 1);
-        data_pack.end_pos = cur_batch_size;
-        o_0.write(data_pack);
+        kernel_out_stream.write(one_write_burst);
     }
-    data_pack.end_flag = true;
-    data_pack.end_pos = 0;
-    o_0.write(data_pack);
 }
 
-static void fused_op_294(hls::stream<internal_end_data_batch_t> &i_0,
-                         hls::stream<node_dist_batch_t> &i_1,
-                         hls::stream<internal_end_data_batch_t> &o_0) {
-    internal_end_data_batch_t in_batch_i_0;
-    node_dist_batch_t in_batch_i_1;
-    internal_end_data_batch_t out_batch_o_0;
-    bool end_flag;
-    uint8_t end_pos;
-LOOP_WHILE_59:
-    while (true) {
-#pragma HLS PIPELINE
-        in_batch_i_0 = i_0.read();
-        in_batch_i_1 = i_1.read();
-    LOOP_FOR_58:
-        for (uint32_t i = 0; i < DBL_PE_NUM; i++) {
-#pragma HLS UNROLL
-            // -- Inlining FusedOp fused_op_294 --
-            // Inlining BinOp_128
-            // ap_fixed_pod_t fused_temp_BinOp_128_o_0;
-            // distance_t lhs_128 =
-            //     *reinterpret_cast<distance_t *>(&in_batch_i_0.data[i].prop);
-            // distance_t rhs_128 =
-            //     *reinterpret_cast<distance_t *>(&in_batch_i_1.data[i]);
-            // distance_t temp_BinOp_128_o_0_ap_result;
-            // temp_BinOp_128_o_0_ap_result =
-            //     (((lhs_128) < (rhs_128) ? lhs_128 : rhs_128));
-            // fused_temp_BinOp_128_o_0 = *reinterpret_cast<ap_fixed_pod_t *>(
-            //     &temp_BinOp_128_o_0_ap_result);
-            // Inlining Gathe_288
-            out_batch_o_0.data[i].prop =
-                ((in_batch_i_0.data[i].prop < in_batch_i_1.data[i])
-                     ? in_batch_i_0.data[i].prop
-                     : in_batch_i_1.data[i]);
-            out_batch_o_0.data[i].node_id = in_batch_i_0.data[i].node_id;
-            // -- End Inlining FusedOp fused_op_294 --
-        }
-        end_flag = in_batch_i_0.end_flag;
-        end_pos = in_batch_i_0.end_pos;
-        out_batch_o_0.end_flag = end_flag;
-        out_batch_o_0.end_pos = end_pos;
-        o_0.write(out_batch_o_0);
-        if (end_flag) {
-            break;
-        }
-    }
-}
+// static void fused_op_294(hls::stream<internal_end_data_batch_t> &i_0,
+//                          hls::stream<node_dist_batch_t> &i_1,
+//                          hls::stream<internal_end_data_batch_t> &o_0) {
+//     internal_end_data_batch_t in_batch_i_0;
+//     node_dist_batch_t in_batch_i_1;
+//     internal_end_data_batch_t out_batch_o_0;
+//     bool end_flag;
+//     uint8_t end_pos;
+// LOOP_WHILE_59:
+//     while (true) {
+// #pragma HLS PIPELINE
+//         in_batch_i_0 = i_0.read();
+//         in_batch_i_1 = i_1.read();
+//     LOOP_FOR_58:
+//         for (uint32_t i = 0; i < DBL_PE_NUM; i++) {
+// #pragma HLS UNROLL
+//             // -- Inlining FusedOp fused_op_294 --
+//             // Inlining BinOp_128
+//             // ap_fixed_pod_t fused_temp_BinOp_128_o_0;
+//             // distance_t lhs_128 =
+//             //     *reinterpret_cast<distance_t *>(&in_batch_i_0.data[i].prop);
+//             // distance_t rhs_128 =
+//             //     *reinterpret_cast<distance_t *>(&in_batch_i_1.data[i]);
+//             // distance_t temp_BinOp_128_o_0_ap_result;
+//             // temp_BinOp_128_o_0_ap_result =
+//             //     (((lhs_128) < (rhs_128) ? lhs_128 : rhs_128));
+//             // fused_temp_BinOp_128_o_0 = *reinterpret_cast<ap_fixed_pod_t *>(
+//             //     &temp_BinOp_128_o_0_ap_result);
+//             // Inlining Gathe_288
+//             out_batch_o_0.data[i].prop =
+//                 ((in_batch_i_0.data[i].prop < in_batch_i_1.data[i])
+//                      ? in_batch_i_0.data[i].prop
+//                      : in_batch_i_1.data[i]);
+//             out_batch_o_0.data[i].node_id = in_batch_i_0.data[i].node_id;
+//             // -- End Inlining FusedOp fused_op_294 --
+//         }
+//         end_flag = in_batch_i_0.end_flag;
+//         end_pos = in_batch_i_0.end_pos;
+//         out_batch_o_0.end_flag = end_flag;
+//         out_batch_o_0.end_pos = end_pos;
+//         o_0.write(out_batch_o_0);
+//         if (end_flag) {
+//             break;
+//         }
+//     }
+// }
 
 static void graphyflow_big_dataflow(
     hls::stream<edge_batch_t> &response_to_318,
     // hls::stream<node_dist_batch_t> &all_node_distances_to_343,
-    hls::stream<internal_end_data_batch_t> &internal_end_stream,
+    hls::stream<write_burst_pkt_t> &kernel_out_stream,
     int32_t dst_num) {
 #pragma HLS DATAFLOW
     hls::stream<struct_kbu_50_t> reduce_105_z2d_pair;
@@ -1168,7 +1157,7 @@ LOOP_FOR_60:
                                         pe_mem_out_streams[pe_idx], pe_idx,
                                         dst_num);
     }
-    Reduc_105_drain_multi_pe(pe_mem_out_streams, internal_end_stream, dst_num);
+    Reduc_105_drain_multi_pe(pe_mem_out_streams, kernel_out_stream, dst_num);
     // --- End of Reduce Super-Block for Reduc_105 ---
     // Scatt_302(stream_o_0_107, stream_o_0_304, stream_o_1_305);
     // CopyC_306(stream_o_1_305, stream_o_0_308, stream_o_1_309);
@@ -1222,8 +1211,8 @@ graphyflow_big(const bus_word_t *edge_props,
 #pragma HLS STREAM variable = stream_edge_data depth = 16
     //     hls::stream<node_dist_batch_t> stream_node_dist_data;
     // #pragma HLS STREAM variable = stream_node_dist_data depth = 16
-    hls::stream<internal_end_data_batch_t> stream_result_data;
-#pragma HLS STREAM variable = stream_result_data depth = 16
+//     hls::stream<internal_end_data_batch_t> stream_result_data;
+// #pragma HLS STREAM variable = stream_result_data depth = 16
 
     // --- Data Loading ---
     // src_id_loader(src_ids, stream_src_ids_1, stream_src_ids_2, num_edges);
@@ -1243,12 +1232,12 @@ graphyflow_big(const bus_word_t *edge_props,
     // stream_node_dist_data);
 
     // --- Main Dataflow Processing ---
-    graphyflow_big_dataflow(stream_edge_data, stream_result_data, dst_num);
+    graphyflow_big_dataflow(stream_edge_data, kernel_out_stream, dst_num);
 
     // --- Final Writeback ---
     // final_writeback(stream_result_data, dst_num, output);
     //     hls::stream<bus_word_t> bus_word_stream;
     // #pragma HLS STREAM variable = bus_word_stream depth = 4
-    pack_distances_to_bus_words(stream_result_data, kernel_out_stream);
+    // pack_distances_to_bus_words(stream_result_data, kernel_out_stream);
     // write_bus_words_to_ddr(bus_word_stream, output, dst_num);
 }

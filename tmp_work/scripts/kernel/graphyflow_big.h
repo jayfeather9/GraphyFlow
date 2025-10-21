@@ -50,7 +50,7 @@ typedef ap_uint<DISTANCE_BITWIDTH>
 typedef ap_fixed<DISTANCE_BITWIDTH, DISTANCE_INTEGER_PART> distance_t;
 typedef ap_uint<OUT_END_MARKER_BITWIDTH> out_end_marker_t;
 typedef ap_axiu<256, 0, 0, 0> node_dist_pkt_t;
-typedef ap_axiu<512, 0, 0, 32> write_burst_pkt_t;
+typedef ap_axiu<512, 0, 0, 0> write_burst_pkt_t;
 typedef ap_axiu<32, 0, 0, 8> cacheline_request_pkt_t;
 typedef ap_axiu<512, 0, 0, 8> cacheline_response_pkt_t;
 
@@ -159,7 +159,7 @@ struct __attribute__((packed)) struct_sbu_17_t {
 };
 
 struct __attribute__((packed)) internal_end_data_batch_t {
-    node_with_prop_t data[DBL_PE_NUM];
+    ap_fixed_pod_t data[DBL_PE_NUM];
     bool end_flag;
     uint8_t end_pos;
 };

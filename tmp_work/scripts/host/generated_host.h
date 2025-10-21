@@ -43,9 +43,11 @@ class AlgorithmHost {
     void setup_buffers(const PartitionContainer &container);
     void update_data(const PartitionContainer &container);
     void transfer_data_to_fpga(const PartitionContainer &container);
-    void execute_kernel_iteration(const PartitionContainer &container,
-                                  std::vector<cl::Event> &big_kernel_events,
-                                  std::vector<cl::Event> &little_kernel_events);
+    void execute_kernel_iteration(
+    const PartitionContainer &container,
+    std::vector<cl::Event> &big_kernel_events,
+    std::vector<cl::Event> &little_kernel_events,
+    cl::Event &hbm_writer_event, cl::Event &apply_kernel_event);
     void transfer_data_from_fpga();
     bool check_convergence_and_update(const PartitionContainer &container);
     const std::vector<int> &get_results() const;

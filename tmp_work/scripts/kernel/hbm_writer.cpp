@@ -59,9 +59,13 @@ LOOP_NPL_S0_READ:
 }
 
 void write_out(bus_word_t *output,
+               uint32_t dst_num,
                hls::stream<write_burst_pkt_t> &write_burst_stream) {
     uint32_t write_idx = 0;
 
+    uint32_t total_writes = 0;
+    uint32_t target_writes =
+        (dst_num + DBL_PE_NUM - 1) / DBL_PE_NUM; // Total number of write bursts
 write_out:
     while (true) {
 #pragma HLS PIPELINE II = 1
@@ -72,18 +76,19 @@ write_out:
 
             write_idx = one_write_burst.dest;
 
-            if (one_write_burst.last) {
-                break;
-            }
-
             bus_word_t new_prop = one_write_burst.data;
             output[write_idx] = new_prop;
+
+            total_writes++;
+            if (total_writes >= target_writes) {
+                break;
+            }
         }
     }
 }
 
 extern "C" void
-hbm_writer(bus_word_t *node_props, bus_word_t *output,
+hbm_writer(bus_word_t *node_props, bus_word_t *output, uint32_t dst_num,
            hls::stream<cacheline_request_pkt_t> &cacheline_req_stream,
            hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream,
            hls::stream<write_burst_pkt_t> &write_burst_stream) {
@@ -95,5 +100,5 @@ hbm_writer(bus_word_t *node_props, bus_word_t *output,
 #pragma HLS DATAFLOW
     node_property_loader(node_props, cacheline_req_stream,
                          cacheline_resp_stream);
-    write_out(output, write_burst_stream);
+    write_out(output, dst_num, write_burst_stream);
 }

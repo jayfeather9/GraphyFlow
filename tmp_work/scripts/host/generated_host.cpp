@@ -600,12 +600,41 @@ void AlgorithmHost::transfer_data_to_fpga(const PartitionContainer &container) {
 void AlgorithmHost::execute_kernel_iteration(
     const PartitionContainer &container,
     std::vector<cl::Event> &big_kernel_events,
-    std::vector<cl::Event> &little_kernel_events) {
+    std::vector<cl::Event> &little_kernel_events,
+    cl::Event &hbm_writer_event, cl::Event &apply_kernel_event) {
     cl_int err;
     // std::cout << "--- [Host] Phase 3: Enqueuing kernel tasks ---" <<
     // std::endl;
 
     auto enqueue_start = std::chrono::high_resolution_clock::now();
+
+    // 3.2: Enqueue HBM_WRITER kernels (receive from big kernels via stream)
+    std::vector<cl::Event> writer_kernel_events(writer_kernel_buffers.size());
+    // for (size_t i = 0; i < writer_kernel_buffers.size(); ++i) {
+    int i = 0;
+    auto &kernel = acc.writer_krnls[i];
+    auto &buffers = writer_kernel_buffers[i];
+    const auto &p_graph = container.SPs[i].partitioned_graph;
+
+    int arg_idx = 0;
+    OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.node_props_buf));
+    OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.output_buf));
+    // OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_vertices));
+    // Note: node_dist_stream and write_burst_stm are NOT kernel arguments -
+    // they're stream connections
+
+    // cl::Event *event_ptr = &writer_kernel_events[i];
+    OCL_CHECK(err, err = acc.writer_queue[i].enqueueTask(kernel, nullptr,
+                                                            &hbm_writer_event));
+    // }
+
+    // Enqueue apply kernel
+    auto &apply_kernel = acc.apply_krnl;
+    int apply_arg_idx = 0;
+    OCL_CHECK(err, err = apply_kernel.setArg(
+                       apply_arg_idx++, apply_kernel_buffers.node_props_buf));
+    OCL_CHECK(err, err = acc.apply_queue.enqueueTask(apply_kernel, nullptr,
+                                                     &apply_kernel_event));
 
     // 3.1: Enqueue BIG kernels (no output parameter, streams to hbm_writer)
     for (size_t i = 0; i < big_kernel_buffers.size(); ++i) {
@@ -626,34 +655,6 @@ void AlgorithmHost::execute_kernel_iteration(
         OCL_CHECK(err, err = acc.big_gs_queue[i].enqueueTask(kernel, nullptr,
                                                              event_ptr));
     }
-
-    // 3.2: Enqueue HBM_WRITER kernels (receive from big kernels via stream)
-    std::vector<cl::Event> writer_kernel_events(writer_kernel_buffers.size());
-    for (size_t i = 0; i < writer_kernel_buffers.size(); ++i) {
-        auto &kernel = acc.writer_krnls[i];
-        auto &buffers = writer_kernel_buffers[i];
-        const auto &p_graph = container.SPs[i].partitioned_graph;
-
-        int arg_idx = 0;
-        OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.node_props_buf));
-        OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.output_buf));
-        // OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_vertices));
-        // Note: node_dist_stream and write_burst_stm are NOT kernel arguments -
-        // they're stream connections
-
-        cl::Event *event_ptr = &writer_kernel_events[i];
-        OCL_CHECK(err, err = acc.writer_queue[i].enqueueTask(kernel, nullptr,
-                                                             event_ptr));
-    }
-
-    // Enqueue apply kernel
-    auto &apply_kernel = acc.apply_krnl;
-    int apply_arg_idx = 0;
-    OCL_CHECK(err, err = apply_kernel.setArg(
-                       apply_arg_idx++, apply_kernel_buffers.node_props_buf));
-    cl::Event apply_event;
-    OCL_CHECK(err, err = acc.apply_queue.enqueueTask(apply_kernel, nullptr,
-                                                     &apply_event));
 
     // 3.3: Enqueue LITTLE kernels
     // for (size_t i = 0; i < little_kernel_buffers.size(); ++i) {
