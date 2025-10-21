@@ -404,7 +404,7 @@ static void
 merge_node_props(hls::stream<bus_word_t> (&cacheline_streams)[PE_NUM],
                  hls::stream<edge_descriptor_batch_t> &edge_stream,
                  //  hls::stream<node_id_burst_t> &src_id_burst_stream,
-                 hls::stream<struct_kbu_50_t> &edge_batch_stream,
+                 hls::stream<update_tuple_t> &edge_batch_stream,
                  uint32_t edge_num) {
     bus_word_t last_cacheline[PE_NUM];
 #pragma HLS ARRAY_PARTITION variable = last_cacheline complete dim = 0
@@ -436,8 +436,9 @@ LOOP_SCATTER_EDGES:
         //         node_id_burst_t src_id_burst = src_id_burst_stream.read();
         // #pragma HLS ARRAY_PARTITION variable = src_id_burst.data complete dim
         // = 0
-        struct_kbu_50_t out_batch;
-#pragma HLS ARRAY_PARTITION variable = out_batch.data complete dim = 0
+        update_tuple_t out_batch;
+#pragma HLS ARRAY_PARTITION variable = out_batch.node_id complete dim = 0
+#pragma HLS ARRAY_PARTITION variable = out_batch.prop complete dim = 0
         out_batch.end_flag = false;
         out_batch.end_pos = edge_batch.end_pos;
         bus_word_t cur_last_cacheline;
@@ -463,9 +464,8 @@ LOOP_SCATTER_EDGES:
                 // out_batch.src_distances[pe_idx] = prop;
                 // out_batch.weights[pe_idx] = edge_weight;
                 // out_batch.dsts[pe_idx] = edge_batch.edges[pe_idx].dst_id;
-                out_batch.data[pe_idx].key = edge_batch.edges[pe_idx].dst_id;
-                out_batch.data[pe_idx].transform.node_id = edge_batch.edges[pe_idx].dst_id;
-                out_batch.data[pe_idx].transform.prop = (prop + edge_weight);
+                out_batch.node_id[pe_idx] = edge_batch.edges[pe_idx].dst_id;
+                out_batch.prop[pe_idx] = (prop + edge_weight);
 
                 if (pe_idx == PE_NUM - 1) {
                     cur_last_cacheline = cacheline;
@@ -483,7 +483,7 @@ LOOP_SCATTER_EDGES:
         }
     }
     // Send end marker
-    struct_kbu_50_t end_batch;
+    update_tuple_t end_batch;
     end_batch.end_flag = true;
     end_batch.end_pos = 0;
     edge_batch_stream.write(end_batch);
@@ -600,20 +600,24 @@ LOOP_SCATTER_EDGES:
 // --- 2. Utility Network Functions ---
 
 static void
-demux_1(hls::stream<struct_kbu_50_t> &in_batch_stream,
+demux_1(hls::stream<update_tuple_t> &in_batch_stream,
         hls::stream<net_wrapper_kt_pair_105_t_t> (&out_streams)[8]) {
-    struct_kbu_50_t in_batch;
+    update_tuple_t in_batch;
+#pragma HLS ARRAY_PARTITION variable = in_batch.node_id complete dim = 0
+#pragma HLS ARRAY_PARTITION variable = in_batch.prop complete dim = 0
 LOOP_WHILE_22:
     while (true) {
 #pragma HLS PIPELINE
         in_batch = in_batch_stream.read();
         net_wrapper_kt_pair_105_t_t wrapper_data;
-#pragma HLS ARRAY_PARTITION variable = wrapper_data.data complete dim = 0
+#pragma HLS ARRAY_PARTITION variable = wrapper_data.node_id complete dim = 0
+#pragma HLS ARRAY_PARTITION variable = wrapper_data.prop complete dim = 0
     LOOP_FOR_20:
         for (uint32_t i = 0; i < PE_NUM; i++) {
 #pragma HLS UNROLL
             if ((i < in_batch.end_pos)) {
-                wrapper_data.data = in_batch.data[i];
+                wrapper_data.node_id = in_batch.node_id[i];
+                wrapper_data.prop = in_batch.prop[i];
                 wrapper_data.end_flag = false;
                 out_streams[i].write(wrapper_data);
             }
@@ -648,7 +652,7 @@ LOOP_WHILE_23:
             net_wrapper_kt_pair_105_t_t data1;
             data1 = in1.read();
             if ((!data1.end_flag)) {
-                if (((data1.data.key >> i) & 1)) {
+                if (((data1.node_id >> i) & 1)) {
                     out2.write(data1);
                 } else {
                     out1.write(data1);
@@ -661,7 +665,7 @@ LOOP_WHILE_23:
             net_wrapper_kt_pair_105_t_t data2;
             data2 = in2.read();
             if ((!data2.end_flag)) {
-                if (((data2.data.key >> i) & 1)) {
+                if (((data2.node_id >> i) & 1)) {
                     out4.write(data2);
                 } else {
                     out3.write(data2);
@@ -798,51 +802,52 @@ omega_switch_2(hls::stream<net_wrapper_kt_pair_105_t_t> (&in_streams)[8],
 }
 
 // --- 3. DFIR Component Functions ---
-static void
-Reduc_105_pre_process(hls::stream<edge_batch_t> &response_to_318,
-                      hls::stream<struct_kbu_50_t> &reduce_105_z2d_pair) {
-    edge_batch_t edge_batch_data;
-#pragma HLS ARRAY_PARTITION variable = edge_batch_data.dsts complete dim = 0
-#pragma HLS ARRAY_PARTITION variable =                                         \
-    edge_batch_data.src_distances complete dim = 0
-#pragma HLS ARRAY_PARTITION variable = edge_batch_data.weights complete dim = 0
-    struct_kbu_50_t out_batch_data;
-#pragma HLS ARRAY_PARTITION variable = out_batch_data.data complete dim = 0
-    bool end_flag;
-LOOP_WHILE_26:
-    while (true) {
-#pragma HLS PIPELINE
-        edge_batch_data = response_to_318.read();
-    LOOP_FOR_25:
-        for (uint32_t i = 0; i < PE_NUM; i++) {
-#pragma HLS UNROLL
-            kt_pair_105_t kt_pair;
-            kt_pair.key = edge_batch_data.dsts[i];
-            kt_pair.transform.node_id = edge_batch_data.dsts[i];
-            ap_fixed_pod_t new_dist;
-            // distance_t lhs_68 = *reinterpret_cast<distance_t *>(
-            //     &edge_batch_data.src_distances[i]);
-            // distance_t rhs_68 =
-            //     *reinterpret_cast<distance_t *>(&edge_batch_data.weights[i]);
-            // distance_t temp_BinOp_68_o_0_ap_result;
-            // temp_BinOp_68_o_0_ap_result = (lhs_68 + rhs_68);
-            // ap_fixed_pod_t fused_temp_BinOp_68_o_0 =
-            //     *reinterpret_cast<ap_fixed_pod_t *>(
-            //         &temp_BinOp_68_o_0_ap_result);
-            // Inlining Gathe_179
-            kt_pair.transform.prop =
-                (edge_batch_data.src_distances[i] + edge_batch_data.weights[i]);
-            out_batch_data.data[i] = kt_pair;
-        }
-        out_batch_data.end_flag = edge_batch_data.end_flag;
-        out_batch_data.end_pos = edge_batch_data.end_pos;
-        reduce_105_z2d_pair.write(out_batch_data);
-        end_flag = edge_batch_data.end_flag;
-        if (end_flag) {
-            break;
-        }
-    }
-}
+// static void
+// Reduc_105_pre_process(hls::stream<edge_batch_t> &response_to_318,
+//                       hls::stream<update_tuple_t> &reduce_105_z2d_pair) {
+//     edge_batch_t edge_batch_data;
+// #pragma HLS ARRAY_PARTITION variable = edge_batch_data.dsts complete dim = 0
+// #pragma HLS ARRAY_PARTITION variable =                                         \
+//     edge_batch_data.src_distances complete dim = 0
+// #pragma HLS ARRAY_PARTITION variable = edge_batch_data.weights complete dim = 0
+//     update_tuple_t out_batch_data;
+// #pragma HLS ARRAY_PARTITION variable = out_batch_data.node_id complete dim = 0
+// #pragma HLS ARRAY_PARTITION variable = out_batch_data.prop complete dim = 0
+//     bool end_flag;
+// LOOP_WHILE_26:
+//     while (true) {
+// #pragma HLS PIPELINE
+//         edge_batch_data = response_to_318.read();
+//     LOOP_FOR_25:
+//         for (uint32_t i = 0; i < PE_NUM; i++) {
+// #pragma HLS UNROLL
+//             kt_pair_105_t kt_pair;
+//             kt_pair.key = edge_batch_data.dsts[i];
+//             kt_pair.transform.node_id = edge_batch_data.dsts[i];
+//             ap_fixed_pod_t new_dist;
+//             // distance_t lhs_68 = *reinterpret_cast<distance_t *>(
+//             //     &edge_batch_data.src_distances[i]);
+//             // distance_t rhs_68 =
+//             //     *reinterpret_cast<distance_t *>(&edge_batch_data.weights[i]);
+//             // distance_t temp_BinOp_68_o_0_ap_result;
+//             // temp_BinOp_68_o_0_ap_result = (lhs_68 + rhs_68);
+//             // ap_fixed_pod_t fused_temp_BinOp_68_o_0 =
+//             //     *reinterpret_cast<ap_fixed_pod_t *>(
+//             //         &temp_BinOp_68_o_0_ap_result);
+//             // Inlining Gathe_179
+//             kt_pair.transform.prop =
+//                 (edge_batch_data.src_distances[i] + edge_batch_data.weights[i]);
+//             out_batch_data.data[i] = kt_pair;
+//         }
+//         out_batch_data.end_flag = edge_batch_data.end_flag;
+//         out_batch_data.end_pos = edge_batch_data.end_pos;
+//         reduce_105_z2d_pair.write(out_batch_data);
+//         end_flag = edge_batch_data.end_flag;
+//         if (end_flag) {
+//             break;
+//         }
+//     }
+// }
 
 inline ap_fixed_pod_t get_raw_val(reduce_word_t word, int idx) {
 #pragma HLS INLINE
@@ -966,8 +971,8 @@ LOOP_AGGREGATE:
         if (kt_elem.end_flag) {
             break;
         }
-        int32_t key = kt_elem.data.key >> LOG_PE_NUM;
-        ap_fixed_pod_t incoming_dist_pod = kt_elem.data.transform.prop;
+        int32_t key = kt_elem.node_id >> LOG_PE_NUM;
+        ap_fixed_pod_t incoming_dist_pod = kt_elem.prop;
 
         int32_t word_addr = (key >> 1);
         int32_t pack_idx = (key & 1);
@@ -1100,12 +1105,10 @@ LOOP_DRAIN_ADDR:
 // }
 
 static void graphyflow_big_dataflow(
-    hls::stream<struct_kbu_50_t> &input_to_demux,
+    hls::stream<update_tuple_t> &input_to_demux,
     // hls::stream<node_dist_batch_t> &all_node_distances_to_343,
     hls::stream<write_burst_pkt_t> &kernel_out_stream, int32_t dst_num) {
 #pragma HLS DATAFLOW
-//     hls::stream<struct_kbu_50_t> reduce_105_z2d_pair;
-// #pragma HLS STREAM variable = reduce_105_z2d_pair depth = 4
     hls::stream<net_wrapper_kt_pair_105_t_t> reduce_105_d2o_pair[8];
 #pragma HLS STREAM variable = reduce_105_d2o_pair depth = 16
 #pragma HLS ARRAY_PARTITION variable = reduce_105_d2o_pair complete dim = 0
@@ -1223,7 +1226,7 @@ graphyflow_big(const bus_word_t *edge_props,
 // #pragma HLS STREAM variable = node_distance_burst_stream depth = 16
     hls::stream<edge_descriptor_batch_t> edge_stream;
 #pragma HLS STREAM variable = edge_stream depth = 32
-    hls::stream<struct_kbu_50_t> stream_edge_data;
+    hls::stream<update_tuple_t> stream_edge_data;
 #pragma HLS STREAM variable = stream_edge_data depth = 16
     //     hls::stream<node_dist_batch_t> stream_node_dist_data;
     // #pragma HLS STREAM variable = stream_node_dist_data depth = 16

@@ -190,14 +190,23 @@ struct __attribute__((packed)) KernelOutputBatch {
     uint8_t end_pos;
 };
 
-struct __attribute__((packed)) struct_kbu_50_t {
-    kt_pair_105_t data[PE_NUM];
+// struct __attribute__((packed)) struct_kbu_50_t {
+//     kt_pair_105_t data[PE_NUM];
+//     bool end_flag;
+//     uint8_t end_pos;
+// };
+
+struct __attribute__((packed)) update_tuple_t {
+    node_id_t node_id[PE_NUM];
+    ap_fixed_pod_t prop[PE_NUM];
     bool end_flag;
     uint8_t end_pos;
 };
 
+
 struct __attribute__((packed)) net_wrapper_kt_pair_105_t_t {
-    kt_pair_105_t data;
+    node_id_t node_id;
+    ap_fixed_pod_t prop;
     bool end_flag;
 };
 
