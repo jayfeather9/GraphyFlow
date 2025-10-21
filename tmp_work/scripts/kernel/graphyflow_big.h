@@ -270,13 +270,13 @@ graphyflow_big(const bus_word_t *edge_props,
                hls::stream<write_burst_pkt_t> &kernel_out_stream);
 
 extern "C" void
-hbm_writer(bus_word_t *node_props, bus_word_t *output,
+hbm_writer(bus_word_t *node_props, bus_word_t *output, uint32_t dst_num,
            hls::stream<cacheline_request_pkt_t> &cacheline_req_stream,
            hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream,
            hls::stream<write_burst_pkt_t> &write_burst_stream);
 
 extern "C" void
-apply_kernel(const bus_word_t *node_props,
+apply_kernel(const bus_word_t *node_props, uint32_t dst_num,
              hls::stream<write_burst_pkt_t> &kernel_out_stream,
              hls::stream<write_burst_pkt_t> &write_burst_stream);
 #endif // __GRAPHYFLOW_GRAPHYFLOW_BIG_H__

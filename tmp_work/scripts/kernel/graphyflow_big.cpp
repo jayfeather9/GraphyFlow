@@ -529,47 +529,49 @@ LOOP_FOR_14:
 // --- REWRITTEN: New final_writeback function packs only distances (no node
 // IDs) into 512-bit words. Node IDs are implicit: they are sequential from 0 to
 // num_dsts-1.
-static void
-pack_distances_to_bus_words(hls::stream<internal_end_data_batch_t> &in_stream,
-                            hls::stream<write_burst_pkt_t> &output_stream) {
-    bus_word_t word;
-    int pkt_idx = 0;
+// static void
+// pack_distances_to_bus_words(hls::stream<internal_end_data_batch_t>
+// &in_stream,
+//                             hls::stream<write_burst_pkt_t> &output_stream) {
+//     bus_word_t word;
+//     int pkt_idx = 0;
 
-LOOP_PACK_TO_BUS:
-    while (true) {
-#pragma HLS PIPELINE II = 1
-        internal_end_data_batch_t in_batch = in_stream.read();
-#pragma HLS ARRAY_PARTITION variable = in_batch.data complete dim = 0
+// LOOP_PACK_TO_BUS:
+//     while (true) {
+// #pragma HLS PIPELINE II = 1
+//         internal_end_data_batch_t in_batch = in_stream.read();
+// #pragma HLS ARRAY_PARTITION variable = in_batch.data complete dim = 0
 
-        if (in_batch.end_pos == 0 && in_batch.end_flag) {
-            break;
-        }
+//         if (in_batch.end_pos == 0 && in_batch.end_flag) {
+//             break;
+//         }
 
-    LOOP_PACK_BATCH:
-        for (int i = 0; i < DBL_PE_NUM; i++) {
-#pragma HLS UNROLL
-            ap_fixed_pod_t distance = in_batch.data[i];
-            word.range((i + 1) * DISTANCE_BITWIDTH - 1, i * DISTANCE_BITWIDTH) =
-                distance;
-        }
+//     LOOP_PACK_BATCH:
+//         for (int i = 0; i < DBL_PE_NUM; i++) {
+// #pragma HLS UNROLL
+//             ap_fixed_pod_t distance = in_batch.data[i];
+//             word.range((i + 1) * DISTANCE_BITWIDTH - 1, i *
+//             DISTANCE_BITWIDTH) =
+//                 distance;
+//         }
 
-        write_burst_pkt_t pkt;
-        pkt.data = word;
-        pkt.dest = pkt_idx;
-        pkt.last = false;
-        pkt_idx++;
+//         write_burst_pkt_t pkt;
+//         pkt.data = word;
+//         pkt.dest = pkt_idx;
+//         pkt.last = false;
+//         pkt_idx++;
 
-        output_stream.write(pkt);
+//         output_stream.write(pkt);
 
-        if (in_batch.end_flag) {
-            break;
-        }
-    }
+//         if (in_batch.end_flag) {
+//             break;
+//         }
+//     }
 
-    write_burst_pkt_t pkt;
-    pkt.last = true;
-    output_stream.write(pkt);
-}
+//     write_burst_pkt_t pkt;
+//     pkt.last = true;
+//     output_stream.write(pkt);
+// }
 
 // Write bus words from stream to DDR memory
 // Writes exactly the number of words needed to cover dst_num distances
@@ -1009,6 +1011,10 @@ LOOP_STREAM_OUT:
     }
 }
 
+// float ap_fixed_to_float2(ap_fixed_pod_t val) {
+//     return (float)*reinterpret_cast<distance_t *>(&val);
+// }
+
 // Multi-PE drain function
 // Collects aggregated data from all PEs and outputs final results
 static void
@@ -1028,11 +1034,16 @@ LOOP_DRAIN_ADDR:
         for (uint32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
             reduce_word_t word = pe_mem_in[pe_idx].read();
-            ap_fixed_pod_t dist0 = get_raw_val(word, 0);
-            ap_fixed_pod_t dist1 = get_raw_val(word, 1);
-            
-            one_write_burst.data.range(31 + (pe_idx << 5), (pe_idx << 5)) = word.range(31, 0);
-            one_write_burst.data.range(31 + (pe_idx << 5) + 256, (pe_idx << 5) + 256) = word.range(63, 32);
+
+            one_write_burst.data.range(31 + (pe_idx << 5), (pe_idx << 5)) =
+                word.range(31, 0);
+            one_write_burst.data.range(31 + (pe_idx << 5) + 256,
+                                       (pe_idx << 5) + 256) =
+                word.range(63, 32);
+
+            // printf("Drained word from PE %d: lower=%f upper=%f\n", pe_idx,
+            //        ap_fixed_to_float2(word.range(31, 0)),
+            //        ap_fixed_to_float2(word.range(63, 32)));
         }
         kernel_out_stream.write(one_write_burst);
     }
@@ -1058,13 +1069,15 @@ LOOP_DRAIN_ADDR:
 //             // Inlining BinOp_128
 //             // ap_fixed_pod_t fused_temp_BinOp_128_o_0;
 //             // distance_t lhs_128 =
-//             //     *reinterpret_cast<distance_t *>(&in_batch_i_0.data[i].prop);
+//             //     *reinterpret_cast<distance_t
+//             *>(&in_batch_i_0.data[i].prop);
 //             // distance_t rhs_128 =
 //             //     *reinterpret_cast<distance_t *>(&in_batch_i_1.data[i]);
 //             // distance_t temp_BinOp_128_o_0_ap_result;
 //             // temp_BinOp_128_o_0_ap_result =
 //             //     (((lhs_128) < (rhs_128) ? lhs_128 : rhs_128));
-//             // fused_temp_BinOp_128_o_0 = *reinterpret_cast<ap_fixed_pod_t *>(
+//             // fused_temp_BinOp_128_o_0 = *reinterpret_cast<ap_fixed_pod_t
+//             *>(
 //             //     &temp_BinOp_128_o_0_ap_result);
 //             // Inlining Gathe_288
 //             out_batch_o_0.data[i].prop =
@@ -1088,8 +1101,7 @@ LOOP_DRAIN_ADDR:
 static void graphyflow_big_dataflow(
     hls::stream<edge_batch_t> &response_to_318,
     // hls::stream<node_dist_batch_t> &all_node_distances_to_343,
-    hls::stream<write_burst_pkt_t> &kernel_out_stream,
-    int32_t dst_num) {
+    hls::stream<write_burst_pkt_t> &kernel_out_stream, int32_t dst_num) {
 #pragma HLS DATAFLOW
     hls::stream<struct_kbu_50_t> reduce_105_z2d_pair;
 #pragma HLS STREAM variable = reduce_105_z2d_pair depth = 4
@@ -1211,8 +1223,8 @@ graphyflow_big(const bus_word_t *edge_props,
 #pragma HLS STREAM variable = stream_edge_data depth = 16
     //     hls::stream<node_dist_batch_t> stream_node_dist_data;
     // #pragma HLS STREAM variable = stream_node_dist_data depth = 16
-//     hls::stream<internal_end_data_batch_t> stream_result_data;
-// #pragma HLS STREAM variable = stream_result_data depth = 16
+    //     hls::stream<internal_end_data_batch_t> stream_result_data;
+    // #pragma HLS STREAM variable = stream_result_data depth = 16
 
     // --- Data Loading ---
     // src_id_loader(src_ids, stream_src_ids_1, stream_src_ids_2, num_edges);

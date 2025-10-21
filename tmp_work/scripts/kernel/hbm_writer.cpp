@@ -58,12 +58,9 @@ LOOP_NPL_S0_READ:
     }
 }
 
-void write_out(bus_word_t *output,
-               uint32_t dst_num,
+void write_out(bus_word_t *output, uint32_t dst_num,
                hls::stream<write_burst_pkt_t> &write_burst_stream) {
     uint32_t write_idx = 0;
-
-    uint32_t total_writes = 0;
     uint32_t target_writes =
         (dst_num + DBL_PE_NUM - 1) / DBL_PE_NUM; // Total number of write bursts
 write_out:
@@ -73,14 +70,11 @@ write_out:
         write_burst_pkt_t one_write_burst;
 
         if (write_burst_stream.read_nb(one_write_burst)) {
-
-            write_idx = one_write_burst.dest;
-
             bus_word_t new_prop = one_write_burst.data;
             output[write_idx] = new_prop;
 
-            total_writes++;
-            if (total_writes >= target_writes) {
+            write_idx++;
+            if (write_idx >= target_writes) {
                 break;
             }
         }
@@ -92,10 +86,11 @@ hbm_writer(bus_word_t *node_props, bus_word_t *output, uint32_t dst_num,
            hls::stream<cacheline_request_pkt_t> &cacheline_req_stream,
            hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream,
            hls::stream<write_burst_pkt_t> &write_burst_stream) {
-#pragma HLS INTERFACE m_axi port = node_props offset = slave bundle = gmem0
+#pragma HLS INTERFACE m_axi port = node_props offset = slave bundle = gmem1
 #pragma HLS INTERFACE m_axi port = output offset = slave bundle = gmem1
 #pragma HLS INTERFACE s_axilite port = node_props bundle = control
 #pragma HLS INTERFACE s_axilite port = output bundle = control
+#pragma HLS INTERFACE s_axilite port = dst_num bundle = control
 #pragma HLS INTERFACE s_axilite port = return bundle = control
 #pragma HLS DATAFLOW
     node_property_loader(node_props, cacheline_req_stream,
