@@ -2,8 +2,10 @@
 
 static void node_property_loader(
     const bus_word_t *node_distances_ddr,
+    uint32_t dst_num,
     hls::stream<cacheline_request_pkt_t> &cacheline_req_stream,
-    hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream) {
+    hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream,
+    hls::stream<cacheline_data_pkt_t> &cacheline_data_stream) {
 
     cacheline_request_pkt_t cache_req;
     cacheline_response_pkt_t cache_resp;
@@ -56,6 +58,17 @@ LOOP_NPL_S0_READ:
             break;
         }
     }
+
+    LOOP_LOADER_2:
+    cacheline_data_pkt_t cache_data;
+    uint32_t total_cachelines =
+        (dst_num + DIST_PER_WORD - 1) / DIST_PER_WORD; // Total number of cache lines
+    for (uint32_t i = 0; i < total_cachelines; i++) {
+#pragma HLS PIPELINE II = 1
+        cache_data.data = node_distances_ddr[i];
+        cache_data.last = (i == total_cachelines - 1) ? true : false;
+        cacheline_data_stream.write(cache_data);
+    }
 }
 
 void write_out(bus_word_t *output, uint32_t dst_num,
@@ -83,6 +96,7 @@ extern "C" void
 hbm_writer(bus_word_t *node_props, bus_word_t *output, uint32_t dst_num,
            hls::stream<cacheline_request_pkt_t> &cacheline_req_stream,
            hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream,
+           hls::stream<cacheline_data_pkt_t> &cacheline_data_stream,
            hls::stream<write_burst_pkt_t> &write_burst_stream) {
 #pragma HLS INTERFACE m_axi port = node_props offset = slave bundle = gmem1
 #pragma HLS INTERFACE m_axi port = output offset = slave bundle = gmem1
@@ -91,7 +105,7 @@ hbm_writer(bus_word_t *node_props, bus_word_t *output, uint32_t dst_num,
 #pragma HLS INTERFACE s_axilite port = dst_num bundle = control
 #pragma HLS INTERFACE s_axilite port = return bundle = control
 #pragma HLS DATAFLOW
-    node_property_loader(node_props, cacheline_req_stream,
-                         cacheline_resp_stream);
+    node_property_loader(node_props, dst_num, cacheline_req_stream,
+                         cacheline_resp_stream, cacheline_data_stream);
     write_out(output, dst_num, write_burst_stream);
 }

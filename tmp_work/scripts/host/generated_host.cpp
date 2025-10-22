@@ -350,13 +350,13 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
     writer_kernel_buffers.push_back(writer_buffers);
     // }
 
-    cl_mem_ext_ptr_t hbm_ext_apply;
-    hbm_ext_apply.flags = XCL_MEM_TOPOLOGY | 30;
-    hbm_ext_apply.obj = nullptr;
-    hbm_ext_apply.param = 0;
-    OCL_CHECK(err, apply_kernel_buffers.node_props_buf = cl::Buffer(
-                       acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,
-                       num_dist_words * bytes_per_word, &hbm_ext_apply, &err));
+    // cl_mem_ext_ptr_t hbm_ext_apply;
+    // hbm_ext_apply.flags = XCL_MEM_TOPOLOGY | 30;
+    // hbm_ext_apply.obj = nullptr;
+    // hbm_ext_apply.param = 0;
+    // OCL_CHECK(err, apply_kernel_buffers.node_props_buf = cl::Buffer(
+    //                    acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,
+    //                    num_dist_words * bytes_per_word, &hbm_ext_apply, &err));
 
     // --- 1.4: Setup buffers for LITTLE kernels (Dense Partitions) ---
     // for (size_t i = 0; i < container.DPs.size(); ++i) {
@@ -575,11 +575,11 @@ void AlgorithmHost::transfer_data_to_fpga(const PartitionContainer &container) {
     }
 
     // transfer apply kernel node props buffer
-    OCL_CHECK(err, err = acc.apply_queue.enqueueWriteBuffer(
-                       apply_kernel_buffers.node_props_buf, CL_FALSE, 0,
-                       big_kernel_input_buffers[0].packed_node_props.size() *
-                           sizeof(bus_word_t),
-                       big_kernel_input_buffers[0].packed_node_props.data()));
+    // OCL_CHECK(err, err = acc.apply_queue.enqueueWriteBuffer(
+    //                    apply_kernel_buffers.node_props_buf, CL_FALSE, 0,
+    //                    big_kernel_input_buffers[0].packed_node_props.size() *
+    //                        sizeof(bus_word_t),
+    //                    big_kernel_input_buffers[0].packed_node_props.data()));
 
     // --- 2.6: 在所有命令入队后，执行一次全局同步 ---
     for (auto &q : acc.big_gs_queue)
@@ -635,8 +635,8 @@ void AlgorithmHost::execute_kernel_iteration(
     // Enqueue apply kernel
     auto &apply_kernel = acc.apply_krnl;
     int apply_arg_idx = 0;
-    OCL_CHECK(err, err = apply_kernel.setArg(
-                       apply_arg_idx++, apply_kernel_buffers.node_props_buf));
+    // OCL_CHECK(err, err = apply_kernel.setArg(
+    //                    apply_arg_idx++, apply_kernel_buffers.node_props_buf));
     OCL_CHECK(err,
               err = apply_kernel.setArg(apply_arg_idx++, p_graph.num_dsts));
     OCL_CHECK(err, err = acc.apply_queue.enqueueTask(apply_kernel, nullptr,
