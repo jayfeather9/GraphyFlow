@@ -4,7 +4,8 @@
 #define uINF 4294967295u
 
 using uint = unsigned int;
-#define DEBUG
+
+
 #ifdef DEBUG
     #define DBGPRINTF(...) \
         do { \
@@ -55,10 +56,13 @@ ap_uint<4> count_end_ones(ap_uint<PE_NUM> valid_mask) {
 
 // --- MODIFIED: Reads 512-bit words and unpacks packed edge data (48 bits per
 // edge).
+// 由于添加了伪边，按原来的边数计数会导致最后会少几条边.......在主机端把num_edges改掉
+
 static void
 edge_descriptor_loader(const bus_word_t *edge_props_ddr,
                        hls::stream<edge_descriptor_batch_t> &edge_stream,
                        int32_t num_edges) {
+    DBGPRINTF("DEBUG EDGE LOADER num_edges : %d\n",num_edges);
     const int bits_per_edge = NODE_ID_BITWIDTH + WEIGHT_BITWIDTH;
     const int edges_per_word = AXI_BUS_WIDTH / bits_per_edge;
     const int num_wide_reads =
@@ -167,7 +171,7 @@ static void hbm_memory_reader_logic(
 
     ppb_response_dt one_ppb_response;
 
-    // 此代码块假设一次性启动并推送所有数据
+    // 假设一次启动发送所有数据
     littleKernelReadMemory:
     {
         ap_uint<32> base_addr = 0;
@@ -178,14 +182,49 @@ static void hbm_memory_reader_logic(
 
         int nodes_sent_to_dist_stream = 0; 
 
+
+        DBGPRINTF("DEBUG HBM manager : num nodes : %d\n",num_nodes);
+
         for(int i = 0; i < num_wide_reads; i ++){
         #pragma HLS PIPELINE II=2 
 
             int addr = base_addr + i;
             bus_word_t hbm_word = node_distances[addr]; 
+
+            // DEBUG
+            #ifdef DEBUG
+            DBGPRINTF("DEBUG Reading HBM Addr[%d]:\n", addr);
+            for (int j = 0; j < num_dists_per_bus_word; j++) {
+            #pragma HLS UNROLL // 帮助 HLS 展开这个小循环
+                
+                // 计算全局的 node_id
+                int current_node_id = (i * num_dists_per_bus_word) + j;
+
+                // 只有当 node_id 有效时才打印
+                if (current_node_id < num_nodes) {
+                    
+                    // 1. 提取 32-bit (ap_fixed_pod_t)
+                    ap_fixed_pod_t dist_bits = hbm_word.range(
+                        (j + 1) * DISTANCE_BITWIDTH - 1,  // end_bit
+                        j * DISTANCE_BITWIDTH             // start_bit
+                    );
+
+                    // 2. 将 32-bit 重新解释为 distance_t (ap_fixed) 以便打印
+                    distance_t dist_float = *reinterpret_cast<distance_t *>(&dist_bits);
+
+                    // 3. 打印
+                    DBGPRINTF("    -> NodeID=%d, Distance=%f (Raw bits: 0x%X)\n", 
+                              current_node_id, 
+                              (float)dist_float,
+                              (unsigned int)dist_bits);
+                }
+            }
+            #endif
+            // DEBUG
+
             one_ppb_response.addr = addr;
             one_ppb_response.data = hbm_word;
-            one_ppb_response.end_flag = (i == num_wide_reads - 1) ? true : false;
+            one_ppb_response.end_flag = false;//(i == num_wide_reads - 1) ? true : false;
             ppb_response_stm.write(one_ppb_response);
 
             
@@ -199,6 +238,9 @@ static void hbm_memory_reader_logic(
                 nodes_sent_to_dist_stream += num_dists_per_burst;
             }
         }
+
+        one_ppb_response.end_flag = true;
+        ppb_response_stm.write(one_ppb_response);
     }
 }
 /*
@@ -364,6 +406,7 @@ static void ping_pong_buffer_manager(
    
 }
 */
+
 static void ping_pong_buffer_manager(
     hls::stream<ppb_request_dt>     &ppb_request_stm,
     hls::stream<ppb_response_dt>    &ppb_response_stm,
@@ -388,10 +431,10 @@ static void ping_pong_buffer_manager(
     edge_descriptor_batch_t an_edge_desc_batch;
     node_id_burst_t a_src_id_burst;
     bool data_valid = false; 
-    
-    // 跟踪HBM加载状态
-    bool hbm_load_complete = false;
+    bool response_valid = false;
 
+    bool hbm_load_complete = false;
+    
     //DBGPRINTF("DEBUG PPB_MGR: Starting...\n");
 
     scatterLoop:
@@ -399,29 +442,46 @@ static void ping_pong_buffer_manager(
     {
 #pragma HLS PIPELINE II=1
 
-        if(!hbm_load_complete && !ppb_response_stm.empty()){
-            one_ppb_response = ppb_response_stm.read();
+        if(!hbm_load_complete && !ppb_response_stm.empty() && !response_valid ){
+            one_ppb_response = ppb_response_stm.read();//HBM持续发送，应该在这里持续接收
             if(one_ppb_response.end_flag){
-                //DBGPRINTF("DEBUG HBM_READ: Received END_FLAG. HBM load complete.\n");
+                DBGPRINTF("DEBUG HBM_READ: Received END_FLAG. HBM load complete.\n");
                 hbm_load_complete = true;
             }
+            else{
+                pp_write_round = one_ppb_response.addr << 4 >> LOG2_SRC_BUFFER_SIZE;
+                response_valid = true;
+            }
             
-            pp_write_round = one_ppb_response.addr << 4 >> LOG2_SRC_BUFFER_SIZE;
+        }
+        
+        if(pp_write_round <= pp_read_round + 1 && response_valid){
+            
             bool write_buffer = pp_write_round & 0x1;
             uint write_idx = one_ppb_response.addr & ((SRC_BUFFER_SIZE >> 4) - 1);
             ap_uint<512> one_read_burst = one_ppb_response.data; 
 
-            //DBGPRINTF("DEBUG HBM_READ: new pp_write_round: %d\n", (int)pp_write_round);
-            //DBGPRINTF("DEBUG HBM_READ: write_addr: %d, write_buffer: %d, write_idx: %d\n", 
-            //    (int)one_ppb_response.addr, (int)write_buffer, (int)write_idx);
+            DBGPRINTF("DEBUG HBM_READ: new pp_write_round: %d\n", (int)pp_write_round);
+             DBGPRINTF("DEBUG HBM_READ: write_addr: %d, write_buffer: %d, write_idx: %d\n", 
+                 (int)one_ppb_response.addr, (int)write_buffer, (int)write_idx);
+             
+             #ifdef DEBUG
+                 for(int i = 0;i<16;i++){
+                     ap_uint<32> src_prop = one_read_burst.range(31 + (i << 5), (i << 5)); 
+                     DBGPRINTF("DEBUG ping pong id:%d,prop:%f\n",(int)one_ppb_response.addr * 16 + i,(uint)src_prop / 65536.0) ; 
+                 }
+             #endif
 
             for (int u = 0; u < SCATTER_PE_NUM; u++){
             #pragma HLS UNROLL
                 src_prop_buffer[u][write_buffer][write_idx] = one_read_burst;
             }
             //DBGPRINTF("DEBUG HBM_READ: Wrote data to BRAM.\n");
+
+            response_valid = false;
         }
-        
+
+
         if (!data_valid) {
             bool is_empty = edge_batch_stream.empty();
         
@@ -432,26 +492,34 @@ static void ping_pong_buffer_manager(
                 data_valid = true; 
                 //DBGPRINTF("DEBUG DATA_READ: Acquired data. data_valid set to true.\n");
             }
+            else{
+                DBGPRINTF("DEBUG edge_batch_stream ends.\n");
+            }
         }
         
         if (data_valid) {
 
+            //bool is_empty = edge_batch_stream.empty();
+            //    if(is_empty){
+            //        DBGPRINTF("in empty\n");
+            //    }
+            //an_edge_desc_batch = edge_batch_stream.read();
+            //a_src_id_burst = stream_src_id.read();
             uint32_t current_pp_read_round = (a_src_id_burst.data[0].range(30, 0) / SRC_BUFFER_SIZE);
             
 
-            if (!hbm_load_complete && (current_pp_read_round >= pp_write_round)) {// !hbm_load_complete && (current_pp_read_round >= pp_write_round)
-                //DBGPRINTF("DEBUG PROCESS: STALL! read_round %d > write_round %d. Waiting...\n", 
-                    //(int)current_pp_read_round, (int)pp_write_round);
+            if (!hbm_load_complete && (current_pp_read_round >= pp_write_round)) {
+                DBGPRINTF("DEBUG PROCESS: STALLL! read_round %d >= write_round %d. Waiting...\n", 
+                    (int)current_pp_read_round, (int)pp_write_round);
             } 
             else {
-               
-                DBGPRINTF("DEBUG PROCESS: OK. (curr_read %d <= write %d). Processing packet...\n", 
-                    (int)current_pp_read_round, (int)pp_write_round);
+                //DBGPRINTF("DEBUG PROCESS: OK. (curr_read %d <= write %d). Processing packet...\n", 
+                //    (int)current_pp_read_round, (int)pp_write_round);
                 
                 pp_read_round = current_pp_read_round;
                 
                 bool read_buffer = pp_read_round & 0x1;
-                DBGPRINTF("DEBUG PROCESS: Global pp_read_round=%d, read_buffer=%d.\n", (int)pp_read_round, (int)read_buffer);
+                DBGPRINTF("DEBUG PROCESS: Global pp_read_round=%d, write round : %d read_buffer=%d.\n", (int)pp_read_round, (int)pp_write_round,(int)read_buffer);
                 
                 edge_batch_t output_batch;
                 
@@ -459,39 +527,57 @@ static void ping_pong_buffer_manager(
                 
                 for (int u = 0; u < PE_NUM; u ++){ 
                 #pragma HLS UNROLL
+                if (u < an_edge_desc_batch.end_pos){
                     node_id_t src_id = a_src_id_burst.data[u];
 
                     if((uint) src_id != uINF){
-                    ap_uint<31> idx = (src_id.range(30, 0) % SRC_BUFFER_SIZE);
-                    ap_uint<30> uram_row_idx = idx >> 4; 
-                    ap_uint<30> uram_row_offset = (idx & 0xf);
-
-                    ap_uint<512> uram_row = src_prop_buffer[u][read_buffer][uram_row_idx];
-                    ap_uint<32> src_prop = uram_row.range(31 + (uram_row_offset << 5), (uram_row_offset << 5));   
-
-                    output_batch.src_distances[u] = src_prop;
-                    output_batch.dsts[u] = an_edge_desc_batch.edges[u].node_id;
-                    output_batch.weights[u] = an_edge_desc_batch.edges[u].prop;
-                    
-                    end = end+1;
-                    DBGPRINTF("DEBUG src_id:%u src_prop :%f\n", src_id, (double)src_prop / 65536.0);
+                        ap_uint<31> idx = (src_id.range(30, 0) % SRC_BUFFER_SIZE);
+                        ap_uint<30> uram_row_idx = idx >> 4; 
+                        ap_uint<30> uram_row_offset = (idx & 0xf);
+                        
+                        ap_uint<512> uram_row = src_prop_buffer[u][read_buffer][uram_row_idx];
+                        ap_uint<32> src_prop = uram_row.range(31 + (uram_row_offset << 5), (uram_row_offset << 5));   
+                        
+                        output_batch.src_distances[u] = src_prop;
+                        output_batch.dsts[u] = an_edge_desc_batch.edges[u].node_id;
+                        output_batch.weights[u] = an_edge_desc_batch.edges[u].prop;
+                        
+                        end = end+1;
+                        DBGPRINTF("DEBUG idx:%d,row_idx:%d,row_offset:%d       ",idx,uram_row_idx,uram_row_offset);
+                        DBGPRINTF("DEBUG src_id:%u , dst_id : %u, src_prop :%f\n", src_id,an_edge_desc_batch.edges[u].node_id, (uint)src_prop / 65536.0);
                     }
                     else{
-                    output_batch.src_distances[u] = 16384;
-                    output_batch.dsts[u] = -1;
-                    output_batch.weights[u] = 0;
-                    DBGPRINTF("DEBUG Find pseudo edge\n");
-                    }
+                        output_batch.src_distances[u] = 16384;
+                        output_batch.dsts[u] = uINF;
+                        output_batch.weights[u] = 0;
+                        DBGPRINTF("DEBUG Find pseudo edge : src %u\n",src_id);
 
-                    
+                    }
+                }
+                else{
+                    output_batch.src_distances[u] = 0;
+                    output_batch.dsts[u] = 0;
+                    output_batch.weights[u] = 0;
+                }
+                
+                 
                 }
                 
                 output_batch.end_pos = end;//an_edge_desc_batch.end_pos;
-                DBGPRINTF("DEBUG: endpos at :%d\n",an_edge_desc_batch.end_pos);
+                
                 output_batch.end_flag = false; 
                 stream_edge_data.write(output_batch);
                 
                 edge_transferred_cnt +=8;
+                DBGPRINTF("DEBUG: endpos at :%d,transferrred:%d,total : %d\n",an_edge_desc_batch.end_pos,edge_transferred_cnt,num_edges);
+                if(edge_transferred_cnt >= num_edges){
+                    DBGPRINTF("DEBUG PPB_MGR: DONE. Exiting num edges %d.\n",edge_transferred_cnt);
+                    edge_batch_t end_batch;
+                    end_batch.end_flag = true;
+                    end_batch.end_pos = 0;
+                    stream_edge_data.write(end_batch);
+                    break;
+                }
                 //DBGPRINTF("DEBUG PROCESS: Batch written to output. Total edges: %d\n", (int)edge_transferred_cnt);
                 
                 // 标记数据包已消耗
@@ -500,31 +586,33 @@ static void ping_pong_buffer_manager(
             }
         }
 
-        if(edge_transferred_cnt >= num_edges){ 
-            //DBGPRINTF("DEBUG EXIT: Target edge count %d reached.\n", (int)num_edges);
-            
-            exitscatter:
-            while(!hbm_load_complete){
-            #pragma HLS PIPELINE
-                //DBGPRINTF("DEBUG EXIT: Flushing HBM response stream...\n");
-                if (!ppb_response_stm.empty()) {
-                     ppb_response_stm.read(one_ppb_response); 
-                     if (one_ppb_response.end_flag) {
-                         //DBGPRINTF("DEBUG EXIT: HBM flush complete (found end_flag).\n");
-                         hbm_load_complete = true;
-                         break;
-                     }
-                }
-            }
-            DBGPRINTF("DEBUG PPB_MGR: DONE. Exiting.\n");
-                edge_batch_t end_batch;
-                end_batch.end_flag = true;
-                end_batch.end_pos = 0;
-                stream_edge_data.write(end_batch);
-            break;
-        }   
+        // if(edge_transferred_cnt >= num_edges){ 
+        //     //DBGPRINTF("DEBUG EXIT: Target edge count %d reached.\n", (int)num_edges);
+        //     
+        //     exitscatter:
+        //     while(!hbm_load_complete){
+        //     #pragma HLS PIPELINE
+        //         //DBGPRINTF("DEBUG EXIT: Flushing HBM response stream...\n");
+        //         if (!ppb_response_stm.empty()) {
+        //              ppb_response_stm.read(one_ppb_response); 
+        //              if (one_ppb_response.end_flag) {
+        //                  //DBGPRINTF("DEBUG EXIT: HBM flush complete (found end_flag).\n");
+        //                  hbm_load_complete = true;
+        //                  break;
+        //              }
+        //         }
+        //     }
+        //     DBGPRINTF("DEBUG PPB_MGR: DONE. Exiting num edges %d.\n",edge_transferred_cnt);
+        //         edge_batch_t end_batch;
+        //         end_batch.end_flag = true;
+        //         end_batch.end_pos = 0;
+        //         stream_edge_data.write(end_batch);
+        //     break;
+        // }   
     }
 }
+
+
 
 ap_fixed_pod_t get_val_from_256_bus(const ap_uint<256> bus, int offset) {
 #pragma HLS INLINE
@@ -612,7 +700,12 @@ static void node_property_responder(
         for (uint32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
         #pragma HLS UNROLL
             dist_batch.data[pe_idx] = get_val_from_256_bus(node_distance_burst, pe_idx);
+
+                #ifdef DEBUG
+                //DBGPRINTF("DEBUG node property responder id : %d,dst: %f\n",node_burst_idx*8 + pe_idx,((uint)dist_batch.data[pe_idx]) / 65536.0);
+                #endif
         }
+
 
         const int32_t remaining_nodes = num_nodes - base_idx;
         dist_batch.end_pos = (remaining_nodes < PE_NUM) ? remaining_nodes : PE_NUM;
@@ -628,8 +721,10 @@ static void node_property_responder(
 static void final_writeback(hls::stream<internal_end_data_batch_t> &in_stream,
                             bus_word_t *out_ddr) {
     const int bits_per_output =
-        NODE_ID_BITWIDTH + DISTANCE_BITWIDTH + OUT_END_MARKER_BITWIDTH;
-    const int outputs_per_word = AXI_BUS_WIDTH / bits_per_output;
+        NODE_ID_BITWIDTH + DISTANCE_BITWIDTH + OUT_END_MARKER_BITWIDTH;// 68?
+
+
+    const int outputs_per_word = AXI_BUS_WIDTH / bits_per_output;// 7?
 
     bus_word_t write_word = 0;
     int pack_count = 0;
@@ -645,6 +740,12 @@ LOOP_WRITEBACK_MAIN:
             for (int i = 0; i < in_batch.end_pos; i++) {
 #pragma HLS UNROLL
                 node_with_prop_t item = in_batch.data[i];
+
+                DBGPRINTF("DEBUG [final_writeback] Packing output: node_id=%u, distance_as_float=%f\n", 
+                          (unsigned int)item.node_id, 
+                          (float)*reinterpret_cast<distance_t *>(&item.prop));
+
+
                 ap_uint<bits_per_output> packed_output;
                 // DBGPRINTF("[LITTLE]Packing output: node_id=%d, distance=%f\n",
                 // (int)item.node_id, (float)*reinterpret_cast<distance_t
@@ -723,6 +824,11 @@ LOOP_WHILE_79:
 #pragma HLS UNROLL
             out_batch.data[i].key = key_batch.data[i];
             out_batch.data[i].transform = transform_batch.data[i];
+
+            if(out_batch.data[i].key == 1721){
+                 DBGPRINTF("DEBUG zipper 3 special case key: %d id %d,transform: %f\n",out_batch.data[i].key , out_batch.data[i].transform.node_id , ((uint)out_batch.data[i].transform.prop) / 65536.0) ;
+             }
+            
         }
         out_batch.end_flag = key_batch.end_flag;
         out_batch.end_pos = key_batch.end_pos;
@@ -777,7 +883,7 @@ LOOP_WHILE_81:
             distance_t rhs_68 = *reinterpret_cast<distance_t *>(
                 &in_batch_i_global_data_3.data[i]);
             distance_t temp_BinOp_68_o_0_ap_result;
-            temp_BinOp_68_o_0_ap_result = (lhs_68 + rhs_68);
+            temp_BinOp_68_o_0_ap_result = (lhs_68 + rhs_68); 
             fused_temp_BinOp_68_o_0 = *reinterpret_cast<ap_fixed_pod_t *>(
                 &temp_BinOp_68_o_0_ap_result);
             // Inlining Gathe_179
@@ -787,6 +893,14 @@ LOOP_WHILE_81:
             // -- Inline sub graph end --
             out_batch_intermediate_key.data[i] = key_out_elem;
             out_batch_intermediate_transform.data[i] = transform_out_elem;
+
+
+            DBGPRINTF("DEBUG preprocess key:%d, id:%d , prop:%f\n",key_out_elem,transform_out_elem.node_id,  (uint)transform_out_elem.prop / 65536.0);
+            #ifdef DEBUG
+                if(key_out_elem == 1721){
+                    DBGPRINTF("DEBUG preprocess find special case: lhs : %f , rhs:%f\n",lhs_68.to_double(),rhs_68.to_double());
+                }
+            #endif
         }
         out_batch_intermediate_key.end_flag = in_batch_i_global_data_0.end_flag;
         out_batch_intermediate_key.end_pos = in_batch_i_global_data_0.end_pos;
@@ -845,11 +959,11 @@ inline void set_val(reduce_word_t &word, int idx, distance_t val) {
     }
 }
 
-
+// 修改，忽略无效边
 static void
 Reduc_105_unit_reduce(hls::stream<struct_kbu_50_t> &in_kt_pair_stream,
                       hls::stream<internal_end_data_batch_t> &o_0,
-                      int32_t dst_num) { // <-- 函数签名已修改
+                      int32_t dst_num) {
     // --- Phase 1: Memory Declaration ---
     // (此部分保持不变)
     const int MEM_SIZE =
@@ -914,15 +1028,17 @@ LOOP_AGGREGATE_LITTLE:
                 if (pe < in_batch.end_pos) {
                     int key = in_batch.data[pe].key;
 
-                    // if((uint) key == uINF){
-                    //     DBGPRINTF("DEBUG REDUCE find pseudo edge\n");
-                    //         continue;
-                    // }
+                    if((uint) key == uINF){
+                         DBGPRINTF("DEBUG REDUCE find pseudo edge\n");
+                             continue;
+                     }
+
                     // 
                     // DBGPRINTF("DEBUG REDUCE key : %d\n",key);
-                    // ap_fixed_pod_t incoming_dist_pod =
-                    //     in_batch.data[pe].transform.prop;
-                    
+                    ap_fixed_pod_t incoming_dist_pod =
+                         in_batch.data[pe].transform.prop;
+
+
                     // Note: In the original code, key_to_addr_map was PE-specific.
                     // It's more efficient to have a single shared map if the mapping is the same.
                     // Using a non-PE-specific map here for optimization.
@@ -994,6 +1110,13 @@ LOOP_DRAIN_OPTIMIZED:
 
         distance_t min_dist = (distance_t)INFINITY_DIST;
 
+
+        if((uint) key == uINF){
+            //DBGPRINTF("DEBUG REDUCE find pseudo edge\n");
+            continue;
+        }
+
+
     LOOP_MERGE_PES:
         for (int pe = 0; pe < PE_NUM; pe++) {
 #pragma HLS UNROLL
@@ -1009,6 +1132,9 @@ LOOP_DRAIN_OPTIMIZED:
             }
         }
 
+
+
+        DBGPRINTF("DEBUG REDUCE key:%d ,min_dist : %f\n",key,min_dist.to_double());
         // 无需 'valid_found' 标志，因为保证key有效，min_dist一定会被更新。
         data_pack.data[data_pack.end_pos].prop = *reinterpret_cast<ap_fixed_pod_t *>(&min_dist);
         data_pack.data[data_pack.end_pos].node_id = key;
@@ -1032,6 +1158,9 @@ LOOP_DRAIN_OPTIMIZED:
     data_pack.end_pos = 0;
     o_0.write(data_pack);
 }
+
+
+
 static void Scatt_234(hls::stream<struct_sbu_7_t> &i_0,
                       hls::stream<struct_abu_9_t> &o_0,
                       hls::stream<struct_nbu_11_t> &o_1,
@@ -1182,10 +1311,20 @@ LOOP_WHILE_99:
     LOOP_FOR_98:
         for (uint32_t i = 0; i < PE_NUM; i++) {
 #pragma HLS UNROLL
-            out_batch_o_0_edge_src_distance.data[i] =
-                in_batch_i_0_edge_id.src_distances[i];
+            
+            #ifdef DEBUG
+            if((uint)in_batch_i_0_edge_id.dsts[i] == uINF){
+                DBGPRINTF("DEBUG memor 274 find pseudo edge\n");
+                
+            }
+            #endif
+
+            out_batch_o_0_edge_src_distance.data[i] =in_batch_i_0_edge_id.src_distances[i];
             out_batch_o_0_edge_dst.data[i] = in_batch_i_0_edge_id.dsts[i];
             out_batch_o_0_edge_weight.data[i] = in_batch_i_0_edge_id.weights[i];
+
+            DBGPRINTF("DEBUG memor 274 src_distance:%f, dst:%u \n",(uint) in_batch_i_0_edge_id.src_distances[i] / 65536.0,out_batch_o_0_edge_dst.data[i]);
+
         }
         end_flag = in_batch_i_0_edge_id.end_flag;
         end_pos = in_batch_i_0_edge_id.end_pos;
@@ -1334,6 +1473,8 @@ LOOP_WHILE_107:
                 *reinterpret_cast<distance_t *>(&in_batch_i_0.data[i]);
             distance_t rhs_128 =
                 *reinterpret_cast<distance_t *>(&in_batch_i_1.data[i]);
+
+            
             distance_t temp_BinOp_128_o_0_ap_result;
             temp_BinOp_128_o_0_ap_result =
                 (((lhs_128) < (rhs_128) ? lhs_128 : rhs_128));
@@ -1342,6 +1483,8 @@ LOOP_WHILE_107:
             // Inlining Gathe_288
             out_batch_o_0.data[i].prop = fused_temp_BinOp_128_o_0;
             out_batch_o_0.data[i].node_id = in_batch_i_2.data[i];
+
+            DBGPRINTF("DEBUG fused op id: %d , lhs , %f, rhs %f\n",out_batch_o_0.data[i].node_id,lhs_128 .to_double(),rhs_128.to_double() );
             // -- End Inlining FusedOp fused_op_294 --
         }
         end_flag = in_batch_i_0.end_flag;
@@ -1460,51 +1603,6 @@ LOOP_SIL_READ:
         nodes_read += num_ids_per_word;
     }
 
-/*
-/ node based:
-    const int num_ids_per_word = AXI_BUS_WIDTH / NODE_ID_BITWIDTH;
-    const int num_wide_reads =
-        (num_nodes + num_ids_per_word - 1) / num_ids_per_word;
-
-    int nodes_read = 0;
-    int burst_idx = 0;
-    node_id_burst_t burst1, burst2;
-LOOP_SIL_READ:
-    for (int i = 0; i < num_wide_reads; i++) {
-#pragma HLS PIPELINE II = 2
-        bus_word_t wide_word = src_ids[i];
-
-    LOOP_SIL_UNPACK:
-        for (int j = 0; j < 8; j++) {
-#pragma HLS UNROLL
-            if (nodes_read + j < num_nodes) {
-                node_id_t cur_id = wide_word.range(
-                    (j + 1) * NODE_ID_BITWIDTH - 1, j * NODE_ID_BITWIDTH);
-                burst1.data[j] = cur_id;
-                DBGPRINTF("Loaded node ID %d at burst %d, position %d\n",
-                (int)cur_id, burst_idx, j);
-            }
-        }
-        bool burst2_valid = false;
-        for (int j = 8; j < 16; j++) {
-#pragma HLS UNROLL
-            if (nodes_read + j < num_nodes) {
-                burst2.data[j - 8] = wide_word.range(
-                    (j + 1) * NODE_ID_BITWIDTH - 1, j * NODE_ID_BITWIDTH);
-                burst2_valid |= true;
-                DBGPRINTF("Loaded node ID %d at burst %d, position %d\n",
-                (int)burst2.data[j - 8], burst_idx + 1, j - 8);
-            }
-        }
-        stream_src_ids_1.write(burst1);
-
-        if (burst2_valid) {
-            stream_src_ids_1.write(burst2);
-
-        }
-        nodes_read += num_ids_per_word;
-    }
-*/
     
     DBGPRINTF("DEBUG:load done\n");
     edge_descriptor_loader(edge_props, edge_stream, num_edges);
@@ -1582,6 +1680,7 @@ LOOP_SIL_READ:
     DBGPRINTF("start memor231\n");
     Memor_231(stream_o_0_node_id_232, stream_o_1_250);
     // --- Start of Reduce Super-Block for Reduc_105 ---
+    
     Reduc_105_pre_process(stream_o_0_node_id_232, stream_o_0_249,
                           stream_o_0_236, stream_o_2_238, intermediate_key,
                           intermediate_transform);

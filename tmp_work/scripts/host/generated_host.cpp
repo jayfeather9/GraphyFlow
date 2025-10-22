@@ -5,6 +5,20 @@
 #include <map>
 #include <vector>
 
+
+#define DEBUG
+#ifdef DEBUG
+    #define DBGPRINTF(...) \
+        do { \
+            printf(__VA_ARGS__); \
+            fflush(NULL); \
+        } while (0)
+#else
+    #define DBGPRINTF(...) do { } while (0)
+#endif
+
+int32_t total_edges_packed = 0; // 跟踪已打包的边总数
+
 AlgorithmHost::AlgorithmHost(AccDescriptor &acc) : acc(acc) {}
 
 void AlgorithmHost::prepare_data(const PartitionContainer &container,
@@ -245,7 +259,7 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
 
         // --- 状态跟踪变量 ---
         uint32_t last_src_buffer_idx = 0xFFFFFFFF; // 初始为无效值
-        uint64_t total_edges_packed = 0; // 跟踪已打包的边总数
+        
 
         // --- 预先序列化“伪边”以提高效率 ---
         char pseudo_edge_bytes[bytes_per_edge_prop];
@@ -680,8 +694,9 @@ void AlgorithmHost::execute_kernel_iteration(
         // OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.node_props_buf));
         OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.output_buf));
         OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_vertices));
-        OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_edges));
+        OCL_CHECK(err, err = kernel.setArg(arg_idx++, total_edges_packed));//修改。在这里添加上伪边的数量,不是p_graph.num_edges
 
+        DBGPRINTF("DEBUG HOST valid edges:%d , total edges:%d\n",p_graph.num_edges,total_edges_packed);
 
 
         // Assuming dst_num is required, using num_vertices as a placeholder.
@@ -725,10 +740,19 @@ void AlgorithmHost::transfer_data_from_fpga() {
                       little_kernel_host_outputs[i].data()));
     }
 
+
+
+
     // Wait for all transfers to complete
     for (auto &q : acc.big_gs_queue) q.finish();
     for (auto &q : acc.little_gs_queue) q.finish();
     std::cout << "[SUCCESS] All results transferred from HBM." << std::endl;
+
+    // DEBUG
+
+    //little_kernel_host_outputs
+
+    // DEBUG 
 }
 
 bool AlgorithmHost::check_convergence_and_update(const PartitionContainer &container) {
