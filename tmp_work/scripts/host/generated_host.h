@@ -24,9 +24,9 @@ struct WriterKernelBuffers {
     cl::Buffer output_buf;     // Buffer for final output
 };
 
-struct ApplyKernelBuffers {
-    cl::Buffer node_props_buf; // Buffer for node properties (distances)
-};
+// struct ApplyKernelBuffers {
+//     cl::Buffer node_props_buf; // Buffer for node properties (distances)
+// };
 
 struct HostInputBuffers {
     std::vector<bus_word_t, aligned_allocator<bus_word_t>> packed_edge_props;
@@ -44,10 +44,12 @@ class AlgorithmHost {
     void update_data(const PartitionContainer &container);
     void transfer_data_to_fpga(const PartitionContainer &container);
     void execute_kernel_iteration(
-    const PartitionContainer &container,
-    std::vector<cl::Event> &big_kernel_events,
-    std::vector<cl::Event> &little_kernel_events,
-    cl::Event &hbm_writer_event, cl::Event &apply_kernel_event);
+        const PartitionContainer &container,
+        std::vector<cl::Event> &big_kernel_events,
+        std::vector<cl::Event> &little_kernel_events,
+        std::vector<cl::Event> &apply_kernel_events,
+        cl::Event &hbm_writer_event
+    );
     void transfer_data_from_fpga();
     bool check_convergence_and_update(const PartitionContainer &container);
     const std::vector<int> &get_results() const;
@@ -73,7 +75,7 @@ class AlgorithmHost {
     // std::vector<std::vector<bus_word_t, aligned_allocator<bus_word_t>>>
     //     little_kernel_host_outputs;
 
-    ApplyKernelBuffers apply_kernel_buffers;
+    // ApplyKernelBuffers apply_kernel_buffers;
 
     // Buffer containers for HBM writer kernels (one entry per writer kernel
     // instance)
