@@ -12,9 +12,11 @@
 #define PE_NUM 8
 #define DBL_PE_NUM 16
 #define LOG_PE_NUM 3
-// #define MAX_NUM 512
-#define MAX_NUM 524288
+#define MAX_NUM 10000
+// #define MAX_NUM 65536
 #define L 4
+#define SRC_BUFFER_SIZE 4096
+#define LOG_SRC_BUFFER_SIZE 12
 
 // --- New Bitwidth Definitions for HLS Synthesis ---
 #define NODE_ID_BITWIDTH 32
@@ -51,8 +53,8 @@ typedef ap_fixed<DISTANCE_BITWIDTH, DISTANCE_INTEGER_PART> distance_t;
 typedef ap_uint<OUT_END_MARKER_BITWIDTH> out_end_marker_t;
 typedef ap_axiu<256, 0, 0, 0> node_dist_pkt_t;
 typedef ap_axiu<512, 0, 0, 0> write_burst_pkt_t;
-typedef ap_axiu<32, 0, 0, 8> cacheline_request_pkt_t;
-typedef ap_axiu<512, 0, 0, 8> cacheline_response_pkt_t;
+typedef ap_axiu<32, 0, 0, 0>   ppb_request_pkt_t;
+typedef ap_axiu<512, 0, 0, 32> ppb_response_pkt_t;
 typedef ap_axiu<512, 0, 0, 0> cacheline_data_pkt_t;
 
 // --- Struct Type Definitions (UNCHANGED) ---
@@ -271,18 +273,16 @@ struct __attribute__((packed)) net_wrapper_kt_pair_105_t_t {
 
 // --- Top-Level Function Prototype ---
 extern "C" void
-graphyflow_big(const bus_word_t *edge_props,
-               //    const bus_word_t *node_props,
-               //    bus_word_t *output,
+graphyflow_little(const bus_word_t *edge_props,
                int32_t num_nodes, int32_t num_edges, int32_t dst_num,
-               hls::stream<cacheline_request_pkt_t> &cacheline_req_stream,
-               hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream,
+               hls::stream<ppb_request_pkt_t> &ppb_req_stream,
+               hls::stream<ppb_response_pkt_t> &ppb_resp_stream,
                hls::stream<write_burst_pkt_t> &kernel_out_stream);
 
 extern "C" void
 hbm_writer(bus_word_t *node_props, bus_word_t *output, uint32_t dst_num,
-           hls::stream<cacheline_request_pkt_t> &cacheline_req_stream,
-           hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream,
+           hls::stream<ppb_request_pkt_t> &ppb_req_stream,
+           hls::stream<ppb_response_pkt_t> &ppb_resp_stream,
            hls::stream<cacheline_data_pkt_t> &cacheline_data_stream,
            hls::stream<write_burst_pkt_t> &write_burst_stream);
 

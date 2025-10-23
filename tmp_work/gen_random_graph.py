@@ -128,16 +128,16 @@ def main():
             f.write(" ".join(map(str, edge_info)) + "\n")
 
     # generate a "1 -> 2;" graphviz representation to a file 524289 vertices, 15483988 edges.
-    # with open("graph.dot", "w") as f:
-    #     f.write("digraph G {\n")
-    #     for edge_info in graph:
-    #         if args.have_weight:
-    #             u, v, w = edge_info
-    #             f.write(f"    {u} -> {v} [label={w}];\n")
-    #         else:
-    #             u, v = edge_info
-    #             f.write(f"    {u} -> {v};\n")
-    #     f.write("}\n")
+    with open("graph.dot", "w") as f:
+        f.write("digraph G {\n")
+        for edge_info in graph:
+            if args.have_weight:
+                u, v, w = edge_info
+                f.write(f"    {u} -> {v} [label={w}];\n")
+            else:
+                u, v = edge_info
+                f.write(f"    {u} -> {v};\n")
+        f.write("}\n")
 
 
 if __name__ == "__main__":

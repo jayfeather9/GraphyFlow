@@ -72,8 +72,8 @@ AccDescriptor initAccelerator(const std::string xclbin_path) {
         for (int i = 0; i < acc.num_big_krnl; i++) {
             std::string cu_id = std::to_string(i + 1);
             // 构造内核名称，格式为 "kernel_name:{instance_name_ID}"
-            std::string krnl_name_full = std::string("graphyflow_big:{") +
-                                         "graphyflow_big_" + cu_id + "}";
+            std::string krnl_name_full = std::string("graphyflow_little:{") +
+                                         "graphyflow_little_" + cu_id + "}";
 
             cl::Kernel tmp_gs_krnl;
             printf("Creating a big kernel [%s] for CU(%d)\n",

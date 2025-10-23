@@ -764,6 +764,10 @@ bool AlgorithmHost::check_convergence_and_update(
                 distance_t new_dist =
                     *reinterpret_cast<distance_t *>(&dist_pod);
 
+                // printf("[BIG] Unpacked global node %d with distance %f\n",
+                //        global_id, (float)new_dist);
+                // fflush(nullptr);
+
                 if (min_distances.find(global_id) == min_distances.end() ||
                     new_dist < min_distances[global_id]) {
                     min_distances[global_id] = new_dist;
