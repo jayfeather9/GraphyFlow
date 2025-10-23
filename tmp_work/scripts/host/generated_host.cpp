@@ -313,8 +313,8 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
     // markers) Output is num_dst_vertices * DISTANCE_BITWIDTH
     size_t max_dst_local_id = 0;
     for (size_t e = 0; e < p_graph.num_edges; ++e) {
-        int dst = p_graph.columns[e];
-        if (dst > max_dst_local_id) {
+        int dst = p_graph.columns[e]; // get local ID
+        if (((dst & 0x40000000) == 0) && dst > max_dst_local_id) {
             max_dst_local_id = dst;
         }
     }
@@ -344,6 +344,10 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
                   num_dist_words * bytes_per_word, &hbm_ext_writer_in, &err));
     // Create output buffer for writer kernel
     writer_kernel_host_outputs[0].resize(num_output_words);
+    printf(
+        "[HBM Setup] Writer kernel output buffer size: %zu * %zu = %zu bytes\n",
+        num_output_words, bytes_per_word, num_output_words * bytes_per_word);
+    fflush(NULL);
     OCL_CHECK(err, writer_buffers.output_buf = cl::Buffer(
                        acc.context, CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX,
                        num_output_words * bytes_per_word, &hbm_ext_out, &err));
@@ -356,7 +360,8 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
     // hbm_ext_apply.param = 0;
     // OCL_CHECK(err, apply_kernel_buffers.node_props_buf = cl::Buffer(
     //                    acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,
-    //                    num_dist_words * bytes_per_word, &hbm_ext_apply, &err));
+    //                    num_dist_words * bytes_per_word, &hbm_ext_apply,
+    //                    &err));
 
     // --- 1.4: Setup buffers for LITTLE kernels (Dense Partitions) ---
     // for (size_t i = 0; i < container.DPs.size(); ++i) {
@@ -636,7 +641,8 @@ void AlgorithmHost::execute_kernel_iteration(
     auto &apply_kernel = acc.apply_krnl;
     int apply_arg_idx = 0;
     // OCL_CHECK(err, err = apply_kernel.setArg(
-    //                    apply_arg_idx++, apply_kernel_buffers.node_props_buf));
+    //                    apply_arg_idx++,
+    //                    apply_kernel_buffers.node_props_buf));
     OCL_CHECK(err,
               err = apply_kernel.setArg(apply_arg_idx++, p_graph.num_dsts));
     OCL_CHECK(err, err = acc.apply_queue.enqueueTask(apply_kernel, nullptr,
