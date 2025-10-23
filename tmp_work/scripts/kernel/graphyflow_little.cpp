@@ -155,10 +155,10 @@ void request_manager(
 
         pp_read_round = (an_edge_burst.edges[0].src_id / SRC_BUFFER_SIZE);
 
-        if(pp_read_round >= pp_write_round) 
-            wait_flag = 1; 
-        else 
-            wait_flag = 0;
+        wait_flag = (pp_read_round >= pp_write_round) ? 1 : 0;
+
+        bool exit_flag = (wait_flag == 0) ?
+            (edge_set_cnt + 1 >= total_edge_sets) : (edge_set_cnt >= total_edge_sets);
         
         if(!wait_flag){
 
@@ -185,7 +185,7 @@ void request_manager(
             edge_set_cnt ++;
         }
 
-        if (edge_set_cnt >= total_edge_sets){
+        if (exit_flag){
             one_ppb_request.last = 1;
             ppb_request_stm.write(one_ppb_request);
             exitscatter:
