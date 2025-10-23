@@ -10,36 +10,26 @@ typedef struct AccDescriptor {
 
     std::vector<cl::CommandQueue> big_gs_queue;
     std::vector<cl::CommandQueue> little_gs_queue;
-    std::vector<cl::CommandQueue> writer_queue;
-    cl::CommandQueue apply_queue;
+    std::vector<cl::CommandQueue> apply_queue;
+    cl::CommandQueue hbm_writer_queue;
 
     int num_big_krnl = BIG_KERNEL_NUM;
     int num_little_krnl = LITTLE_KERNEL_NUM;
-    int num_writer_krnl = BIG_KERNEL_NUM; // One writer per big kernel
-
-    // std::string big_gs_kernel_name = "bigKernel";
-    // std::string little_gs_kernel_name = "littleKernel";
-    // std::string writer_kernel_name = "hbm_writer";
-    // std::string apply_kernel_name = "applyKernel";
+    int num_apply_krnl = (BIG_KERNEL_NUM + LITTLE_KERNEL_NUM);
 
     std::vector<cl::Kernel> big_gs_krnls;
     std::vector<cl::Kernel> little_gs_krnls;
-    std::vector<cl::Kernel> writer_krnls;
-    cl::Kernel apply_krnl;
+    std::vector<cl::Kernel> apply_krnls;
+    cl::Kernel hbm_writer_krnl;
 
     cl::Context context;
 
     // 新增
-    std::vector<int> big_kernel_hbm_input_id = BIG_KERNEL_HBM_INPUT_ID;
-    std::vector<int> big_kernel_hbm_output_id = BIG_KERNEL_HBM_OUTPUT_ID;
+    std::vector<int> big_kernel_hbm_edge_id = BIG_KERNEL_HBM_EDGE_ID;
+    std::vector<int> big_kernel_hbm_node_id = BIG_KERNEL_HBM_NODE_ID;
 
-    std::vector<int> little_kernel_hbm_input_id = LITTLE_KERNEL_HBM_INPUT_ID;
-    std::vector<int> little_kernel_hbm_output_id = LITTLE_KERNEL_HBM_OUTPUT_ID;
-
-    //
-    // std::vector<int> big_kernel_hbm_stop_flag_id =
-    // BIG_KERNEL_HBM_STOP_FLAG_ID; std::vector<int>
-    // little_kernel_hbm_stop_flag_id = LITTLE_KERNEL_HBM_STOP_FLAG_ID;
+    std::vector<int> little_kernel_hbm_edge_id = LITTLE_KERNEL_HBM_EDGE_ID;
+    std::vector<int> little_kernel_hbm_node_id = LITTLE_KERNEL_HBM_NODE_ID;
 
 } AccDescriptor;
 

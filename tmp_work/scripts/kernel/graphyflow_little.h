@@ -12,7 +12,7 @@
 #define PE_NUM 8
 #define DBL_PE_NUM 16
 #define LOG_PE_NUM 3
-// #define MAX_NUM 10000
+// #define MAX_NUM 512
 #define MAX_NUM 65536
 #define L 4
 #define SRC_BUFFER_SIZE 4096
@@ -279,11 +279,21 @@ graphyflow_little(const bus_word_t *edge_props, int32_t num_nodes,
                   hls::stream<write_burst_pkt_t> &kernel_out_stream);
 
 extern "C" void
-hbm_writer(bus_word_t *node_props, bus_word_t *output, uint32_t dst_num,
-           hls::stream<ppb_request_pkt_t> &ppb_req_stream,
-           hls::stream<ppb_response_pkt_t> &ppb_resp_stream,
-           hls::stream<cacheline_data_pkt_t> &cacheline_data_stream,
-           hls::stream<write_burst_pkt_t> &write_burst_stream);
+hbm_writer(bus_word_t *node_props_1, bus_word_t *node_props_2,
+           bus_word_t *node_props_3, bus_word_t *output_1, bus_word_t *output_2,
+           bus_word_t *output_3, uint32_t dst_num_1, uint32_t dst_num_2,
+           uint32_t dst_num_3, hls::stream<ppb_request_pkt_t> &ppb_req_stream_1,
+           hls::stream<ppb_request_pkt_t> &ppb_req_stream_2,
+           hls::stream<ppb_request_pkt_t> &ppb_req_stream_3,
+           hls::stream<ppb_response_pkt_t> &ppb_resp_stream_1,
+           hls::stream<ppb_response_pkt_t> &ppb_resp_stream_2,
+           hls::stream<ppb_response_pkt_t> &ppb_resp_stream_3,
+           hls::stream<cacheline_data_pkt_t> &cacheline_data_stream_1,
+           hls::stream<cacheline_data_pkt_t> &cacheline_data_stream_2,
+           hls::stream<cacheline_data_pkt_t> &cacheline_data_stream_3,
+           hls::stream<write_burst_pkt_t> &write_burst_stream_1,
+           hls::stream<write_burst_pkt_t> &write_burst_stream_2,
+           hls::stream<write_burst_pkt_t> &write_burst_stream_3);
 
 extern "C" void
 apply_kernel(uint32_t dst_num,
