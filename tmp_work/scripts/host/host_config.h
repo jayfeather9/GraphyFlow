@@ -8,8 +8,8 @@
 
 #define NUM_KERNEL (BIG_KERNEL_NUM + LITTLE_KERNEL_NUM)
 
-#define BIG_KERNEL_HBM_EDGE_ID {0, 2, 4}
-#define BIG_KERNEL_HBM_NODE_ID {1, 3, 5}
+#define BIG_KERNEL_HBM_EDGE_ID {0, 1, 2}
+#define BIG_KERNEL_HBM_NODE_ID {20, 21, 22}
 // #define LITTLE_KERNEL_HBM_EDGE_ID                                             \
 //     {                                                                          \
 //     }

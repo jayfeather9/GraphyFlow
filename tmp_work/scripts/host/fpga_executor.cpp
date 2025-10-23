@@ -112,8 +112,7 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
 
             std::cout << "FPGA Iteration " << iter << ": "
                       << "Apply Kernel, "
-                      << "Time = " << (iteration_time_ns * 1.0e-6) << " ms, "
-                      << "Throughput = " << mteps << " MTEPS" << std::endl;
+                      << "Time = " << (iteration_time_ns * 1.0e-6) << " ms, " << std::endl;
         }
 
         // gather profiling information for hbm writer and apply kernels
@@ -126,7 +125,7 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
                   << "Time = " << (iteration_time_ns * 1.0e-6) << " ms" << std::endl;
 
         iteration_time_ns = current_kernel_time_sec * 1.0e9;
-        total_kernel_time_sec += current_kernel_time_sec;
+        total_kernel_time_sec += end_to_end_time.count();
         current_kernel_time_sec = 0;
         double mteps =
             (double)graph.num_edges / (iteration_time_ns * 1.0e-9) / 1.0e6;
