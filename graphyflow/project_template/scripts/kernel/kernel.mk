@@ -9,7 +9,7 @@ EMCONFIG_FILE := ./emconfig.json
 
 # 1. 在这里定义您所有的内核名称。
 #    这是将来您唯一需要修改的变量。
-KERNEL_NAMES := graphyflow_big graphyflow_little
+KERNEL_NAMES := graphyflow_big hbm_writer apply_kernel
 
 # 2. 定义最终输出的二进制文件的名称。
 XCLBIN_NAME := graphyflow_kernels
@@ -23,6 +23,11 @@ KERNEL_XOS := $(patsubst %,$(XCLBIN_DIR)/%.$(TARGET).xo,$(KERNEL_NAMES))
 # 定义最终 .xclbin 文件的完整路径。
 XCLBIN_FILE := $(XCLBIN_DIR)/$(XCLBIN_NAME).$(TARGET).xclbin
 
+# if defined WAVE then add -g for debug symbols
+ifdef WAVE
+CLFLAGS += -g
+LDFLAGS_VPP += -g
+endif
 
 # --- 编译器和链接器参数 ---
 
@@ -32,6 +37,7 @@ CLFLAGS += -Iscripts/kernel
 CLFLAGS += -Iscripts/host
 CLFLAGS += -I$(XILINX_XRT)/include
 CLFLAGS += -I$(XILINX_VITIS)/include
+CLFLAGS += -O3
 
 # VPP 在链接 .xclbin 文件时使用的参数。
 LDFLAGS_VPP += --config ./system.cfg
@@ -39,6 +45,7 @@ LDFLAGS_VPP += -Iscripts/kernel
 LDFLAGS_VPP += -Iscripts/host
 LDFLAGS_VPP += -I$(XILINX_XRT)/include
 LDFLAGS_VPP += -I$(XILINX_VITIS)/include
+LDFLAGS_VPP += --xp prop:solution.kernel_compiler_margin=10%
 
 
 # --- 构建规则 ---

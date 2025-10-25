@@ -443,7 +443,7 @@ static void ping_pong_buffer_manager(
 #pragma HLS PIPELINE II=1
 
         if(!hbm_load_complete && !ppb_response_stm.empty() && !response_valid ){
-            one_ppb_response = ppb_response_stm.read();//HBM持续发送，应该在这里持续接收
+            ppb_response_stm.read_nb(one_ppb_response);//HBM持续发送，应该在这里持续接收
             if(one_ppb_response.end_flag){
                 DBGPRINTF("DEBUG HBM_READ: Received END_FLAG. HBM load complete.\n");
                 hbm_load_complete = true;
@@ -487,8 +487,8 @@ static void ping_pong_buffer_manager(
         
             if(!is_empty){
                 //DBGPRINTF("DEBUG DATA_READ: Reading from edge/src streams...\n");
-                an_edge_desc_batch = edge_batch_stream.read();
-                a_src_id_burst = stream_src_id.read();
+                edge_batch_stream.read_nb(an_edge_desc_batch);
+                stream_src_id.read_nb(a_src_id_burst);
                 data_valid = true; 
                 //DBGPRINTF("DEBUG DATA_READ: Acquired data. data_valid set to true.\n");
             }

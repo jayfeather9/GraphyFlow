@@ -17,9 +17,8 @@ class HLSBasicType(Enum):
     UINT16 = "uint16_t"
     INT = "int32_t"
     FLOAT = "ap_fixed<32, 16>"
-    NODE_ID = "node_id_t"
-    EDGE_ID = "edge_id_t"
-    AP_FIXED_POD = "ap_fixed_pod_t"
+
+    
     REAL_FLOAT = "float"
     AP_UINT = "ap_uint"
     BOOL = "bool"
@@ -27,6 +26,21 @@ class HLSBasicType(Enum):
     STREAM = "stream"
     ARRAY = "array"
     POINTER = "pointer"
+    AP_AXIU  = "ap_axiu"
+
+    # typedef：
+    NODE_ID = "node_id_t"
+    EDGE_ID = "edge_id_t"
+    BUS_WORD_T = "bus_word_t"
+    AP_FIXED_POD = "ap_fixed_pod_t"
+    DISTANCE_T = "distance_t"
+    OUT_END_MARMER_T = "out_end_marker_t"
+    NODE_DIST_PKT_T="node_dist_pkt_t"
+    WRITE_BURST_PKT_T="write_burst_pkt_t"
+    CACHELINE_REQUEST_PKT_T = "cacheline_request_pkt_t"
+    CACHELINE_RESPONSE_PKT_T = "cacheline_response_pkt_t"
+    CACHELINE_DATA_PKT_T = "cacheline_data_pkt_t"
+
 
     def __repr__(self) -> str:
         return self.value
@@ -38,6 +52,8 @@ class HLSBasicType(Enum):
             HLSBasicType.STREAM,
             HLSBasicType.ARRAY,
             HLSBasicType.POINTER,
+            HLSBasicType.AP_UINT,
+            HLSBasicType.AP_AXIU
         ]
 
 
@@ -57,6 +73,7 @@ class HLSType:
         array_dims: Optional[List[Union[str, int]]] = None,
         is_const_ptr: bool = False,
         width: Optional[int] = None,
+        axiu_config: Optional[Tuple[int, int, int, int]] = None,
     ) -> None:
         self.type = basic_type
         self.sub_types = sub_types
@@ -66,8 +83,18 @@ class HLSType:
         self.is_const_ptr = is_const_ptr
 
         self.width = width  # --- 新增 ---
+        self.axiu_config = axiu_config  # --- 新增 ---
 
-        if basic_type == HLSBasicType.AP_UINT:  # --- 新增 ---
+        if basic_type == HLSBasicType.AP_AXIU:
+            assert axiu_config is not None
+            W = axiu_config[0]
+            U = axiu_config[1]
+            I = axiu_config[2]
+            D = axiu_config[3]
+
+            self.name = f"ap_axiu<{W}, {U}, {I}, {D}>"
+            self.full_name = self.name
+        elif basic_type == HLSBasicType.AP_UINT:  # --- 新增 ---
             assert width is not None
             self.name = f"ap_uint<{width}>"
             self.full_name = self.name

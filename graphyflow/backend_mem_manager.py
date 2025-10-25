@@ -53,10 +53,11 @@ class MemoryAndGraphManager:
         self._build_all_memory_functions()
 
         self.kernel_params: Dict[str, HLSVar] = {
-            "edge_batches": self.memory_loader_func.params[6],
-            "node_distances": self.memory_loader_func.params[7],
-            "writeback_stream": self.final_writeback_func.params[1],
+        # "edge_batches": self.memory_loader_func.params[6],
+        # "node_distances": self.memory_loader_func.params[7],
+        # "writeback_stream": self.final_writeback_func.params[1],
         }
+
 
     def validate_and_analyze(self):
         """
@@ -899,7 +900,8 @@ class MemoryAndGraphManager:
     ) -> HLSFunction:
         func = HLSFunction(name=comp.name, comp=comp)
         remain_ports = copy.deepcopy(comp.ports)
-        if comp == self.pre_reduce_mem_read:
+        # 现有的访存分三个阶段，reduce前，reduce中，reduce后
+        if comp == self.pre_reduce_mem_read: # reduce前
             assert len(comp.in_ports) == 1
             in_port = comp.in_ports[0]
             remain_ports.remove(in_port)
@@ -911,7 +913,9 @@ class MemoryAndGraphManager:
                 )
             )
             self.mem_top_io_map[in_port.readable_id] = self.kernel_params["edge_batches"]
-        elif comp == self.post_reduce_mem_read:
+
+
+        elif comp == self.post_reduce_mem_read: # reduce 后
             new_port = dfir.Port("i_all_node_distances", comp)
             comp.ports.append(new_port)
             comp.in_ports.append(new_port)
@@ -923,7 +927,8 @@ class MemoryAndGraphManager:
                 )
             )
             self.mem_top_io_map[new_port.readable_id] = self.kernel_params["node_distances"]
-        for port in remain_ports:
+
+        for port in remain_ports: # 剩余的 reduce 本身
             if port.connection and isinstance(
                 port.connection.parent, (dfir.UnusedEndMarkerComponent, dfir.ConstantComponent)
             ):

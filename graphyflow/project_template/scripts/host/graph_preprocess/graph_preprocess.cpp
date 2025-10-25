@@ -39,7 +39,8 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
     PartitionContainer container;
     container.num_graph_vertices = graph->num_vertices;
     container.num_graph_edges = graph->num_edges;
-
+    printf("Global graph has %d vertices and %d edges.\n", graph->num_vertices,
+           graph->num_edges);
     const int num_partitions = BIG_KERNEL_NUM + LITTLE_KERNEL_NUM;
     if (num_partitions == 0) {
         std::cerr << "Error: No kernels defined (BIG_KERNEL_NUM and "
@@ -133,14 +134,46 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
                 local_vertices_set.insert(edge.dest);
             }
 
+            // --- 4.1.1: Calculate indegree for destination vertices ---
+            std::unordered_map<int, int> dst_indegree;
+            for (int global_id : partition_dst_nodes) {
+                dst_indegree[global_id] = 0;
+            }
+            for (const auto &edge : partition_edges) {
+                if (partition_dst_nodes.count(edge.dest)) {
+                    dst_indegree[edge.dest]++;
+                }
+            }
+
+            // --- 4.1.2: Sort destination vertices by indegree (descending) ---
+            std::vector<int> sorted_dst_vertices(partition_dst_nodes.begin(),
+                                                 partition_dst_nodes.end());
+            std::sort(sorted_dst_vertices.begin(), sorted_dst_vertices.end(),
+                      [&dst_indegree](int a, int b) {
+                          return dst_indegree[a] > dst_indegree[b];
+                      });
+
+            // --- 4.1.3: Shuffle within each 65536-sized block ---
+            const int BLOCK_SIZE = 65536;
+            for (size_t block_start = 0;
+                 block_start < sorted_dst_vertices.size();
+                 block_start += BLOCK_SIZE) {
+                size_t block_end = std::min(block_start + BLOCK_SIZE,
+                                            sorted_dst_vertices.size());
+                std::random_shuffle(sorted_dst_vertices.begin() + block_start,
+                                    sorted_dst_vertices.begin() + block_end);
+            }
+
             int local_id_counter = 0;
             // First, map destination vertices to guarantee they have
-            // lower-range IDs
-            for (int global_id : partition_dst_nodes) {
+            // lower-range IDs (sorted by indegree descending, then shuffled per
+            // block)
+            for (int global_id : sorted_dst_vertices) {
                 p_graph.vtx_map[global_id] = local_id_counter;
                 p_graph.vtx_map_rev[local_id_counter] = global_id;
                 local_id_counter++;
             }
+            p_graph.num_dsts = partition_dst_nodes.size();
             // Then, map the remaining source vertices
             for (int global_id : local_vertices_set) {
                 if (p_graph.vtx_map.find(global_id) == p_graph.vtx_map.end()) {

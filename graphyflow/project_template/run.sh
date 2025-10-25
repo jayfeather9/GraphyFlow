@@ -3,7 +3,7 @@
 
 # --- *** 关键修正：使其能够处理不同的目标 *** ---
 TARGET=$1
-EXECUTABLE="{{EXECUTABLE_NAME}}"
+EXECUTABLE="graphyflow_host"
 XCLBIN_NAME="graphyflow_kernels"
 
 # 默认目标为 sw_emu
@@ -12,6 +12,8 @@ if [ -z "$TARGET" ]; then
 fi
 
 echo "--- Running for target: $TARGET ---"
+
+export XRT_INI_PATH="./xrt.ini"
 
 # 1. 设置环境变量
 source /home/feiyang/set_env.sh
@@ -38,4 +40,5 @@ fi
 
 # 3. 运行 host 程序
 DATASET="./graph.txt"
+# DATASET="./rmat-19-32.txt"
 ./${EXECUTABLE} ${XCLBIN_FILE} $DATASET

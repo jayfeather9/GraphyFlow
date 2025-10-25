@@ -32,7 +32,7 @@ CXXFLAGS += -I$(XILINX_VITIS)/include
 CXXFLAGS += -I$(XILINX_HLS)/include
 
 # Compiler flags
-CXXFLAGS += -std=c++17 -Wall -g # Added -g for easier debugging
+CXXFLAGS += -std=c++17 -O3 -Wall -g # Added -g for easier debugging
 
 # Linker flags (no changes needed here)
 LDFLAGS := -L$(XILINX_XRT)/lib

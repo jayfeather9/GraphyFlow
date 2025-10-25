@@ -13,13 +13,15 @@ include $(SCRIPTS_PATH)/utils.mk
 include global_para.mk
 
 # Use SCRIPTS_PATH for consistency
-include $(SCRIPTS_PATH)/host/host.mk 
+
 # Remove non-existent makefiles
 # include autogen/autogen.mk
 # include acc_template/acc.mk
 
 # Include our new kernel makefile
 include $(SCRIPTS_PATH)/kernel/kernel.mk
+
+include $(SCRIPTS_PATH)/host/host.mk 
 
 # This include seems to be for Vitis 1.0 examples, not needed here
 # include $(SCRIPTS_PATH)/bitstream.mk
