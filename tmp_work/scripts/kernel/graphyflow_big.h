@@ -292,7 +292,6 @@ struct __attribute__((packed)) net_wrapper_kt_pair_105_t_t {
 
 // --- Top-Level Function Prototype ---
 extern "C" void
-extern "C" void
 graphyflow_big(const bus_word_t *edge_props,
                const bus_word_t *node_props, bus_word_t *output,
                const bus_word_t *node_props_apply, int32_t num_nodes, int32_t num_edges, int32_t dst_num

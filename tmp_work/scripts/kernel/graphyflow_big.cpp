@@ -1311,11 +1311,13 @@ graphyflow_big(const bus_word_t *edge_props,
                const bus_word_t *node_props_apply, int32_t num_nodes, int32_t num_edges, int32_t dst_num
 ) {
 #pragma HLS INTERFACE m_axi port = edge_props offset = slave bundle = gmem0
-// #pragma HLS INTERFACE m_axi port = node_props offset = slave bundle = gmem1
-// #pragma HLS INTERFACE m_axi port = output offset = slave bundle = gmem2
+#pragma HLS INTERFACE m_axi port = node_props offset = slave bundle = gmem1
+#pragma HLS INTERFACE m_axi port = output offset = slave bundle = gmem2
+#pragma HLS INTERFACE m_axi port = node_props_apply offset = slave bundle = gmem3
 #pragma HLS INTERFACE s_axilite port = edge_props
-// #pragma HLS INTERFACE s_axilite port = node_props
-// #pragma HLS INTERFACE s_axilite port = output
+#pragma HLS INTERFACE s_axilite port = node_props
+#pragma HLS INTERFACE s_axilite port = output
+#pragma HLS INTERFACE s_axilite port = node_props_apply
 #pragma HLS INTERFACE s_axilite port = num_nodes
 #pragma HLS INTERFACE s_axilite port = num_edges
 #pragma HLS INTERFACE s_axilite port = dst_num
@@ -1355,11 +1357,11 @@ graphyflow_big(const bus_word_t *edge_props,
 
     // --- New COO-style Source Property Loading Pipeline ---
     dist_req_packer(stream_src_ids, stream_dist_req, num_edges);
+    hls::stream<cacheline_request_pkt_t> cacheline_req_stream;
+#pragma HLS STREAM variable = cacheline_req_stream depth = 16
     cacheline_req_sender(stream_dist_req, cacheline_req_stream);
     // node_property_loader(node_props, stream_cache_req, stream_cache_resp,
     //                      node_distance_burst_stream, num_nodes);
-    hls::stream<cacheline_request_pkt_t> cacheline_req_stream;
-#pragma HLS STREAM variable = cacheline_req_stream depth = 16
     hls::stream<cacheline_response_pkt_t> cacheline_resp_stream;
 #pragma HLS STREAM variable = cacheline_resp_stream depth = 16
     node_property_loader(node_props, cacheline_req_stream,
