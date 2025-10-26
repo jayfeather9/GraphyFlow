@@ -702,17 +702,24 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
                                            struct_name="distance_req_pack_t",
                                            struct_prop_names=["idx", "offset", "end_flag"],
                                            sub_types=[node_id_array_pe_type, ap_uint_4_type, bool_type])
+        if distance_req_pack_t_type.name not in self.struct_definitions:
+            self.struct_definitions[distance_req_pack_t_type.name] = (distance_req_pack_t_type, distance_req_pack_t_type.struct_prop_names)
 
         # Type: edge_descriptor_batch_t
         edge_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
                               struct_name="edge_t",
                               struct_prop_names=["src_id", "dst_id"],
                               sub_types=[node_id_type, node_id_type])
+        if edge_t_type.name not in self.struct_definitions:
+            self.struct_definitions[edge_t_type.name] = (edge_t_type, edge_t_type.struct_prop_names)
+
         edge_array_pe_type = HLSType(HLSBasicType.ARRAY, sub_types=[edge_t_type], array_dims=["PE_NUM"])
         edge_descriptor_batch_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
                                                struct_name="edge_descriptor_batch_t",
                                                struct_prop_names=["edges", "end_pos"],
                                                sub_types=[edge_array_pe_type, int_type])
+        if edge_descriptor_batch_t_type.name not in self.struct_definitions:
+            self.struct_definitions[edge_descriptor_batch_t_type.name] = (edge_descriptor_batch_t_type, edge_descriptor_batch_t_type.struct_prop_names)
 
         # Type: update_tuple_t
         prop_array_pe_type = HLSType(HLSBasicType.ARRAY, sub_types=[ap_fixed_pod_t_type], array_dims=["PE_NUM"])
@@ -720,6 +727,8 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
                                     struct_name="update_tuple_t",
                                     struct_prop_names=["node_id", "prop", "end_flag", "end_pos"],
                                     sub_types=[node_id_array_pe_type, prop_array_pe_type, bool_type, uint8_type])
+        if update_tuple_t_type.name not in self.struct_definitions:
+            self.struct_definitions[update_tuple_t_type.name] = (update_tuple_t_type, update_tuple_t_type.struct_prop_names)
 
         # --- 3. Function Body ---
         code_lines: List[HLSCodeLine] = []
@@ -1132,6 +1141,9 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
                                        struct_name="node_id_burst_t",
                                        struct_prop_names=["data"],
                                        sub_types=[node_id_array_pe_type])
+        if node_id_burst_t_type.name not in self.struct_definitions:
+            self.struct_definitions[node_id_burst_t_type.name] = (node_id_burst_t_type, node_id_burst_t_type.struct_prop_names)
+
         src_id_burst_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[node_id_burst_t_type])
         src_id_burst_stream = HLSVar(var_name="src_id_burst_stream", var_type=src_id_burst_stream_type)
         
@@ -1141,6 +1153,10 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
                                            struct_name="distance_req_pack_t",
                                            struct_prop_names=["idx", "offset", "end_flag"],
                                            sub_types=[node_id_array_pe_type, offset_type, bool_type])
+        
+        if distance_req_pack_t_type.name not in self.struct_definitions:
+            self.struct_definitions[distance_req_pack_t_type.name] = (distance_req_pack_t_type, distance_req_pack_t_type.struct_prop_names)
+
         distance_req_pack_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[distance_req_pack_t_type])
         distance_req_pack_stream = HLSVar(var_name="distance_req_pack_stream", var_type=distance_req_pack_stream_type)
         
@@ -1706,12 +1722,16 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
                               struct_name="edge_t",
                               struct_prop_names=["src_id", "dst_id"],
                               sub_types=[node_id_type, node_id_type])
+        if edge_t_type.name not in self.struct_definitions:
+            self.struct_definitions[edge_t_type.name] = (edge_t_type, edge_t_type.struct_prop_names)
 
         edge_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[edge_t_type], array_dims=["PE_NUM"])
         edge_descriptor_batch_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
                                                struct_name="edge_descriptor_batch_t",
                                                struct_prop_names=["edges", "end_pos"],
                                                sub_types=[edge_array_type, int_type])
+        if edge_descriptor_batch_t_type.name not in self.struct_definitions:
+            self.struct_definitions[edge_descriptor_batch_t_type.name] = (edge_descriptor_batch_t_type, edge_descriptor_batch_t_type.struct_prop_names)
 
         edge_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[edge_descriptor_batch_t_type])
         edge_stream = HLSVar(var_name="edge_stream", var_type=edge_stream_type)
@@ -1723,6 +1743,10 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
                                     struct_name="update_tuple_t",
                                     struct_prop_names=["node_id", "prop", "end_flag", "end_pos"],
                                     sub_types=[node_id_array_pe_type, prop_array_type, bool_type, uint8_type])
+
+        if update_tuple_t_type.name not in self.struct_definitions:
+            self.struct_definitions[update_tuple_t_type.name] = (update_tuple_t_type, update_tuple_t_type.struct_prop_names)
+
 
         edge_batch_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[update_tuple_t_type])
         edge_batch_stream = HLSVar(var_name="edge_batch_stream", var_type=edge_batch_stream_type)
@@ -2003,7 +2027,9 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
                                     struct_prop_names=["node_id", "prop", "end_flag", "end_pos"],
                                     sub_types=[node_id_array_type, prop_array_type, bool_type, uint8_type])
         
-        
+        if update_tuple_t_type.name not in self.struct_definitions:
+            self.struct_definitions[update_tuple_t_type.name] = (update_tuple_t_type, update_tuple_t_type.struct_prop_names)
+
         if update_tuple_t_type.name not in self.struct_definitions:
             self.struct_definitions[update_tuple_t_type.name] = (update_tuple_t_type, update_tuple_t_type.struct_prop_names)
         in_batch_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[update_tuple_t_type])
@@ -2171,6 +2197,8 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
                                                   struct_name="net_wrapper_kt_pair_105_t_t",
                                                   struct_prop_names=["node_id", "prop", "end_flag"],
                                                   sub_types=[node_id_type, ap_fixed_pod_t_type, bool_type])
+        if net_wrapper_kt_pair_105_t_t_type.name not in self.struct_definitions:
+            self.struct_definitions[net_wrapper_kt_pair_105_t_t_type.name] = (net_wrapper_kt_pair_105_t_t_type, net_wrapper_kt_pair_105_t_t_type.struct_prop_names)
 
         stream_type = HLSType(HLSBasicType.STREAM, sub_types=[net_wrapper_kt_pair_105_t_t_type])
 
@@ -2358,7 +2386,9 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
                                                   struct_name="net_wrapper_kt_pair_105_t_t",
                                                   struct_prop_names=["node_id", "prop", "end_flag"],
                                                   sub_types=[node_id_type, ap_fixed_pod_t_type, bool_type])
-        
+        if net_wrapper_kt_pair_105_t_t_type.name not in self.struct_definitions:
+            self.struct_definitions[net_wrapper_kt_pair_105_t_t_type.name] = (net_wrapper_kt_pair_105_t_t_type, net_wrapper_kt_pair_105_t_t_type.struct_prop_names)
+            
         stream_type = HLSType(HLSBasicType.STREAM, sub_types=[net_wrapper_kt_pair_105_t_t_type])
         
         out1_var = HLSVar(var_name="out1", var_type=stream_type)
