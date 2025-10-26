@@ -40,6 +40,7 @@ class HLSBasicType(Enum):
     CACHELINE_REQUEST_PKT_T = "cacheline_request_pkt_t"
     CACHELINE_RESPONSE_PKT_T = "cacheline_response_pkt_t"
     CACHELINE_DATA_PKT_T = "cacheline_data_pkt_t"
+    REDUCE_WORD_T = "reduce_word_t"
 
 
     def __repr__(self) -> str:

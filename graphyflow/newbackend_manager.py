@@ -297,7 +297,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         def write_func_body(func: HLSFunction,is_top):
             nonlocal code
             params_str = ",\n ".join(
-                [p.type.get_upper_param(p.name, p.type.type != HLSBasicType.INT) for p in func.params]
+                [p.type.get_upper_param(p.name, p.type.type != HLSBasicType.INT and p.type.type!= HLSBasicType.UINT) for p in func.params]
             )
             if is_top:
                 code += f"extern \"C\" void\n {func.name}({params_str}) " + "{\n"
@@ -571,7 +571,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         def write_func_sig(func: HLSFunction):
             nonlocal code
             params_str = ",\n ".join(
-                [p.type.get_upper_param(p.name, p.type.type != HLSBasicType.INT) for p in func.params]
+                [p.type.get_upper_param(p.name, p.type.type != HLSBasicType.INT and p.type.type != HLSBasicType.UINT) for p in func.params]
             )
             
             code += f"extern \"C\" void\n {func.name}({params_str} \n);\n\n"
@@ -1109,326 +1109,248 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         #         int32_t num_nodes)
         self.scatter_funcs.append(edge_descriptor_loader_func)
         self.top_dataflow_funcs.append(edge_descriptor_loader_func)
-        # 1. 创建函数对象
+
         dist_req_packer_func = HLSFunction(name="dist_req_packer", comp=comp)
         params = []
-
-        # 2. 定义函数参数和相关类型
-
-        # 2a. 定义 node_id_burst_t 类型 (用于 src_id_burst_stream)
-        # (假设此类型已在之前的函数中定义并缓存)
-        try:
-            node_id_burst_t_type = HLSType._full_to_type[HLSType._name_to_full["node_id_burst_t"]]
-        except KeyError:
-            # 如果未定义，则创建
-            node_id_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[
-                HLSType(HLSBasicType.NODE_ID)
-            ], array_dims=["PE_NUM"])
-            node_id_burst_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
-                                           struct_name="node_id_burst_t",
-                                           struct_prop_names=["data"],
-                                           sub_types=[node_id_array_type])
-        if node_id_burst_t_type.name not in self.struct_definitions:
-                self.struct_definitions[node_id_burst_t_type.name] = (node_id_burst_t_type, node_id_burst_t_type.struct_prop_names)
-
-        src_id_burst_stream = HLSVar(var_name="src_id_burst_stream", var_type=HLSType(HLSBasicType.STREAM, sub_types=[
-            node_id_burst_t_type
-        ]))
-
-        # 2b. 定义 distance_req_pack_t 类型 (用于 distance_req_pack_stream)
-
-        cache_idx_elem_type = HLSType(basic_type=HLSBasicType.AP_UINT, width=1) # 假的 width
-        cache_idx_elem_type.name = "ap_uint<NODE_ID_BITWIDTH - LOG_DIST_PER_WORD>" # 手动覆盖
-        idx_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[HLSType(basic_type=HLSBasicType.NODE_ID)], array_dims=["PE_NUM"])
-
-        # Type for 'offset': ap_uint<4>
-        offset_type = HLSType(basic_type=HLSBasicType.AP_UINT, width=4)
-
-        # Type for 'end_flag': bool
-        end_flag_type = HLSType(basic_type=HLSBasicType.BOOL)
-
-        distance_req_pack_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
-                                            struct_name="distance_req_pack_t",
-                                            struct_prop_names=["idx", "offset", "end_flag"],
-                                            sub_types=[idx_array_type, offset_type, end_flag_type])
-        if distance_req_pack_t_type.name not in self.struct_definitions:
-            self.struct_definitions[distance_req_pack_t_type.name] = (distance_req_pack_t_type, distance_req_pack_t_type.struct_prop_names)        
         
-        distance_req_pack_stream = HLSVar(var_name="distance_req_pack_stream", var_type=HLSType(HLSBasicType.STREAM, sub_types=[
-            distance_req_pack_t_type
-        ]))
-
-        # 2c. 定义 num_nodes
-        num_nodes = HLSVar(var_name="num_nodes", var_type=HLSType(HLSBasicType.INT))
-
-        # 2d. 组合参数
+        # --- 1. Define Types & Params ---
+        
+        # Basic Types
+        int_type = HLSType(HLSBasicType.INT)
+        bool_type = HLSType(HLSBasicType.BOOL)
+        node_id_type = HLSType(HLSBasicType.NODE_ID)
+        
+        # Special ap_uint types
+        cache_idx_elem_type = HLSType(basic_type=HLSBasicType.AP_UINT, 
+                                      width="NODE_ID_BITWIDTH - LOG_DIST_PER_WORD")
+        valid_mask_type = HLSType(basic_type=HLSBasicType.AP_UINT, width="PE_NUM") # Use string for define
+        offset_type = HLSType(basic_type=HLSBasicType.AP_UINT, width=4)
+        
+        # Param 1: hls::stream<node_id_burst_t> &src_id_burst_stream
+        node_id_array_pe_type = HLSType(HLSBasicType.ARRAY, sub_types=[node_id_type], array_dims=["PE_NUM"])
+        node_id_burst_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
+                                       struct_name="node_id_burst_t",
+                                       struct_prop_names=["data"],
+                                       sub_types=[node_id_array_pe_type])
+        src_id_burst_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[node_id_burst_t_type])
+        src_id_burst_stream = HLSVar(var_name="src_id_burst_stream", var_type=src_id_burst_stream_type)
+        
+        # Param 2: hls::stream<distance_req_pack_t> &distance_req_pack_stream
+        # Note: distance_req_pack_t uses node_id_t idx[PE_NUM] which is node_id_array_pe_type
+        distance_req_pack_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
+                                           struct_name="distance_req_pack_t",
+                                           struct_prop_names=["idx", "offset", "end_flag"],
+                                           sub_types=[node_id_array_pe_type, offset_type, bool_type])
+        distance_req_pack_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[distance_req_pack_t_type])
+        distance_req_pack_stream = HLSVar(var_name="distance_req_pack_stream", var_type=distance_req_pack_stream_type)
+        
+        # Param 3: int32_t num_nodes
+        num_nodes = HLSVar(var_name="num_nodes", var_type=int_type)
+        
         params.extend([src_id_burst_stream, distance_req_pack_stream, num_nodes])
         dist_req_packer_func.params = params
-
-        # 3. 开始构建函数体 (CodeLine 列表)
+        
+        # --- 2. Function Body ---
         code_lines: List[HLSCodeLine] = []
-
+        
         # const int max_node_burst_idx = (num_nodes + PE_NUM - 1) / PE_NUM;
-        code_lines.append(CodeVarDecl(var_name="max_node_burst_idx", var_type=HLSType(HLSBasicType.INT), init_val="(num_nodes + PE_NUM - 1) / PE_NUM", const=True))
-
-        # ap_uint<NODE_ID_BITWIDTH - LOG_DIST_PER_WORD> last_idx_max = 0;
-        # (使用在 2b 中定义的 cache_idx_elem_type)
+        code_lines.append(CodeVarDecl(var_name="max_node_burst_idx", var_type=int_type, init_val="(num_nodes + PE_NUM - 1) / PE_NUM", const=True))
+        max_node_burst_idx_var = HLSVar(var_name="max_node_burst_idx", var_type=int_type)
+        
+        # ap_uint<...> last_idx_max = 0;
         code_lines.append(CodeVarDecl(var_name="last_idx_max", var_type=cache_idx_elem_type, init_val="0", const=False))
-
-        # (空行)
-        code_lines.append(CodeOther(text=""))
-
-        # LOOP_DRP_SEND_REQ:
-        code_lines.append(CodeComment(text="LOOP_DRP_SEND_REQ:"))
-
-        # for (int32_t node_burst_idx = 0; node_burst_idx < max_node_burst_idx; node_burst_idx += 1) {
+        last_idx_max_var = HLSVar(var_name="last_idx_max", var_type=cache_idx_elem_type)
+        
+        # for (int32_t node_burst_idx = 0; ...
         for_loop_1_codes: List[HLSCodeLine] = []
-        max_node_burst_idx_var = HLSVar(var_name="max_node_burst_idx", var_type=HLSType(HLSBasicType.INT))
-        for_loop_1 = CodeFor(codes=for_loop_1_codes, 
-                             iter_limit=max_node_burst_idx_var, 
-                             iter_cmp="<", 
-                             iter_name="node_burst_idx", 
-                             iter_start="0", 
-                             iter_step="node_burst_idx += 1", 
-                             iter_val_type=HLSType(HLSBasicType.INT))
-        code_lines.append(for_loop_1)
-
-        # --- 循环 (node_burst_idx) 内部 ---
+        # (for_loop_1 object created and added to code_lines at the end)
+        
+        # --- Inside for(node_burst_idx) ---
         # #pragma HLS PIPELINE II = 1
         for_loop_1_codes.append(CodePragma(content="PIPELINE II = 1"))
-
-        # ap_uint<NODE_ID_BITWIDTH - LOG_DIST_PER_WORD> cache_idx[PE_NUM];
+        
+        # ap_uint<...> cache_idx[PE_NUM];
         cache_idx_type = HLSType(HLSBasicType.ARRAY, sub_types=[cache_idx_elem_type], array_dims=["PE_NUM"])
         for_loop_1_codes.append(CodeVarDecl(var_name="cache_idx", var_type=cache_idx_type))
-
+        
         # #pragma HLS ARRAY_PARTITION variable = cache_idx complete dim = 0
         for_loop_1_codes.append(CodePragma(content="ARRAY_PARTITION variable = cache_idx complete dim = 0"))
-
+        
         # node_id_burst_t node_id_burst = src_id_burst_stream.read();
         for_loop_1_codes.append(CodeVarDecl(var_name="node_id_burst", var_type=node_id_burst_t_type, init_val="src_id_burst_stream.read()"))
-
+        
         # #pragma HLS ARRAY_PARTITION variable = node_id_burst.data complete dim = 0
         for_loop_1_codes.append(CodePragma(content="ARRAY_PARTITION variable = node_id_burst.data complete dim = 0"))
-
-        # for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
+        
+        # --- Build for(pe_idx) 1 ---
         for_loop_2_codes: List[HLSCodeLine] = []
+        # #pragma HLS UNROLL
+        for_loop_2_codes.append(CodePragma(content="UNROLL"))
+        # cache_idx[pe_idx] = node_id_burst.data[pe_idx] >> LOG_DIST_PER_WORD;
+        cache_idx_pe_idx_var = HLSVar(var_name="cache_idx[pe_idx]", var_type=cache_idx_elem_type)
+        assign_expr_1 = HLSExpr(HLSExprT.CONST, "node_id_burst.data[pe_idx] >> LOG_DIST_PER_WORD")
+        for_loop_2_codes.append(CodeAssign(var=cache_idx_pe_idx_var, expr=assign_expr_1))
+        # Create for loop 2
         for_loop_2 = CodeFor(codes=for_loop_2_codes, 
                              iter_limit="PE_NUM", 
                              iter_cmp="<", 
                              iter_name="pe_idx", 
                              iter_start="0", 
                              iter_step="pe_idx++", 
-                             iter_val_type=HLSType(HLSBasicType.INT))
+                             iter_val_type=int_type)
         for_loop_1_codes.append(for_loop_2)
-
-        # --- 循环 (pe_idx) 内部 ---
-        # #pragma HLS UNROLL
-        for_loop_2_codes.append(CodePragma(content="UNROLL"))
-
-        # cache_idx[pe_idx] = node_id_burst.data[pe_idx] >> LOG_DIST_PER_WORD;
-        cache_idx_pe_idx_var = HLSVar(var_name="cache_idx[pe_idx]", var_type=cache_idx_elem_type)
-        assign_expr_1 = HLSExpr(HLSExprT.CONST, "node_id_burst.data[pe_idx] >> LOG_DIST_PER_WORD")
-        for_loop_2_codes.append(CodeAssign(var=cache_idx_pe_idx_var, expr=assign_expr_1))
-
-        # // printf("PE %d requests node ID %d (cache idx %d)\n", pe_idx,
-        for_loop_2_codes.append(CodeComment(text=" printf(\"PE %d requests node ID %d (cache idx %d)\\n\", pe_idx, "))
-        # // (int)node_id_burst.data[pe_idx], (int)cache_idx[pe_idx]);
-        for_loop_2_codes.append(CodeComment(text=" (int)node_id_burst.data[pe_idx], (int)cache_idx[pe_idx]); "))
-        # // fflush(NULL);
-        for_loop_2_codes.append(CodeComment(text=" fflush(NULL); "))
-
-        # (空行)
-        for_loop_1_codes.append(CodeOther(text=""))
-
-        # ap_uint<NODE_ID_BITWIDTH - LOG_DIST_PER_WORD> cache_idx_diffs[PE_NUM];
+        # --- End for(pe_idx) 1 ---
+        
+        # ap_uint<...> cache_idx_diffs[PE_NUM];
         cache_idx_diffs_type = HLSType(HLSBasicType.ARRAY, sub_types=[cache_idx_elem_type], array_dims=["PE_NUM"])
         for_loop_1_codes.append(CodeVarDecl(var_name="cache_idx_diffs", var_type=cache_idx_diffs_type))
-
+        
         # #pragma HLS ARRAY_PARTITION variable = cache_idx_diffs complete dim = 0
         for_loop_1_codes.append(CodePragma(content="ARRAY_PARTITION variable = cache_idx_diffs complete dim = 0"))
-
-        # for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
+        
+        # --- Build for(pe_idx) 2 ---
         for_loop_3_codes: List[HLSCodeLine] = []
+        # #pragma HLS UNROLL
+        for_loop_3_codes.append(CodePragma(content="UNROLL"))
+        # cache_idx_diffs[pe_idx] = cache_idx[pe_idx] - last_idx_max;
+        cache_idx_diffs_pe_idx_var = HLSVar(var_name="cache_idx_diffs[pe_idx]", var_type=cache_idx_elem_type)
+        assign_expr_2 = HLSExpr(HLSExprT.CONST, "cache_idx[pe_idx] - last_idx_max")
+        for_loop_3_codes.append(CodeAssign(var=cache_idx_diffs_pe_idx_var, expr=assign_expr_2))
+        # Create for loop 3
         for_loop_3 = CodeFor(codes=for_loop_3_codes, 
                              iter_limit="PE_NUM", 
                              iter_cmp="<", 
                              iter_name="pe_idx", 
                              iter_start="0", 
                              iter_step="pe_idx++", 
-                             iter_val_type=HLSType(HLSBasicType.INT))
+                             iter_val_type=int_type)
         for_loop_1_codes.append(for_loop_3)
-
-        # --- 循环 (pe_idx) 内部 2 ---
-        # #pragma HLS UNROLL
-        for_loop_3_codes.append(CodePragma(content="UNROLL"))
-
-        # cache_idx_diffs[pe_idx] = cache_idx[pe_idx] - last_idx_max;
-        cache_idx_diffs_pe_idx_var = HLSVar(var_name="cache_idx_diffs[pe_idx]", var_type=cache_idx_elem_type)
-        assign_expr_2 = HLSExpr(HLSExprT.CONST, "cache_idx[pe_idx] - last_idx_max")
-        for_loop_3_codes.append(CodeAssign(var=cache_idx_diffs_pe_idx_var, expr=assign_expr_2))
-
-        # // printf("PE %d cache idx diff: %d\n", pe_idx,
-        for_loop_3_codes.append(CodeComment(text=" printf(\"PE %d cache idx diff: %d\\n\", pe_idx, "))
-        # // (int)cache_idx_diffs[pe_idx]); fflush(NULL);
-        for_loop_3_codes.append(CodeComment(text=" (int)cache_idx_diffs[pe_idx]); fflush(NULL); "))
-
-        # (空行)
-        for_loop_1_codes.append(CodeOther(text=""))
-
-        # // if not all diffs are zero, send a req_pack
-        for_loop_1_codes.append(CodeComment(text=" if not all diffs are zero, send a req_pack "))
-
-        # if (cache_idx_diffs[PE_NUM - 1]) {
+        # --- End for(pe_idx) 2 ---
+        
+        # --- Build IF_1 (cache_idx_diffs[PE_NUM - 1]) ---
         if_1_codes: List[HLSCodeLine] = []
         if_expr_1 = HLSExpr(HLSExprT.CONST, "cache_idx_diffs[PE_NUM - 1]")
-        if_1 = CodeIf(expr=if_expr_1, if_codes=if_1_codes)
-        for_loop_1_codes.append(if_1)
-
-        # --- If 内部 ---
+        # (This IF_1 has no else block)
+        
+        # --- Build IF_1 Contents ---
         # ap_uint<PE_NUM> valid_mask;
-        valid_mask_type = HLSType(basic_type=HLSBasicType.AP_UINT, width=1) # 假的 width
-        valid_mask_type.name = "ap_uint<PE_NUM>" # 手动覆盖
         if_1_codes.append(CodeVarDecl(var_name="valid_mask", var_type=valid_mask_type))
-
-        # for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
+        
+        # --- Build for(pe_idx) 3 ---
         for_loop_4_codes: List[HLSCodeLine] = []
+        # #pragma HLS UNROLL
+        for_loop_4_codes.append(CodePragma(content="UNROLL"))
+        
+        # --- Build IF_2 (cache_idx_diffs[pe_idx] == 0) ---
+        if_2_codes: List[HLSCodeLine] = []
+        else_2_codes: List[HLSCodeLine] = []
+        if_expr_2 = HLSExpr(HLSExprT.CONST, "cache_idx_diffs[pe_idx] == 0")
+        # Build IF_2 Contents
+        valid_mask_pe_idx_var = HLSVar(var_name="valid_mask[pe_idx]", var_type=HLSType(HLSBasicType.AP_UINT, width=1)) # Single bit assignment
+        assign_expr_3 = HLSExpr(HLSExprT.CONST, 1)
+        if_2_codes.append(CodeAssign(var=valid_mask_pe_idx_var, expr=assign_expr_3))
+        # Build ELSE_2 Contents
+        assign_expr_4 = HLSExpr(HLSExprT.CONST, 0)
+        else_2_codes.append(CodeAssign(var=valid_mask_pe_idx_var, expr=assign_expr_4))
+        # Create IF_2
+        if_2 = CodeIf(expr=if_expr_2, if_codes=if_2_codes, else_codes=else_2_codes)
+        for_loop_4_codes.append(if_2)
+        # --- End IF_2 ---
+        
+        # Create for loop 4
         for_loop_4 = CodeFor(codes=for_loop_4_codes, 
                              iter_limit="PE_NUM", 
                              iter_cmp="<", 
                              iter_name="pe_idx", 
                              iter_start="0", 
                              iter_step="pe_idx++", 
-                             iter_val_type=HLSType(HLSBasicType.INT))
+                             iter_val_type=int_type)
         if_1_codes.append(for_loop_4)
-
-        # --- 循环 (pe_idx) 内部 3 ---
-        # #pragma HLS UNROLL
-        for_loop_4_codes.append(CodePragma(content="UNROLL"))
-
-        # if (cache_idx_diffs[pe_idx] == 0) {
-        if_2_codes: List[HLSCodeLine] = []
-        else_2_codes: List[HLSCodeLine] = []
-        if_expr_2 = HLSExpr(HLSExprT.CONST, "cache_idx_diffs[pe_idx] == 0")
-        if_2 = CodeIf(expr=if_expr_2, if_codes=if_2_codes, else_codes=else_2_codes)
-        for_loop_4_codes.append(if_2)
-
-        # --- If (== 0) 内部 ---
-        # valid_mask[pe_idx] = 1;
-        # (ap_uint<1> 是 HLS/C++ 中 bool-to-int 赋值的合理表示)
-        valid_mask_pe_idx_var = HLSVar(var_name="valid_mask[pe_idx]", var_type=HLSType(HLSBasicType.AP_UINT, width=1))
-        assign_expr_3 = HLSExpr(HLSExprT.CONST, 1)
-        if_2_codes.append(CodeAssign(var=valid_mask_pe_idx_var, expr=assign_expr_3))
-
-        # } else { (由 else_2_codes 处理)
-
-        # valid_mask[pe_idx] = 0;
-        assign_expr_4 = HLSExpr(HLSExprT.CONST, 0)
-        else_2_codes.append(CodeAssign(var=valid_mask_pe_idx_var, expr=assign_expr_4))
-        # } (if_2 结束)
-        # } (for_loop_4 结束)
-
-        # (空行)
-        if_1_codes.append(CodeOther(text=""))
-
+        # --- End for(pe_idx) 3 ---
+        
         # ap_uint<4> num_unread = count_end_ones(valid_mask);
-        # (使用在 2b 中定义的 offset_type)
         if_1_codes.append(CodeVarDecl(var_name="num_unread", var_type=offset_type, init_val="count_end_ones(valid_mask)"))
-
-        # // printf("Packing req for %d unread PEs\n", (int)num_unread);
-        if_1_codes.append(CodeComment(text=" printf(\"Packing req for %d unread PEs\\n\", (int)num_unread); "))
-        # // fflush(NULL);
-        if_1_codes.append(CodeComment(text=" fflush(NULL); "))
-
-        # (空行)
-        if_1_codes.append(CodeOther(text=""))
-
+        num_unread_var = HLSVar(var_name="num_unread", var_type=offset_type)
+        
         # distance_req_pack_t req_pack;
         if_1_codes.append(CodeVarDecl(var_name="req_pack", var_type=distance_req_pack_t_type))
-
+        req_pack_var = HLSVar(var_name="req_pack", var_type=distance_req_pack_t_type)
+        
         # #pragma HLS ARRAY_PARTITION variable = req_pack.idx complete dim = 0
         if_1_codes.append(CodePragma(content="ARRAY_PARTITION variable = req_pack.idx complete dim = 0"))
-
+        
         # req_pack.offset = num_unread;
         req_pack_offset_var = HLSVar(var_name="req_pack.offset", var_type=offset_type)
-        num_unread_var = HLSVar(var_name="num_unread", var_type=offset_type)
         if_1_codes.append(CodeAssign(var=req_pack_offset_var, expr=HLSExpr(HLSExprT.VAR, num_unread_var)))
-
+        
         # req_pack.end_flag = false;
-        req_pack_end_flag_var = HLSVar(var_name="req_pack.end_flag", var_type=end_flag_type)
+        req_pack_end_flag_var = HLSVar(var_name="req_pack.end_flag", var_type=bool_type)
         assign_expr_5 = HLSExpr(HLSExprT.CONST, False)
         if_1_codes.append(CodeAssign(var=req_pack_end_flag_var, expr=assign_expr_5))
-
-        # (空行)
-        if_1_codes.append(CodeOther(text=""))
-
-        # for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
+        
+        # --- Build for(pe_idx) 4 ---
         for_loop_5_codes: List[HLSCodeLine] = []
+        # #pragma HLS UNROLL
+        for_loop_5_codes.append(CodePragma(content="UNROLL"))
+        # req_pack.idx[pe_idx] = cache_idx[pe_idx];
+        req_pack_idx_pe_idx_var = HLSVar(var_name="req_pack.idx[pe_idx]", var_type=node_id_type) # Assuming idx is node_id_t array
+        assign_expr_6 = HLSExpr(HLSExprT.CONST, "cache_idx[pe_idx]")
+        for_loop_5_codes.append(CodeAssign(var=req_pack_idx_pe_idx_var, expr=assign_expr_6))
+        # Create for loop 5
         for_loop_5 = CodeFor(codes=for_loop_5_codes, 
                              iter_limit="PE_NUM", 
                              iter_cmp="<", 
                              iter_name="pe_idx", 
                              iter_start="0", 
                              iter_step="pe_idx++", 
-                             iter_val_type=HLSType(HLSBasicType.INT))
+                             iter_val_type=int_type)
         if_1_codes.append(for_loop_5)
-
-        # --- 循环 (pe_idx) 内部 4 ---
-        # #pragma HLS UNROLL
-        for_loop_5_codes.append(CodePragma(content="UNROLL"))
-
-        # req_pack.idx[pe_idx] = cache_idx[pe_idx];
-        req_pack_idx_pe_idx_var = HLSVar(var_name="req_pack.idx[pe_idx]", var_type=cache_idx_elem_type)
-        assign_expr_6 = HLSExpr(HLSExprT.CONST, "cache_idx[pe_idx]")
-        for_loop_5_codes.append(CodeAssign(var=req_pack_idx_pe_idx_var, expr=assign_expr_6))
-
-        # // printf("Req pack PE %d node ID: %d\n", pe_idx,
-        for_loop_5_codes.append(CodeComment(text=" printf(\"Req pack PE %d node ID: %d\\n\", pe_idx, "))
-        # // (int)req_pack.node_ids[pe_idx]); fflush(NULL);
-        for_loop_5_codes.append(CodeComment(text=" (int)req_pack.node_ids[pe_idx]); fflush(NULL); "))
-        # } (for_loop_5 结束)
-
-        # (空行)
-        if_1_codes.append(CodeOther(text=""))
-
+        # --- End for(pe_idx) 4 ---
+        
         # distance_req_pack_stream.write(req_pack);
-        req_pack_var = HLSVar(var_name="req_pack", var_type=distance_req_pack_t_type)
         if_1_codes.append(CodeWriteStream(stream_var=distance_req_pack_stream, in_expr=req_pack_var))
-        # } (if_1 结束)
-
-        # (空行)
-        for_loop_1_codes.append(CodeOther(text=""))
-
+        
+        # Create IF_1 statement (no else)
+        if_1 = CodeIf(expr=if_expr_1, if_codes=if_1_codes)
+        for_loop_1_codes.append(if_1)
+        # --- End IF_1 ---
+        
         # last_idx_max = cache_idx[PE_NUM - 1];
-        last_idx_max_var = HLSVar(var_name="last_idx_max", var_type=cache_idx_elem_type)
         assign_expr_7 = HLSExpr(HLSExprT.CONST, "cache_idx[PE_NUM - 1]")
         for_loop_1_codes.append(CodeAssign(var=last_idx_max_var, expr=assign_expr_7))
-        # } (for_loop_1 结束)
-
-        # (空行)
-        code_lines.append(CodeOther(text=""))
-
+        
+        # --- Create For Loop 1 ---
+        for_loop_1 = CodeFor(codes=for_loop_1_codes, 
+                             iter_limit=max_node_burst_idx_var, 
+                             iter_cmp="<", 
+                             iter_name="node_burst_idx", 
+                             iter_start="0", 
+                             iter_step="node_burst_idx += 1", 
+                             iter_val_type=int_type)
+        code_lines.append(for_loop_1)
+        # --- End For Loop 1 ---
+        
         # distance_req_pack_t end_req_pack;
         code_lines.append(CodeVarDecl(var_name="end_req_pack", var_type=distance_req_pack_t_type))
-
+        end_req_pack_var = HLSVar(var_name="end_req_pack", var_type=distance_req_pack_t_type)
+        
         # end_req_pack.end_flag = true;
-        end_req_pack_end_flag_var = HLSVar(var_name="end_req_pack.end_flag", var_type=end_flag_type)
+        end_req_pack_end_flag_var = HLSVar(var_name="end_req_pack.end_flag", var_type=bool_type)
         assign_expr_8 = HLSExpr(HLSExprT.CONST, True)
         code_lines.append(CodeAssign(var=end_req_pack_end_flag_var, expr=assign_expr_8))
-
+        
         # end_req_pack.offset = 8;
         end_req_pack_offset_var = HLSVar(var_name="end_req_pack.offset", var_type=offset_type)
         assign_expr_9 = HLSExpr(HLSExprT.CONST, 8)
         code_lines.append(CodeAssign(var=end_req_pack_offset_var, expr=assign_expr_9))
-
+        
         # distance_req_pack_stream.write(end_req_pack);
-        end_req_pack_var = HLSVar(var_name="end_req_pack", var_type=distance_req_pack_t_type)
         code_lines.append(CodeWriteStream(stream_var=distance_req_pack_stream, in_expr=end_req_pack_var))
-
-        # 5. 完成函数体
+        
+        # --- 3. Finalize ---
         dist_req_packer_func.codes = code_lines
 
-        # (可选：添加一个结束注释)
-        code_lines.append(CodeComment("End of dist_req_packer Function"))
+
         self.scatter_funcs.append(dist_req_packer_func)
         self.top_dataflow_funcs.append(dist_req_packer_func)
         # cacheline_req_sender(
@@ -1770,50 +1692,43 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         uint8_type = HLSType(HLSBasicType.UINT8)
         bool_type = HLSType(HLSBasicType.BOOL)
 
-        # Correctly defined ap_uint type
+        # Special ap_uint type
         cache_idx_elem_type = HLSType(basic_type=HLSBasicType.AP_UINT, 
-                                      width="NODE_ID_BITWIDTH-LOG_DIST_PER_WORD")
+                                      width="NODE_ID_BITWIDTH - LOG_DIST_PER_WORD")
 
-        # Param 1: cacheline_streams
+        # Param 1: hls::stream<bus_word_t> (&cacheline_streams)[PE_NUM]
         bus_word_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[bus_word_t_type])
         cacheline_streams_type = HLSType(HLSBasicType.ARRAY, sub_types=[bus_word_stream_type], array_dims=["PE_NUM"])
         cacheline_streams = HLSVar(var_name="cacheline_streams", var_type=cacheline_streams_type)
 
-        # Param 2: edge_stream (based on graphyflow_big.h)
+        # Param 2: hls::stream<edge_descriptor_batch_t> &edge_stream
         edge_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
                               struct_name="edge_t",
                               struct_prop_names=["src_id", "dst_id"],
                               sub_types=[node_id_type, node_id_type])
-        
-        if edge_t_type.name not in self.struct_definitions:
-            self.struct_definitions[edge_t_type.name] = (edge_t_type, edge_t_type.struct_prop_names)
 
         edge_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[edge_t_type], array_dims=["PE_NUM"])
         edge_descriptor_batch_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
                                                struct_name="edge_descriptor_batch_t",
                                                struct_prop_names=["edges", "end_pos"],
                                                sub_types=[edge_array_type, int_type])
-        if edge_descriptor_batch_t_type.name not in self.struct_definitions:
-            self.struct_definitions[edge_descriptor_batch_t_type.name] = (edge_descriptor_batch_t_type, edge_descriptor_batch_t_type.struct_prop_names)
 
         edge_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[edge_descriptor_batch_t_type])
         edge_stream = HLSVar(var_name="edge_stream", var_type=edge_stream_type)
 
-        # Param 3: edge_batch_stream (based on graphyflow_big.h)
-        node_id_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[node_id_type], array_dims=["PE_NUM"])
+        # Param 3: hls::stream<update_tuple_t> &edge_batch_stream
+        node_id_array_pe_type = HLSType(HLSBasicType.ARRAY, sub_types=[node_id_type], array_dims=["PE_NUM"]) # Reused type
         prop_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[ap_fixed_pod_t_type], array_dims=["PE_NUM"])
         update_tuple_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
                                     struct_name="update_tuple_t",
                                     struct_prop_names=["node_id", "prop", "end_flag", "end_pos"],
-                                    sub_types=[node_id_array_type, prop_array_type, bool_type, uint8_type])
-        if update_tuple_t_type.name not in self.struct_definitions:
-            self.struct_definitions[update_tuple_t_type.name] = (update_tuple_t_type, update_tuple_t_type.struct_prop_names)
+                                    sub_types=[node_id_array_pe_type, prop_array_type, bool_type, uint8_type])
 
         edge_batch_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[update_tuple_t_type])
         edge_batch_stream = HLSVar(var_name="edge_batch_stream", var_type=edge_batch_stream_type)
 
-        # Param 4: edge_num
-        edge_num = HLSVar(var_name="edge_num", var_type=HLSType(HLSBasicType.INT))
+        # Param 4: uint32_t edge_num
+        edge_num = HLSVar(var_name="edge_num", var_type=uint_type)
 
         params.extend([cacheline_streams, edge_stream, edge_batch_stream, edge_num])
         merge_node_props_func.params = params
@@ -1829,7 +1744,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         # #pragma HLS ARRAY_PARTITION variable = last_cacheline complete dim = 0
         code_lines.append(CodePragma(content="ARRAY_PARTITION variable = last_cacheline complete dim = 0"))
 
-        # ap_uint<NODE_ID_BITWIDTH - LOG_DIST_PER_WORD> last_cache_idx[PE_NUM];
+        # ap_uint<...> last_cache_idx[PE_NUM];
         last_cache_idx_type = HLSType(HLSBasicType.ARRAY, sub_types=[cache_idx_elem_type], array_dims=["PE_NUM"])
         code_lines.append(CodeVarDecl(var_name="last_cache_idx", var_type=last_cache_idx_type))
         last_cache_idx_var = HLSVar(var_name="last_cache_idx", var_type=last_cache_idx_type)
@@ -1837,8 +1752,19 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         # #pragma HLS ARRAY_PARTITION variable = last_cache_idx complete dim = 0
         code_lines.append(CodePragma(content="ARRAY_PARTITION variable = last_cache_idx complete dim = 0"))
 
-        # for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
+        # --- Build for(pe_idx) 1 ---
         for_loop_1_codes: List[HLSCodeLine] = []
+        # #pragma HLS UNROLL
+        for_loop_1_codes.append(CodePragma(content="UNROLL"))
+        # last_cacheline[pe_idx] = cacheline_streams[pe_idx].read();
+        last_cacheline_pe_idx_var = HLSVar(var_name="last_cacheline[pe_idx]", var_type=bus_word_t_type)
+        assign_expr_1 = HLSExpr(HLSExprT.CONST, "cacheline_streams[pe_idx].read()")
+        for_loop_1_codes.append(CodeAssign(var=last_cacheline_pe_idx_var, expr=assign_expr_1))
+        # last_cache_idx[pe_idx] = 0;
+        last_cache_idx_pe_idx_var = HLSVar(var_name="last_cache_idx[pe_idx]", var_type=cache_idx_elem_type)
+        assign_expr_2 = HLSExpr(HLSExprT.CONST, 0)
+        for_loop_1_codes.append(CodeAssign(var=last_cache_idx_pe_idx_var, expr=assign_expr_2))
+        # Create for loop 1
         for_loop_1 = CodeFor(codes=for_loop_1_codes,
                              iter_limit="PE_NUM",
                              iter_cmp="<",
@@ -1847,20 +1773,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
                              iter_step="pe_idx++",
                              iter_val_type=int_type)
         code_lines.append(for_loop_1)
-
-        # --- Inside for(pe_idx) 1 ---
-        # #pragma HLS UNROLL
-        for_loop_1_codes.append(CodePragma(content="UNROLL"))
-
-        # last_cacheline[pe_idx] = cacheline_streams[pe_idx].read();
-        last_cacheline_pe_idx_var = HLSVar(var_name="last_cacheline[pe_idx]", var_type=bus_word_t_type)
-        assign_expr_1 = HLSExpr(HLSExprT.CONST, "cacheline_streams[pe_idx].read()")
-        for_loop_1_codes.append(CodeAssign(var=last_cacheline_pe_idx_var, expr=assign_expr_1))
-
-        # last_cache_idx[pe_idx] = 0;
-        last_cache_idx_pe_idx_var = HLSVar(var_name="last_cache_idx[pe_idx]", var_type=cache_idx_elem_type)
-        assign_expr_2 = HLSExpr(HLSExprT.CONST, 0)
-        for_loop_1_codes.append(CodeAssign(var=last_cache_idx_pe_idx_var, expr=assign_expr_2))
+        # --- End for(pe_idx) 1 ---
 
         # const uint32_t scatter_size = (edge_num + PE_NUM - 1) / PE_NUM;
         code_lines.append(CodeVarDecl(var_name="scatter_size", var_type=uint_type, init_val="(edge_num + PE_NUM - 1) / PE_NUM", const=True))
@@ -1869,23 +1782,13 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         # distance_t real_edge_weight = 1.0; 
         code_lines.append(CodeVarDecl(var_name="real_edge_weight", var_type=distance_t_type, init_val="1.0", const=False))
 
-        # const ap_fixed_pod_t edge_weight = (*reinterpret_cast<ap_fixed_pod_t *>(&real_edge_weight));
+        # const ap_fixed_pod_t edge_weight = (*reinterpret_cast<...>(&real_edge_weight));
         edge_weight_init_val = "(*reinterpret_cast<ap_fixed_pod_t *>(&real_edge_weight))"
         code_lines.append(CodeVarDecl(var_name="edge_weight", var_type=ap_fixed_pod_t_type, init_val=edge_weight_init_val, const=True))
         edge_weight_var = HLSVar(var_name="edge_weight", var_type=ap_fixed_pod_t_type)
 
-        # for (int32_t edge_batch_idx = 0; edge_batch_idx < scatter_size; edge_batch_idx++) {
+        # --- Build for(edge_batch_idx) ---
         for_loop_2_codes: List[HLSCodeLine] = []
-        for_loop_2 = CodeFor(codes=for_loop_2_codes,
-                             iter_limit=scatter_size_var,
-                             iter_cmp="<",
-                             iter_name="edge_batch_idx",
-                             iter_start="0",
-                             iter_step="edge_batch_idx++",
-                             iter_val_type=int_type)
-        code_lines.append(for_loop_2)
-
-        # --- Inside for(edge_batch_idx) ---
         # #pragma HLS PIPELINE II = 1
         for_loop_2_codes.append(CodePragma(content="PIPELINE II = 1"))
 
@@ -1924,60 +1827,46 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         for_loop_2_codes.append(CodeVarDecl(var_name="cur_last_cacheline", var_type=bus_word_t_type))
         cur_last_cacheline_var = HLSVar(var_name="cur_last_cacheline", var_type=bus_word_t_type)
 
-        # ap_uint<NODE_ID_BITWIDTH - LOG_DIST_PER_WORD> cur_last_cache_idx;
+        # ap_uint<...> cur_last_cache_idx;
         for_loop_2_codes.append(CodeVarDecl(var_name="cur_last_cache_idx", var_type=cache_idx_elem_type))
         cur_last_cache_idx_var = HLSVar(var_name="cur_last_cache_idx", var_type=cache_idx_elem_type)
 
-        # for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
+        # --- Build for(pe_idx) 2 ---
         for_loop_3_codes: List[HLSCodeLine] = []
-        for_loop_3 = CodeFor(codes=for_loop_3_codes,
-                             iter_limit="PE_NUM",
-                             iter_cmp="<",
-                             iter_name="pe_idx",
-                             iter_start="0",
-                             iter_step="pe_idx++",
-                             iter_val_type=int_type)
-        for_loop_2_codes.append(for_loop_3)
-
-        # --- Inside for(pe_idx) 2 ---
         # #pragma HLS UNROLL
         for_loop_3_codes.append(CodePragma(content="UNROLL"))
 
-        # ap_uint<...> cacheline_idx = (edge_batch.edges[pe_idx].src_id >> LOG_DIST_PER_WORD);
+        # ap_uint<...> cacheline_idx = ...
         cacheline_idx_init_val = "(edge_batch.edges[pe_idx].src_id >> LOG_DIST_PER_WORD)"
         for_loop_3_codes.append(CodeVarDecl(var_name="cacheline_idx", var_type=cache_idx_elem_type, init_val=cacheline_idx_init_val))
 
-        # uint32_t offset = (edge_batch.edges[pe_idx].src_id & (DIST_PER_WORD - 1));
+        # uint32_t offset = ...
         offset_init_val = "(edge_batch.edges[pe_idx].src_id & (DIST_PER_WORD - 1))"
         for_loop_3_codes.append(CodeVarDecl(var_name="offset", var_type=uint_type, init_val=offset_init_val))
 
-        # if (pe_idx < edge_batch.end_pos) {
+        # --- Build IF_1 (pe_idx < edge_batch.end_pos) ---
         if_1_codes: List[HLSCodeLine] = []
         if_expr_1 = HLSExpr(HLSExprT.CONST, "pe_idx < edge_batch.end_pos")
-        if_1 = CodeIf(expr=if_expr_1, if_codes=if_1_codes)
-        for_loop_3_codes.append(if_1)
+        # (This IF_1 has no else block)
 
-        # --- Inside if(pe_idx < edge_batch.end_pos) ---
-        # bus_word_t cacheline;
-        if_1_codes.append(CodeVarDecl(var_name="cacheline", var_type=bus_word_t_type))
+        # --- Build IF_1 Contents ---
         cacheline_var = HLSVar(var_name="cacheline", var_type=bus_word_t_type)
+        if_1_codes.append(CodeVarDecl(var_name="cacheline", var_type=cacheline_var.type))
 
-        # if (cacheline_idx == last_cache_idx[pe_idx]) {
+        # --- Build IF_2 (cacheline_idx == last_cache_idx[pe_idx]) ---
         if_2_codes: List[HLSCodeLine] = []
         else_2_codes: List[HLSCodeLine] = []
         if_expr_2 = HLSExpr(HLSExprT.CONST, "cacheline_idx == last_cache_idx[pe_idx]")
-        if_2 = CodeIf(expr=if_expr_2, if_codes=if_2_codes, else_codes=else_2_codes)
-        if_1_codes.append(if_2)
-
-        # cacheline = last_cacheline[pe_idx];
+        # Build IF_2 Contents
         assign_expr_6 = HLSExpr(HLSExprT.CONST, "last_cacheline[pe_idx]")
         if_2_codes.append(CodeAssign(var=cacheline_var, expr=assign_expr_6))
-
-        # } else {
-        # cacheline = cacheline_streams[pe_idx].read();
+        # Build ELSE_2 Contents
         assign_expr_7 = HLSExpr(HLSExprT.CONST, "cacheline_streams[pe_idx].read()")
         else_2_codes.append(CodeAssign(var=cacheline_var, expr=assign_expr_7))
-        # }
+        # Create IF_2
+        if_2 = CodeIf(expr=if_expr_2, if_codes=if_2_codes, else_codes=else_2_codes)
+        if_1_codes.append(if_2)
+        # --- End IF_2 ---
 
         # ap_fixed_pod_t prop = get_val_from_bus(cacheline, offset);
         if_1_codes.append(CodeVarDecl(var_name="prop", var_type=ap_fixed_pod_t_type, init_val="get_val_from_bus(cacheline, offset)"))
@@ -1992,28 +1881,49 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         assign_expr_9 = HLSExpr(HLSExprT.CONST, "(prop + edge_weight)")
         if_1_codes.append(CodeAssign(var=out_batch_prop_pe_idx_var, expr=assign_expr_9))
 
-        # if (pe_idx == PE_NUM - 1) {
+        # --- Build IF_3 (pe_idx == PE_NUM - 1) ---
         if_3_codes: List[HLSCodeLine] = []
         if_expr_3 = HLSExpr(HLSExprT.CONST, "pe_idx == PE_NUM - 1")
-        if_3 = CodeIf(expr=if_expr_3, if_codes=if_3_codes)
-        if_1_codes.append(if_3)
-
-        # --- Inside if(pe_idx == PE_NUM - 1) ---
-        # cur_last_cacheline = cacheline;
+        # (This IF_3 has no else block)
+        # Build IF_3 Contents
         if_3_codes.append(CodeAssign(var=cur_last_cacheline_var, expr=HLSExpr(HLSExprT.VAR, cacheline_var)))
-
-        # cur_last_cache_idx = cacheline_idx;
         assign_expr_10 = HLSExpr(HLSExprT.CONST, "cacheline_idx")
         if_3_codes.append(CodeAssign(var=cur_last_cache_idx_var, expr=assign_expr_10))
-        # } (end if_3)
-        # } (end if_1)
-        # } (end for_loop_3)
+        # Create IF_3
+        if_3 = CodeIf(expr=if_expr_3, if_codes=if_3_codes)
+        if_1_codes.append(if_3)
+        # --- End IF_3 ---
+
+        # Create IF_1
+        if_1 = CodeIf(expr=if_expr_1, if_codes=if_1_codes)
+        for_loop_3_codes.append(if_1)
+        # --- End IF_1 ---
+
+        # Create for loop 3
+        for_loop_3 = CodeFor(codes=for_loop_3_codes,
+                             iter_limit="PE_NUM",
+                             iter_cmp="<",
+                             iter_name="pe_idx",
+                             iter_start="0",
+                             iter_step="pe_idx++",
+                             iter_val_type=int_type)
+        for_loop_2_codes.append(for_loop_3)
+        # --- End for(pe_idx) 2 ---
 
         # edge_batch_stream.write(out_batch);
         for_loop_2_codes.append(CodeWriteStream(stream_var=edge_batch_stream, in_expr=out_batch_var))
 
-        # for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
+        # --- Build for(pe_idx) 3 ---
         for_loop_4_codes: List[HLSCodeLine] = []
+        # #pragma HLS UNROLL
+        for_loop_4_codes.append(CodePragma(content="UNROLL"))
+        # last_cacheline[pe_idx] = cur_last_cacheline;
+        last_cacheline_pe_idx_var_2 = HLSVar(var_name="last_cacheline[pe_idx]", var_type=bus_word_t_type)
+        for_loop_4_codes.append(CodeAssign(var=last_cacheline_pe_idx_var_2, expr=cur_last_cacheline_var))
+        # last_cache_idx[pe_idx] = cur_last_cache_idx;
+        last_cache_idx_pe_idx_var_2 = HLSVar(var_name="last_cache_idx[pe_idx]", var_type=cache_idx_elem_type)
+        for_loop_4_codes.append(CodeAssign(var=last_cache_idx_pe_idx_var_2, expr=cur_last_cache_idx_var))
+        # Create for loop 4
         for_loop_4 = CodeFor(codes=for_loop_4_codes,
                              iter_limit="PE_NUM",
                              iter_cmp="<",
@@ -2022,20 +1932,18 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
                              iter_step="pe_idx++",
                              iter_val_type=int_type)
         for_loop_2_codes.append(for_loop_4)
+        # --- End for(pe_idx) 3 ---
 
-        # --- Inside for(pe_idx) 3 ---
-        # #pragma HLS UNROLL
-        for_loop_4_codes.append(CodePragma(content="UNROLL"))
-
-        # last_cacheline[pe_idx] = cur_last_cacheline;
-        last_cacheline_pe_idx_var_2 = HLSVar(var_name="last_cacheline[pe_idx]", var_type=bus_word_t_type)
-        for_loop_4_codes.append(CodeAssign(var=last_cacheline_pe_idx_var_2, expr=cur_last_cacheline_var))
-
-        # last_cache_idx[pe_idx] = cur_last_cache_idx;
-        last_cache_idx_pe_idx_var_2 = HLSVar(var_name="last_cache_idx[pe_idx]", var_type=cache_idx_elem_type)
-        for_loop_4_codes.append(CodeAssign(var=last_cache_idx_pe_idx_var_2, expr=cur_last_cache_idx_var))
-        # } (end for_loop_4)
-        # } (end for_loop_2)
+        # Create for loop 2
+        for_loop_2 = CodeFor(codes=for_loop_2_codes,
+                             iter_limit=scatter_size_var,
+                             iter_cmp="<",
+                             iter_name="edge_batch_idx",
+                             iter_start="0",
+                             iter_step="edge_batch_idx++",
+                             iter_val_type=int_type)
+        code_lines.append(for_loop_2)
+        # --- End for(edge_batch_idx) ---
 
         # update_tuple_t end_batch;
         code_lines.append(CodeVarDecl(var_name="end_batch", var_type=update_tuple_t_type))
@@ -2911,7 +2819,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         kt_wrap_item_single = HLSVar(var_name="kt_wrap_item_single", var_type=kt_wrap_item_single_stream_type)
 
         # Param 2 Type: hls::stream<reduce_word_t>
-        reduce_word_t_type = HLSType(basic_type=HLSBasicType.AP_UINT, width="REDUCE_MEM_WIDTH")
+        reduce_word_t_type = HLSType(basic_type=HLSBasicType.REDUCE_WORD_T)
         pe_mem_out_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[reduce_word_t_type])
         pe_mem_out = HLSVar(var_name="pe_mem_out", var_type=pe_mem_out_stream_type)
 
@@ -3148,7 +3056,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         uint_type = HLSType(HLSBasicType.UINT)
 
         # Param 1: hls::stream<reduce_word_t> (&pe_mem_in)[PE_NUM]
-        reduce_word_t_type = HLSType(basic_type=HLSBasicType.AP_UINT, width="REDUCE_MEM_WIDTH")
+        reduce_word_t_type = HLSType(basic_type=HLSBasicType.REDUCE_WORD_T)
         pe_mem_in_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[reduce_word_t_type])
         pe_mem_in_type = HLSType(HLSBasicType.ARRAY, sub_types=[pe_mem_in_stream_type], array_dims=["PE_NUM"])
         pe_mem_in = HLSVar(var_name="pe_mem_in", var_type=pe_mem_in_type)
@@ -3287,7 +3195,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
 
 
         # Internal Type: reduce_word_t (ap_uint<REDUCE_MEM_WIDTH>)
-        reduce_word_t_type = HLSType(basic_type=HLSBasicType.AP_UINT, width="REDUCE_MEM_WIDTH")
+        reduce_word_t_type = HLSType(basic_type=HLSBasicType.REDUCE_WORD_T)
 
         # Internal Type: hls::stream<reduce_word_t>
         pe_mem_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[reduce_word_t_type])
