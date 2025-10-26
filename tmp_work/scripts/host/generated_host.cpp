@@ -621,14 +621,16 @@ void AlgorithmHost::execute_kernel_iteration(
     // OCL_CHECK(err, err = writer_kernel.setArg(arg_idx++,
     //                                           writer_buffers.node_props_buf));
     // OCL_CHECK(err,
-    //           err = writer_kernel.setArg(arg_idx++, writer_buffers.output_buf));
+    //           err = writer_kernel.setArg(arg_idx++,
+    //           writer_buffers.output_buf));
     // OCL_CHECK(err, err = writer_kernel.setArg(arg_idx++, p_graph.num_dsts));
     // // OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_vertices));
     // // Note: node_dist_stream and write_burst_stm are NOT kernel arguments -
     // // they're stream connections
 
     // // cl::Event *event_ptr = &writer_kernel_events[i];
-    // OCL_CHECK(err, err = acc.writer_queue[i].enqueueTask(writer_kernel, nullptr,
+    // OCL_CHECK(err, err = acc.writer_queue[i].enqueueTask(writer_kernel,
+    // nullptr,
     //                                                      &hbm_writer_event));
     // }
 
@@ -636,7 +638,8 @@ void AlgorithmHost::execute_kernel_iteration(
     // auto &apply_kernel = acc.apply_krnl;
     // int apply_arg_idx = 0;
     // OCL_CHECK(err, err = apply_kernel.setArg(
-    //                    apply_arg_idx++, apply_kernel_buffers.node_props_buf));
+    //                    apply_arg_idx++,
+    //                    apply_kernel_buffers.node_props_buf));
     // OCL_CHECK(err,
     //           err = apply_kernel.setArg(apply_arg_idx++, p_graph.num_dsts));
     // OCL_CHECK(err, err = acc.apply_queue.enqueueTask(apply_kernel, nullptr,
@@ -649,9 +652,11 @@ void AlgorithmHost::execute_kernel_iteration(
 
     arg_idx = 0;
     OCL_CHECK(err, err = kernel.setArg(arg_idx++, buffers.edge_props_buf));
-    OCL_CHECK(err, err = kernel.setArg(arg_idx++, writer_buffers[0].node_props_buf));
-    OCL_CHECK(err, err = kernel.setArg(arg_idx++, writer_buffers[0].output_buf));
-    OCL_CHECK(err, err = kernel.setArg(arg_idx++, apply_kernel_buffers.node_props_buf));
+    OCL_CHECK(err,
+              err = kernel.setArg(arg_idx++, writer_buffers.node_props_buf));
+    OCL_CHECK(err, err = kernel.setArg(arg_idx++, writer_buffers.output_buf));
+    OCL_CHECK(err, err = kernel.setArg(arg_idx++,
+                                       apply_kernel_buffers.node_props_buf));
     OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_vertices));
     OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_edges));
     OCL_CHECK(err, err = kernel.setArg(arg_idx++, p_graph.num_dsts));

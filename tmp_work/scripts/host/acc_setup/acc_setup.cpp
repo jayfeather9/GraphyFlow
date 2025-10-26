@@ -98,30 +98,31 @@ AccDescriptor initAccelerator(const std::string xclbin_path) {
         // }
 
         // 创建 acc.num_writer_krnl 个 "hbm_writer" 内核实例 ---
-        for (int i = 0; i < acc.num_writer_krnl; i++) {
-            std::string cu_id = std::to_string(i + 1);
-            std::string krnl_name_full =
-                std::string("hbm_writer:{") + "hbm_writer_" + cu_id + "}";
+        // for (int i = 0; i < acc.num_writer_krnl; i++) {
+        //     std::string cu_id = std::to_string(i + 1);
+        //     std::string krnl_name_full =
+        //         std::string("hbm_writer:{") + "hbm_writer_" + cu_id + "}";
 
-            cl::Kernel tmp_writer_krnl;
-            printf("Creating a writer kernel [%s] for CU(%d)\n",
-                   krnl_name_full.c_str(), i + 1);
-            OCL_CHECK(err, tmp_writer_krnl = cl::Kernel(
-                               program, krnl_name_full.c_str(), &err));
-            acc.writer_krnls.push_back(tmp_writer_krnl);
-        }
+        //     cl::Kernel tmp_writer_krnl;
+        //     printf("Creating a writer kernel [%s] for CU(%d)\n",
+        //            krnl_name_full.c_str(), i + 1);
+        //     OCL_CHECK(err, tmp_writer_krnl = cl::Kernel(
+        //                        program, krnl_name_full.c_str(), &err));
+        //     acc.writer_krnls.push_back(tmp_writer_krnl);
+        // }
 
         // 创建 apply 内核实例 ---
-        {
-            std::string krnl_name_full =
-                std::string("apply_kernel:{") + "apply_kernel_1}";
+        // {
+        //     std::string krnl_name_full =
+        //         std::string("apply_kernel:{") + "apply_kernel_1}";
 
-            cl::Kernel tmp_apply_krnl;
-            printf("Creating an apply kernel [%s]\n", krnl_name_full.c_str());
-            OCL_CHECK(err, tmp_apply_krnl = cl::Kernel(
-                               program, krnl_name_full.c_str(), &err));
-            acc.apply_krnl = tmp_apply_krnl;
-        }
+        //     cl::Kernel tmp_apply_krnl;
+        //     printf("Creating an apply kernel [%s]\n",
+        //     krnl_name_full.c_str()); OCL_CHECK(err, tmp_apply_krnl =
+        //     cl::Kernel(
+        //                        program, krnl_name_full.c_str(), &err));
+        //     acc.apply_krnl = tmp_apply_krnl;
+        // }
     }
 
     return acc;
