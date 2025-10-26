@@ -1185,15 +1185,131 @@ LOOP_FOR_60:
     //              internal_end_stream);
 }
 
+static void
+apply_kernel_inter(const bus_word_t *node_props, uint32_t dst_num,
+                   hls::stream<write_burst_pkt_t> &node_distance_burst_stream,
+                   hls::stream<write_burst_pkt_t> &write_burst_stream) {
+    uint32_t write_idx = 0;
+LOOP_APPLY:
+    for (uint32_t addr = 0; addr < dst_num; addr += (PE_NUM << 1)) {
+#pragma HLS PIPELINE II = 1
+        write_burst_pkt_t pkt = node_distance_burst_stream.read();
+
+        bus_word_t wide_word = pkt.data;
+
+        bus_word_t node_prop = node_props[write_idx];
+        bus_word_t new_node_prop;
+        
+        for (int i = 0; i < DBL_PE_NUM; i++) {
+#pragma HLS UNROLL
+            ap_fixed_pod_t update_dist =
+                wide_word.range(31 + (i << 5), (i << 5));
+            ap_fixed_pod_t current_dist =
+                node_prop.range(31 + (i << 5), (i << 5));
+            ap_fixed_pod_t new_dist =
+                (update_dist < current_dist) ? update_dist : current_dist;
+            // printf("Node %d: current dist = %f, update dist = %f, new dist =
+            // %f\n",
+            //        addr + i, ap_fixed_to_float(current_dist),
+            //        ap_fixed_to_float(update_dist),
+            //        ap_fixed_to_float(new_dist));
+            // fflush(NULL);
+            new_node_prop.range(31 + (i << 5), (i << 5)) = new_dist;
+        }
+
+        write_burst_pkt_t out_pkt;
+        out_pkt.data = new_node_prop;
+        out_pkt.last = false;
+        write_burst_stream.write(out_pkt);
+        write_idx++;
+    }
+}
+
+static void node_property_loader(
+    const bus_word_t *node_distances_ddr,
+    hls::stream<cacheline_request_pkt_t> &cacheline_req_stream,
+    hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream) {
+
+    cacheline_request_pkt_t cache_req;
+    cacheline_response_pkt_t cache_resp;
+
+    ap_uint<NODE_ID_BITWIDTH - LOG_DIST_PER_WORD> last_cache_idx = -1;
+    bus_word_t last_cacheline;
+    bool end_flag_get = false;
+
+    // Stream 0
+LOOP_NPL_S0_READ:
+    while (true) {
+#pragma HLS PIPELINE II = 1
+        bool process_flag = cacheline_req_stream.read_nb(cache_req);
+
+        ap_uint<26> idx = cache_req.data;
+        ap_uint<8> target_pe = cache_req.dest;
+        bool end_flag = cache_req.last;
+
+        ap_uint<8> dst_pe;
+        bus_word_t out_data;
+        bool out_end_flag;
+
+        if (process_flag) {
+            // printf("Waiting for cacheline request...\n");fflush(NULL);
+            // printf("Received cacheline request for idx %d from PE %d\n",
+            // (int)cache_req.idx, (int)cache_req.target_pe); fflush(NULL);
+            if (end_flag) {
+                end_flag_get = true;
+            } else {
+                if (idx == last_cache_idx) {
+                    out_data = last_cacheline;
+                } else {
+                    out_data = node_distances_ddr[idx];
+                    last_cache_idx = idx;
+                    last_cacheline = out_data;
+                }
+            }
+
+            out_end_flag = end_flag;
+            dst_pe = target_pe;
+
+            cache_resp.data = out_data;
+            cache_resp.dest = dst_pe;
+            cache_resp.last = out_end_flag;
+            cacheline_resp_stream.write(cache_resp);
+            // printf("Sent cacheline response for idx %d to PE %d\n",
+            // (int)cache_req.idx, (int)cache_req.target_pe); fflush(NULL);
+        }
+        if (end_flag_get) {
+            break;
+        }
+    }
+}
+
+void write_out(bus_word_t *output, uint32_t dst_num,
+               hls::stream<write_burst_pkt_t> &write_burst_stream) {
+    uint32_t write_idx = 0;
+    uint32_t target_writes = ((dst_num + DBL_PE_NUM - 1) / DBL_PE_NUM) - 1; // Total number of write bursts
+write_out:
+    while (true) {
+#pragma HLS PIPELINE II = 1
+
+        write_burst_pkt_t one_write_burst;
+
+        if (write_burst_stream.read_nb(one_write_burst)) {
+            output[write_idx] = one_write_burst.data;
+
+            if (write_idx >= target_writes) {
+                break;
+            }
+            write_idx = write_idx + 1;
+        }
+    }
+}
+
 // --- 5. Top-level AXI Kernel Wrapper ---
 extern "C" void
 graphyflow_big(const bus_word_t *edge_props,
-               //    const bus_word_t *node_props,
-               //    bus_word_t *output,
-               int32_t num_nodes, int32_t num_edges, int32_t dst_num,
-               hls::stream<cacheline_request_pkt_t> &cacheline_req_stream,
-               hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream,
-               hls::stream<write_burst_pkt_t> &kernel_out_stream) {
+               const bus_word_t *node_props, bus_word_t *output,
+               const bus_word_t *node_props_apply, int32_t num_nodes, int32_t num_edges, int32_t dst_num
+) {
 #pragma HLS INTERFACE m_axi port = edge_props offset = slave bundle = gmem0
 // #pragma HLS INTERFACE m_axi port = node_props offset = slave bundle = gmem1
 // #pragma HLS INTERFACE m_axi port = output offset = slave bundle = gmem2
@@ -1242,6 +1358,12 @@ graphyflow_big(const bus_word_t *edge_props,
     cacheline_req_sender(stream_dist_req, cacheline_req_stream);
     // node_property_loader(node_props, stream_cache_req, stream_cache_resp,
     //                      node_distance_burst_stream, num_nodes);
+    hls::stream<cacheline_request_pkt_t> cacheline_req_stream;
+#pragma HLS STREAM variable = cacheline_req_stream depth = 16
+    hls::stream<cacheline_response_pkt_t> cacheline_resp_stream;
+#pragma HLS STREAM variable = cacheline_resp_stream depth = 16
+    node_property_loader(node_props, cacheline_req_stream,
+                        cacheline_resp_stream);
     node_prop_resp_receiver(cacheline_resp_stream, stream_cachelines);
     merge_node_props(stream_cachelines, edge_stream, stream_edge_data,
                      num_edges);
@@ -1250,8 +1372,18 @@ graphyflow_big(const bus_word_t *edge_props,
     // node_property_responder(node_distance_burst_stream, num_nodes,
     // stream_node_dist_data);
 
+    hls::stream<write_burst_pkt_t> apply_write_burst_stream;
+#pragma HLS STREAM variable = apply_write_burst_stream depth = 16
+
     // --- Main Dataflow Processing ---
-    graphyflow_big_dataflow(stream_edge_data, kernel_out_stream, dst_num);
+    graphyflow_big_dataflow(stream_edge_data, apply_write_burst_stream, dst_num);
+
+    // --- Apply Kernel ---
+    hls::stream<write_burst_pkt_t> kernel_out_stream;
+#pragma HLS STREAM variable = kernel_out_stream depth = 16
+    apply_kernel_inter(node_props_apply, dst_num,
+                      apply_write_burst_stream, kernel_out_stream);
+    write_out(output, dst_num, kernel_out_stream);
 
     // --- Final Writeback ---
     // final_writeback(stream_result_data, dst_num, output);
