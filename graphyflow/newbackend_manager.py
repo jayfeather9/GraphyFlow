@@ -7,7 +7,7 @@ import graphyflow.dataflow_ir as dfir
 import re
 import copy
 
-
+import graphyflow.dataflow_ir_datatype as dftype
 from graphyflow.dataflow_ir import BinOp, UnaryOp
 from graphyflow.backend_defines import (
     INDENT_UNIT,
@@ -312,51 +312,61 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         write_func_body(self.apply_top_func,True)
         return code
 
+    def _dfirtype_to_hlstype(self, dfir_type: dftype.DfirType) -> HLSType:
+        node_id_type = HLSType(basic_type=HLSBasicType.NODE_ID)
+        distance_type = HLSType(basic_type=HLSBasicType.AP_FIXED_POD)
+        if isinstance(dfir_type , dftype.SpecialIdType):
+            if dfir_type.type_name == "node_id":
+                return node_id_type
+            else:
+                assert 0
+        elif isinstance(dfir_type , dftype.FloatType):
+            return distance_type
+        elif isinstance(dfir_type , dftype.ArrayType):
+            elem_type = dfir_type.type_
+            if isinstance(elem_type , dftype.SpecialIdType):
+                if elem_type.type_name == "node_id":
+                    return node_id_type#HLSType(basic_type=HLSBasicType.ARRAY, sub_types=[node_id_type])
+                else:
+                    assert 0
+            elif isinstance(elem_type , dftype.FloatType):
+                return distance_type#HLSType(basic_type=HLSBasicType.ARRAY, sub_types=[distance_type])
+        else:
+            assert 0
 
-    def _inline_stateless_sub_graph(
-        self, sub_graph: dfir.ComponentCollection, io_var_map: Dict[dfir.Port, HLSVar]
-    ) -> List[HLSCodeLine]:
+    def _add_pod_to_float_cast(
+        self, pod_expr: HLSExpr, code_list: List[HLSCodeLine], base_name: str
+    ) -> HLSExpr:
         """
-        Traverses a stateless sub-graph (from a FusedOpComponent) and generates inlined HLS logic.
-        (Refactored to use the _translate_inline_component helper).
+        Generates code to cast a POD type (int32_t) to a computational float (ap_fixed).
+        Handles both variables and constants correctly by returning an HLSExpr.
+        Appends prerequisite declarations to code_list for variables.
         """
-        code_lines: List[HLSCodeLine] = []
-        p2var_map = io_var_map.copy()
+        # If the expression is a constant, return a direct C++ cast expression.
+        # This will generate "((ap_fixed<32, 16>)0.0)" which is legal C++.
+        if pod_expr.type == HLSExprT.CONST:
+            return HLSExpr(HLSExprT.UOP, UnaryOp.CAST_FLOAT, [pod_expr])
 
-        try:
-            sorted_components = sub_graph.topo_sort()
-        except (RuntimeError, ConnectionError) as e:
-            raise RuntimeError(f"Failed to topologically sort FusedOpComponent subgraph: {e}")
+        # If the expression is a variable, generate the reinterpret_cast logic.
+        elif pod_expr.type == HLSExprT.VAR:
+            ap_fixed_type = HLSType(HLSBasicType.FLOAT)
+            float_var = HLSVar(base_name, ap_fixed_type)
 
-        for comp in sorted_components:
-            code_lines.append(CodeComment(f"Inlining {comp.name}"))
+            # 1. Declare a new ap_fixed variable.
+            # 2. Initialize it by reinterpreting the bits of the input POD variable.
+            cast_str = f"*reinterpret_cast<ap_fixed<32, 16>*>(&{pod_expr.code})"
+            code_list.append(CodeVarDecl(float_var.name, float_var.type, init_val=cast_str))
 
-            # Proactively define HLS variables for all intermediate outputs of this component.
-            for out_port in comp.out_ports:
-                if out_port not in p2var_map:
-                    temp_var = HLSVar(
-                        f"fused_temp_{out_port.parent.name}_{out_port.name}",
-                        self.type_map[out_port.data_type],
-                    )
-                    code_lines.append(CodeVarDecl(temp_var.name, temp_var.type))
-                    p2var_map[out_port] = temp_var
+            # 3. Return an expression that refers to this new temporary variable.
+            return HLSExpr(HLSExprT.VAR, float_var)
 
-            # Delegate the actual code generation to the shared helper function.
-            self._translate_inline_component(comp, p2var_map, code_lines)
-
-        return code_lines
+        else:
+            raise TypeError(f"Unsupported HLSExpr type for casting: {pod_expr.type}")
+        
     def _translate_inline_component(
         self, comp: dfir.Component, p2var_map: Dict[dfir.Port, HLSVar], code_lines: List[HLSCodeLine]
     ):
-        """
-        Generates HLS code for a single DFIR component within an inlining context.
-        This is a shared helper function to eliminate code duplication.
 
-        Args:
-            comp: The DFIR component to translate.
-            p2var_map: The map from dfir.Port objects to their corresponding HLSVar.
-            code_lines: The list of HLSCodeLine objects to append generated code to.
-        """
         if isinstance(comp, dfir.BinOpComponent):
             op1_expr = HLSExpr.check_const(
                 HLSExpr(HLSExprT.VAR, p2var_map[comp.get_port("i_0").connection]), comp.get_port("i_0")
@@ -365,151 +375,13 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
                 HLSExpr(HLSExprT.VAR, p2var_map[comp.get_port("i_1").connection]), comp.get_port("i_1")
             )
             target_var = p2var_map[comp.get_port("o_0")]
-            # code_lines.append(CodeComment(f"Translating BinOp {comp.name} data type {op1_expr.val.type.type}"))
 
-            if op1_expr.val.type.type == HLSBasicType.AP_FIXED_POD:
-                is_comparison = comp.op in [BinOp.EQ, BinOp.NE, BinOp.LT, BinOp.GT, BinOp.LE, BinOp.GE]
-                final_op1_expr = self._add_pod_to_float_cast(op1_expr, code_lines, f"lhs_{comp.readable_id}")
-                final_op2_expr = self._add_pod_to_float_cast(op2_expr, code_lines, f"rhs_{comp.readable_id}")
-                op_expr = HLSExpr(HLSExprT.BINOP, comp.op, [final_op1_expr, final_op2_expr])
-
-                if is_comparison:
-                    code_lines.append(CodeAssign(target_var, op_expr))
-                else:
-                    result_var = HLSVar(f"temp_{comp.name}_o_0_ap_result", HLSType(HLSBasicType.FLOAT))
-                    code_lines.append(CodeVarDecl(result_var.name, result_var.type))
-                    code_lines.append(CodeAssign(result_var, op_expr))
-                    self._add_float_to_pod_cast(result_var, code_lines, target_var)
-            else:
-                expr = HLSExpr(HLSExprT.BINOP, comp.op, [op1_expr, op2_expr])
-                code_lines.append(CodeAssign(target_var, expr))
-
-        elif isinstance(comp, dfir.UnaryOpComponent):
-            op1 = HLSExpr.check_const(
-                HLSExpr(HLSExprT.VAR, p2var_map[comp.get_port("i_0").connection]), comp.get_port("i_0")
-            )
-            comp_op_var = comp.op
-            if comp.op in [UnaryOp.GET_ATTR, UnaryOp.SELECT]:
-                assert op1.val.type.type == HLSBasicType.STRUCT
-                comp_op_var = (comp_op_var, comp.select_index)
-            expr = HLSExpr(HLSExprT.UOP, comp_op_var, [op1])
-            code_lines.append(CodeAssign(p2var_map[comp.get_port("o_0")], expr))
-
-        elif isinstance(comp, dfir.CopyComponent):
-            in_var_expr = HLSExpr.check_const(
-                HLSExpr(HLSExprT.VAR, p2var_map[comp.get_port("i_0").connection]), comp.get_port("i_0")
-            )
-            target_o0 = p2var_map[comp.get_port("o_0")]
-            target_o1 = p2var_map[comp.get_port("o_1")]
-            code_lines.append(CodeAssign(target_o0, in_var_expr))
-            code_lines.append(CodeAssign(target_o1, in_var_expr))
-
-        elif isinstance(comp, dfir.GatherComponent):
-            target_struct_var = p2var_map[comp.get_port("o_0")]
-            output_type = target_struct_var.type
-            for i, in_port in enumerate(comp.in_ports):
-                in_var_expr = HLSExpr.check_const(
-                    HLSExpr(HLSExprT.VAR, p2var_map[in_port.connection]), in_port
-                )
-                member_var = HLSVar(
-                    f"{target_struct_var.name}.{output_type.get_nth_subname(i)}", in_var_expr.val.type
-                )
-                code_lines.append(CodeAssign(member_var, in_var_expr))
-
-        elif isinstance(comp, dfir.ScatterComponent):
-            in_var = p2var_map[comp.get_port("i_0").connection]
-            for i, out_port in enumerate(comp.out_ports):
-                if isinstance(out_port.connection.parent, dfir.UnusedEndMarkerComponent):
-                    continue
-                ga_op = UnaryOp.GET_ATTR
-                sub_name = in_var.type.get_nth_subname(i)
-                expr = HLSExpr(HLSExprT.UOP, (ga_op, sub_name), [HLSExpr(HLSExprT.VAR, in_var)])
-                code_lines.append(CodeAssign(p2var_map[out_port], expr))
-
-        elif isinstance(comp, dfir.FusedOpComponent):
-            # Handle nested FusedOpComponent by recursively calling the inliner.
-            code_lines.append(CodeComment(f" -- Begin Nested Inline for FusedOp {comp.name} -- "))
-
-            # 1. Prepare the I/O variable map for the recursive call.
-            nested_io_var_map: Dict[dfir.Port, HLSVar] = {}
-
-            # 2. Map the inner subgraph's inputs to the current scope's variables.
-            # We use the same placeholder technique as in `_translate_fused_op`.
-            for sub_in_port in comp.sub_graph.inputs:
-                placeholder = dfir.PlaceholderComponent(sub_in_port.data_type)
-                sub_in_port.connect(placeholder.get_port("o_0"))
-
-                # Find the corresponding external port on the FusedOp itself.
-                fused_op_port = comp.port_mapping.get(sub_in_port.readable_id)
-
-                # The variable for this input is already in the current p2var_map,
-                # indexed by the port connected to the FusedOp's input.
-                input_var = p2var_map[fused_op_port.connection]
-                nested_io_var_map[placeholder.get_port("o_0")] = input_var
-
-            # 3. Map the inner subgraph's outputs to the variables already created for them.
-            for sub_out_port in comp.sub_graph.outputs:
-                fused_op_port = comp.port_mapping.get(sub_out_port.readable_id)
-
-                # The variable for this output was created before we started processing this comp.
-                output_var = p2var_map[fused_op_port]
-                nested_io_var_map[sub_out_port] = output_var
-
-            # 4. Recursively call the inliner for the nested subgraph.
-            try:
-                inlined_fused_code = self._inline_stateless_sub_graph(comp.sub_graph, nested_io_var_map)
-                code_lines.extend(inlined_fused_code)
-            finally:
-                # 5. IMPORTANT: Clean up the temporary connections to restore graph state.
-                for sub_in_port in comp.sub_graph.inputs:
-                    if sub_in_port.connected:
-                        sub_in_port.disconnect()
-
-            code_lines.append(CodeComment(f" -- End Nested Inline for FusedOp {comp.name} -- "))
-
-        elif isinstance(comp, dfir.ConditionalComponent):
-            data_expr = HLSExpr.check_const(
-                HLSExpr(HLSExprT.VAR, p2var_map[comp.get_port("i_data").connection]),
-                comp.get_port("i_data"),
-            )
-            cond_expr = HLSExpr.check_const(
-                HLSExpr(HLSExprT.VAR, p2var_map[comp.get_port("i_cond").connection]),
-                comp.get_port("i_cond"),
-            )
-            target_struct_var = p2var_map[comp.get_port("o_0")]
-            assign_data = CodeAssign(HLSVar(f"{target_struct_var.name}.data", data_expr.val.type), data_expr)
-            assign_valid = CodeAssign(
-                HLSVar(f"{target_struct_var.name}.valid", cond_expr.val.type), cond_expr
-            )
-            code_lines.extend([assign_data, assign_valid])
-
-        elif isinstance(comp, dfir.CollectComponent):
-            in_opt_var = p2var_map[comp.get_port("i_0").connection]
-            out_var = p2var_map[comp.get_port("o_0")]
-            cond_expr = HLSExpr(
-                HLSExprT.UOP, (UnaryOp.GET_ATTR, "valid"), [HLSExpr(HLSExprT.VAR, in_opt_var)]
-            )
-            assign_expr = HLSExpr(
-                HLSExprT.UOP, (UnaryOp.GET_ATTR, "data"), [HLSExpr(HLSExprT.VAR, in_opt_var)]
-            )
-            if_block = CodeIf(cond_expr, [CodeAssign(out_var, assign_expr)])
-            code_lines.append(if_block)
-
-        elif isinstance(comp, dfir.PlaceholderComponent):
-            in_var_expr = HLSExpr.check_const(
-                HLSExpr(HLSExprT.VAR, p2var_map[comp.get_port("i_0").connection]), comp.get_port("i_0")
-            )
-            target_var = p2var_map[comp.get_port("o_0")]
-            code_lines.append(CodeAssign(target_var, in_var_expr))
-
-        elif isinstance(comp, (dfir.UnusedEndMarkerComponent, dfir.ConstantComponent)):
-            # These components generate no executable code in this context.
-            pass
+            expr = HLSExpr(HLSExprT.BINOP, comp.op, [op1_expr, op2_expr])
+            code_lines.append(CodeAssign(target_var, expr))
 
         else:
-            # Stricter policy: fail if we don't know how to translate a component.
-            # raise NotImplementedError(f"Inlining logic not implemented for component type: {type(comp).__name__}")
-            code_lines.append(CodeComment(f"Unknown {comp.name} of type {type(comp).__name__}"))
+            print("unimplemented inline component type:", type(comp))
+        pass
 
     def _topologically_sort_structs(self) -> List[Tuple[HLSType, List[str]]]:
         """Sorts struct definitions based on their member dependencies."""
@@ -836,7 +708,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         def write_func_body(func: HLSFunction,is_top):
             nonlocal code
             params_str = ",\n ".join(
-                [p.type.get_upper_param(p.name, p.type.type != HLSBasicType.INT) for p in func.params]
+                [p.type.get_upper_param(p.name, p.type.type != HLSBasicType.INT and p.type.type != HLSBasicType.UINT) for p in func.params]
             )
             if len(func.codes) != 0:
                 if is_top:
@@ -1047,8 +919,6 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         if_codes.append(CodeVarDecl(var_name="src_id", var_type=node_id_type))
         src_id_var = HLSVar(var_name="src_id", var_type=node_id_type)
 
-        # (为 HLSExpr 不支持的 .range() 方法使用技巧：
-        #  将原始 C++ 字符串作为 HLSExprT.CONST 传递)
 
         # edge.dst_id = packed_edge.range(NODE_ID_BITWIDTH - 1, 0);
         edge_dst_id_var = HLSVar(var_name="edge.dst_id", var_type=node_id_type)
@@ -2388,7 +2258,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
                                                   sub_types=[node_id_type, ap_fixed_pod_t_type, bool_type])
         if net_wrapper_kt_pair_105_t_t_type.name not in self.struct_definitions:
             self.struct_definitions[net_wrapper_kt_pair_105_t_t_type.name] = (net_wrapper_kt_pair_105_t_t_type, net_wrapper_kt_pair_105_t_t_type.struct_prop_names)
-            
+
         stream_type = HLSType(HLSBasicType.STREAM, sub_types=[net_wrapper_kt_pair_105_t_t_type])
         
         out1_var = HLSVar(var_name="out1", var_type=stream_type)
@@ -3094,6 +2964,11 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         # Param 2: hls::stream<write_burst_pkt_t> &kernel_out_stream
         # (write_burst_pkt_t is defined in backend_defines.py)
         write_burst_pkt_t_type = HLSType(HLSBasicType.WRITE_BURST_PKT_T)
+
+        for p in comp.ports:
+            if p.name in ["i_0", "o_0"]:
+                self.type_map[p] = write_burst_pkt_t_type
+        
         kernel_out_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[write_burst_pkt_t_type])
         kernel_out_stream = HLSVar(var_name="kernel_out_stream", var_type=kernel_out_stream_type)
 
@@ -3354,6 +3229,9 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         self._translate_reduce_op(reduce_comp)
             
     def process_apply(self,apply_stage_comps : List[dfir.Component]):
+
+ 
+        # translate funstions
         apply_kernel_inter_func = HLSFunction(name="apply_kernel_inter", comp=None)
         params = []
 
@@ -3440,23 +3318,146 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         # #pragma HLS UNROLL
         for_loop_2_codes.append(CodePragma(content="UNROLL"))
 
+
+        # begin inline fused op ====
         # ap_fixed_pod_t update_dist = wide_word.range(31 + (i << 5), (i << 5));
         init_val_1 = "wide_word.range(31 + (i << 5), (i << 5))"
         for_loop_2_codes.append(CodeVarDecl(var_name="update_dist", var_type=ap_fixed_pod_t_type, init_val=init_val_1))
+        init_val_1_var = HLSVar(var_name="update_dist", var_type=ap_fixed_pod_t_type)
 
         # ap_fixed_pod_t current_dist = node_prop.range(31 + (i << 5), (i << 5));
         init_val_2 = "node_prop.range(31 + (i << 5), (i << 5))"
         for_loop_2_codes.append(CodeVarDecl(var_name="current_dist", var_type=ap_fixed_pod_t_type, init_val=init_val_2))
+        init_val_2_var = HLSVar(var_name="current_dist", var_type=ap_fixed_pod_t_type)
+
 
         # ap_fixed_pod_t new_dist = (update_dist < current_dist) ? update_dist : current_dist;
-        init_val_3 = "(update_dist < current_dist) ? update_dist : current_dist"
-        for_loop_2_codes.append(CodeVarDecl(var_name="new_dist", var_type=ap_fixed_pod_t_type, init_val=init_val_3))
+        # init_val_3 = "(update_dist < current_dist) ? update_dist : current_dist"
+        for_loop_2_codes.append(CodeVarDecl(var_name="new_dist", var_type=ap_fixed_pod_t_type))
+        result_val3 = HLSVar(var_name="new_dist", var_type=ap_fixed_pod_t_type)
 
         # new_node_prop.range(31 + (i << 5), (i << 5)) = new_dist;
         # (Using CodeOther for LHS .range())
-        for_loop_2_codes.append(CodeOther(text="new_node_prop.range(31 + (i << 5), (i << 5)) = new_dist;"))
+        
         # } (end for_loop_2)
 
+        node_id_type = HLSType(HLSBasicType.NODE_ID)
+        distance_type = HLSType(HLSBasicType.AP_FIXED_POD)
+        print("========= apply Stage =========")
+        for comp in apply_stage_comps:
+            print(f"{type(comp)} id : {comp.readable_id}")
+            for port in comp.ports:
+                print(f"Port: {port.name}, Type: {port.port_type}, id:{port.readable_id},Connection: {port.connection if port.connection else 'None'}")
+            
+            if isinstance(comp, dfir.ScatterComponent):
+                for port in comp.ports:
+                    in_port = None
+                    conn = port.connection
+                    parent = conn.parent
+                    idx = 0
+                    if port.port_type == dfir.PortType.IN:
+                        in_port = port
+                        self.type_map[port] = self.type_map[conn]
+                        
+                    elif port.port_type == dfir.PortType.OUT:
+                        if isinstance(port.data_type , dftype.SpecialIdType):
+                            if port.data_type.type_name == "node_id":
+                                 self.type_map[port] = node_id_type
+                            else:
+                                assert 0
+                        elif isinstance(port.data_type , dftype.FloatType):
+                            self.type_map[port] = distance_type
+                        elif isinstance(port.data_type , dftype.ArrayType):
+                            elem_type = port.data_type.type_
+                            if isinstance(elem_type , dftype.SpecialIdType):
+                                if elem_type.type_name == "node_id":
+                                     self.type_map[port] = node_id_type
+                                else:
+                                    assert 0
+                            elif isinstance(elem_type , dftype.FloatType):
+                                self.type_map[port] = distance_type
+                        else:
+                            assert 0
+                               
+
+            elif isinstance(comp, dfir.CopyComponent):
+                for port in comp.ports:
+                    conn = port.connection
+    
+                    if port.port_type == dfir.PortType.IN:
+                        in_port = port
+                        self.type_map[port] = self.type_map[conn]
+                    elif port.port_type == dfir.PortType.OUT:
+                        self.type_map[port] = self.type_map[in_port]
+            elif isinstance(comp,dfir.MemoryReadComponent):
+                for port in comp.ports:
+                    conn = port.connection
+
+                    if port.port_type == dfir.PortType.IN:
+                        in_port = port
+                        self.type_map[port] = self.type_map[conn]
+                    elif port.port_type == dfir.PortType.OUT:
+                        if isinstance(port.data_type , dftype.SpecialIdType):
+                            if port.data_type.type_name == "node_id":
+                                 self.type_map[port] = node_id_type
+                            else:
+                                assert 0
+                        elif isinstance(port.data_type , dftype.FloatType):
+                            self.type_map[port] = distance_type
+                        elif isinstance(port.data_type , dftype.ArrayType):
+                            elem_type = port.data_type.type_
+                            if isinstance(elem_type , dftype.SpecialIdType):
+                                if elem_type.type_name == "node_id":
+                                     self.type_map[port] = node_id_type
+                                else:
+                                    assert 0
+                            elif isinstance(elem_type , dftype.FloatType):
+                                self.type_map[port] = distance_type
+                        else:
+                            assert 0
+            elif isinstance(comp,dfir.FusedOpComponent):
+                 
+                # 连接到memor的是旧distance 连接到scatter的是新distance
+                for port in comp.ports:
+                    conn = port.connection
+    
+                    if port.port_type == dfir.PortType.IN:
+                        in_port = port
+                        self.type_map[port] = self.type_map[conn]
+                    elif port.port_type == dfir.PortType.OUT:
+                        self.type_map[port] = distance_type
+                        print(port.data_type)
+                
+                inline_code = []
+
+                inline_code.append(CodeComment(f" -- Inlining FusedOp {comp.name} -- "))
+
+
+                for c in comp.sub_graph.components:
+                    if isinstance(c, dfir.BinOpComponent):
+                        op1_expr = HLSExpr(HLSExprT.VAR, init_val_1_var)
+
+                        op2_expr = HLSExpr(HLSExprT.VAR, init_val_2_var)
+
+                        target_var = result_val3
+
+                        expr = HLSExpr(HLSExprT.BINOP, c.op, [op1_expr, op2_expr])
+                        inline_code.append(CodeAssign(target_var, expr))
+
+
+                inline_code.append(CodeComment(f" -- End Inlining FusedOp {comp.name} -- "))
+
+
+                for_loop_2_codes.extend(inline_code)
+
+            else:
+                assert 0
+
+            
+        # ==== end inline fused op ====
+        for_loop_2_codes.append(CodeOther(text="new_node_prop.range(31 + (i << 5), (i << 5)) = new_dist;"))
+        
+        
         # write_burst_pkt_t out_pkt;
         for_loop_1_codes.append(CodeVarDecl(var_name="out_pkt", var_type=write_burst_pkt_t_type))
         out_pkt_var = HLSVar(var_name="out_pkt", var_type=write_burst_pkt_t_type)
@@ -3557,12 +3558,13 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         apply_stage_comps = []
 
         reduce_found = False
+        reduce_out_ports = []
 
         for comp in component_list:
             print(f"{type(comp)}: id:{comp.readable_id}")
             for port in comp.ports:
                 conn_id = port.connection.readable_id if port.connection else "None"
-                print(f"    Port: {port.readable_id}, Type: {port.port_type}, Connected to: {conn_id}")
+                print(f"    Port: {port.readable_id}, name:{port.name},Type: {port.port_type}, Connected to: {conn_id}")
             if isinstance(
                     comp,
                     (
@@ -3573,11 +3575,28 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
             ):
                 continue
             if reduce_found:
-                apply_stage_comps.append(comp)
+                is_post_reduce = True
+
+                for port in comp.ports:
+                    if port.port_type == dfir.PortType.IN:
+                        if not (port.connection in reduce_out_ports):
+                            is_post_reduce = False
+                            break
+                if is_post_reduce:
+                    for port in comp.ports:
+                        if port.port_type == dfir.PortType.OUT:
+                             reduce_out_ports.append(port)
+                    apply_stage_comps.append(comp)
+
 
             elif isinstance(comp, dfir.ReduceComponent):
                 gather_stage_comps.append(comp)
                 reduce_found = True  
+
+                for port in comp._port_groups["global"]:
+                    if port.port_type == dfir.PortType.OUT:
+                        reduce_out_ports.append(port)
+
 
             else:
                 scatter_stage_comps.append(comp)
