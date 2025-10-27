@@ -832,7 +832,7 @@ class MemoryReadComponent(Component):
         self.access_tree = self._build_access_tree()
         self.output_types = output_types
         self.pattern_to_pname = {}
-
+        self.pname_to_pattern = {}
         ports = []
         specific_port_types = {}
 
@@ -844,7 +844,8 @@ class MemoryReadComponent(Component):
             port_name = f"o_{in_idx}_{base_type}_{path_str}"
             ports.append(port_name)
             self.pattern_to_pname[(in_idx, (base_type, tuple(path)))] = port_name
-
+            self.pname_to_pattern[port_name] = (in_idx, (base_type, tuple(path)))
+            
             assert base_type in ["node", "edge"], f"Base type must be 'node' or 'edge', got '{base_type}'"
             if f"i_{in_idx}_{base_type}_id" not in ports:
                 ports.append(f"i_{in_idx}_{base_type}_id")

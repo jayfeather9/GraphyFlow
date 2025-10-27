@@ -1558,10 +1558,53 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
 
         
         
-    def _translate_fused_op(self, comp: dfir.FusedOpComponent):
+    def _translate_fused_op(self, comp: dfir.FusedOpComponent,memory_read_outpattern):
+    
+        # 分析fused op
+        node_id_type = HLSType(HLSBasicType.NODE_ID)
+        distance_type = HLSType(HLSBasicType.DISTANCE_T)
+
+        inline_code = []
+        sub_graph_inports = comp.sub_graph.inputs
+        port_to_var: Dict[dfir.Port, HLSVar] = {}
+
+
+        sub_graph_components = comp.sub_graph.topo_sort()
+
+        top = 0
+        inline_code.append(CodeComment("Begin inline code for fused op: " + comp.name))
+        for c in sub_graph_components:
+            if isinstance(c,dfir.ConstantComponent):
+                constvar = HLSVar(var_name=c.name+"out", var_type=distance_type)
+                inline_code.append(CodeVarDecl(var_name=constvar.name, var_type=distance_type, init_val=str(c.value)))
+
+                for port in c.ports:
+                    if port.port_type == dfir.PortType.OUT:
+                        port_to_var[port] = constvar
+            elif isinstance(c,dfir.BinOpComponent):
+                lhs_port = c.get_port("i_0")
+                rhs_port = c.get_port("i_1")
+                if not lhs_port in sub_graph_inports:
+                    lhs = port_to_var[lhs_port.connection]
+                else:
+                    lhs = HLSVar(var_name="top" + str(top), var_type=distance_type)
+                    top = top+1
+                if not rhs_port in sub_graph_inports:
+                    rhs = port_to_var[rhs_port.connection]
+                else:
+                    rhs = HLSVar(var_name="top" + str(top), var_type=distance_type)
+                    top =top +1
+                result_var = HLSVar(var_name=c.name+"out", var_type=distance_type)
+                binop_expr = HLSExpr(HLSExprT.BINOP, c.op, [HLSExpr(HLSExprT.VAR, lhs), HLSExpr(HLSExprT.VAR, rhs)] )
+                inline_code.append(CodeVarDecl(var_name=result_var.name, var_type=distance_type))
+                inline_code.append(CodeAssign(var=result_var, expr=binop_expr))
+            else:
+                pass
         
+        inline_code.append(CodeComment("end inline code for fused op: " + comp.name))
 
 
+        # 还缺少pre reduce的翻译
         # 下面是函数翻译
         merge_node_props_func = HLSFunction(name="merge_node_props", comp=comp)
         params = []
@@ -1628,7 +1671,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         merge_node_props_func.params = params
 
         # --- 2. Function Body ---
-        code_lines: List[HLSCodeLine] = []
+        code_lines: List[HLSCodeLine] = inline_code
 
         # bus_word_t last_cacheline[PE_NUM];
         last_cacheline_type = HLSType(HLSBasicType.ARRAY, sub_types=[bus_word_t_type], array_dims=["PE_NUM"])
@@ -3195,30 +3238,23 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
 
     def process_scatter(self,scatter_stage_comps : List[dfir.Component]):
         print("========= Scatter Stage =========")
-        memory_read_outputs = []
         
+        port_property = {}
         for comp in scatter_stage_comps:
             if isinstance(comp, dfir.MemoryReadComponent):
-                for port in comp.ports:
-                    if port.port_type == dfir.PortType.OUT:
-                        memory_read_outputs.append(port)
-
-                # define HLS function
                 self._translate_memory_read_op(comp)
                     
 
             elif isinstance(comp, dfir.FusedOpComponent):
-                for port in comp.ports:
-                    #connected_to = port.connection.readable_id
-                    if port.port_type == dfir.PortType.IN:
-                        assert port.connection is not None
-                        assert port.connection in memory_read_outputs
-
-
                 print(comp.port_mapping)
-                for comp in comp.sub_graph.components:
-                    print(type(comp))
-                self._translate_fused_op(comp)
+                # for comp in comp.sub_graph.components:
+                #     print(type(comp))
+                for port in comp.ports:
+                    if port.port_type == dfir.PortType.IN:
+                        conn = port.connection
+                        parent = conn.parent
+                        port_property[port] = parent.pname_to_pattern[conn.name]
+                self._translate_fused_op(comp,port_property)
             else:
                 break
 
@@ -3319,7 +3355,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         for_loop_2_codes.append(CodePragma(content="UNROLL"))
 
 
-        # begin inline fused op ====
+        # ================ begin inline fused op =============================
         # ap_fixed_pod_t update_dist = wide_word.range(31 + (i << 5), (i << 5));
         init_val_1 = "wide_word.range(31 + (i << 5), (i << 5))"
         for_loop_2_codes.append(CodeVarDecl(var_name="update_dist", var_type=ap_fixed_pod_t_type, init_val=init_val_1))
@@ -3454,7 +3490,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
                 assert 0
 
             
-        # ==== end inline fused op ====
+        # ========================= end inline fused op ===========================
         for_loop_2_codes.append(CodeOther(text="new_node_prop.range(31 + (i << 5), (i << 5)) = new_dist;"))
         
         
