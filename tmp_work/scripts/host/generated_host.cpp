@@ -259,75 +259,7 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
 
     const size_t bytes_per_word = AXI_BUS_WIDTH / 8;
 
-    // --- 1.3: Setup buffers for BIG kernels (Sparse Partitions) ---
-    for (size_t i = 0; i < container.SPs.size(); ++i) {
-        const auto &p_graph = container.SPs[i].partitioned_graph;
-        KernelBuffers buffers;
-
-        cl_mem_ext_ptr_t hbm_ext_edge;
-        hbm_ext_edge.flags = XCL_MEM_TOPOLOGY | acc.big_kernel_hbm_edge_id[i];
-        hbm_ext_edge.obj = big_kernel_input_buffers[i].packed_edge_props.data();
-        hbm_ext_edge.param = 0;
-
-        // use pre-calculated sizes from Phase 0
-        size_t num_edge_words =
-            (big_kernel_input_buffers[i].packed_edge_props.size());
-        OCL_CHECK(err,
-                  buffers.edge_props_buf = cl::Buffer(
-                      acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_USE_HOST_PTR,
-                      num_edge_words * bytes_per_word, &hbm_ext_edge, &err));
-
-        // Calculate output buffer size: only distances (no node IDs or end
-        // markers) Output is num_dst_vertices * DISTANCE_BITWIDTH
-        size_t max_dst_local_id = 0;
-        for (size_t e = 0; e < p_graph.num_edges; ++e) {
-            int dst = p_graph.columns[e];
-            if (((dst & 0x40000000) == 0) && dst > max_dst_local_id) {
-                max_dst_local_id = dst;
-            }
-        }
-        size_t num_dst_vertices = max_dst_local_id + 1;
-        // Calculate how many distances fit in one 512-bit word
-        size_t dists_per_word = AXI_BUS_WIDTH / DISTANCE_BITWIDTH;
-        size_t num_output_words =
-            (num_dst_vertices + dists_per_word - 1) / dists_per_word;
-
-        big_kernel_buffers.push_back(buffers);
-
-        // Create buffers for corresponding hbm_writer kernel
-        WriterKernelBuffers writer_buffers;
-
-        // Setup HBM extension for writer kernel input (node distances)
-        cl_mem_ext_ptr_t hbm_ext_writer_node;
-        hbm_ext_writer_node.flags =
-            XCL_MEM_TOPOLOGY | acc.big_kernel_hbm_node_id[i];
-        hbm_ext_writer_node.obj = big_kernel_input_buffers[i].packed_node_props.data();
-        hbm_ext_writer_node.param = 0;
-        cl_mem_ext_ptr_t hbm_ext_writer_out;
-        hbm_ext_writer_out.flags =
-            XCL_MEM_TOPOLOGY | acc.big_kernel_hbm_node_id[i];
-        hbm_ext_writer_out.obj = nullptr;
-        hbm_ext_writer_out.param = 0;
-
-        // Create node_props_buf for writer kernel (same size as node_props)
-        size_t num_dist_words =
-            (big_kernel_input_buffers[i].packed_node_props.size());
-        OCL_CHECK(err, writer_buffers.node_props_buf =
-                           cl::Buffer(acc.context,
-                                      CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_USE_HOST_PTR,
-                                      num_dist_words * bytes_per_word,
-                                      &hbm_ext_writer_node, &err));
-        // Create output buffer for writer kernel
-        writer_kernel_host_outputs[i].resize(num_output_words);
-        OCL_CHECK(err, writer_buffers.output_buf =
-                           cl::Buffer(acc.context,
-                                      CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX,
-                                      num_output_words * bytes_per_word,
-                                      &hbm_ext_writer_out, &err));
-        writer_kernel_buffers.push_back(writer_buffers);
-    }
-
-    // --- 1.4: Setup buffers for LITTLE kernels (Dense Partitions) ---
+    // --- 1.3: Setup buffers for LITTLE kernels (Dense Partitions) ---
     for (size_t i = 0; i < container.DPs.size(); ++i) {
         printf("Setting up LITTLE kernel %zu buffers...\n", i);
         const auto &p_graph = container.DPs[i].partitioned_graph;
@@ -336,16 +268,19 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
         cl_mem_ext_ptr_t hbm_ext_edge;
         hbm_ext_edge.flags =
             XCL_MEM_TOPOLOGY | acc.little_kernel_hbm_edge_id[i];
-        hbm_ext_edge.obj = little_kernel_input_buffers[i].packed_edge_props.data();
+        hbm_ext_edge.obj =
+            little_kernel_input_buffers[i].packed_edge_props.data();
         hbm_ext_edge.param = 0;
 
         // use pre-calculated sizes from Phase 0
         size_t num_edge_words =
             (little_kernel_input_buffers[i].packed_edge_props.size());
-        OCL_CHECK(err,
-                  buffers.edge_props_buf = cl::Buffer(
-                      acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_USE_HOST_PTR,
-                      num_edge_words * bytes_per_word, &hbm_ext_edge, &err));
+        OCL_CHECK(err, buffers.edge_props_buf =
+                           cl::Buffer(acc.context,
+                                      CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX |
+                                          CL_MEM_USE_HOST_PTR,
+                                      num_edge_words * bytes_per_word,
+                                      &hbm_ext_edge, &err));
 
         // Calculate output buffer size: only distances (no node IDs or end
         // markers) Output is num_dst_vertices * DISTANCE_BITWIDTH
@@ -371,7 +306,8 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
         cl_mem_ext_ptr_t hbm_ext_writer_node;
         hbm_ext_writer_node.flags =
             XCL_MEM_TOPOLOGY | acc.little_kernel_hbm_node_id[i];
-        hbm_ext_writer_node.obj = little_kernel_input_buffers[i].packed_node_props.data();
+        hbm_ext_writer_node.obj =
+            little_kernel_input_buffers[i].packed_node_props.data();
         hbm_ext_writer_node.param = 0;
         cl_mem_ext_ptr_t hbm_ext_writer_out;
         hbm_ext_writer_out.flags =
@@ -384,11 +320,84 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
             (little_kernel_input_buffers[i].packed_node_props.size());
         OCL_CHECK(err, writer_buffers.node_props_buf =
                            cl::Buffer(acc.context,
-                                      CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_USE_HOST_PTR,
+                                      CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX |
+                                          CL_MEM_USE_HOST_PTR,
                                       num_dist_words * bytes_per_word,
                                       &hbm_ext_writer_node, &err));
         // Create output buffer for writer kernel
-        writer_kernel_host_outputs[i + acc.num_big_krnl].resize(
+        writer_kernel_host_outputs[i].resize(num_output_words);
+        OCL_CHECK(err, writer_buffers.output_buf =
+                           cl::Buffer(acc.context,
+                                      CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX,
+                                      num_output_words * bytes_per_word,
+                                      &hbm_ext_writer_out, &err));
+        writer_kernel_buffers.push_back(writer_buffers);
+    }
+
+    // --- 1.4: Setup buffers for BIG kernels (Sparse Partitions) ---
+    for (size_t i = 0; i < container.SPs.size(); ++i) {
+        const auto &p_graph = container.SPs[i].partitioned_graph;
+        KernelBuffers buffers;
+
+        cl_mem_ext_ptr_t hbm_ext_edge;
+        hbm_ext_edge.flags = XCL_MEM_TOPOLOGY | acc.big_kernel_hbm_edge_id[i];
+        hbm_ext_edge.obj = big_kernel_input_buffers[i].packed_edge_props.data();
+        hbm_ext_edge.param = 0;
+
+        // use pre-calculated sizes from Phase 0
+        size_t num_edge_words =
+            (big_kernel_input_buffers[i].packed_edge_props.size());
+        OCL_CHECK(err, buffers.edge_props_buf =
+                           cl::Buffer(acc.context,
+                                      CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX |
+                                          CL_MEM_USE_HOST_PTR,
+                                      num_edge_words * bytes_per_word,
+                                      &hbm_ext_edge, &err));
+
+        // Calculate output buffer size: only distances (no node IDs or end
+        // markers) Output is num_dst_vertices * DISTANCE_BITWIDTH
+        size_t max_dst_local_id = 0;
+        for (size_t e = 0; e < p_graph.num_edges; ++e) {
+            int dst = p_graph.columns[e];
+            if (((dst & 0x40000000) == 0) && dst > max_dst_local_id) {
+                max_dst_local_id = dst;
+            }
+        }
+        size_t num_dst_vertices = max_dst_local_id + 1;
+        // Calculate how many distances fit in one 512-bit word
+        size_t dists_per_word = AXI_BUS_WIDTH / DISTANCE_BITWIDTH;
+        size_t num_output_words =
+            (num_dst_vertices + dists_per_word - 1) / dists_per_word;
+
+        big_kernel_buffers.push_back(buffers);
+
+        // Create buffers for corresponding hbm_writer kernel
+        WriterKernelBuffers writer_buffers;
+
+        // Setup HBM extension for writer kernel input (node distances)
+        cl_mem_ext_ptr_t hbm_ext_writer_node;
+        hbm_ext_writer_node.flags =
+            XCL_MEM_TOPOLOGY | acc.big_kernel_hbm_node_id[i];
+        hbm_ext_writer_node.obj =
+            big_kernel_input_buffers[i].packed_node_props.data();
+        hbm_ext_writer_node.param = 0;
+        cl_mem_ext_ptr_t hbm_ext_writer_out;
+        hbm_ext_writer_out.flags =
+            XCL_MEM_TOPOLOGY | acc.big_kernel_hbm_node_id[i];
+        hbm_ext_writer_out.obj = nullptr;
+        hbm_ext_writer_out.param = 0;
+
+        // Create node_props_buf for writer kernel (same size as node_props)
+        size_t num_dist_words =
+            (big_kernel_input_buffers[i].packed_node_props.size());
+        OCL_CHECK(err, writer_buffers.node_props_buf =
+                           cl::Buffer(acc.context,
+                                      CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX |
+                                          CL_MEM_USE_HOST_PTR,
+                                      num_dist_words * bytes_per_word,
+                                      &hbm_ext_writer_node, &err));
+        // Create output buffer for writer kernel
+        writer_kernel_host_outputs[i + acc.num_little_krnl].resize(
             num_output_words);
         OCL_CHECK(err, writer_buffers.output_buf =
                            cl::Buffer(acc.context,
@@ -491,25 +500,23 @@ void AlgorithmHost::transfer_data_to_fpga(const PartitionContainer &container) {
 
     // --- 2.3: Transfer all packed data using enqueueMigrateMemObjects ---
     for (size_t i = 0; i < big_kernel_buffers.size(); ++i) {
-        OCL_CHECK(err,
-                  err = acc.big_gs_queue[i].enqueueMigrateMemObjects(
-                      {big_kernel_buffers[i].edge_props_buf}, 
-                      0 /* 0 means from host*/));
-        OCL_CHECK(err,
-                  err = acc.hbm_writer_queue.enqueueMigrateMemObjects(
-                      {writer_kernel_buffers[i].node_props_buf}, 
-                      0 /* 0 means from host*/));
+        OCL_CHECK(err, err = acc.big_gs_queue[i].enqueueMigrateMemObjects(
+                           {big_kernel_buffers[i].edge_props_buf},
+                           0 /* 0 means from host*/));
+        OCL_CHECK(
+            err,
+            err = acc.hbm_writer_queue.enqueueMigrateMemObjects(
+                {writer_kernel_buffers[i + acc.num_little_krnl].node_props_buf},
+                0 /* 0 means from host*/));
     }
 
     for (size_t i = 0; i < little_kernel_buffers.size(); ++i) {
-        OCL_CHECK(err,
-                  err = acc.little_gs_queue[i].enqueueMigrateMemObjects(
-                      {little_kernel_buffers[i].edge_props_buf}, 
-                      0 /* 0 means from host*/));
-        OCL_CHECK(
-            err, err = acc.hbm_writer_queue.enqueueMigrateMemObjects(
-                     {writer_kernel_buffers[i + acc.num_big_krnl].node_props_buf}, 
-                     0 /* 0 means from host*/));
+        OCL_CHECK(err, err = acc.little_gs_queue[i].enqueueMigrateMemObjects(
+                           {little_kernel_buffers[i].edge_props_buf},
+                           0 /* 0 means from host*/));
+        OCL_CHECK(err, err = acc.hbm_writer_queue.enqueueMigrateMemObjects(
+                           {writer_kernel_buffers[i].node_props_buf},
+                           0 /* 0 means from host*/));
     }
 
     // --- 2.6: Wait for all transfers to complete ---
@@ -669,9 +676,9 @@ bool AlgorithmHost::check_convergence_and_update(
     // Node IDs are implicit: they are sequential from 0 to num_dsts-1
     for (size_t i = 0; i < writer_kernel_host_outputs.size(); ++i) {
         const auto &p_graph =
-            (i < acc.num_big_krnl)
-                ? container.SPs[i].partitioned_graph
-                : container.DPs[i - acc.num_big_krnl].partitioned_graph;
+            (i < acc.num_little_krnl)
+                ? container.DPs[i].partitioned_graph
+                : container.SPs[i - acc.num_little_krnl].partitioned_graph;
         int local_id = 0; // Implicit node ID counter
 
         for (const auto &word : writer_kernel_host_outputs[i]) {
