@@ -1,8 +1,4 @@
-#include "graphyflow_little.h"
-
-// float ap_fixed_to_float(ap_fixed_pod_t val) {
-//     return (float)*reinterpret_cast<distance_t *>(&val);
-// }
+#include "shared_kernel_params.h"
 
 static void
 apply_kernel_inter(uint32_t dst_num,
@@ -20,7 +16,7 @@ LOOP_APPLY:
 
         bus_word_t node_prop = cache_pkt.data;
         bus_word_t new_node_prop;
-        
+
         for (int i = 0; i < DBL_PE_NUM; i++) {
 #pragma HLS UNROLL
             ap_fixed_pod_t update_dist =
