@@ -1,55 +1,5 @@
 #include "graphyflow_big.h"
 
-static void src_id_loader(const bus_word_t *node_ids_ddr,
-                          hls::stream<node_id_burst_t> &src_id_burst_stream_1,
-                          hls::stream<node_id_burst_t> &src_id_burst_stream_2,
-                          int32_t num_nodes) {
-    const int num_ids_per_word = AXI_BUS_WIDTH / NODE_ID_BITWIDTH;
-    const int num_wide_reads =
-        (num_nodes + num_ids_per_word - 1) / num_ids_per_word;
-
-    int nodes_read = 0;
-    int burst_idx = 0;
-    node_id_burst_t burst1, burst2;
-#pragma HLS ARRAY_PARTITION variable = burst1.data complete dim = 0
-#pragma HLS ARRAY_PARTITION variable = burst2.data complete dim = 0
-LOOP_SIL_READ:
-    for (int i = 0; i < num_wide_reads; i++) {
-#pragma HLS PIPELINE II = 2
-        bus_word_t wide_word = node_ids_ddr[i];
-
-    LOOP_SIL_UNPACK:
-        for (int j = 0; j < 8; j++) {
-#pragma HLS UNROLL
-            if (nodes_read + j < num_nodes) {
-                node_id_t cur_id = wide_word.range(
-                    (j + 1) * NODE_ID_BITWIDTH - 1, j * NODE_ID_BITWIDTH);
-                burst1.data[j] = cur_id;
-                // printf("Loaded node ID %d at burst %d, position %d\n",
-                // (int)cur_id, burst_idx, j); fflush(NULL);
-            }
-        }
-        bool burst2_valid = false;
-        for (int j = 8; j < 16; j++) {
-#pragma HLS UNROLL
-            if (nodes_read + j < num_nodes) {
-                burst2.data[j - 8] = wide_word.range(
-                    (j + 1) * NODE_ID_BITWIDTH - 1, j * NODE_ID_BITWIDTH);
-                burst2_valid |= true;
-                // printf("Loaded node ID %d at burst %d, position %d\n",
-                // (int)burst2.data[j - 8], burst_idx + 1, j - 8); fflush(NULL);
-            }
-        }
-        src_id_burst_stream_1.write(burst1);
-        src_id_burst_stream_2.write(burst1);
-        if (burst2_valid) {
-            src_id_burst_stream_1.write(burst2);
-            src_id_burst_stream_2.write(burst2);
-        }
-        nodes_read += num_ids_per_word;
-    }
-}
-
 static void
 edge_descriptor_loader(const bus_word_t *edge_props_ddr,
                        hls::stream<node_id_burst_t> &stream_src_ids,
@@ -68,7 +18,6 @@ edge_descriptor_loader(const bus_word_t *edge_props_ddr,
     node_id_burst_t src_id_burst;
 #pragma HLS ARRAY_PARTITION variable = src_id_burst.data complete dim = 0
 
-#if (NODE_ID_BITWIDTH == 32) && (DISTANCE_BITWIDTH == 32)
 LOOP_EDL_READ:
     for (int i = 0; i < num_wide_reads; i++) {
 #pragma HLS PIPELINE II = 1
@@ -98,11 +47,6 @@ LOOP_EDL_READ:
         edge_stream.write(edge_batch);
         edge_batch.end_pos = 0;
     }
-#else
-// Add support for other bitwidth combinations if needed.
-#error                                                                         \
-    "edge_descriptor_loader currently only supports 32-bit node_id and 32-bit weight."
-#endif
 }
 
 ap_uint<4> count_end_ones(ap_uint<PE_NUM> valid_mask) {
@@ -286,45 +230,45 @@ LOOP_RECEIVE_CACHE_RESP:
     }
 }
 
-ap_fixed_pod_t get_val_from_bus(const bus_word_t bus, int offset) {
-#pragma HLS INLINE
-    switch (offset) {
-    case 0:
-        return bus.range(31, 0);
-    case 1:
-        return bus.range(63, 32);
-    case 2:
-        return bus.range(95, 64);
-    case 3:
-        return bus.range(127, 96);
-    case 4:
-        return bus.range(159, 128);
-    case 5:
-        return bus.range(191, 160);
-    case 6:
-        return bus.range(223, 192);
-    case 7:
-        return bus.range(255, 224);
-    case 8:
-        return bus.range(287, 256);
-    case 9:
-        return bus.range(319, 288);
-    case 10:
-        return bus.range(351, 320);
-    case 11:
-        return bus.range(383, 352);
-    case 12:
-        return bus.range(415, 384);
-    case 13:
-        return bus.range(447, 416);
-    case 14:
-        return bus.range(479, 448);
-    case 15:
-        return bus.range(511, 480);
-    default:
-        return 0;
-    }
-}
+// ap_fixed_pod_t get_val_from_bus(const bus_word_t bus, int offset) {
+// #pragma HLS INLINE
+//     switch (offset) {
+//     case 0:
+//         return bus.range(31, 0);
+//     case 1:
+//         return bus.range(63, 32);
+//     case 2:
+//         return bus.range(95, 64);
+//     case 3:
+//         return bus.range(127, 96);
+//     case 4:
+//         return bus.range(159, 128);
+//     case 5:
+//         return bus.range(191, 160);
+//     case 6:
+//         return bus.range(223, 192);
+//     case 7:
+//         return bus.range(255, 224);
+//     case 8:
+//         return bus.range(287, 256);
+//     case 9:
+//         return bus.range(319, 288);
+//     case 10:
+//         return bus.range(351, 320);
+//     case 11:
+//         return bus.range(383, 352);
+//     case 12:
+//         return bus.range(415, 384);
+//     case 13:
+//         return bus.range(447, 416);
+//     case 14:
+//         return bus.range(479, 448);
+//     case 15:
+//         return bus.range(511, 480);
+//     default:
+//         return 0;
+//     }
+// }
 
 static void
 merge_node_props(hls::stream<bus_word_t> (&cacheline_streams)[PE_NUM],
@@ -385,11 +329,10 @@ LOOP_SCATTER_EDGES:
 
                 // ap_fixed_pod_t prop = cacheline.range(
                 //     31 + (offset << 5), offset << 5);
-                ap_fixed_pod_t prop = get_val_from_bus(cacheline, offset);
+                ap_fixed_pod_t prop = cacheline.range(
+                    DISTANCE_BITWIDTH - 1 + (offset << LOG_DIST_BITWIDTH),
+                    offset << LOG_DIST_BITWIDTH);
 
-                // out_batch.src_distances[pe_idx] = prop;
-                // out_batch.weights[pe_idx] = edge_weight;
-                // out_batch.dsts[pe_idx] = edge_batch.edges[pe_idx].dst_id;
                 out_batch.node_id[pe_idx] = edge_batch.edges[pe_idx].dst_id;
                 out_batch.prop[pe_idx] = (prop + edge_weight);
 
@@ -619,19 +562,33 @@ omega_switch_2(hls::stream<net_wrapper_kt_pair_105_t_t> (&in_streams)[8],
                 out_streams[7]);
 }
 
-inline ap_fixed_pod_t get_raw_val(reduce_word_t word, int idx) {
+inline ap_fixed_pod_t get_val(reduce_word_t word, int idx) {
 #pragma HLS INLINE
     ap_uint<DISTANCE_BITWIDTH> bits;
     switch (idx) {
     case 0:
-        bits = word.range(DISTANCE_BITWIDTH - 1, 0);
+        bits = word.range(7, 0);
         break;
     case 1:
-        bits = word.range((DISTANCE_BITWIDTH << 1) - 1, DISTANCE_BITWIDTH);
+        bits = word.range(15, 8);
         break;
     case 2:
-        bits =
-            word.range((DISTANCE_BITWIDTH * 3) - 1, (DISTANCE_BITWIDTH << 1));
+        bits = word.range(23, 16);
+        break;
+    case 3:
+        bits = word.range(31, 24);
+        break;
+    case 4:
+        bits = word.range(39, 32);
+        break;
+    case 5:
+        bits = word.range(47, 40);
+        break;
+    case 6:
+        bits = word.range(55, 48);
+        break;
+    case 7:
+        bits = word.range(63, 56);
         break;
     default:
         bits = 0;
@@ -640,46 +597,34 @@ inline ap_fixed_pod_t get_raw_val(reduce_word_t word, int idx) {
     return bits;
 }
 
-inline distance_t get_val(reduce_word_t word, int idx) {
-#pragma HLS INLINE
-    ap_fixed_pod_t raw_val = get_raw_val(word, idx);
-    distance_t val = *reinterpret_cast<distance_t *>(&raw_val);
-    return val;
-}
-
-inline void set_val(reduce_word_t &word, int idx, distance_t val) {
+inline void set_val(reduce_word_t &word, int idx, ap_fixed_pod_t val) {
 #pragma HLS INLINE
     ap_uint<DISTANCE_BITWIDTH> val_bits =
         *reinterpret_cast<ap_uint<DISTANCE_BITWIDTH> *>(&val);
     switch (idx) {
     case 0:
-        word.range(DISTANCE_BITWIDTH - 1, 0) = val_bits;
+        word.range(7, 0) = val_bits;
         break;
     case 1:
-        word.range((DISTANCE_BITWIDTH << 1) - 1, DISTANCE_BITWIDTH) = val_bits;
+        word.range(15, 8) = val_bits;
         break;
     case 2:
-        word.range((DISTANCE_BITWIDTH * 3) - 1, (DISTANCE_BITWIDTH << 1)) =
-            val_bits;
+        word.range(23, 16) = val_bits;
         break;
-    default:
+    case 3:
+        word.range(31, 24) = val_bits;
         break;
-    }
-}
-
-inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
-#pragma HLS INLINE
-    ap_uint<DISTANCE_BITWIDTH> val_bits = pod_val;
-    switch (idx) {
-    case 0:
-        word.range(DISTANCE_BITWIDTH - 1, 0) = val_bits;
+    case 4:
+        word.range(39, 32) = val_bits;
         break;
-    case 1:
-        word.range((DISTANCE_BITWIDTH << 1) - 1, DISTANCE_BITWIDTH) = val_bits;
+    case 5:
+        word.range(47, 40) = val_bits;
         break;
-    case 2:
-        word.range((DISTANCE_BITWIDTH * 3) - 1, (DISTANCE_BITWIDTH << 1)) =
-            val_bits;
+    case 6:
+        word.range(55, 48) = val_bits;
+        break;
+    case 7:
+        word.range(63, 56) = val_bits;
         break;
     default:
         break;
@@ -732,36 +677,38 @@ LOOP_AGGREGATE:
         int32_t word_addr = (key >> 1);
         int32_t pack_idx = (key & 1);
 
-        reduce_word_t current_word = prop_mem[word_addr];
+        if ((key & 0x40000000) == 0) {
+            reduce_word_t current_word = prop_mem[word_addr];
 
-        // Check cache first
-        for (int i = L; i >= 0; --i) {
+            // Check cache first
+            for (int i = L; i >= 0; --i) {
 #pragma HLS UNROLL
-            if (cache_addr_buffer[i] == word_addr) {
-                current_word = cache_data_buffer[i];
-                break;
+                if (cache_addr_buffer[i] == word_addr) {
+                    current_word = cache_data_buffer[i];
+                    break;
+                }
             }
-        }
 
-        // Shift cache
-        for (int i = 0; i < L; i++) {
+            // Shift cache
+            for (int i = 0; i < L; i++) {
 #pragma HLS UNROLL
-            cache_addr_buffer[i] = cache_addr_buffer[i + 1];
-            cache_data_buffer[i] = cache_data_buffer[i + 1];
+                cache_addr_buffer[i] = cache_addr_buffer[i + 1];
+                cache_data_buffer[i] = cache_data_buffer[i + 1];
+            }
+
+            ap_fixed_pod_t old_dist_pod = get_val(current_word, pack_idx);
+            ap_fixed_pod_t new_dist_pod =
+                (old_dist_pod < incoming_dist_pod && old_dist_pod != 0x0)
+                    ? old_dist_pod
+                    : incoming_dist_pod;
+
+            set_val(current_word, pack_idx, new_dist_pod);
+
+            // Write back to URAM and update cache
+            prop_mem[word_addr] = current_word;
+            cache_addr_buffer[L] = word_addr;
+            cache_data_buffer[L] = current_word;
         }
-
-        ap_fixed_pod_t old_dist_pod = get_raw_val(current_word, pack_idx);
-        ap_fixed_pod_t new_dist_pod =
-            (old_dist_pod < incoming_dist_pod && old_dist_pod != 0x0)
-                ? old_dist_pod
-                : incoming_dist_pod;
-
-        set_raw_val(current_word, pack_idx, new_dist_pod);
-
-        // Write back to URAM and update cache
-        prop_mem[word_addr] = current_word;
-        cache_addr_buffer[L] = word_addr;
-        cache_data_buffer[L] = current_word;
     }
 
     // --- Phase 4: Stream out aggregated memory ---
@@ -796,11 +743,22 @@ LOOP_DRAIN_ADDR:
 #pragma HLS UNROLL
             reduce_word_t word = pe_mem_in[pe_idx].read();
 
-            one_write_burst.data.range(31 + (pe_idx << 5), (pe_idx << 5)) =
-                word.range(31, 0);
-            one_write_burst.data.range(31 + (pe_idx << 5) + 256,
-                                       (pe_idx << 5) + 256) =
-                word.range(63, 32);
+            one_write_burst.data.range(7 + (pe_idx << 3), (pe_idx << 3)) =
+                word.range(7, 0);
+            one_write_burst.data.range(15 + (pe_idx << 3), 8 + (pe_idx << 3)) =
+                word.range(15, 8);
+            one_write_burst.data.range(23 + (pe_idx << 3), 16 + (pe_idx << 3)) =
+                word.range(23, 16);
+            one_write_burst.data.range(31 + (pe_idx << 3), 24 + (pe_idx << 3)) =
+                word.range(31, 24);
+            one_write_burst.data.range(39 + (pe_idx << 3), 32 + (pe_idx << 3)) =
+                word.range(39, 32);
+            one_write_burst.data.range(47 + (pe_idx << 3), 40 + (pe_idx << 3)) =
+                word.range(47, 40);
+            one_write_burst.data.range(55 + (pe_idx << 3), 48 + (pe_idx << 3)) =
+                word.range(55, 48);
+            one_write_burst.data.range(63 + (pe_idx << 3), 56 + (pe_idx << 3)) =
+                word.range(63, 56);
 
             // printf("Drained word from PE %d: lower=%f upper=%f\n", pe_idx,
             //        ap_fixed_to_float2(word.range(31, 0)),

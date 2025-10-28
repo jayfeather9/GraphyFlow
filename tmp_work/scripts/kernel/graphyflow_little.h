@@ -9,9 +9,13 @@
 // #include <stdio.h>
 #include <string.h>
 
+constexpr int log2_floor(int n) {
+    return (n <= 1) ? 0 : 1 + log2_floor(n >> 1);
+}
+
 constexpr int PE_NUM = 8;
 constexpr int DBL_PE_NUM = 16;
-constexpr int LOG_PE_NUM = 3;
+constexpr int LOG_PE_NUM = log2_floor(PE_NUM);
 #ifdef EMULATION
 constexpr int MAX_NUM = 512;
 #else
@@ -19,9 +23,10 @@ constexpr int MAX_NUM = 65536;
 #endif
 constexpr int L = 4;
 constexpr int SRC_BUFFER_SIZE = 4096;
-constexpr int LOG_SRC_BUFFER_SIZE = 12;
+constexpr int LOG_SRC_BUFFER_SIZE = log2_floor(SRC_BUFFER_SIZE);
 constexpr int NODE_ID_BITWIDTH = 32;
 constexpr int DISTANCE_BITWIDTH = 8;
+constexpr int LOG_DIST_BITWIDTH = log2_floor(DISTANCE_BITWIDTH);
 constexpr int AXI_BUS_WIDTH = 512;
 constexpr int REDUCE_MEM_WIDTH = 64;
 
@@ -34,11 +39,9 @@ typedef ap_uint<DISTANCE_BITWIDTH> distance_t;
 constexpr int INFINITY_DIST = (1 << DISTANCE_BITWIDTH) - 4;
 #endif
 
-constexpr int log2_floor(int n) {
-    return (n <= 1) ? 0 : 1 + log2_floor(n >> 1);
-}
 constexpr int DIST_PER_WORD = AXI_BUS_WIDTH / DISTANCE_BITWIDTH;
 constexpr int LOG_DIST_PER_WORD = log2_floor(DIST_PER_WORD);
+constexpr int DISTANCES_PER_REDUCE_WORD = REDUCE_MEM_WIDTH / DISTANCE_BITWIDTH;
 
 typedef ap_uint<AXI_BUS_WIDTH> bus_word_t;
 typedef ap_uint<REDUCE_MEM_WIDTH> reduce_word_t;
@@ -67,7 +70,7 @@ struct __attribute__((packed)) edge_t {
 
 struct __attribute__((packed)) edge_descriptor_batch_t {
     edge_t edges[PE_NUM];
-    int32_t end_pos;
+    uint8_t end_pos;
 };
 
 struct __attribute__((packed)) update_tuple_t {

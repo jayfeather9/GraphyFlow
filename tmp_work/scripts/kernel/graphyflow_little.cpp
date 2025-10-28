@@ -17,7 +17,6 @@ edge_descriptor_loader(const bus_word_t *edge_props_ddr,
     node_id_burst_t src_id_burst;
 #pragma HLS ARRAY_PARTITION variable = src_id_burst.data complete dim = 0
 
-#if (NODE_ID_BITWIDTH == 32) && (DISTANCE_BITWIDTH == 32)
 LOOP_EDL_READ:
     for (int i = 0; i < num_wide_reads; i++) {
 #pragma HLS PIPELINE II = 1
@@ -46,53 +45,48 @@ LOOP_EDL_READ:
         edge_stream.write(edge_batch);
         edge_batch.end_pos = 0;
     }
-#else
-// Add support for other bitwidth combinations if needed.
-#error                                                                         \
-    "edge_descriptor_loader currently only supports 32-bit node_id and 32-bit weight."
-#endif
 }
 
-ap_fixed_pod_t get_val_from_bus(bus_word_t bus_data,
-                                ap_uint<30> position_in_bus) {
-#pragma HLS INLINE
-    switch (position_in_bus) {
-    case 0:
-        return bus_data.range(31, 0);
-    case 1:
-        return bus_data.range(63, 32);
-    case 2:
-        return bus_data.range(95, 64);
-    case 3:
-        return bus_data.range(127, 96);
-    case 4:
-        return bus_data.range(159, 128);
-    case 5:
-        return bus_data.range(191, 160);
-    case 6:
-        return bus_data.range(223, 192);
-    case 7:
-        return bus_data.range(255, 224);
-    case 8:
-        return bus_data.range(287, 256);
-    case 9:
-        return bus_data.range(319, 288);
-    case 10:
-        return bus_data.range(351, 320);
-    case 11:
-        return bus_data.range(383, 352);
-    case 12:
-        return bus_data.range(415, 384);
-    case 13:
-        return bus_data.range(447, 416);
-    case 14:
-        return bus_data.range(479, 448);
-    case 15:
-        return bus_data.range(511, 480);
-    default:
-        return 0;
-    }
-}
+// ap_fixed_pod_t get_val_from_bus(bus_word_t bus_data,
+//                                 ap_uint<30> position_in_bus) {
+// #pragma HLS INLINE
+//     switch (position_in_bus) {
+//     case 0:
+//         return bus_data.range(31, 0);
+//     case 1:
+//         return bus_data.range(63, 32);
+//     case 2:
+//         return bus_data.range(95, 64);
+//     case 3:
+//         return bus_data.range(127, 96);
+//     case 4:
+//         return bus_data.range(159, 128);
+//     case 5:
+//         return bus_data.range(191, 160);
+//     case 6:
+//         return bus_data.range(223, 192);
+//     case 7:
+//         return bus_data.range(255, 224);
+//     case 8:
+//         return bus_data.range(287, 256);
+//     case 9:
+//         return bus_data.range(319, 288);
+//     case 10:
+//         return bus_data.range(351, 320);
+//     case 11:
+//         return bus_data.range(383, 352);
+//     case 12:
+//         return bus_data.range(415, 384);
+//     case 13:
+//         return bus_data.range(447, 416);
+//     case 14:
+//         return bus_data.range(479, 448);
+//     case 15:
+//         return bus_data.range(511, 480);
+//     default:
+//         return 0;
+//     }
+// }
 
 void request_manager(hls::stream<edge_descriptor_batch_t> &edge_burst_stm,
                      hls::stream<ppb_request_pkt_t> &ppb_request_stm,
@@ -101,7 +95,7 @@ void request_manager(hls::stream<edge_descriptor_batch_t> &edge_burst_stm,
                      int32_t part_edge_num) {
     // as we can buffer two vertices in one row with width of 64-bit, we can let
     // the depth go as MAX_VERTICES_IN_ONE_PARTITION / 2.
-    bus_word_t src_prop_buffer[PE_NUM][2][SRC_BUFFER_SIZE >> 4];
+    bus_word_t src_prop_buffer[PE_NUM][2][SRC_BUFFER_SIZE >> LOG_DIST_PER_WORD];
 #pragma HLS ARRAY_PARTITION variable = src_prop_buffer dim = 1 complete
 #pragma HLS BIND_STORAGE variable = src_prop_buffer type = RAM_S2P impl = BRAM
 #pragma HLS dependence variable = src_prop_buffer inter false
@@ -128,8 +122,7 @@ void request_manager(hls::stream<edge_descriptor_batch_t> &edge_burst_stm,
 
     ppb_response_pkt_t one_ppb_response;
 
-    distance_t real_edge_weight =
-        1.0; // All edge weights are 1.0 in unweighted graph
+    distance_t real_edge_weight = (distance_t)1;
     const ap_fixed_pod_t edge_weight =
         (*reinterpret_cast<ap_fixed_pod_t *>(&real_edge_weight));
 
@@ -150,16 +143,15 @@ scatterLoop:
         }
 
         if (ppb_response_stm.read_nb(one_ppb_response)) {
-            pp_write_round = one_ppb_response.dest << 4 >> LOG_SRC_BUFFER_SIZE;
+            pp_write_round = one_ppb_response.dest << LOG_DIST_PER_WORD >>
+                             LOG_SRC_BUFFER_SIZE;
 
             bool write_buffer = pp_write_round & 0x1;
 
-            int32_t write_idx =
-                one_ppb_response.dest & ((SRC_BUFFER_SIZE >> 4) - 1);
+            int32_t write_idx = one_ppb_response.dest &
+                                ((SRC_BUFFER_SIZE >> LOG_DIST_PER_WORD) - 1);
 
-            bus_word_t one_read_burst =
-                one_ppb_response
-                    .data; // src_prop[(base_addr >> 4) + pp_write_idx];
+            bus_word_t one_read_burst = one_ppb_response.data;
 
             for (int u = 0; u < PE_NUM; u++) {
 #pragma HLS UNROLL
@@ -196,8 +188,12 @@ scatterLoop:
 
                 bus_word_t uram_row =
                     src_prop_buffer[u][read_buffer][uram_row_idx];
+                // ap_fixed_pod_t src_prop =
+                //     get_val_from_bus(uram_row, uram_row_offset);
                 ap_fixed_pod_t src_prop =
-                    get_val_from_bus(uram_row, uram_row_offset);
+                    uram_row.range(DISTANCE_BITWIDTH - 1 +
+                                       (uram_row_offset << LOG_DIST_BITWIDTH),
+                                   uram_row_offset << LOG_DIST_BITWIDTH);
 
                 an_update_set.prop[u] = (src_prop + edge_weight);
                 an_update_set.node_id[u] = an_edge_burst.edges[u].dst_id;
@@ -221,19 +217,33 @@ scatterLoop:
     }
 }
 
-ap_fixed_pod_t get_raw_val(reduce_word_t word, int idx) {
+inline ap_fixed_pod_t get_val(reduce_word_t word, int idx) {
 #pragma HLS INLINE
     ap_uint<DISTANCE_BITWIDTH> bits;
     switch (idx) {
     case 0:
-        bits = word.range(DISTANCE_BITWIDTH - 1, 0);
+        bits = word.range(7, 0);
         break;
     case 1:
-        bits = word.range((DISTANCE_BITWIDTH << 1) - 1, DISTANCE_BITWIDTH);
+        bits = word.range(15, 8);
         break;
     case 2:
-        bits =
-            word.range((DISTANCE_BITWIDTH * 3) - 1, (DISTANCE_BITWIDTH << 1));
+        bits = word.range(23, 16);
+        break;
+    case 3:
+        bits = word.range(31, 24);
+        break;
+    case 4:
+        bits = word.range(39, 32);
+        break;
+    case 5:
+        bits = word.range(47, 40);
+        break;
+    case 6:
+        bits = word.range(55, 48);
+        break;
+    case 7:
+        bits = word.range(63, 56);
         break;
     default:
         bits = 0;
@@ -242,19 +252,34 @@ ap_fixed_pod_t get_raw_val(reduce_word_t word, int idx) {
     return bits;
 }
 
-void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
+inline void set_val(reduce_word_t &word, int idx, ap_fixed_pod_t val) {
 #pragma HLS INLINE
-    ap_uint<DISTANCE_BITWIDTH> val_bits = pod_val;
+    ap_uint<DISTANCE_BITWIDTH> val_bits =
+        *reinterpret_cast<ap_uint<DISTANCE_BITWIDTH> *>(&val);
     switch (idx) {
     case 0:
-        word.range(DISTANCE_BITWIDTH - 1, 0) = val_bits;
+        word.range(7, 0) = val_bits;
         break;
     case 1:
-        word.range((DISTANCE_BITWIDTH << 1) - 1, DISTANCE_BITWIDTH) = val_bits;
+        word.range(15, 8) = val_bits;
         break;
     case 2:
-        word.range((DISTANCE_BITWIDTH * 3) - 1, (DISTANCE_BITWIDTH << 1)) =
-            val_bits;
+        word.range(23, 16) = val_bits;
+        break;
+    case 3:
+        word.range(31, 24) = val_bits;
+        break;
+    case 4:
+        word.range(39, 32) = val_bits;
+        break;
+    case 5:
+        word.range(47, 40) = val_bits;
+        break;
+    case 6:
+        word.range(55, 48) = val_bits;
+        break;
+    case 7:
+        word.range(63, 56) = val_bits;
         break;
     default:
         break;
@@ -335,14 +360,13 @@ LOOP_AGGREGATE:
                     cache_data_buffer[pe][i] = cache_data_buffer[pe][i + 1];
                 }
 
-                ap_fixed_pod_t old_dist_pod =
-                    get_raw_val(current_word, pack_idx);
+                ap_fixed_pod_t old_dist_pod = get_val(current_word, pack_idx);
                 ap_fixed_pod_t new_dist_pod =
                     (old_dist_pod < incoming_dist_pod && old_dist_pod != 0x0)
                         ? old_dist_pod
                         : incoming_dist_pod;
 
-                set_raw_val(current_word, pack_idx, new_dist_pod);
+                set_val(current_word, pack_idx, new_dist_pod);
 
                 // Write back to URAM and update cache
                 prop_mem[pe][word_addr] = current_word;
@@ -425,8 +449,7 @@ LOOP_DRAIN_ADDR:
     for (int32_t base_addr = 0; base_addr < dst_num;
          base_addr += DIST_PER_WORD) {
 #pragma HLS PIPELINE II = 1
-        ap_fixed_pod_t uram_res_low = max_pod;
-        ap_fixed_pod_t uram_res_high = max_pod;
+        ap_fixed_pod_t uram_res[LOG_DIST_PER_WORD];
     LOOP_FOR_57:
         for (uint32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
