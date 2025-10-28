@@ -731,45 +731,46 @@ LOOP_STREAM_OUT:
 
 // Multi-PE drain function
 // Collects aggregated data from all PEs and outputs final results
+// Each PE holds disjoint destinations (striped by PE index)
+// Need to interleave bytes to get sequential output order
 static void
 Reduc_105_drain_multi_pe(hls::stream<reduce_word_t> (&pe_mem_in)[PE_NUM],
                          hls::stream<write_burst_pkt_t> &kernel_out_stream,
                          int32_t dst_num) {
 
-    // --- Phase 2: High-Performance Drain Loop ---
     write_burst_pkt_t one_write_burst;
     one_write_burst.last = 0;
 
+    // Each iteration: read 1 reduce_word from each PE (8 PEs × 8 bytes = 64
+    // bytes) This fills exactly 1 bus word (512 bits = 64 bytes)
 LOOP_DRAIN_ADDR:
     for (int32_t base_addr = 0; base_addr < dst_num;
-         base_addr += (PE_NUM << 1)) {
+         base_addr += (PE_NUM << LOG_DISTANCES_PER_REDUCE_WORD)) {
 #pragma HLS PIPELINE II = 1
-    LOOP_FOR_57:
+        // Read one word from each PE
+        reduce_word_t words[PE_NUM];
+#pragma HLS ARRAY_PARTITION variable = words complete dim = 0
+
         for (uint32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
-            reduce_word_t word = pe_mem_in[pe_idx].read();
-
-            one_write_burst.data.range(7 + (pe_idx << 3), (pe_idx << 3)) =
-                word.range(7, 0);
-            one_write_burst.data.range(15 + (pe_idx << 3), 8 + (pe_idx << 3)) =
-                word.range(15, 8);
-            one_write_burst.data.range(23 + (pe_idx << 3), 16 + (pe_idx << 3)) =
-                word.range(23, 16);
-            one_write_burst.data.range(31 + (pe_idx << 3), 24 + (pe_idx << 3)) =
-                word.range(31, 24);
-            one_write_burst.data.range(39 + (pe_idx << 3), 32 + (pe_idx << 3)) =
-                word.range(39, 32);
-            one_write_burst.data.range(47 + (pe_idx << 3), 40 + (pe_idx << 3)) =
-                word.range(47, 40);
-            one_write_burst.data.range(55 + (pe_idx << 3), 48 + (pe_idx << 3)) =
-                word.range(55, 48);
-            one_write_burst.data.range(63 + (pe_idx << 3), 56 + (pe_idx << 3)) =
-                word.range(63, 56);
-
-            // printf("Drained word from PE %d: lower=%f upper=%f\n", pe_idx,
-            //        ap_fixed_to_float2(word.range(31, 0)),
-            //        ap_fixed_to_float2(word.range(63, 32)));
+            words[pe_idx] = pe_mem_in[pe_idx].read();
         }
+
+        // Interleave bytes: PE0[0], PE1[0], ..., PE7[0], PE0[1], PE1[1], ...
+        for (int byte_idx = 0; byte_idx < DISTANCES_PER_REDUCE_WORD;
+             byte_idx++) {
+#pragma HLS UNROLL
+            for (uint32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
+#pragma HLS UNROLL
+                int output_bit_pos =
+                    (byte_idx * PE_NUM + pe_idx) * DISTANCE_BITWIDTH;
+                one_write_burst.data.range(
+                    output_bit_pos + DISTANCE_BITWIDTH - 1, output_bit_pos) =
+                    words[pe_idx].range((byte_idx + 1) * DISTANCE_BITWIDTH - 1,
+                                        byte_idx * DISTANCE_BITWIDTH);
+            }
+        }
+
         kernel_out_stream.write(one_write_burst);
     }
 }
