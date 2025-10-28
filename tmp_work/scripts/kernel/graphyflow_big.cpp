@@ -394,6 +394,7 @@ LOOP_FOR_21:
     for (uint32_t i = 0; i < 8; i++) {
 #pragma HLS UNROLL
         out_streams[i].write(end_wrapper);
+        prop_mem[i] = 0;
     }
 }
 
