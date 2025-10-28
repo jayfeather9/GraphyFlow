@@ -4,7 +4,7 @@ static void
 edge_descriptor_loader(const bus_word_t *edge_props_ddr,
                        hls::stream<edge_descriptor_batch_t> &edge_stream,
                        int32_t num_edges) {
-    const int bits_per_edge = NODE_ID_BITWIDTH + WEIGHT_BITWIDTH;
+    const int bits_per_edge = NODE_ID_BITWIDTH + DISTANCE_BITWIDTH;
     const int edges_per_word = AXI_BUS_WIDTH / bits_per_edge;
     const int num_wide_reads =
         (num_edges + edges_per_word - 1) / edges_per_word;
@@ -17,7 +17,7 @@ edge_descriptor_loader(const bus_word_t *edge_props_ddr,
     node_id_burst_t src_id_burst;
 #pragma HLS ARRAY_PARTITION variable = src_id_burst.data complete dim = 0
 
-#if (NODE_ID_BITWIDTH == 32) && (WEIGHT_BITWIDTH == 32)
+#if (NODE_ID_BITWIDTH == 32) && (DISTANCE_BITWIDTH == 32)
 LOOP_EDL_READ:
     for (int i = 0; i < num_wide_reads; i++) {
 #pragma HLS PIPELINE II = 1
@@ -268,7 +268,7 @@ Reduc_105_unit_reduce(hls::stream<update_tuple_t> &update_set_stm,
                       hls::stream<reduce_word_t> (&pe_mem_outs)[PE_NUM],
                       int32_t edge_num, int32_t dst_num) {
     // --- Phase 1: Memory Declaration ---
-    const int MEM_SIZE = MAX_NUM / DISTANCES_PER_REDUCE_WORD;
+    const int MEM_SIZE = MAX_NUM / DIST_PER_WORD;
     reduce_word_t prop_mem[PE_NUM][MEM_SIZE];
 #pragma HLS ARRAY_PARTITION variable = prop_mem complete dim = 1
 #pragma HLS BIND_STORAGE variable = prop_mem type = RAM_S2P impl = URAM
@@ -280,8 +280,7 @@ Reduc_105_unit_reduce(hls::stream<update_tuple_t> &update_set_stm,
     int32_t cache_addr_buffer[PE_NUM][L + 1];
 #pragma HLS ARRAY_PARTITION variable = cache_addr_buffer complete dim = 0
 
-    const int32_t num_words =
-        (dst_num + DISTANCES_PER_REDUCE_WORD - 1) / DISTANCES_PER_REDUCE_WORD;
+    const int32_t num_words = (dst_num + DIST_PER_WORD - 1) / DIST_PER_WORD;
 
     // memset(prop_mem, 0, sizeof(reduce_word_t) * PE_NUM * MEM_SIZE);
 
@@ -419,12 +418,12 @@ Reduc_105_drain_multi_pe(hls::stream<reduce_word_t> (&pe_mem_in)[PE_NUM],
     write_burst_pkt_t one_write_burst;
     one_write_burst.last = 0;
     uint32_t waiting_count = 0;
-    distance_t max_val = (distance_t)(16384.0);
+    distance_t max_val = (distance_t)(INFINITY_DIST);
     ap_fixed_pod_t max_pod = *reinterpret_cast<ap_fixed_pod_t *>(&max_val);
 
 LOOP_DRAIN_ADDR:
     for (int32_t base_addr = 0; base_addr < dst_num;
-         base_addr += DISTANCES_PER_REDUCE_WORD) {
+         base_addr += DIST_PER_WORD) {
 #pragma HLS PIPELINE II = 1
         ap_fixed_pod_t uram_res_low = max_pod;
         ap_fixed_pod_t uram_res_high = max_pod;

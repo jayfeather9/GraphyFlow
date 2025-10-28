@@ -30,6 +30,7 @@ CXXFLAGS += -Iscripts/kernel
 CXXFLAGS += -I$(XILINX_XRT)/include
 CXXFLAGS += -I$(XILINX_VITIS)/include
 CXXFLAGS += -I$(XILINX_HLS)/include
+CXXFLAGS += -DINT_DISTANCE
 
 # Compiler flags
 CXXFLAGS += -std=c++17 -O3 -Wall -g # Added -g for easier debugging

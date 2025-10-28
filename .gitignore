@@ -238,3 +238,6 @@ membership.out
 generated_project
 graphyflow_host
 .vscode/
+sample_link.ini
+compile.txt
+graph.dot

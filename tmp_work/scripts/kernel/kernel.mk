@@ -31,12 +31,17 @@ endif
 
 # --- 编译器和链接器参数 ---
 
+ifeq ($(TARGET),$(filter $(TARGET), sw_emu hw_emu))
+CLFLAGS  += -DEMULATION
+endif
+
 # VPP 在编译 .xo 文件时使用的参数。
 # 注意：特定的 "--kernel <名称>" 参数现在被移到了编译规则内部。
 CLFLAGS += -Iscripts/kernel
 CLFLAGS += -Iscripts/host
 CLFLAGS += -I$(XILINX_XRT)/include
 CLFLAGS += -I$(XILINX_VITIS)/include
+CLFLAGS += -DINT_DISTANCE
 CLFLAGS += -O3
 
 # VPP 在链接 .xclbin 文件时使用的参数。
