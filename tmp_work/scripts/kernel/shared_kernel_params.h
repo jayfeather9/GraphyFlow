@@ -14,7 +14,6 @@ constexpr int log2_floor(int n) {
 }
 
 constexpr int PE_NUM = 8;
-constexpr int DBL_PE_NUM = 16;
 constexpr int LOG_PE_NUM = log2_floor(PE_NUM);
 constexpr int L = 4;
 constexpr int SRC_BUFFER_SIZE = 4096;

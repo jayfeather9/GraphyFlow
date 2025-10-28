@@ -17,14 +17,16 @@ littleKernelReadMemory:
             uint32_t request_round = one_ppb_request_pkg.data;
             bool end_flag = one_ppb_request_pkg.last;
 
-            uint32_t base_addr = request_round << LOG_SRC_BUFFER_SIZE >> 4;
+            uint32_t base_addr =
+                request_round << LOG_SRC_BUFFER_SIZE >> LOG_DIST_PER_WORD;
 
             if (end_flag) {
                 one_ppb_response_pkg.last = end_flag;
                 ppb_resp_stream.write(one_ppb_response_pkg);
                 break;
             } else {
-                for (int i = 0; i < (SRC_BUFFER_SIZE >> 4); i++) {
+                for (int i = 0; i < (SRC_BUFFER_SIZE >> LOG_DIST_PER_WORD);
+                     i++) {
                     int addr = base_addr + i;
 
                     one_ppb_response_pkg.data = node_distances_ddr[addr];
@@ -122,7 +124,7 @@ LOOP_LOADER_2:
 void write_out(int i, bus_word_t *output, uint32_t dst_num,
                hls::stream<write_burst_pkt_t> &write_burst_stream) {
     uint32_t write_idx = 0;
-    uint32_t target_writes = ((dst_num + DBL_PE_NUM - 1) / DBL_PE_NUM) -
+    uint32_t target_writes = ((dst_num + DIST_PER_WORD - 1) / DIST_PER_WORD) -
                              1; // Total number of write bursts
 #pragma HLS function_instantiate variable = i
 write_out:
@@ -211,17 +213,17 @@ hbm_writer(bus_word_t *node_props_1, bus_word_t *node_props_2,
     // below to execute concurrently as soon as their input data is available.
 #pragma HLS DATAFLOW
 
-        // --- Function Instantiations ---
+    // --- Function Instantiations ---
     // Instantiate the processing logic for each of the three parallel channels.
     // The first argument (0, 1, 2) is a constant integer used by HLS to create
     // three distinct hardware instances of each function.
 
     little_node_prop_loader(0, node_props_1, dst_num_1, ppb_req_stream_1,
-                         ppb_resp_stream_1, cacheline_data_stream_1);
+                            ppb_resp_stream_1, cacheline_data_stream_1);
     little_node_prop_loader(1, node_props_2, dst_num_2, ppb_req_stream_2,
-                         ppb_resp_stream_2, cacheline_data_stream_2);
+                            ppb_resp_stream_2, cacheline_data_stream_2);
     little_node_prop_loader(2, node_props_3, dst_num_3, ppb_req_stream_3,
-                         ppb_resp_stream_3, cacheline_data_stream_3);
+                            ppb_resp_stream_3, cacheline_data_stream_3);
     big_node_prop_loader(3, node_props_4, dst_num_4, cacheline_req_stream_4,
                          cacheline_resp_stream_4, cacheline_data_stream_4);
     big_node_prop_loader(4, node_props_5, dst_num_5, cacheline_req_stream_5,

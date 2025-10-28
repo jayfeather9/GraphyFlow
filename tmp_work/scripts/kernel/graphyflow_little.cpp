@@ -293,7 +293,7 @@ Reduc_105_unit_reduce(hls::stream<update_tuple_t> &update_set_stm,
                       hls::stream<reduce_word_t> (&pe_mem_outs)[PE_NUM],
                       int32_t edge_num, int32_t dst_num) {
     // --- Phase 1: Memory Declaration ---
-    const int MEM_SIZE = MAX_NUM / DIST_PER_WORD;
+    const int MEM_SIZE = MAX_NUM / DISTANCES_PER_REDUCE_WORD;
     reduce_word_t prop_mem[PE_NUM][MEM_SIZE];
 #pragma HLS ARRAY_PARTITION variable = prop_mem complete dim = 1
 #pragma HLS BIND_STORAGE variable = prop_mem type = RAM_S2P impl = URAM
@@ -305,9 +305,12 @@ Reduc_105_unit_reduce(hls::stream<update_tuple_t> &update_set_stm,
     int32_t cache_addr_buffer[PE_NUM][L + 1];
 #pragma HLS ARRAY_PARTITION variable = cache_addr_buffer complete dim = 0
 
-    const int32_t num_words = (dst_num + DIST_PER_WORD - 1) / DIST_PER_WORD;
+    const int32_t num_words =
+        (dst_num + DISTANCES_PER_REDUCE_WORD - 1) / DISTANCES_PER_REDUCE_WORD;
 
-    // memset(prop_mem, 0, sizeof(reduce_word_t) * PE_NUM * MEM_SIZE);
+#ifdef EMULATION
+    memset(prop_mem, 0, sizeof(reduce_word_t) * PE_NUM * MEM_SIZE);
+#endif
 
 LOOP_INIT_CACHE_ADDR:
     for (int i = 0; i < L + 1; i++) {
@@ -389,42 +392,32 @@ LOOP_STREAM_OUT:
     }
 }
 
-void set_word_in_bus(bus_word_t &bus_word, int idx, ap_fixed_pod_t pod_low,
-                     ap_fixed_pod_t pod_high) {
+void set_word_in_bus(bus_word_t &bus_word, int idx, reduce_word_t reduce_word) {
 #pragma HLS INLINE
     switch (idx) {
     case 0:
-        bus_word.range(31, 0) = pod_low;
-        bus_word.range(63, 32) = pod_high;
+        bus_word.range(63, 0) = reduce_word;
         break;
     case 1:
-        bus_word.range(95, 64) = pod_low;
-        bus_word.range(127, 96) = pod_high;
-        ;
+        bus_word.range(127, 64) = reduce_word;
         break;
     case 2:
-        bus_word.range(159, 128) = pod_low;
-        bus_word.range(191, 160) = pod_high;
+        bus_word.range(191, 128) = reduce_word;
         break;
     case 3:
-        bus_word.range(223, 192) = pod_low;
-        bus_word.range(255, 224) = pod_high;
+        bus_word.range(255, 192) = reduce_word;
         break;
     case 4:
-        bus_word.range(287, 256) = pod_low;
-        bus_word.range(319, 288) = pod_high;
+        bus_word.range(319, 256) = reduce_word;
         break;
     case 5:
-        bus_word.range(351, 320) = pod_low;
-        bus_word.range(383, 352) = pod_high;
+        bus_word.range(383, 320) = reduce_word;
         break;
     case 6:
-        bus_word.range(415, 384) = pod_low;
-        bus_word.range(447, 416) = pod_high;
+        bus_word.range(447, 384) = reduce_word;
         break;
     case 7:
-        bus_word.range(479, 448) = pod_low;
-        bus_word.range(511, 480) = pod_high;
+        bus_word.range(511, 448) = reduce_word;
         break;
     default:
         break;
@@ -447,27 +440,36 @@ Reduc_105_drain_multi_pe(hls::stream<reduce_word_t> (&pe_mem_in)[PE_NUM],
 
 LOOP_DRAIN_ADDR:
     for (int32_t base_addr = 0; base_addr < dst_num;
-         base_addr += DIST_PER_WORD) {
+         base_addr += DISTANCES_PER_REDUCE_WORD) {
 #pragma HLS PIPELINE II = 1
-        ap_fixed_pod_t uram_res[LOG_DIST_PER_WORD];
-    LOOP_FOR_57:
+        ap_fixed_pod_t uram_res[DISTANCES_PER_REDUCE_WORD];
+#pragma HLS ARRAY_PARTITION variable = uram_res complete dim = 0
+        for (uint32_t i = 0; i < DISTANCES_PER_REDUCE_WORD; i++) {
+#pragma HLS UNROLL
+            uram_res[i] = max_pod;
+        }
         for (uint32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
             reduce_word_t word = pe_mem_in[pe_idx].read();
-
-            ap_fixed_pod_t incoming_dist_pod_low = word.range(31, 0);
-            ap_fixed_pod_t incoming_dist_pod_high = word.range(63, 32);
-            uram_res_low = (uram_res_low < incoming_dist_pod_low ||
-                            incoming_dist_pod_low == 0x0)
-                               ? uram_res_low
-                               : incoming_dist_pod_low;
-            uram_res_high = (uram_res_high < incoming_dist_pod_high ||
-                             incoming_dist_pod_high == 0x0)
-                                ? uram_res_high
-                                : incoming_dist_pod_high;
+            for (uint32_t i = 0; i < DISTANCES_PER_REDUCE_WORD; i++) {
+#pragma HLS UNROLL
+                ap_fixed_pod_t incoming_dist_pod = get_val(word, i);
+                uram_res[i] = (uram_res[i] < incoming_dist_pod ||
+                               incoming_dist_pod == 0x0)
+                                  ? uram_res[i]
+                                  : incoming_dist_pod;
+            }
         }
-        set_word_in_bus(one_write_burst.data, waiting_count, uram_res_low,
-                        uram_res_high);
+        reduce_word_t sum_word;
+        sum_word.range(7, 0) = uram_res[0];
+        sum_word.range(15, 8) = uram_res[1];
+        sum_word.range(23, 16) = uram_res[2];
+        sum_word.range(31, 24) = uram_res[3];
+        sum_word.range(39, 32) = uram_res[4];
+        sum_word.range(47, 40) = uram_res[5];
+        sum_word.range(55, 48) = uram_res[6];
+        sum_word.range(63, 56) = uram_res[7];
+        set_word_in_bus(one_write_burst.data, waiting_count, sum_word);
         waiting_count++;
         if (waiting_count == 8) {
             waiting_count = 0;

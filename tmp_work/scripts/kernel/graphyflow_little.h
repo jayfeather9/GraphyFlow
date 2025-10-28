@@ -14,7 +14,6 @@ constexpr int log2_floor(int n) {
 }
 
 constexpr int PE_NUM = 8;
-constexpr int DBL_PE_NUM = 16;
 constexpr int LOG_PE_NUM = log2_floor(PE_NUM);
 #ifdef EMULATION
 constexpr int MAX_NUM = 512;
@@ -29,6 +28,7 @@ constexpr int DISTANCE_BITWIDTH = 8;
 constexpr int LOG_DIST_BITWIDTH = log2_floor(DISTANCE_BITWIDTH);
 constexpr int AXI_BUS_WIDTH = 512;
 constexpr int REDUCE_MEM_WIDTH = 64;
+constexpr int DISTANCES_PER_REDUCE_WORD = REDUCE_MEM_WIDTH / DISTANCE_BITWIDTH;
 
 #ifndef INT_DISTANCE
 constexpr int DISTANCE_INTEGER_PART = 16;
@@ -41,7 +41,6 @@ constexpr int INFINITY_DIST = (1 << DISTANCE_BITWIDTH) - 4;
 
 constexpr int DIST_PER_WORD = AXI_BUS_WIDTH / DISTANCE_BITWIDTH;
 constexpr int LOG_DIST_PER_WORD = log2_floor(DIST_PER_WORD);
-constexpr int DISTANCES_PER_REDUCE_WORD = REDUCE_MEM_WIDTH / DISTANCE_BITWIDTH;
 
 typedef ap_uint<AXI_BUS_WIDTH> bus_word_t;
 typedef ap_uint<REDUCE_MEM_WIDTH> reduce_word_t;

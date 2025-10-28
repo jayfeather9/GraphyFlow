@@ -638,7 +638,7 @@ static void Reduc_105_unit_reduce_single_pe(
     hls::stream<reduce_word_t> &pe_mem_out, int32_t pe_id, int32_t dst_num) {
 
     // --- Phase 1: Memory Declaration ---
-    const int MEM_SIZE = (MAX_NUM >> LOG_PE_NUM) / DIST_PER_WORD;
+    const int MEM_SIZE = (MAX_NUM >> LOG_PE_NUM) / DISTANCES_PER_REDUCE_WORD;
     reduce_word_t prop_mem[MEM_SIZE];
 #pragma HLS BIND_STORAGE variable = prop_mem type = RAM_2P impl = URAM
 #pragma HLS dependence variable = prop_mem inter false
@@ -649,10 +649,13 @@ static void Reduc_105_unit_reduce_single_pe(
     int32_t cache_addr_buffer[L + 1];
 #pragma HLS ARRAY_PARTITION variable = cache_addr_buffer complete dim = 0
 
-    const int32_t num_words = (dst_num + DIST_PER_WORD - 1) / DIST_PER_WORD;
+    const int32_t num_words =
+        (dst_num + DISTANCES_PER_REDUCE_WORD - 1) / DISTANCES_PER_REDUCE_WORD;
     const int32_t num_word_per_pe = (num_words + PE_NUM - 1) / PE_NUM;
 
-    // memset(prop_mem, 0, sizeof(reduce_word_t) * MEM_SIZE);
+#ifdef EMULATION
+    memset(prop_mem, 0, sizeof(reduce_word_t) * MEM_SIZE);
+#endif
 
 LOOP_INIT_CACHE_ADDR:
     for (int i = 0; i < L + 1; i++) {

@@ -20,7 +20,6 @@ constexpr int log2_floor(int n) {
 
 // --- Customizable Bitwidth Macros ---
 constexpr int PE_NUM = 8;
-constexpr int DBL_PE_NUM = 16;
 constexpr int LOG_PE_NUM = log2_floor(PE_NUM);
 constexpr int L = 4;
 constexpr int SRC_BUFFER_SIZE = 4096;
@@ -32,7 +31,7 @@ constexpr int AXI_BUS_WIDTH = 512;
 constexpr int REDUCE_MEM_WIDTH = 64;
 
 #ifndef INT_DISTANCE
-constexpr int DISTANCE_INTEGER_PART = 16;
+constexpr int DISTANCE_INTEGER_PART = 8;
 typedef ap_fixed<DISTANCE_BITWIDTH, DISTANCE_INTEGER_PART> distance_t;
 constexpr int INFINITY_DIST = (1 << DISTANCE_INTEGER_PART) - 4;
 #else
