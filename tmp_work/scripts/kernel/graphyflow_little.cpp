@@ -342,8 +342,8 @@ LOOP_AGGREGATE:
             if (pe < cur_pe_end && (key & 0x40000000) == 0) { // Valid key check
                 ap_fixed_pod_t incoming_dist_pod = one_update.prop[pe];
 
-                int32_t word_addr = (key >> 1);
-                int32_t pack_idx = (key & 1);
+                int32_t word_addr = (key >> LOG_DISTANCES_PER_REDUCE_WORD);
+                int32_t pack_idx = (key & (DISTANCES_PER_REDUCE_WORD - 1));
 
                 reduce_word_t current_word = prop_mem[pe][word_addr];
 

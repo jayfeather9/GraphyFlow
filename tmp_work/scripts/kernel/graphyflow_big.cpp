@@ -677,8 +677,11 @@ LOOP_AGGREGATE:
         int32_t key = kt_elem.node_id >> LOG_PE_NUM;
         ap_fixed_pod_t incoming_dist_pod = kt_elem.prop;
 
-        int32_t word_addr = (key >> 1);
-        int32_t pack_idx = (key & 1);
+        int32_t word_addr =
+            (key >> LOG_DISTANCES_PER_REDUCE_WORD); // Divide by 8 since 8
+                                                    // distances per word
+        int32_t pack_idx =
+            (key & (DISTANCES_PER_REDUCE_WORD - 1)); // Get lower 3 bits (0-7)
 
         if ((key & 0x40000000) == 0) {
             reduce_word_t current_word = prop_mem[word_addr];
