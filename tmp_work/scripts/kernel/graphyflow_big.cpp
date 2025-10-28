@@ -5,7 +5,7 @@ edge_descriptor_loader(const bus_word_t *edge_props_ddr,
                        hls::stream<node_id_burst_t> &stream_src_ids,
                        hls::stream<edge_descriptor_batch_t> &edge_stream,
                        int32_t num_edges) {
-    const int bits_per_edge = NODE_ID_BITWIDTH + DISTANCE_BITWIDTH;
+    const int bits_per_edge = NODE_ID_BITWIDTH + NODE_ID_BITWIDTH;
     const int edges_per_word = AXI_BUS_WIDTH / bits_per_edge;
     const int num_wide_reads =
         (num_edges + edges_per_word - 1) / edges_per_word;

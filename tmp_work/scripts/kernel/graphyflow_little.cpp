@@ -4,7 +4,7 @@ static void
 edge_descriptor_loader(const bus_word_t *edge_props_ddr,
                        hls::stream<edge_descriptor_batch_t> &edge_stream,
                        int32_t num_edges) {
-    const int bits_per_edge = NODE_ID_BITWIDTH + DISTANCE_BITWIDTH;
+    const int bits_per_edge = NODE_ID_BITWIDTH + NODE_ID_BITWIDTH;
     const int edges_per_word = AXI_BUS_WIDTH / bits_per_edge;
     const int num_wide_reads =
         (num_edges + edges_per_word - 1) / edges_per_word;
@@ -183,8 +183,8 @@ scatterLoop:
 #pragma HLS UNROLL
                 ap_uint<31> idx =
                     (an_edge_burst.edges[u].src_id % SRC_BUFFER_SIZE);
-                ap_uint<30> uram_row_idx = idx >> 4;
-                ap_uint<30> uram_row_offset = (idx & 0xf);
+                ap_uint<30> uram_row_idx = idx >> LOG_DIST_PER_WORD;
+                ap_uint<30> uram_row_offset = (idx & (DIST_PER_WORD - 1));
 
                 bus_word_t uram_row =
                     src_prop_buffer[u][read_buffer][uram_row_idx];

@@ -675,6 +675,7 @@ bool AlgorithmHost::check_convergence_and_update(
     // 5.1: Unpack and gather results from BIG kernels (via HBM writer)
     // Node IDs are implicit: they are sequential from 0 to num_dsts-1
     for (size_t i = 0; i < writer_kernel_host_outputs.size(); ++i) {
+        printf("Unpacking results from writer kernel %zu...\n", i);
         const auto &p_graph =
             (i < acc.num_little_krnl)
                 ? container.DPs[i].partitioned_graph
@@ -699,6 +700,10 @@ bool AlgorithmHost::check_convergence_and_update(
 
                 distance_t new_dist =
                     *reinterpret_cast<distance_t *>(&dist_pod);
+                
+                // printf("Local ID: %d, Global ID: %d, Dist value: %d\n",
+                //        local_id, global_id,
+                //        (int)new_dist);
 
                 if (min_distances.find(global_id) == min_distances.end() ||
                     new_dist < min_distances[global_id]) {
