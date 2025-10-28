@@ -32,6 +32,114 @@ def _copy_and_template(src: Path, dest: Path, replacements: Dict[str, str]):
         content = content.replace(placeholder, value)
     dest.write_text(content)
 
+def _generate_hbm_writer(n: int, file_path: Path) -> None:
+    """
+    Generates HLS C++ code for an hbm_writer kernel with 'n' parallel channels
+    and appends it to the specified file.
+
+    Args:
+        n: The number of parallel channels to generate.
+        file_path: The pathlib.Path object of the file to append the code to.
+    """
+    if n <= 0:
+        print(f"Error: n must be greater than 0. No code written to {file_path}", file=sys.stderr)
+        return
+
+    # Use a list to build the code string efficiently
+    code = []
+
+    # --- 1. Function Signature ---
+    code.append("extern \"C\" void\n")
+    code.append(f"hbm_writer(\n") # Changed name to be unique for n
+    
+    args = []
+    # Pointers (node_props_ and output_)
+    for i in range(1, n + 1):
+        args.append(f"    bus_word_t *node_props_{i}")
+    for i in range(1, n + 1):
+        args.append(f"    bus_word_t *output_{i}")
+    
+    # Scalars (dst_num_)
+    for i in range(1, n + 1):
+        args.append(f"    uint32_t dst_num_{i}")
+
+    # Streams
+    for i in range(1, n + 1):
+        args.append(f"    hls::stream<cacheline_request_pkt_t> &cacheline_req_stream_{i}")
+    for i in range(1, n + 1):
+        args.append(f"    hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream_{i}")
+    for i in range(1, n + 1):
+        args.append(f"    hls::stream<cacheline_data_pkt_t> &cacheline_data_stream_{i}")
+    for i in range(1, n + 1):
+        # Last argument set for this channel
+        args.append(f"    hls::stream<write_burst_pkt_t> &write_burst_stream_{i}")
+
+    # Join all arguments with commas
+    code.append(",\n".join(args))
+    code.append("\n) {\n")
+
+    # --- 2. Interface Pragmas (m_axi) ---
+    code.append("\n    // --- Interface Pragmas (m_axi) ---\n")
+    code.append("    // Map pointers to separate AXI memory interfaces (gmem1...gmemN),\n")
+    code.append("    // allowing for parallel access to different HBM banks.\n")
+    for i in range(1, n + 1):
+        code.append(f"#pragma HLS INTERFACE m_axi port = node_props_{i} offset = slave bundle = gmem{i}\n")
+        code.append(f"#pragma HLS INTERFACE m_axi port = output_{i}     offset = slave bundle = gmem{i}\n\n")
+
+    # --- 3. Interface Pragmas (s_axilite) ---
+    code.append("    // --- Interface Pragmas (s_axilite) ---\n")
+    code.append("    // All scalar arguments and pointer addresses are mapped to a single control bus.\n")
+    
+    # Pointers
+    for i in range(1, n + 1):
+        code.append(f"#pragma HLS INTERFACE s_axilite port = node_props_{i} bundle = control\n")
+    for i in range(1, n + 1):
+        code.append(f"#pragma HLS INTERFACE s_axilite port = output_{i}     bundle = control\n")
+    
+    # Scalars
+    for i in range(1, n + 1):
+        code.append(f"#pragma HLS INTERFACE s_axilite port = dst_num_{i}      bundle = control\n")
+    
+    # Return
+    code.append("#pragma HLS INTERFACE s_axilite port = return         bundle = control\n")
+
+    # --- 4. Dataflow Pragma ---
+    code.append("\n    // --- Dataflow Pragma ---\n")
+    code.append("    // This pragma enables task-level parallelism.\n")
+    code.append("#pragma HLS DATAFLOW\n\n")
+
+    # --- 5. Function Instantiations ---
+    code.append("    // --- Function Instantiations ---\n")
+    code.append(f"    // Instantiate the processing logic for each of the {n} parallel channels.\n")
+    code.append("    // The first argument (0...N-1) is a constant integer used by HLS to create\n")
+    code.append("    // distinct hardware instances of each function.\n\n")
+
+    # node_property_loader instances
+    for i in range(1, n + 1):
+        template_id = i - 1  # Create IDs 0, 1, 2, ... n-1
+        code.append(f"    node_property_loader({template_id}, node_props_{i}, dst_num_{i}, cacheline_req_stream_{i},\n")
+        code.append(f"                         cacheline_resp_stream_{i}, cacheline_data_stream_{i});\n")
+    
+    code.append("\n") # Spacer
+
+    # write_out instances
+    for i in range(1, n + 1):
+        template_id = i - 1 # Create IDs 0, 1, 2, ... n-1
+        code.append(f"    write_out({template_id}, output_{i}, dst_num_{i}, write_burst_stream_{i});\n")
+
+    # --- 6. Closing Brace ---
+    code.append("}\n")
+
+    # --- 7. Generate String and Append to File ---
+    final_code = "".join(code)
+
+    try:
+        # Open the file in append mode ('a')
+        with open(file_path, 'a', encoding='utf-8') as f:
+            f.write(f"\n\n// --- Automatically generated HLS kernel for n={n} ---\n")
+            f.write(final_code)
+    except Exception as e:
+        print(f"error: {e}", file=sys.stderr)
 
 def _create_cfg(dest: Path, kernel_name: str):
     """
@@ -251,8 +359,8 @@ def generate_project(
     fill_host_config(host_script_dir / "host_config.h")
 
     # Call the new dynamic system.cfg generator
-    _create_cfg(output_dir, kernel_name)
-
+    _create_cfg(output_dir/"system.cfg", kernel_name)
+    _generate_hbm_writer(NUM_BIG_KERNELS,output_dir / "scripts" / "kernel" / "hbm_writer.cpp")
     # Template the Makefile and run.sh (placeholders might be simple)
     replacements = {
         "{{EXECUTABLE_NAME}}": executable_name,

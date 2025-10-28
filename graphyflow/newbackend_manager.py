@@ -7,6 +7,8 @@ import graphyflow.dataflow_ir as dfir
 import re
 import copy
 
+import graphyflow.passes as passes
+
 import graphyflow.dataflow_ir_datatype as dftype
 from graphyflow.dataflow_ir import BinOp, UnaryOp
 from graphyflow.backend_defines import (
@@ -740,7 +742,8 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
 
 
     def _translate_memory_read_op(self, comp: dfir.Component):
-        # 
+        
+        # hard code 除了merge_node_props以外的函数 
         # edge_descriptor_loader(const bus_word_t *edge_props_ddr,
         #                hls::stream<node_id_burst_t> &stream_src_ids,
         #                hls::stream<edge_descriptor_batch_t> &edge_stream,
@@ -1605,7 +1608,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
 
 
         # 还缺少pre reduce的翻译
-        # 下面是函数翻译
+        # 翻译merge_node_props函数
         merge_node_props_func = HLSFunction(name="merge_node_props", comp=comp)
         params = []
 
@@ -1809,13 +1812,23 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         if_1_codes.append(CodeVarDecl(var_name="prop", var_type=ap_fixed_pod_t_type, init_val="get_val_from_bus(cacheline, offset)"))
 
         # out_batch.node_id[pe_idx] = edge_batch.edges[pe_idx].dst_id;
-        out_batch_node_id_pe_idx_var = HLSVar(var_name="out_batch.node_id[pe_idx]", var_type=node_id_type)
+
+    
+        
         assign_expr_8 = HLSExpr(HLSExprT.CONST, "edge_batch.edges[pe_idx].dst_id")
+
+
+        out_batch_node_id_pe_idx_var = HLSVar(var_name="out_batch.node_id[pe_idx]", var_type=node_id_type)        
         if_1_codes.append(CodeAssign(var=out_batch_node_id_pe_idx_var, expr=assign_expr_8))
 
         # out_batch.prop[pe_idx] = (prop + edge_weight);
         out_batch_prop_pe_idx_var = HLSVar(var_name="out_batch.prop[pe_idx]", var_type=ap_fixed_pod_t_type)
         assign_expr_9 = HLSExpr(HLSExprT.CONST, "(prop + edge_weight)")
+    
+        
+        
+        
+        
         if_1_codes.append(CodeAssign(var=out_batch_prop_pe_idx_var, expr=assign_expr_9))
 
         # --- Build IF_3 (pe_idx == PE_NUM - 1) ---
@@ -3233,30 +3246,619 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         self.top_dataflow_funcs.append(graphyflow_big_dataflow_func)
 
 
+    def _analyse_reduce(self,comp,group:str,port_property:Dict[dfir.Port,Any],port_to_var,top_vars,target_codes):
+        port_already_analysed = []
+        q = []
+        visited_ids = set()
 
+        global_key_inport =[]
+        global_transform_inport =[]
+
+        for port in comp._port_groups["global"]:
+            if port.port_type == dfir.PortType.IN:
+                if comp.glb_grp(port) == "key":
+                    global_key_inport.append(port)
+                elif comp.glb_grp(port) == "transform":
+                    global_transform_inport.append(port)
+
+        idx = 0
+        for port in comp._port_groups["transform"]:
+            
+            if port.port_type == dfir.PortType.OUT:
+                conn = port.connection
+                parent = conn.parent
+            
+                port_property[port] = port_property[global_transform_inport[idx]]
+                port_to_var[port] = port_to_var[global_transform_inport[idx]]
+                idx += 1
+                port_already_analysed.append(port)
+                if parent not in q:
+                    q.append(parent)
+                        
+        head = 0
+        while head < len(q):
+            cur = q[head]
+            head+=1
+            inputs_ready = all(p.connection in port_already_analysed for p in cur.in_ports)
+            if not inputs_ready:
+                q.append(cur)
+                if head > len(q) * 2:
+                    raise RuntimeError(f"Deadlock in sub-graph topological sort at component {cur.name}")
+                continue
+            else:
+                port_property ,target_codes = self._scatter_type_analyze(cur,port_property,port_to_var,top_vars,target_codes)
+            
+            end = False
+            for p in cur.out_ports:
+                if p.connected and not isinstance(
+                    p.connection.parent,
+                    (dfir.ReduceComponent, dfir.UnusedEndMarkerComponent),
+                ):
+                    successor_comp = p.connection.parent
+                    if successor_comp.readable_id not in visited_ids:
+                        q.append(successor_comp)
+                        visited_ids.add(successor_comp.readable_id)
+                else:# cur是最后一个组件
+                    end = True
+            if end:
+                for p in cur.out_ports:
+                    if p.port_type == dfir.PortType.OUT:
+                        for prop in port_property[p]:
+                            if prop[0] == "edge":
+                                if prop[1][0] == "weight":
+                                    target_codes.append(CodeAssign(top_vars["FINAL_PROP_VAR"], port_to_var[p][0]))
+                                elif prop[1][0] == "dst":
+                                    target_codes.append(CodeAssign(top_vars["FINAL_DST_ID_VAR"], port_to_var[p][1]))
+                                else:
+                                    assert 0
+                            
+        
+        return port_property,target_codes
+    
         # hard code
+    def _scatter_type_analyze(self,comp,port_property,port_to_var,top_vars,target_codes):
 
-    def process_scatter(self,scatter_stage_comps : List[dfir.Component]):
+        if isinstance(comp, dfir.MemoryReadComponent):
+            for port in comp.ports:
+                if port.port_type == dfir.PortType.OUT: # 仅适用于现在的写法
+                    port_access_pattern = comp.pname_to_pattern[port.name]
+                    port_property[port] = port_access_pattern[1]
+                    if port_property[port][0] == "edge":
+                        if port_property[port][1][0] == "weight":
+                            port_to_var[port] = top_vars["EDGE_WEIGHT_VAR"]
+                        elif port_property[port][1][0] == "src":
+                            if port_property[port][1][1] == "distance":
+                                port_to_var[port] = top_vars["SRC_PROP_VAR"]
+                            else:
+                                assert 0
+                        elif port_property[port][1][0] == "dst":
+                            port_to_var[port] = top_vars["DST_ID_VAR"]
+                    elif port_property[port][0] == "node":
+                        port_to_var[port] = None
+            # self._translate_memory_read_op(comp) #这部分访存应该全是hard code
+        
+        elif isinstance(comp, dfir.FusedOpComponent):
+            print(comp.port_mapping)
+            for port in comp.ports:
+                if port.port_type == dfir.PortType.IN:
+                    conn = port.connection
+                    parent = conn.parent
+                    port_property[port] = port_property[conn]
+                    port_to_var[port] = port_to_var[conn]
+
+            sub_graph_components = comp.sub_graph.topo_sort()
+            for port in comp.sub_graph.inputs:
+                if port.port_type == dfir.PortType.IN:
+                    parent_port = comp.port_mapping[port.readable_id]
+                    port_property[port] = port_property[parent_port]
+                    port.connection = parent_port
+                    port_to_var[port] = port_to_var[parent_port]
+
+            for sub_c in sub_graph_components:
+                port_property,target_codes = self._scatter_type_analyze(sub_c,port_property,port_to_var,top_vars,target_codes)
+                
+            for port in comp.sub_graph.outputs:
+                if port.port_type == dfir.PortType.OUT:
+                    child_port = comp.port_mapping[port.readable_id]
+                    port_property[child_port] = port_property[port]
+                    port_to_var[child_port] = port_to_var[port]
+                
+        elif isinstance(comp,dfir.ScatterComponent):
+            idx = 0
+            for port in comp.ports:
+                if port.port_type == dfir.PortType.IN:
+                    conn = port.connection
+                    port_property[port] = port_property[conn]
+                    in_properties = port_property[port]
+                    in_vars = port_to_var[conn]
+                elif port.port_type == dfir.PortType.OUT:
+                    port_property[port] = in_properties[idx]
+                    port_to_var[port] = in_vars[idx]
+                    idx += 1
+        elif isinstance(comp,dfir.GatherComponent):
+            gather_out_property = []
+            gather_out_vars = []
+            for port in comp.ports:
+                if port.port_type == dfir.PortType.IN:
+                    if port in port_property:
+                        if port_property[port] is not None:
+                            gather_out_property.append(port_property[port])
+                            gather_out_vars.append(port_to_var[port])
+                    else:
+                        conn = port.connection
+                        port_property[port] = port_property[conn]
+                        gather_out_property.append(port_property[port])
+                        gather_out_vars.append(port_to_var[conn])
+                elif port.port_type == dfir.PortType.OUT:
+                    port_property[port] = gather_out_property
+                    port_to_var[port] = gather_out_vars
+        elif isinstance(comp,dfir.ConstantComponent):
+            tmp_var = HLSVar(var_name=f"constant_{comp.readable_id}", var_type=HLSType(HLSBasicType.AP_FIXED_POD))
+            target_codes.append(CodeVarDecl(var_name=f"constant_{comp.readable_id}", var_type=HLSType(HLSBasicType.AP_FIXED_POD), init_val=str(comp.value)))
+            for port in comp.ports:
+                if port.port_type == dfir.PortType.OUT:
+                    port_property[port] = None
+                    port_to_var[port] = tmp_var
+            
+            
+        elif isinstance(comp,dfir.BinOpComponent):
+            # lhs_var = HLSVar(var_name=f"BinOp_{comp.readable_id}_lhs", var_type=HLSType(HLSBasicType.AP_FIXED_POD))
+            # rhs_var = HLSVar(var_name=f"BinOp_{comp.readable_id}_rhs", var_type=HLSType(HLSBasicType.AP_FIXED_POD))
+            
+            is_op1 = True
+            for port in comp.ports:
+                if port.port_type == dfir.PortType.IN:
+                    conn = port.connection
+
+                    if port in port_property:
+                        if port_property[port] is not None:
+                            inproperty = port_property[port]
+                            
+                    else:
+                        port_property[port] = port_property[conn]
+                        if port_property[conn] is not None:
+                            inproperty = port_property[conn]
+
+                    if is_op1:
+                        is_op1 = False
+                        op1_var = port_to_var[conn]
+                        op1_expr = HLSExpr(HLSExprT.VAR, op1_var)
+                    else:
+                        op2_var = port_to_var[conn]
+                        op2_expr = HLSExpr(HLSExprT.VAR, op2_var)
+                elif port.port_type == dfir.PortType.OUT:
+                    result_var = HLSVar(var_name=f"BinOp_{comp.readable_id}_res", var_type=HLSType(HLSBasicType.AP_FIXED_POD)) 
+                    target_codes.append(CodeVarDecl(var_name=f"BinOp_{comp.readable_id}_res", var_type=HLSType(HLSBasicType.AP_FIXED_POD)))
+                    tmp_expr = HLSExpr(HLSExprT.BINOP, comp.op, [op1_expr, op2_expr])
+                    target_codes.append(CodeAssign(result_var, tmp_expr))
+
+                    port_property[port] = inproperty
+                    port_to_var[port] = result_var
+            
+
+        elif isinstance(comp,dfir.UnaryOpComponent):
+            for port in comp.ports:
+                if port in port_property:
+                    if port_property[port] is not None:
+                        inproperty = port_property[port]
+                    continue
+                if port.port_type == dfir.PortType.IN:
+                    conn = port.connection
+                    port_property[port] = port_property[conn]
+                    if port_property[conn] is not None:
+                        inproperty = port_property[conn]
+                elif port.port_type == dfir.PortType.OUT:
+                    port_property[port] = inproperty
+        elif isinstance(comp,dfir.CopyComponent):
+            
+            for port in comp.ports:
+                if port.port_type == dfir.PortType.IN:
+                    conn = port.connection
+                    port_property[port] = port_property[conn]
+                    in_property = port_property[port]
+                    in_var = port_to_var[conn]
+                elif port.port_type == dfir.PortType.OUT:
+                    port_property[port] = in_property
+                    port_to_var[port] = in_var
+        elif isinstance(comp,dfir.ReduceComponent):
+
+            for port in comp._port_groups["global"]:
+                if port.port_type == dfir.PortType.IN:
+                    conn = port.connection
+                    port_property[port] = port_property[conn]       
+                    port_to_var[port] = port_to_var[conn]
+            port_property,target_codes = self._analyse_reduce(comp,group="transform",port_property=port_property,port_to_var=port_to_var,top_vars=top_vars,target_codes=target_codes)
+            # 约定reduce的key一定是 dst 的nodeIid
+                
+        else:
+            pass
+
+        return port_property, target_codes
+    def _build_reduce_subgraph(
+        self,
+        start_ports: List[dfir.Port],
+        end_port: dfir.Port,
+        io_var_map: Dict[dfir.Port, HLSVar],
+    ) -> List[HLSCodeLine]:
+        """
+        Traverses a sub-graph from start to end ports and generates the inlined logic.
+        (Refactored to use the _translate_inline_component helper).
+        """
+
+        q = []
+        visited_ids = set()
+        for p in start_ports:
+            assert p.connected
+            comp = p.connection.parent
+            if comp.readable_id not in visited_ids:
+                q.append(comp)
+                visited_ids.add(comp.readable_id)
+        head = 0
+
+        while head < len(q):
+            comp = q[head]
+            head += 1
+
+            inputs_ready = all(p.connection in p2var_map for p in comp.in_ports)
+            if not inputs_ready:
+                q.append(comp)
+                if head > len(q) * 2 + len(start_ports) * 2:
+                    raise RuntimeError(f"Deadlock in sub-graph topological sort at component {comp.name}")
+                continue
+
+
+            for p in comp.out_ports:
+                if p.connected and not isinstance(
+                    p.connection.parent,
+                    (dfir.ReduceComponent, dfir.UnusedEndMarkerComponent),
+                ):
+                    successor_comp = p.connection.parent
+                    if successor_comp.readable_id not in visited_ids:
+                        q.append(successor_comp)
+                        visited_ids.add(successor_comp.readable_id)
+
+        return q
+    
+    def process_scatter(self,scatter_stage_comps : List[dfir.Component],ReduceComp : dfir.ReduceComponent):
+
+        self._translate_memory_read_op(None) #这部分访存应该全是hard code
+
+        merge_node_props_func = HLSFunction(name="merge_node_props", comp=None)
+        params = []
+
+        # --- 1. Define Types & Params ---
+
+        # Basic Types
+        node_id_type = HLSType(HLSBasicType.NODE_ID)
+        bus_word_t_type = HLSType(HLSBasicType.BUS_WORD_T)
+        ap_fixed_pod_t_type = HLSType(HLSBasicType.AP_FIXED_POD)
+        distance_t_type = HLSType(HLSBasicType.DISTANCE_T)
+        int_type = HLSType(HLSBasicType.INT)
+        uint_type = HLSType(HLSBasicType.UINT)
+        uint8_type = HLSType(HLSBasicType.UINT8)
+        bool_type = HLSType(HLSBasicType.BOOL)
+
+        # Special ap_uint type
+        cache_idx_elem_type = HLSType(basic_type=HLSBasicType.AP_UINT, 
+                                      width="NODE_ID_BITWIDTH - LOG_DIST_PER_WORD")
+
+        # Param 1: hls::stream<bus_word_t> (&cacheline_streams)[PE_NUM]
+        bus_word_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[bus_word_t_type])
+        cacheline_streams_type = HLSType(HLSBasicType.ARRAY, sub_types=[bus_word_stream_type], array_dims=["PE_NUM"])
+        cacheline_streams = HLSVar(var_name="cacheline_streams", var_type=cacheline_streams_type)
+
+        # Param 2: hls::stream<edge_descriptor_batch_t> &edge_stream
+        edge_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
+                              struct_name="edge_t",
+                              struct_prop_names=["src_id", "dst_id"],
+                              sub_types=[node_id_type, node_id_type])
+        if edge_t_type.name not in self.struct_definitions:
+            self.struct_definitions[edge_t_type.name] = (edge_t_type, edge_t_type.struct_prop_names)
+
+        edge_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[edge_t_type], array_dims=["PE_NUM"])
+        edge_descriptor_batch_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
+                                               struct_name="edge_descriptor_batch_t",
+                                               struct_prop_names=["edges", "end_pos"],
+                                               sub_types=[edge_array_type, int_type])
+        if edge_descriptor_batch_t_type.name not in self.struct_definitions:
+            self.struct_definitions[edge_descriptor_batch_t_type.name] = (edge_descriptor_batch_t_type, edge_descriptor_batch_t_type.struct_prop_names)
+
+        edge_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[edge_descriptor_batch_t_type])
+        edge_stream = HLSVar(var_name="edge_stream", var_type=edge_stream_type)
+
+        # Param 3: hls::stream<update_tuple_t> &edge_batch_stream
+        node_id_array_pe_type = HLSType(HLSBasicType.ARRAY, sub_types=[node_id_type], array_dims=["PE_NUM"]) # Reused type
+        prop_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[ap_fixed_pod_t_type], array_dims=["PE_NUM"])
+        update_tuple_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
+                                    struct_name="update_tuple_t",
+                                    struct_prop_names=["node_id", "prop", "end_flag", "end_pos"],
+                                    sub_types=[node_id_array_pe_type, prop_array_type, bool_type, uint8_type])
+
+        if update_tuple_t_type.name not in self.struct_definitions:
+            self.struct_definitions[update_tuple_t_type.name] = (update_tuple_t_type, update_tuple_t_type.struct_prop_names)
+
+
+        edge_batch_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[update_tuple_t_type])
+        edge_batch_stream = HLSVar(var_name="edge_batch_stream", var_type=edge_batch_stream_type)
+
+        # Param 4: uint32_t edge_num
+        edge_num = HLSVar(var_name="edge_num", var_type=uint_type)
+
+        params.extend([cacheline_streams, edge_stream, edge_batch_stream, edge_num])
+        merge_node_props_func.params = params
+
+        # --- 2. Function Body ---
+        code_lines: List[HLSCodeLine] = []
+
+        # bus_word_t last_cacheline[PE_NUM];
+        last_cacheline_type = HLSType(HLSBasicType.ARRAY, sub_types=[bus_word_t_type], array_dims=["PE_NUM"])
+        code_lines.append(CodeVarDecl(var_name="last_cacheline", var_type=last_cacheline_type))
+        last_cacheline_var = HLSVar(var_name="last_cacheline", var_type=last_cacheline_type)
+
+        # #pragma HLS ARRAY_PARTITION variable = last_cacheline complete dim = 0
+        code_lines.append(CodePragma(content="ARRAY_PARTITION variable = last_cacheline complete dim = 0"))
+
+        # ap_uint<...> last_cache_idx[PE_NUM];
+        last_cache_idx_type = HLSType(HLSBasicType.ARRAY, sub_types=[cache_idx_elem_type], array_dims=["PE_NUM"])
+        code_lines.append(CodeVarDecl(var_name="last_cache_idx", var_type=last_cache_idx_type))
+        last_cache_idx_var = HLSVar(var_name="last_cache_idx", var_type=last_cache_idx_type)
+
+        # #pragma HLS ARRAY_PARTITION variable = last_cache_idx complete dim = 0
+        code_lines.append(CodePragma(content="ARRAY_PARTITION variable = last_cache_idx complete dim = 0"))
+
+        # --- Build for(pe_idx) 1 ---
+        for_loop_1_codes: List[HLSCodeLine] = []
+        # #pragma HLS UNROLL
+        for_loop_1_codes.append(CodePragma(content="UNROLL"))
+        # last_cacheline[pe_idx] = cacheline_streams[pe_idx].read();
+        last_cacheline_pe_idx_var = HLSVar(var_name="last_cacheline[pe_idx]", var_type=bus_word_t_type)
+        assign_expr_1 = HLSExpr(HLSExprT.CONST, "cacheline_streams[pe_idx].read()")
+        for_loop_1_codes.append(CodeAssign(var=last_cacheline_pe_idx_var, expr=assign_expr_1))
+        # last_cache_idx[pe_idx] = 0;
+        last_cache_idx_pe_idx_var = HLSVar(var_name="last_cache_idx[pe_idx]", var_type=cache_idx_elem_type)
+        assign_expr_2 = HLSExpr(HLSExprT.CONST, 0)
+        for_loop_1_codes.append(CodeAssign(var=last_cache_idx_pe_idx_var, expr=assign_expr_2))
+        # Create for loop 1
+        for_loop_1 = CodeFor(codes=for_loop_1_codes,
+                             iter_limit="PE_NUM",
+                             iter_cmp="<",
+                             iter_name="pe_idx",
+                             iter_start="0",
+                             iter_step="pe_idx++",
+                             iter_val_type=int_type)
+        code_lines.append(for_loop_1)
+        # --- End for(pe_idx) 1 ---
+
+        # const uint32_t scatter_size = (edge_num + PE_NUM - 1) / PE_NUM;
+        code_lines.append(CodeVarDecl(var_name="scatter_size", var_type=uint_type, init_val="(edge_num + PE_NUM - 1) / PE_NUM", const=True))
+        scatter_size_var = HLSVar(var_name="scatter_size", var_type=uint_type)
+
+        # distance_t real_edge_weight = 1.0; 
+        code_lines.append(CodeVarDecl(var_name="real_edge_weight", var_type=distance_t_type, init_val="1.0", const=False))
+
+        # const ap_fixed_pod_t edge_weight = (*reinterpret_cast<...>(&real_edge_weight));
+        edge_weight_init_val = "(*reinterpret_cast<ap_fixed_pod_t *>(&real_edge_weight))"
+        code_lines.append(CodeVarDecl(var_name="edge_weight", var_type=ap_fixed_pod_t_type, init_val=edge_weight_init_val, const=True))
+        edge_weight_var = HLSVar(var_name="edge_weight", var_type=ap_fixed_pod_t_type)
+
+        # --- Build for(edge_batch_idx) ---
+        for_loop_2_codes: List[HLSCodeLine] = []
+        # #pragma HLS PIPELINE II = 1
+        for_loop_2_codes.append(CodePragma(content="PIPELINE II = 1"))
+
+        # edge_descriptor_batch_t edge_batch;
+        for_loop_2_codes.append(CodeVarDecl(var_name="edge_batch", var_type=edge_descriptor_batch_t_type))
+        edge_batch_var = HLSVar(var_name="edge_batch", var_type=edge_descriptor_batch_t_type)
+
+        # #pragma HLS ARRAY_PARTITION variable = edge_batch.edges complete dim = 0
+        for_loop_2_codes.append(CodePragma(content="ARRAY_PARTITION variable = edge_batch.edges complete dim = 0"))
+
+        # edge_batch = edge_stream.read();
+        assign_expr_3 = HLSExpr(HLSExprT.CONST, "edge_stream.read()")
+        for_loop_2_codes.append(CodeAssign(var=edge_batch_var, expr=assign_expr_3))
+
+        # update_tuple_t out_batch;
+        for_loop_2_codes.append(CodeVarDecl(var_name="out_batch", var_type=update_tuple_t_type))
+        out_batch_var = HLSVar(var_name="out_batch", var_type=update_tuple_t_type)
+
+        # #pragma HLS ARRAY_PARTITION variable = out_batch.node_id complete dim = 0
+        for_loop_2_codes.append(CodePragma(content="ARRAY_PARTITION variable = out_batch.node_id complete dim = 0"))
+
+        # #pragma HLS ARRAY_PARTITION variable = out_batch.prop complete dim = 0
+        for_loop_2_codes.append(CodePragma(content="ARRAY_PARTITION variable = out_batch.prop complete dim = 0"))
+
+        # out_batch.end_flag = false;
+        out_batch_end_flag_var = HLSVar(var_name="out_batch.end_flag", var_type=bool_type)
+        assign_expr_4 = HLSExpr(HLSExprT.CONST, False)
+        for_loop_2_codes.append(CodeAssign(var=out_batch_end_flag_var, expr=assign_expr_4))
+
+        # out_batch.end_pos = edge_batch.end_pos;
+        out_batch_end_pos_var = HLSVar(var_name="out_batch.end_pos", var_type=uint8_type)
+        assign_expr_5 = HLSExpr(HLSExprT.CONST, "edge_batch.end_pos")
+        for_loop_2_codes.append(CodeAssign(var=out_batch_end_pos_var, expr=assign_expr_5))
+
+        # bus_word_t cur_last_cacheline;
+        for_loop_2_codes.append(CodeVarDecl(var_name="cur_last_cacheline", var_type=bus_word_t_type))
+        cur_last_cacheline_var = HLSVar(var_name="cur_last_cacheline", var_type=bus_word_t_type)
+
+        # ap_uint<...> cur_last_cache_idx;
+        for_loop_2_codes.append(CodeVarDecl(var_name="cur_last_cache_idx", var_type=cache_idx_elem_type))
+        cur_last_cache_idx_var = HLSVar(var_name="cur_last_cache_idx", var_type=cache_idx_elem_type)
+
+        # --- Build for(pe_idx) 2 ---
+        for_loop_3_codes: List[HLSCodeLine] = []
+        # #pragma HLS UNROLL
+        for_loop_3_codes.append(CodePragma(content="UNROLL"))
+
+        # ap_uint<...> cacheline_idx = ...
+        cacheline_idx_init_val = "(edge_batch.edges[pe_idx].src_id >> LOG_DIST_PER_WORD)"
+        for_loop_3_codes.append(CodeVarDecl(var_name="cacheline_idx", var_type=cache_idx_elem_type, init_val=cacheline_idx_init_val))
+
+        # uint32_t offset = ...
+        offset_init_val = "(edge_batch.edges[pe_idx].src_id & (DIST_PER_WORD - 1))"
+        for_loop_3_codes.append(CodeVarDecl(var_name="offset", var_type=uint_type, init_val=offset_init_val))
+
+        # --- Build IF_1 (pe_idx < edge_batch.end_pos) ---
+        if_1_codes: List[HLSCodeLine] = []
+        if_expr_1 = HLSExpr(HLSExprT.CONST, "pe_idx < edge_batch.end_pos")
+        # (This IF_1 has no else block)
+
+        # --- Build IF_1 Contents ---
+        cacheline_var = HLSVar(var_name="cacheline", var_type=bus_word_t_type)
+        if_1_codes.append(CodeVarDecl(var_name="cacheline", var_type=cacheline_var.type))
+
+        # --- Build IF_2 (cacheline_idx == last_cache_idx[pe_idx]) ---
+        if_2_codes: List[HLSCodeLine] = []
+        else_2_codes: List[HLSCodeLine] = []
+        if_expr_2 = HLSExpr(HLSExprT.CONST, "cacheline_idx == last_cache_idx[pe_idx]")
+        # Build IF_2 Contents
+        assign_expr_6 = HLSExpr(HLSExprT.CONST, "last_cacheline[pe_idx]")
+        if_2_codes.append(CodeAssign(var=cacheline_var, expr=assign_expr_6))
+        # Build ELSE_2 Contents
+        assign_expr_7 = HLSExpr(HLSExprT.CONST, "cacheline_streams[pe_idx].read()")
+        else_2_codes.append(CodeAssign(var=cacheline_var, expr=assign_expr_7))
+        # Create IF_2
+        if_2 = CodeIf(expr=if_expr_2, if_codes=if_2_codes, else_codes=else_2_codes)
+        if_1_codes.append(if_2)
+        # --- End IF_2 ---
+
+        # ap_fixed_pod_t prop = get_val_from_bus(cacheline, offset);
+        if_1_codes.append(CodeVarDecl(var_name="prop", var_type=ap_fixed_pod_t_type, init_val="get_val_from_bus(cacheline, offset)"))
+
+
+        # ============= begin inline logic ==============
+        # out_batch.node_id[pe_idx] = edge_batch.edges[pe_idx].dst_id;
+        port_to_var = {}
+        if_1_codes.append(CodeOther(text="// Begin inline logic"))
+        DST_ID_VAR = HLSVar(var_name="DST_ID_VAR", var_type=node_id_type)
+        SRC_PROP_VAR = HLSVar(var_name="SRC_PROP_VAR", var_type=ap_fixed_pod_t_type)
+        EDGE_WEIGHT_VAR = HLSVar(var_name="EDGE_WEIGHT_VAR", var_type=ap_fixed_pod_t_type)
+        top_vars = {
+            "DST_ID_VAR": DST_ID_VAR,
+            "SRC_PROP_VAR": SRC_PROP_VAR,
+            "EDGE_WEIGHT_VAR": EDGE_WEIGHT_VAR
+        }
+        if_1_codes.append(CodeVarDecl(var_name="EDGE_WEIGHT_VAR", var_type=ap_fixed_pod_t_type, init_val="edge_weight"))
+        if_1_codes.append(CodeVarDecl(var_name="SRC_PROP_VAR", var_type=ap_fixed_pod_t_type, init_val="prop"))
+        if_1_codes.append(CodeVarDecl(var_name="DST_ID_VAR", var_type=node_id_type, init_val="edge_batch.edges[pe_idx].dst_id"))
+        
+        
+        assign_expr_8 = HLSExpr(HLSExprT.CONST, "edge_batch.edges[pe_idx].dst_id")
+        assign_expr_9 = HLSExpr(HLSExprT.CONST, "(prop + edge_weight)")
+
+
+        out_batch_node_id_pe_idx_var = HLSVar(var_name="out_batch.node_id[pe_idx]", var_type=node_id_type)
+        out_batch_prop_pe_idx_var = HLSVar(var_name="out_batch.prop[pe_idx]", var_type=ap_fixed_pod_t_type)
+
+        top_vars["FINAL_DST_ID_VAR"] = out_batch_node_id_pe_idx_var
+        top_vars["FINAL_PROP_VAR"] = out_batch_prop_pe_idx_var
+        port_property = {} # 只能是src , dst, edge_prop这三项或组合
+        inlinecodes = []
+        for comp in scatter_stage_comps:
+            port_property,inlinecodes = self._scatter_type_analyze(comp,port_property,port_to_var,top_vars,target_codes=inlinecodes)
+        
+        if_1_codes.extend(inlinecodes)
+        
+        #if_1_codes.append(CodeAssign(var=out_batch_node_id_pe_idx_var, expr=assign_expr_8))
+        # out_batch.prop[pe_idx] = (prop + edge_weight);
+        
+        #if_1_codes.append(CodeAssign(var=out_batch_prop_pe_idx_var, expr=assign_expr_9))
+
+        if_1_codes.append(CodeOther(text="// end inline logic"))
+        # ============= end inline logic ==============
+
+
+        # --- Build IF_3 (pe_idx == PE_NUM - 1) ---
+        if_3_codes: List[HLSCodeLine] = []
+        if_expr_3 = HLSExpr(HLSExprT.CONST, "pe_idx == PE_NUM - 1")
+        # (This IF_3 has no else block)
+        # Build IF_3 Contents
+        if_3_codes.append(CodeAssign(var=cur_last_cacheline_var, expr=HLSExpr(HLSExprT.VAR, cacheline_var)))
+        assign_expr_10 = HLSExpr(HLSExprT.CONST, "cacheline_idx")
+        if_3_codes.append(CodeAssign(var=cur_last_cache_idx_var, expr=assign_expr_10))
+        # Create IF_3
+        if_3 = CodeIf(expr=if_expr_3, if_codes=if_3_codes)
+        if_1_codes.append(if_3)
+        # --- End IF_3 ---
+
+        # Create IF_1
+        if_1 = CodeIf(expr=if_expr_1, if_codes=if_1_codes)
+        for_loop_3_codes.append(if_1)
+        # --- End IF_1 ---
+
+        # Create for loop 3
+        for_loop_3 = CodeFor(codes=for_loop_3_codes,
+                             iter_limit="PE_NUM",
+                             iter_cmp="<",
+                             iter_name="pe_idx",
+                             iter_start="0",
+                             iter_step="pe_idx++",
+                             iter_val_type=int_type)
+        for_loop_2_codes.append(for_loop_3)
+        # --- End for(pe_idx) 2 ---
+
+        # edge_batch_stream.write(out_batch);
+        for_loop_2_codes.append(CodeWriteStream(stream_var=edge_batch_stream, in_expr=out_batch_var))
+
+        # --- Build for(pe_idx) 3 ---
+        for_loop_4_codes: List[HLSCodeLine] = []
+        # #pragma HLS UNROLL
+        for_loop_4_codes.append(CodePragma(content="UNROLL"))
+        # last_cacheline[pe_idx] = cur_last_cacheline;
+        last_cacheline_pe_idx_var_2 = HLSVar(var_name="last_cacheline[pe_idx]", var_type=bus_word_t_type)
+        for_loop_4_codes.append(CodeAssign(var=last_cacheline_pe_idx_var_2, expr=cur_last_cacheline_var))
+        # last_cache_idx[pe_idx] = cur_last_cache_idx;
+        last_cache_idx_pe_idx_var_2 = HLSVar(var_name="last_cache_idx[pe_idx]", var_type=cache_idx_elem_type)
+        for_loop_4_codes.append(CodeAssign(var=last_cache_idx_pe_idx_var_2, expr=cur_last_cache_idx_var))
+        # Create for loop 4
+        for_loop_4 = CodeFor(codes=for_loop_4_codes,
+                             iter_limit="PE_NUM",
+                             iter_cmp="<",
+                             iter_name="pe_idx",
+                             iter_start="0",
+                             iter_step="pe_idx++",
+                             iter_val_type=int_type)
+        for_loop_2_codes.append(for_loop_4)
+        # --- End for(pe_idx) 3 ---
+
+        # Create for loop 2
+        for_loop_2 = CodeFor(codes=for_loop_2_codes,
+                             iter_limit=scatter_size_var,
+                             iter_cmp="<",
+                             iter_name="edge_batch_idx",
+                             iter_start="0",
+                             iter_step="edge_batch_idx++",
+                             iter_val_type=int_type)
+        code_lines.append(for_loop_2)
+        # --- End for(edge_batch_idx) ---
+
+        # update_tuple_t end_batch;
+        code_lines.append(CodeVarDecl(var_name="end_batch", var_type=update_tuple_t_type))
+        end_batch_var = HLSVar(var_name="end_batch", var_type=update_tuple_t_type)
+
+        # end_batch.end_flag = true;
+        end_batch_end_flag_var = HLSVar(var_name="end_batch.end_flag", var_type=bool_type)
+        assign_expr_11 = HLSExpr(HLSExprT.CONST, True)
+        code_lines.append(CodeAssign(var=end_batch_end_flag_var, expr=assign_expr_11))
+
+        # end_batch.end_pos = 0;
+        end_batch_end_pos_var = HLSVar(var_name="end_batch.end_pos", var_type=uint8_type)
+        assign_expr_12 = HLSExpr(HLSExprT.CONST, 0)
+        code_lines.append(CodeAssign(var=end_batch_end_pos_var, expr=assign_expr_12))
+
+        # edge_batch_stream.write(end_batch);
+        code_lines.append(CodeWriteStream(stream_var=edge_batch_stream, in_expr=end_batch_var))
+
+        # --- 3. Finalize ---
+        merge_node_props_func.codes = code_lines
+
+        self.scatter_funcs.append(merge_node_props_func)
+        self.top_dataflow_funcs.append(merge_node_props_func)
+        
         print("========= Scatter Stage =========")
         
-        port_property = {}
-        for comp in scatter_stage_comps:
-            if isinstance(comp, dfir.MemoryReadComponent):
-                self._translate_memory_read_op(comp)
-                    
+        
 
-            elif isinstance(comp, dfir.FusedOpComponent):
-                print(comp.port_mapping)
-                # for comp in comp.sub_graph.components:
-                #     print(type(comp))
-                for port in comp.ports:
-                    if port.port_type == dfir.PortType.IN:
-                        conn = port.connection
-                        parent = conn.parent
-                        port_property[port] = parent.pname_to_pattern[conn.name]
-                self._translate_fused_op(comp,port_property)
-            else:
-                break
 
     def process_gather(self,gather_stage_comps : List[dfir.Component]):
         assert len(gather_stage_comps) == 1
@@ -3579,6 +4181,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         self, comp_col: dfir.ComponentCollection, global_graph: Any, top_func_name: str
     ) -> Tuple[str, str]:
         
+        
         self.global_graph_store = global_graph
         self.comp_col_store = comp_col
         
@@ -3628,7 +4231,8 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
             elif isinstance(comp, dfir.ReduceComponent):
                 gather_stage_comps.append(comp)
                 reduce_found = True  
-
+                ReduceComp = comp
+                scatter_stage_comps.append(comp)
                 for port in comp._port_groups["global"]:
                     if port.port_type == dfir.PortType.OUT:
                         reduce_out_ports.append(port)
@@ -3637,7 +4241,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
             else:
                 scatter_stage_comps.append(comp)
 
-        self.process_scatter(scatter_stage_comps)
+        self.process_scatter(scatter_stage_comps,ReduceComp)
 
         self.process_gather(gather_stage_comps)
 
@@ -3650,4 +4254,6 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         source_code = self._generate_source_file(header_name)
         header_code = self._generate_header_file()
         apply_kernel = self._generate_apply()
+        
         return header_code,source_code,apply_kernel
+    
