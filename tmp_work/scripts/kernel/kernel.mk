@@ -9,8 +9,8 @@ EMCONFIG_FILE := ./emconfig.json
 
 # 1. 在这里定义您所有的内核名称。
 #    这是将来您唯一需要修改的变量。
-KERNEL_NAMES := graphyflow_big hbm_writer apply_kernel
-# graphyflow_little
+KERNEL_NAMES := graphyflow_little hbm_writer apply_kernel
+# graphyflow_big
 
 # 2. 定义最终输出的二进制文件的名称。
 XCLBIN_NAME := graphyflow_kernels
