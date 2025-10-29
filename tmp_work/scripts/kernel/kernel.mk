@@ -2,6 +2,10 @@
 # Vitis 内核的 Makefile (多内核版本)
 #
 
+ifeq ($(TARGET),$(filter $(TARGET), sw_emu hw_emu))
+CLFLAGS += -DEMULATION
+endif
+
 # --- 配置项 ---
 VPP := v++
 XCLBIN_DIR := ./xclbin
@@ -9,7 +13,7 @@ EMCONFIG_FILE := ./emconfig.json
 
 # 1. 在这里定义您所有的内核名称。
 #    这是将来您唯一需要修改的变量。
-KERNEL_NAMES := graphyflow_little graphyflow_big hbm_writer apply_kernel
+KERNEL_NAMES := graphyflow_little graphyflow_big apply_kernel hbm_writer_little hbm_writer_big
 
 # 2. 定义最终输出的二进制文件的名称。
 XCLBIN_NAME := graphyflow_kernels

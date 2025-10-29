@@ -283,7 +283,9 @@ Reduc_105_unit_reduce(hls::stream<update_tuple_t> &update_set_stm,
     const int32_t num_words =
         (dst_num + DISTANCES_PER_REDUCE_WORD - 1) / DISTANCES_PER_REDUCE_WORD;
 
-    // memset(prop_mem, 0, sizeof(reduce_word_t) * PE_NUM * MEM_SIZE);
+#ifdef EMULATION
+    memset(prop_mem, 0, sizeof(reduce_word_t) * PE_NUM * MEM_SIZE);
+#endif
 
 LOOP_INIT_CACHE_ADDR:
     for (int i = 0; i < L + 1; i++) {

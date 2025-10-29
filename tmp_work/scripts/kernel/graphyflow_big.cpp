@@ -956,7 +956,9 @@ static void Reduc_105_unit_reduce_single_pe(
     //         prop_mem[i] = MAX_REDUCE_WORD; // Initialize distances to max
     //     }
 
-    // memset(prop_mem, 0, sizeof(reduce_word_t) * MEM_SIZE);
+#ifdef EMULATION
+    memset(prop_mem, 0, sizeof(reduce_word_t) * MEM_SIZE);
+#endif
 
 LOOP_INIT_CACHE_ADDR:
     for (int i = 0; i < L + 1; i++) {

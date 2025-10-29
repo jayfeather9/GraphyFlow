@@ -257,8 +257,8 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
     little_writer_kernel_buffers.clear();
     big_writer_kernel_buffers.clear();
     apply_kernel_node_prop_buffers.clear();
-    little_writer_host_outputs.assign(acc.num_little_krnl, {});
-    big_writer_host_outputs.assign(acc.num_big_krnl, {});
+    little_writer_host_outputs.resize(acc.num_little_krnl);
+    big_writer_host_outputs.resize(acc.num_big_krnl);
 
     const size_t bytes_per_word = AXI_BUS_WIDTH / 8;
 
