@@ -6,8 +6,6 @@
 #include "graph_preprocess/graph_preprocess.h"
 #include <vector>
 
-#include <vector>
-
 // Define a structure to hold all OpenCL buffers for a single kernel instance.
 // This improves code organization and simplifies buffer management.
 struct KernelBuffers {
@@ -40,7 +38,8 @@ class AlgorithmHost {
                                   std::vector<cl::Event> &big_kernel_events,
                                   std::vector<cl::Event> &little_kernel_events,
                                   std::vector<cl::Event> &apply_kernel_events,
-                                  cl::Event &hbm_writer_event);
+                                  std::vector<cl::Event> &little_writer_events,
+                                  std::vector<cl::Event> &big_writer_events);
     void transfer_data_from_fpga();
     bool check_convergence_and_update(const PartitionContainer &container);
     const std::vector<int> &get_results() const;
@@ -61,10 +60,11 @@ class AlgorithmHost {
 
     // Buffer containers for HBM writer kernels (one entry per writer kernel
     // instance)
-    std::vector<WriterKernelBuffers> writer_kernel_buffers;
+    std::vector<WriterKernelBuffers> little_writer_kernel_buffers,
+        big_writer_kernel_buffers;
     std::vector<cl::Buffer> apply_kernel_node_prop_buffers;
     std::vector<std::vector<bus_word_t, aligned_allocator<bus_word_t>>>
-        writer_kernel_host_outputs;
+        little_writer_host_outputs, big_writer_host_outputs;
 };
 
 #endif // __GENERATED_HOST_H__
