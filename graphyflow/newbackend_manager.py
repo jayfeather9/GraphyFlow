@@ -3286,7 +3286,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
                     raise RuntimeError(f"Deadlock in sub-graph topological sort at component {cur.name}")
                 continue
             else:
-                port_property ,target_codes = self._scatter_type_analyze(cur,port_property,port_to_var,top_vars,target_codes)
+                port_property ,target_codes = self._scatter_analyze(cur,port_property,port_to_var,top_vars,target_codes)
             
             end = False
             for p in cur.out_ports:
@@ -3316,7 +3316,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         return port_property,target_codes
     
         # hard code
-    def _scatter_type_analyze(self,comp,port_property,port_to_var,top_vars,target_codes):
+    def _scatter_analyze(self,comp,port_property,port_to_var,top_vars,target_codes):
 
         if isinstance(comp, dfir.MemoryReadComponent):
             for port in comp.ports:
@@ -3355,7 +3355,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
                     port_to_var[port] = port_to_var[parent_port]
 
             for sub_c in sub_graph_components:
-                port_property,target_codes = self._scatter_type_analyze(sub_c,port_property,port_to_var,top_vars,target_codes)
+                port_property,target_codes = self._scatter_analyze(sub_c,port_property,port_to_var,top_vars,target_codes)
                 
             for port in comp.sub_graph.outputs:
                 if port.port_type == dfir.PortType.OUT:
@@ -3474,6 +3474,180 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
             pass
 
         return port_property, target_codes
+    
+
+    def _apply_analyze(self,comp,port_property,port_to_var,top_vars,target_codes):
+
+        if isinstance(comp,dfir.ReduceComponent):
+            for port in comp._port_groups["global"]:
+                if port.port_type == dfir.PortType.OUT:
+                    #HLSVar(var_name=f"reduce_{comp.readable_id}_key_out", var_type=HLSType(HLSBasicType.NODE_ID))
+                    #HLSVar(var_name=f"reduce_{comp.readable_id}_transform_out", var_type=HLSType(HLSBasicType.AP_FIXED_POD))
+
+                    out_vars = []
+                    
+                    out_vars.append(top_vars["init_val_2_var"])
+                    out_vars.append(None)
+
+                    port_to_var[port] = out_vars
+                    
+        elif isinstance(comp, dfir.MemoryReadComponent):
+            for port in comp.ports:
+                if port.port_type == dfir.PortType.OUT: # 仅适用于现在的写法
+                    port_access_pattern = comp.pname_to_pattern[port.name]
+                    port_property[port] = port_access_pattern[1]
+                    if port_property[port][0] == "edge":
+                        if port_property[port][1][0] == "weight":
+                            port_to_var[port] = top_vars["EDGE_WEIGHT_VAR"]
+                        elif port_property[port][1][0] == "src":
+                            if port_property[port][1][1] == "distance":
+                                port_to_var[port] = top_vars["SRC_PROP_VAR"]
+                            else:
+                                assert 0
+                        elif port_property[port][1][0] == "dst":
+                            port_to_var[port] = top_vars["DST_ID_VAR"]
+                    elif port_property[port][0] == "node":
+                        if port_property[port][1][0] == "distance":
+                            port_to_var[port] = top_vars["init_val_1_var"]
+                        else:
+                            assert 0
+            # self._translate_memory_read_op(comp) #这部分访存应该全是hard code
+        
+        elif isinstance(comp, dfir.FusedOpComponent):
+            print(comp.port_mapping)
+            for port in comp.ports:
+                if port.port_type == dfir.PortType.IN:
+                    conn = port.connection
+                    parent = conn.parent
+                    # port_property[port] = port_property[conn]
+                    port_to_var[port] = port_to_var[conn]
+
+            sub_graph_components = comp.sub_graph.topo_sort()
+            for port in comp.sub_graph.inputs:
+                if port.port_type == dfir.PortType.IN:
+                    parent_port = comp.port_mapping[port.readable_id]
+                    # port_property[port] = port_property[parent_port]
+                    port.connection = parent_port
+                    port_to_var[port] = port_to_var[parent_port]
+
+            for sub_c in sub_graph_components:
+                port_property,target_codes = self._apply_analyze(sub_c,port_property,port_to_var,top_vars,target_codes)
+                
+            for port in comp.sub_graph.outputs:
+                if port.port_type == dfir.PortType.OUT:
+                    child_port = comp.port_mapping[port.readable_id]
+                    # port_property[child_port] = port_property[port]
+                    port_to_var[child_port] = port_to_var[port]
+                
+        elif isinstance(comp,dfir.ScatterComponent):
+            idx = 0
+            for port in comp.ports:
+                if port.port_type == dfir.PortType.IN:
+                    conn = port.connection
+                    # port_property[port] = port_property[conn]
+                    # in_properties = port_property[port]
+                    in_vars = port_to_var[conn]
+                elif port.port_type == dfir.PortType.OUT:
+                    # port_property[port] = in_properties[idx]
+                    port_to_var[port] = in_vars[idx]
+                    idx += 1
+        elif isinstance(comp,dfir.GatherComponent):
+            gather_out_property = []
+            gather_out_vars = []
+            for port in comp.ports:
+                if port.port_type == dfir.PortType.IN:
+                    # if port in port_property:
+                    #     if port_property[port] is not None:
+                    #         #gather_out_property.append(port_property[port])
+                    #         gather_out_vars.append(port_to_var[port])
+                    # else:
+                    #     conn = port.connection
+                    #     #port_property[port] = port_property[conn]
+                    #     gather_out_property.append(port_property[port])
+                    #     gather_out_vars.append(port_to_var[conn])
+                    conn = port.connection
+                    gather_out_vars.append(port_to_var[conn])
+                elif port.port_type == dfir.PortType.OUT:
+                    # port_property[port] = gather_out_property
+                    target_codes.append(CodeAssign(var = top_vars["result_val3"], expr=HLSExpr(HLSExprT.VAR, gather_out_vars[0])))
+                    port_to_var[port] = gather_out_vars
+
+        elif isinstance(comp,dfir.ConstantComponent):
+            tmp_var = HLSVar(var_name=f"constant_{comp.readable_id}", var_type=HLSType(HLSBasicType.AP_FIXED_POD))
+            target_codes.append(CodeVarDecl(var_name=f"constant_{comp.readable_id}", var_type=HLSType(HLSBasicType.AP_FIXED_POD), init_val=str(comp.value)))
+            for port in comp.ports:
+                if port.port_type == dfir.PortType.OUT:
+                    #port_property[port] = None
+                    port_to_var[port] = tmp_var
+            
+            
+        elif isinstance(comp,dfir.BinOpComponent):
+            # lhs_var = HLSVar(var_name=f"BinOp_{comp.readable_id}_lhs", var_type=HLSType(HLSBasicType.AP_FIXED_POD))
+            # rhs_var = HLSVar(var_name=f"BinOp_{comp.readable_id}_rhs", var_type=HLSType(HLSBasicType.AP_FIXED_POD))
+            
+            is_op1 = True
+            for port in comp.ports:
+                if port.port_type == dfir.PortType.IN:
+                    conn = port.connection
+
+                    # if port in port_property:
+                    #     if port_property[port] is not None:
+                    #         inproperty = port_property[port]
+                    #         
+                    # else:
+                    #     port_property[port] = port_property[conn]
+                    #     if port_property[conn] is not None:
+                    #         inproperty = port_property[conn]
+                    if port_to_var[conn] is None: # 没有用到node_id变量，因此也没有chushihua 
+                        continue
+                    if is_op1:
+                        is_op1 = False
+                        op1_var = port_to_var[conn]
+                        op1_expr = HLSExpr(HLSExprT.VAR, op1_var)
+                    else:
+                        op2_var = port_to_var[conn]
+                        op2_expr = HLSExpr(HLSExprT.VAR, op2_var)
+            for port in comp.ports:
+                if port.port_type == dfir.PortType.OUT:
+                    result_var = HLSVar(var_name=f"BinOp_{comp.readable_id}_res", var_type=HLSType(HLSBasicType.AP_FIXED_POD)) 
+                    target_codes.append(CodeVarDecl(var_name=f"BinOp_{comp.readable_id}_res", var_type=HLSType(HLSBasicType.AP_FIXED_POD)))
+                    tmp_expr = HLSExpr(HLSExprT.BINOP, comp.op, [op1_expr, op2_expr])
+                    target_codes.append(CodeAssign(result_var, tmp_expr))
+
+                    # port_property[port] = inproperty
+                    port_to_var[port] = result_var
+            
+
+        elif isinstance(comp,dfir.UnaryOpComponent):
+            for port in comp.ports:
+                if port in port_property:
+                    if port_property[port] is not None:
+                        inproperty = port_property[port]
+                    continue
+                if port.port_type == dfir.PortType.IN:
+                    conn = port.connection
+                    port_property[port] = port_property[conn]
+                    if port_property[conn] is not None:
+                        inproperty = port_property[conn]
+                elif port.port_type == dfir.PortType.OUT:
+                    port_property[port] = inproperty
+        elif isinstance(comp,dfir.CopyComponent):
+            
+            for port in comp.ports:
+                if port.port_type == dfir.PortType.IN:
+                    conn = port.connection
+                    #port_property[port] = port_property[conn]
+                    #in_property = port_property[port]
+                    in_var = port_to_var[conn]
+                elif port.port_type == dfir.PortType.OUT:
+                    #port_property[port] = in_property
+                    port_to_var[port] = in_var
+
+        else:
+            pass
+
+        return port_property, target_codes
+    
     def _build_reduce_subgraph(
         self,
         start_ports: List[dfir.Port],
@@ -3755,7 +3929,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         port_property = {} # 只能是src , dst, edge_prop这三项或组合
         inlinecodes = []
         for comp in scatter_stage_comps:
-            port_property,inlinecodes = self._scatter_type_analyze(comp,port_property,port_to_var,top_vars,target_codes=inlinecodes)
+            port_property,inlinecodes = self._scatter_analyze(comp,port_property,port_to_var,top_vars,target_codes=inlinecodes)
         
         if_1_codes.extend(inlinecodes)
         
@@ -3957,7 +4131,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         for_loop_2_codes.append(CodePragma(content="UNROLL"))
 
 
-        # ================ begin inline fused op =============================
+        
         # ap_fixed_pod_t update_dist = wide_word.range(31 + (i << 5), (i << 5));
         init_val_1 = "wide_word.range(31 + (i << 5), (i << 5))"
         for_loop_2_codes.append(CodeVarDecl(var_name="update_dist", var_type=ap_fixed_pod_t_type, init_val=init_val_1))
@@ -3978,119 +4152,21 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         # (Using CodeOther for LHS .range())
         
         # } (end for_loop_2)
-
-        node_id_type = HLSType(HLSBasicType.NODE_ID)
-        distance_type = HLSType(HLSBasicType.AP_FIXED_POD)
-        print("========= apply Stage =========")
+        # ================ begin inline fused op =============================
+        for_loop_2_codes.append(CodeOther(text="// Begin inline fused op"))
+        inline_codes = []
+        port_property = {}
+        port_to_var = {}
+        top_vars = {
+            "init_val_1_var": init_val_1_var,
+            "init_val_2_var": init_val_2_var,
+            "result_val3": result_val3
+        }
         for comp in apply_stage_comps:
-            print(f"{type(comp)} id : {comp.readable_id}")
-            for port in comp.ports:
-                print(f"Port: {port.name}, Type: {port.port_type}, id:{port.readable_id},Connection: {port.connection if port.connection else 'None'}")
-            
-            if isinstance(comp, dfir.ScatterComponent):
-                for port in comp.ports:
-                    in_port = None
-                    conn = port.connection
-                    parent = conn.parent
-                    idx = 0
-                    if port.port_type == dfir.PortType.IN:
-                        in_port = port
-                        self.type_map[port] = self.type_map[conn]
-                        
-                    elif port.port_type == dfir.PortType.OUT:
-                        if isinstance(port.data_type , dftype.SpecialIdType):
-                            if port.data_type.type_name == "node_id":
-                                 self.type_map[port] = node_id_type
-                            else:
-                                assert 0
-                        elif isinstance(port.data_type , dftype.FloatType):
-                            self.type_map[port] = distance_type
-                        elif isinstance(port.data_type , dftype.ArrayType):
-                            elem_type = port.data_type.type_
-                            if isinstance(elem_type , dftype.SpecialIdType):
-                                if elem_type.type_name == "node_id":
-                                     self.type_map[port] = node_id_type
-                                else:
-                                    assert 0
-                            elif isinstance(elem_type , dftype.FloatType):
-                                self.type_map[port] = distance_type
-                        else:
-                            assert 0
-                               
-
-            elif isinstance(comp, dfir.CopyComponent):
-                for port in comp.ports:
-                    conn = port.connection
-    
-                    if port.port_type == dfir.PortType.IN:
-                        in_port = port
-                        self.type_map[port] = self.type_map[conn]
-                    elif port.port_type == dfir.PortType.OUT:
-                        self.type_map[port] = self.type_map[in_port]
-            elif isinstance(comp,dfir.MemoryReadComponent):
-                for port in comp.ports:
-                    conn = port.connection
-
-                    if port.port_type == dfir.PortType.IN:
-                        in_port = port
-                        self.type_map[port] = self.type_map[conn]
-                    elif port.port_type == dfir.PortType.OUT:
-                        if isinstance(port.data_type , dftype.SpecialIdType):
-                            if port.data_type.type_name == "node_id":
-                                 self.type_map[port] = node_id_type
-                            else:
-                                assert 0
-                        elif isinstance(port.data_type , dftype.FloatType):
-                            self.type_map[port] = distance_type
-                        elif isinstance(port.data_type , dftype.ArrayType):
-                            elem_type = port.data_type.type_
-                            if isinstance(elem_type , dftype.SpecialIdType):
-                                if elem_type.type_name == "node_id":
-                                     self.type_map[port] = node_id_type
-                                else:
-                                    assert 0
-                            elif isinstance(elem_type , dftype.FloatType):
-                                self.type_map[port] = distance_type
-                        else:
-                            assert 0
-            elif isinstance(comp,dfir.FusedOpComponent):
-                 
-                # 连接到memor的是旧distance 连接到scatter的是新distance
-                for port in comp.ports:
-                    conn = port.connection
-    
-                    if port.port_type == dfir.PortType.IN:
-                        in_port = port
-                        self.type_map[port] = self.type_map[conn]
-                    elif port.port_type == dfir.PortType.OUT:
-                        self.type_map[port] = distance_type
-                        print(port.data_type)
-                
-                inline_code = []
-
-                inline_code.append(CodeComment(f" -- Inlining FusedOp {comp.name} -- "))
-
-
-                for c in comp.sub_graph.components:
-                    if isinstance(c, dfir.BinOpComponent):
-                        op1_expr = HLSExpr(HLSExprT.VAR, init_val_1_var)
-
-                        op2_expr = HLSExpr(HLSExprT.VAR, init_val_2_var)
-
-                        target_var = result_val3
-
-                        expr = HLSExpr(HLSExprT.BINOP, c.op, [op1_expr, op2_expr])
-                        inline_code.append(CodeAssign(target_var, expr))
-
-
-                inline_code.append(CodeComment(f" -- End Inlining FusedOp {comp.name} -- "))
-
-
-                for_loop_2_codes.extend(inline_code)
-
-            else:
-                assert 0
-
+            port_property,inline_codes = self._apply_analyze(comp,port_property,port_to_var,top_vars,target_codes=inline_codes)
+        for_loop_2_codes.extend(inline_codes)
+        for_loop_2_codes.append(CodeOther(text="// End inline fused op"))
+        
             
         # ========================= end inline fused op ===========================
         for_loop_2_codes.append(CodeOther(text="new_node_prop.range(31 + (i << 5), (i << 5)) = new_dist;"))
@@ -4233,6 +4309,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
                 reduce_found = True  
                 ReduceComp = comp
                 scatter_stage_comps.append(comp)
+                apply_stage_comps.append(comp)
                 for port in comp._port_groups["global"]:
                     if port.port_type == dfir.PortType.OUT:
                         reduce_out_ports.append(port)
