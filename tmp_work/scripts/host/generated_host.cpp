@@ -314,6 +314,13 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
             XCL_MEM_TOPOLOGY | acc.little_kernel_hbm_node_id[i];
         hbm_ext_writer_out.obj = nullptr;
         hbm_ext_writer_out.param = 0;
+        // apply_kernel_node_prop_buffers
+        cl_mem_ext_ptr_t hbm_ext_apply_node;
+        hbm_ext_apply_node.flags =
+            XCL_MEM_TOPOLOGY | acc.little_kernel_hbm_node_id[i];
+        hbm_ext_apply_node.obj =
+            little_kernel_input_buffers[i].packed_node_props.data();
+        hbm_ext_apply_node.param = 0;
 
         // Create node_props_buf for writer kernel (same size as node_props)
         size_t num_dist_words =
@@ -324,6 +331,13 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
                                           CL_MEM_USE_HOST_PTR,
                                       num_dist_words * bytes_per_word,
                                       &hbm_ext_writer_node, &err));
+        // apply_kernel_node_prop_buffers
+        OCL_CHECK(
+            err,
+            apply_kernel_node_prop_buffers.push_back(cl::Buffer(
+                acc.context,
+                CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_USE_HOST_PTR,
+                num_dist_words * bytes_per_word, &hbm_ext_apply_node, &err)));
         // Create output buffer for writer kernel
         writer_kernel_host_outputs[i].resize(num_output_words);
         OCL_CHECK(err, writer_buffers.output_buf =
@@ -386,6 +400,13 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
             XCL_MEM_TOPOLOGY | acc.big_kernel_hbm_node_id[i];
         hbm_ext_writer_out.obj = nullptr;
         hbm_ext_writer_out.param = 0;
+        // apply_kernel_node_prop_buffers
+        cl_mem_ext_ptr_t hbm_ext_apply_node;
+        hbm_ext_apply_node.flags =
+            XCL_MEM_TOPOLOGY | acc.big_kernel_hbm_node_id[i];
+        hbm_ext_apply_node.obj =
+            big_kernel_input_buffers[i].packed_node_props.data();
+        hbm_ext_apply_node.param = 0;
 
         // Create node_props_buf for writer kernel (same size as node_props)
         size_t num_dist_words =
@@ -396,6 +417,13 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
                                           CL_MEM_USE_HOST_PTR,
                                       num_dist_words * bytes_per_word,
                                       &hbm_ext_writer_node, &err));
+        // apply_kernel_node_prop_buffers
+        OCL_CHECK(
+            err,
+            apply_kernel_node_prop_buffers.push_back(cl::Buffer(
+                acc.context,
+                CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_USE_HOST_PTR,
+                num_dist_words * bytes_per_word, &hbm_ext_apply_node, &err)));
         // Create output buffer for writer kernel
         writer_kernel_host_outputs[i + acc.num_little_krnl].resize(
             num_output_words);
@@ -508,6 +536,14 @@ void AlgorithmHost::transfer_data_to_fpga(const PartitionContainer &container) {
             err = acc.hbm_writer_queue.enqueueMigrateMemObjects(
                 {writer_kernel_buffers[i + acc.num_little_krnl].node_props_buf},
                 0 /* 0 means from host*/));
+        // apply_kernel_node_prop_buffers
+        OCL_CHECK(
+            err,
+            err = acc.apply_queue[i + acc.num_little_krnl]
+                      .enqueueMigrateMemObjects(
+                          {apply_kernel_node_prop_buffers[i +
+                                                          acc.num_little_krnl]},
+                          0 /* 0 means from host*/));
     }
 
     for (size_t i = 0; i < little_kernel_buffers.size(); ++i) {
@@ -516,6 +552,10 @@ void AlgorithmHost::transfer_data_to_fpga(const PartitionContainer &container) {
                            0 /* 0 means from host*/));
         OCL_CHECK(err, err = acc.hbm_writer_queue.enqueueMigrateMemObjects(
                            {writer_kernel_buffers[i].node_props_buf},
+                           0 /* 0 means from host*/));
+        // apply_kernel_node_prop_buffers
+        OCL_CHECK(err, err = acc.apply_queue[i].enqueueMigrateMemObjects(
+                           {apply_kernel_node_prop_buffers[i]},
                            0 /* 0 means from host*/));
     }
 
@@ -588,6 +628,8 @@ void AlgorithmHost::execute_kernel_iteration(
                 ? container.SPs[i].partitioned_graph
                 : container.DPs[i - acc.num_big_krnl].partitioned_graph;
         int apply_arg_idx = 0;
+        OCL_CHECK(err, err = apply_kernel.setArg(
+                           apply_arg_idx++, apply_kernel_node_prop_buffers[i]));
         OCL_CHECK(err,
                   err = apply_kernel.setArg(apply_arg_idx++, p_graph.num_dsts));
         OCL_CHECK(err, err = acc.apply_queue[i].enqueueTask(

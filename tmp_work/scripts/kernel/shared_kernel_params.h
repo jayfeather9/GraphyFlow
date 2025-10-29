@@ -55,37 +55,40 @@ typedef ap_axiu<512, 0, 0, 32> ppb_response_pkt_t;
 typedef ap_axiu<512, 0, 0, 0> cacheline_data_pkt_t;
 
 extern "C" void
-apply_kernel(uint32_t dst_num,
-             hls::stream<cacheline_data_pkt_t> &cacheline_data_stream,
+apply_kernel(bus_word_t *node_props, uint32_t dst_num,
              hls::stream<write_burst_pkt_t> &kernel_out_stream,
              hls::stream<write_burst_pkt_t> &write_burst_stream);
 
 extern "C" void
 hbm_writer(bus_word_t *node_props_1, bus_word_t *node_props_2,
            bus_word_t *node_props_3, bus_word_t *node_props_4,
-           bus_word_t *node_props_5, bus_word_t *output_1, bus_word_t *output_2,
-           bus_word_t *output_3, bus_word_t *output_4, bus_word_t *output_5,
+           //    bus_word_t *node_props_5,
+           bus_word_t *output_1, bus_word_t *output_2, bus_word_t *output_3,
+           bus_word_t *output_4,
+           // bus_word_t *output_5,
            uint32_t dst_num_1, uint32_t dst_num_2, uint32_t dst_num_3,
-           uint32_t dst_num_4, uint32_t dst_num_5,
+           uint32_t dst_num_4,
+           //    uint32_t dst_num_5,
            hls::stream<ppb_request_pkt_t> &ppb_req_stream_1,
            hls::stream<ppb_request_pkt_t> &ppb_req_stream_2,
-           hls::stream<ppb_request_pkt_t> &ppb_req_stream_3,
+           //    hls::stream<ppb_request_pkt_t> &ppb_req_stream_3,
+           hls::stream<cacheline_request_pkt_t> &cacheline_req_stream_3,
            hls::stream<cacheline_request_pkt_t> &cacheline_req_stream_4,
-           hls::stream<cacheline_request_pkt_t> &cacheline_req_stream_5,
            hls::stream<ppb_response_pkt_t> &ppb_resp_stream_1,
            hls::stream<ppb_response_pkt_t> &ppb_resp_stream_2,
-           hls::stream<ppb_response_pkt_t> &ppb_resp_stream_3,
+           //    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_3,
+           hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream_3,
            hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream_4,
-           hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream_5,
-           hls::stream<cacheline_data_pkt_t> &cacheline_data_stream_1,
-           hls::stream<cacheline_data_pkt_t> &cacheline_data_stream_2,
-           hls::stream<cacheline_data_pkt_t> &cacheline_data_stream_3,
-           hls::stream<cacheline_data_pkt_t> &cacheline_data_stream_4,
-           hls::stream<cacheline_data_pkt_t> &cacheline_data_stream_5,
+           //    hls::stream<cacheline_data_pkt_t> &cacheline_data_stream_1,
+           //    hls::stream<cacheline_data_pkt_t> &cacheline_data_stream_2,
+           //    hls::stream<cacheline_data_pkt_t> &cacheline_data_stream_3,
+           //    hls::stream<cacheline_data_pkt_t> &cacheline_data_stream_4,
+           //    hls::stream<cacheline_data_pkt_t> &cacheline_data_stream_5,
            hls::stream<write_burst_pkt_t> &write_burst_stream_1,
            hls::stream<write_burst_pkt_t> &write_burst_stream_2,
            hls::stream<write_burst_pkt_t> &write_burst_stream_3,
-           hls::stream<write_burst_pkt_t> &write_burst_stream_4,
-           hls::stream<write_burst_pkt_t> &write_burst_stream_5);
+           hls::stream<write_burst_pkt_t> &write_burst_stream_4
+           //    hls::stream<write_burst_pkt_t> &write_burst_stream_5
+);
 
 #endif // __SHARED_KERNEL_PARAMS_H__

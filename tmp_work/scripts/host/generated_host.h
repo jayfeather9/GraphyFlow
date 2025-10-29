@@ -62,6 +62,7 @@ class AlgorithmHost {
     // Buffer containers for HBM writer kernels (one entry per writer kernel
     // instance)
     std::vector<WriterKernelBuffers> writer_kernel_buffers;
+    std::vector<cl::Buffer> apply_kernel_node_prop_buffers;
     std::vector<std::vector<bus_word_t, aligned_allocator<bus_word_t>>>
         writer_kernel_host_outputs;
 };

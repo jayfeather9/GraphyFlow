@@ -53,35 +53,71 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
 
     // --- PHASE 1: Identify and Collect All Unique Destination Vertices ---
     std::set<int> unique_dst_vertices_set;
+    std::unordered_map<int, int> node_indegrees;
     for (int i = 0; i < graph->num_edges; ++i) {
-        unique_dst_vertices_set.insert(graph->columns[i]);
+        int dst = graph->columns[i];
+        unique_dst_vertices_set.insert(dst);
+        // if dst not in map, initialize indegree to 0
+        if (node_indegrees.find(dst) == node_indegrees.end()) {
+            node_indegrees[dst] = 0;
+        }
+        node_indegrees[dst]++;
     }
     std::vector<int> unique_dst_vertices(unique_dst_vertices_set.begin(),
                                          unique_dst_vertices_set.end());
+
+    // Sort unique_dst_vertices by indegree (descending order)
+    std::sort(unique_dst_vertices.begin(), unique_dst_vertices.end(),
+              [&node_indegrees](int a, int b) {
+                  return node_indegrees[a] > node_indegrees[b];
+              });
+
     std::cout << "[PHASE 1] Found " << unique_dst_vertices.size()
-              << " unique destination vertices." << std::endl;
+              << " unique destination vertices (sorted by indegree)."
+              << std::endl;
 
     // --- PHASE 2: Distribute Destination Vertices to Partitions ---
     std::vector<std::set<int>> dst_vertices_per_partition(num_partitions);
     std::unordered_map<int, int> dst_vertex_to_partition_map;
 
-    size_t base_dst_per_part = unique_dst_vertices.size() / num_partitions;
-    size_t remainder_dst = unique_dst_vertices.size() % num_partitions;
-    size_t current_dst_idx = 0;
+    const size_t DENSE_BLOCK_SIZE = 400;
+    size_t num_dense_dst = LITTLE_KERNEL_NUM * DENSE_BLOCK_SIZE;
 
+    size_t dense_assignment_count =
+        std::min(num_dense_dst, unique_dst_vertices.size());
+    for (size_t i = 0; i < dense_assignment_count; ++i) {
+        int partition_id = i % LITTLE_KERNEL_NUM;
+        int vertex_id = unique_dst_vertices[i];
+        dst_vertices_per_partition[partition_id].insert(vertex_id);
+        dst_vertex_to_partition_map[vertex_id] = partition_id;
+    }
+
+    std::cout << "[PHASE 2] Assigned first " << dense_assignment_count
+              << " high-degree vertices to " << LITTLE_KERNEL_NUM
+              << " dense partitions." << std::endl;
+
+    for (size_t i = dense_assignment_count; i < unique_dst_vertices.size();
+         ++i) {
+        int partition_id =
+            LITTLE_KERNEL_NUM + ((i - dense_assignment_count) % BIG_KERNEL_NUM);
+        int vertex_id = unique_dst_vertices[i];
+        dst_vertices_per_partition[partition_id].insert(vertex_id);
+        dst_vertex_to_partition_map[vertex_id] = partition_id;
+    }
+
+    if (unique_dst_vertices.size() > dense_assignment_count) {
+        std::cout << "[PHASE 2] Assigned remaining "
+                  << (unique_dst_vertices.size() - dense_assignment_count)
+                  << " vertices to " << BIG_KERNEL_NUM << " sparse partitions."
+                  << std::endl;
+    }
+
+    // Print distribution statistics
     for (int i = 0; i < num_partitions; ++i) {
-        size_t num_dst_in_part =
-            base_dst_per_part + (i < remainder_dst ? 1 : 0);
-        for (size_t j = 0; j < num_dst_in_part; ++j) {
-            if (current_dst_idx < unique_dst_vertices.size()) {
-                int vertex_id = unique_dst_vertices[current_dst_idx];
-                dst_vertices_per_partition[i].insert(vertex_id);
-                dst_vertex_to_partition_map[vertex_id] = i;
-                current_dst_idx++;
-            }
-        }
-        std::cout << "[PHASE 2] Partition " << i << " assigned "
-                  << dst_vertices_per_partition[i].size()
+        std::string partition_type =
+            (i < LITTLE_KERNEL_NUM) ? "Dense" : "Sparse";
+        std::cout << "[PHASE 2] Partition " << i << " (" << partition_type
+                  << ") assigned " << dst_vertices_per_partition[i].size()
                   << " destination vertices." << std::endl;
     }
 

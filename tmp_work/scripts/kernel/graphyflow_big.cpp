@@ -326,7 +326,8 @@ LOOP_SEND_CACHE_REQ:
 //         for (int j = 0; j < DBL_PE_NUM; j++) {
 // #pragma HLS UNROLL
 //             if (nodes_read_s1 + j < num_nodes) {
-//                 burst.data[j] = wide_word.range((j + 1) * DISTANCE_BITWIDTH - 1,
+//                 burst.data[j] = wide_word.range((j + 1) * DISTANCE_BITWIDTH -
+//                 1,
 //                                                 j * DISTANCE_BITWIDTH);
 //             }
 //         }
@@ -491,8 +492,8 @@ LOOP_SCATTER_EDGES:
 
 // static void node_property_responder(
 //     hls::stream<node_distance_burst_t> &node_distance_burst_stream,
-//     int32_t num_nodes, hls::stream<node_dist_batch_t> &all_distances_stream) {
-//     node_dist_batch_t dist_batch;
+//     int32_t num_nodes, hls::stream<node_dist_batch_t> &all_distances_stream)
+//     { node_dist_batch_t dist_batch;
 // #pragma HLS ARRAY_PARTITION variable = dist_batch.data complete dim = 0
 //     dist_batch.end_flag = false;
 //     int32_t nodes_read = 0;
@@ -807,12 +808,13 @@ omega_switch_2(hls::stream<net_wrapper_kt_pair_105_t_t> (&in_streams)[8],
 //                       hls::stream<update_tuple_t> &reduce_105_z2d_pair) {
 //     edge_batch_t edge_batch_data;
 // #pragma HLS ARRAY_PARTITION variable = edge_batch_data.dsts complete dim = 0
-// #pragma HLS ARRAY_PARTITION variable =                                         \
+// #pragma HLS ARRAY_PARTITION variable = \
 //     edge_batch_data.src_distances complete dim = 0
-// #pragma HLS ARRAY_PARTITION variable = edge_batch_data.weights complete dim = 0
+// #pragma HLS ARRAY_PARTITION variable = edge_batch_data.weights complete dim =
+// 0
 //     update_tuple_t out_batch_data;
-// #pragma HLS ARRAY_PARTITION variable = out_batch_data.node_id complete dim = 0
-// #pragma HLS ARRAY_PARTITION variable = out_batch_data.prop complete dim = 0
+// #pragma HLS ARRAY_PARTITION variable = out_batch_data.node_id complete dim =
+// 0 #pragma HLS ARRAY_PARTITION variable = out_batch_data.prop complete dim = 0
 //     bool end_flag;
 // LOOP_WHILE_26:
 //     while (true) {
@@ -828,7 +830,8 @@ omega_switch_2(hls::stream<net_wrapper_kt_pair_105_t_t> (&in_streams)[8],
 //             // distance_t lhs_68 = *reinterpret_cast<distance_t *>(
 //             //     &edge_batch_data.src_distances[i]);
 //             // distance_t rhs_68 =
-//             //     *reinterpret_cast<distance_t *>(&edge_batch_data.weights[i]);
+//             //     *reinterpret_cast<distance_t
+//             *>(&edge_batch_data.weights[i]);
 //             // distance_t temp_BinOp_68_o_0_ap_result;
 //             // temp_BinOp_68_o_0_ap_result = (lhs_68 + rhs_68);
 //             // ap_fixed_pod_t fused_temp_BinOp_68_o_0 =
@@ -836,7 +839,8 @@ omega_switch_2(hls::stream<net_wrapper_kt_pair_105_t_t> (&in_streams)[8],
 //             //         &temp_BinOp_68_o_0_ap_result);
 //             // Inlining Gathe_179
 //             kt_pair.transform.prop =
-//                 (edge_batch_data.src_distances[i] + edge_batch_data.weights[i]);
+//                 (edge_batch_data.src_distances[i] +
+//                 edge_batch_data.weights[i]);
 //             out_batch_data.data[i] = kt_pair;
 //         }
 //         out_batch_data.end_flag = edge_batch_data.end_flag;
@@ -1014,6 +1018,7 @@ LOOP_STREAM_OUT:
     for (int i = 0; i < num_word_per_pe; i++) {
 #pragma HLS UNROLL factor = 1
         pe_mem_out.write(prop_mem[i]);
+        prop_mem[i] = 0;
     }
 }
 
@@ -1131,8 +1136,8 @@ static void graphyflow_big_dataflow(
     // #pragma HLS STREAM variable = stream_o_0_node_id_232 depth = 4
     //     hls::stream<struct_nbu_11_t> stream_o_1_250;
     // #pragma HLS STREAM variable = stream_o_1_250 depth = 4
-//     hls::stream<internal_end_data_batch_t> stream_o_0_107;
-// #pragma HLS STREAM variable = stream_o_0_107 depth = 4
+    //     hls::stream<internal_end_data_batch_t> stream_o_0_107;
+    // #pragma HLS STREAM variable = stream_o_0_107 depth = 4
     //     hls::stream<struct_nbu_11_t> stream_o_0_249;
     // #pragma HLS STREAM variable = stream_o_0_249 depth = 4
     //     hls::stream<struct_abu_9_t> stream_o_0_edge_src_distance_275;
@@ -1141,14 +1146,14 @@ static void graphyflow_big_dataflow(
     // #pragma HLS STREAM variable = stream_o_0_edge_dst_277 depth = 4
     //     hls::stream<struct_abu_9_t> stream_o_0_edge_weight_278;
     // #pragma HLS STREAM variable = stream_o_0_edge_weight_278 depth = 4
-//     hls::stream<struct_abu_9_t> stream_o_0_node_distance_300;
-// #pragma HLS STREAM variable = stream_o_0_node_distance_300 depth = 4
+    //     hls::stream<struct_abu_9_t> stream_o_0_node_distance_300;
+    // #pragma HLS STREAM variable = stream_o_0_node_distance_300 depth = 4
     //     hls::stream<struct_nbu_11_t> stream_o_1_309;
     // #pragma HLS STREAM variable = stream_o_1_309 depth = 4
-//     hls::stream<struct_abu_9_t> stream_o_0_304;
-// #pragma HLS STREAM variable = stream_o_0_304 depth = 4
-//     hls::stream<struct_nbu_11_t> stream_o_1_305;
-// #pragma HLS STREAM variable = stream_o_1_305 depth = 4
+    //     hls::stream<struct_abu_9_t> stream_o_0_304;
+    // #pragma HLS STREAM variable = stream_o_0_304 depth = 4
+    //     hls::stream<struct_nbu_11_t> stream_o_1_305;
+    // #pragma HLS STREAM variable = stream_o_1_305 depth = 4
     //     hls::stream<struct_nbu_11_t> stream_o_0_308;
     // #pragma HLS STREAM variable = stream_o_0_308 depth = 4
     // --- Function Calls (in topological order) ---
@@ -1219,11 +1224,11 @@ graphyflow_big(const bus_word_t *edge_props,
     // #pragma HLS STREAM variable = stream_cache_resp depth = 16
     hls::stream<bus_word_t> stream_cachelines[PE_NUM];
 #pragma HLS STREAM variable = stream_cachelines depth = 32
-// #pragma HLS ARRAY_PARTITION variable = stream_cachelines complete dim = 0
+    // #pragma HLS ARRAY_PARTITION variable = stream_cachelines complete dim = 0
 
     // Existing streams
-//     hls::stream<node_distance_burst_t> node_distance_burst_stream;
-// #pragma HLS STREAM variable = node_distance_burst_stream depth = 16
+    //     hls::stream<node_distance_burst_t> node_distance_burst_stream;
+    // #pragma HLS STREAM variable = node_distance_burst_stream depth = 16
     hls::stream<edge_descriptor_batch_t> edge_stream;
 #pragma HLS STREAM variable = edge_stream depth = 32
     hls::stream<update_tuple_t> stream_edge_data;
