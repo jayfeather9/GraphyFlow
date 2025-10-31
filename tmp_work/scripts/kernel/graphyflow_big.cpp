@@ -394,7 +394,6 @@ LOOP_FOR_21:
     for (uint32_t i = 0; i < 8; i++) {
 #pragma HLS UNROLL
         out_streams[i].write(end_wrapper);
-        prop_mem[i] = 0;
     }
 }
 
@@ -568,28 +567,28 @@ inline ap_fixed_pod_t get_val(reduce_word_t word, int idx) {
     ap_uint<DISTANCE_BITWIDTH> bits;
     switch (idx) {
     case 0:
-        bits = word.range(7, 0);
+        bits = word.range(DISTANCE_BITWIDTH - 1, 0);
         break;
     case 1:
-        bits = word.range(15, 8);
+        bits = word.range(2 * DISTANCE_BITWIDTH - 1, DISTANCE_BITWIDTH);
         break;
     case 2:
-        bits = word.range(23, 16);
+        bits = word.range(3 * DISTANCE_BITWIDTH - 1, 2 * DISTANCE_BITWIDTH);
         break;
     case 3:
-        bits = word.range(31, 24);
+        bits = word.range(4 * DISTANCE_BITWIDTH - 1, 3 * DISTANCE_BITWIDTH);
         break;
     case 4:
-        bits = word.range(39, 32);
+        bits = word.range(5 * DISTANCE_BITWIDTH - 1, 4 * DISTANCE_BITWIDTH);
         break;
     case 5:
-        bits = word.range(47, 40);
+        bits = word.range(6 * DISTANCE_BITWIDTH - 1, 5 * DISTANCE_BITWIDTH);
         break;
     case 6:
-        bits = word.range(55, 48);
+        bits = word.range(7 * DISTANCE_BITWIDTH - 1, 6 * DISTANCE_BITWIDTH);
         break;
     case 7:
-        bits = word.range(63, 56);
+        bits = word.range(8 * DISTANCE_BITWIDTH - 1, 7 * DISTANCE_BITWIDTH);
         break;
     default:
         bits = 0;
@@ -604,28 +603,28 @@ inline void set_val(reduce_word_t &word, int idx, ap_fixed_pod_t val) {
         *reinterpret_cast<ap_uint<DISTANCE_BITWIDTH> *>(&val);
     switch (idx) {
     case 0:
-        word.range(7, 0) = val_bits;
+        word.range(DISTANCE_BITWIDTH - 1, 0) = val_bits;
         break;
     case 1:
-        word.range(15, 8) = val_bits;
+        word.range(2 * DISTANCE_BITWIDTH - 1, DISTANCE_BITWIDTH) = val_bits;
         break;
     case 2:
-        word.range(23, 16) = val_bits;
+        word.range(3 * DISTANCE_BITWIDTH - 1, 2 * DISTANCE_BITWIDTH) = val_bits;
         break;
     case 3:
-        word.range(31, 24) = val_bits;
+        word.range(4 * DISTANCE_BITWIDTH - 1, 3 * DISTANCE_BITWIDTH) = val_bits;
         break;
     case 4:
-        word.range(39, 32) = val_bits;
+        word.range(5 * DISTANCE_BITWIDTH - 1, 4 * DISTANCE_BITWIDTH) = val_bits;
         break;
     case 5:
-        word.range(47, 40) = val_bits;
+        word.range(6 * DISTANCE_BITWIDTH - 1, 5 * DISTANCE_BITWIDTH) = val_bits;
         break;
     case 6:
-        word.range(55, 48) = val_bits;
+        word.range(7 * DISTANCE_BITWIDTH - 1, 6 * DISTANCE_BITWIDTH) = val_bits;
         break;
     case 7:
-        word.range(63, 56) = val_bits;
+        word.range(8 * DISTANCE_BITWIDTH - 1, 7 * DISTANCE_BITWIDTH) = val_bits;
         break;
     default:
         break;
@@ -723,6 +722,7 @@ LOOP_STREAM_OUT:
     for (int i = 0; i < num_word_per_pe; i++) {
 #pragma HLS UNROLL factor = 1
         pe_mem_out.write(prop_mem[i]);
+        prop_mem[i] = 0;
     }
 }
 
