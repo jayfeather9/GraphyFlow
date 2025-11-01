@@ -31,12 +31,12 @@ constexpr int AXI_BUS_WIDTH = 512;
 constexpr int REDUCE_MEM_WIDTH = 64;
 
 #ifndef INT_DISTANCE
-constexpr int DISTANCE_INTEGER_PART = 8;
+constexpr int DISTANCE_INTEGER_PART = 16;
 typedef ap_fixed<DISTANCE_BITWIDTH, DISTANCE_INTEGER_PART> distance_t;
-constexpr int INFINITY_DIST = (1 << DISTANCE_INTEGER_PART) - 4;
+constexpr int INFINITY_DIST = (1ULL << (DISTANCE_INTEGER_PART - 1)) - 2;
 #else
 typedef ap_uint<DISTANCE_BITWIDTH> distance_t;
-constexpr int INFINITY_DIST = (1 << DISTANCE_BITWIDTH) - 4;
+constexpr int INFINITY_DIST = (1ULL << (DISTANCE_BITWIDTH - 1)) - 2;
 #endif
 
 constexpr int DIST_PER_WORD = AXI_BUS_WIDTH / DISTANCE_BITWIDTH;

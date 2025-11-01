@@ -9,35 +9,30 @@
 // #include <stdio.h>
 #include <string.h>
 
-constexpr int log2_floor(int n) {
-    return (n <= 1) ? 0 : 1 + log2_floor(n >> 1);
-}
-
-constexpr int PE_NUM = 8;
-constexpr int LOG_PE_NUM = log2_floor(PE_NUM);
-constexpr int L = 4;
-constexpr int SRC_BUFFER_SIZE = 4096;
-constexpr int LOG_SRC_BUFFER_SIZE = log2_floor(SRC_BUFFER_SIZE);
-constexpr int NODE_ID_BITWIDTH = 32;
-constexpr int DISTANCE_BITWIDTH = 8;
-constexpr int LOG_DIST_BITWIDTH = log2_floor(DISTANCE_BITWIDTH);
-constexpr int AXI_BUS_WIDTH = 512;
-constexpr int REDUCE_MEM_WIDTH = 64;
-constexpr int DISTANCES_PER_REDUCE_WORD = REDUCE_MEM_WIDTH / DISTANCE_BITWIDTH;
-constexpr int LOG_DISTANCES_PER_REDUCE_WORD =
-    log2_floor(DISTANCES_PER_REDUCE_WORD);
+#define PE_NUM 8
+#define LOG_PE_NUM 3 // log2_floor(8)
+#define L 4
+#define SRC_BUFFER_SIZE 4096
+#define LOG_SRC_BUFFER_SIZE 12 // log2_floor(4096)
+#define NODE_ID_BITWIDTH 32
+#define DISTANCE_BITWIDTH 8
+#define LOG_DIST_BITWIDTH 3 // log2_floor(8)
+#define AXI_BUS_WIDTH 512
+#define REDUCE_MEM_WIDTH 64
+#define DISTANCES_PER_REDUCE_WORD 8 // 64 / 8
+#define LOG_DISTANCES_PER_REDUCE_WORD 3 // log2_floor(8)
 
 #ifndef INT_DISTANCE
-constexpr int DISTANCE_INTEGER_PART = 16;
+#define DISTANCE_INTEGER_PART 16
 typedef ap_fixed<DISTANCE_BITWIDTH, DISTANCE_INTEGER_PART> distance_t;
-constexpr int INFINITY_DIST = (1 << DISTANCE_INTEGER_PART) - 4;
+#define INFINITY_DIST 32766 // (1ULL << (16 - 1)) - 2
 #else
 typedef ap_uint<DISTANCE_BITWIDTH> distance_t;
-constexpr int INFINITY_DIST = (1 << DISTANCE_BITWIDTH) - 4;
+#define INFINITY_DIST 126 // (1ULL << (8 - 1)) - 2
 #endif
 
-constexpr int DIST_PER_WORD = AXI_BUS_WIDTH / DISTANCE_BITWIDTH;
-constexpr int LOG_DIST_PER_WORD = log2_floor(DIST_PER_WORD);
+#define DIST_PER_WORD 64 // 512 / 8
+#define LOG_DIST_PER_WORD 6 // log2_floor(64)
 
 typedef ap_uint<AXI_BUS_WIDTH> bus_word_t;
 typedef ap_uint<REDUCE_MEM_WIDTH> reduce_word_t;
