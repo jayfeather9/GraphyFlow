@@ -52,23 +52,17 @@ typedef ap_axiu<32, 0, 0, 8> cacheline_request_pkt_t;
 typedef ap_axiu<512, 0, 0, 8> cacheline_response_pkt_t;
 typedef ap_axiu<32, 0, 0, 0> ppb_request_pkt_t;
 typedef ap_axiu<512, 0, 0, 32> ppb_response_pkt_t;
-typedef ap_axiu<512, 0, 0, 0> cacheline_data_pkt_t;
-
-extern "C" void
-apply_kernel(bus_word_t *node_props, uint32_t dst_num,
-             hls::stream<write_burst_pkt_t> &kernel_out_stream,
-             hls::stream<write_burst_pkt_t> &write_burst_stream);
 
 extern "C" void
 hbm_writer_big(bus_word_t *node_props, bus_word_t *output, uint32_t dst_num,
                hls::stream<cacheline_request_pkt_t> &cacheline_req_stream,
                hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream,
-               hls::stream<write_burst_pkt_t> &write_burst_stream);
+               hls::stream<write_burst_pkt_t> &kernel_out_stream);
 
 extern "C" void
 hbm_writer_little(bus_word_t *node_props, bus_word_t *output, uint32_t dst_num,
                   hls::stream<ppb_request_pkt_t> &ppb_req_stream,
                   hls::stream<ppb_response_pkt_t> &ppb_resp_stream,
-                  hls::stream<write_burst_pkt_t> &write_burst_stream);
+                  hls::stream<write_burst_pkt_t> &kernel_out_stream);
 
 #endif // __SHARED_KERNEL_PARAMS_H__

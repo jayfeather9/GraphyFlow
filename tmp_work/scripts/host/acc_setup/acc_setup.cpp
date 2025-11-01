@@ -36,16 +36,6 @@ AccDescriptor initAccelerator(const std::string xclbin_path) {
         acc.little_gs_queue[k] = tmp_q;
     }
 
-    // 为每个 "apply" 内核实例创建一个专用的命令队列 ---
-    acc.apply_queue.resize(acc.num_apply_krnl);
-    for (int k = 0; k < acc.num_apply_krnl; k++) {
-        cl::CommandQueue tmp_q;
-        OCL_CHECK(err,
-                  tmp_q = cl::CommandQueue(acc.context, device,
-                                           CL_QUEUE_PROFILING_ENABLE, &err));
-        acc.apply_queue[k] = tmp_q;
-    }
-
     // 为 little/big writer 内核创建专用的命令队列 ---
     acc.hbm_writer_little_queue.resize(acc.num_little_krnl);
     for (int k = 0; k < acc.num_little_krnl; k++) {
@@ -102,20 +92,6 @@ AccDescriptor initAccelerator(const std::string xclbin_path) {
             OCL_CHECK(err, tmp_gs_krnl = cl::Kernel(
                                program, krnl_name_full.c_str(), &err));
             acc.little_gs_krnls.push_back(tmp_gs_krnl);
-        }
-
-        // 创建 acc.num_apply_krnl 个 "apply_kernel" 内核实例 ---
-        for (int i = 0; i < acc.num_apply_krnl; i++) {
-            std::string cu_id = std::to_string(i + 1);
-            std::string krnl_name_full =
-                std::string("apply_kernel:{") + "apply_kernel_" + cu_id + "}";
-
-            cl::Kernel tmp_apply_krnl;
-            printf("Creating a apply kernel [%s] for CU(%d)\n",
-                   krnl_name_full.c_str(), i + 1);
-            OCL_CHECK(err, tmp_apply_krnl = cl::Kernel(
-                               program, krnl_name_full.c_str(), &err));
-            acc.apply_krnls.push_back(tmp_apply_krnl);
         }
 
         // 创建 hbm_writer_little 内核实例 ---

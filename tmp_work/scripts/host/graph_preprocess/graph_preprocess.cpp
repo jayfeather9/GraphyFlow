@@ -80,7 +80,8 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
     std::vector<std::set<int>> dst_vertices_per_partition(num_partitions);
     std::unordered_map<int, int> dst_vertex_to_partition_map;
 
-    const size_t DENSE_BLOCK_SIZE = 40000;
+    const size_t DENSE_BLOCK_SIZE =
+        std::min(40000, (int)(unique_dst_vertices.size() / 2));
     size_t num_dense_dst = LITTLE_KERNEL_NUM * DENSE_BLOCK_SIZE;
 
     size_t dense_assignment_count =
@@ -231,7 +232,8 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
                 uint32_t weight = global_edge.weight;
 
                 uint32_t cur_src_buffer = floor(src_id / SRC_BUFFER_SIZE);
-                if (cur_src_buffer != last_src_buffer) {
+                if (i < LITTLE_KERNEL_NUM &&
+                    cur_src_buffer != last_src_buffer) {
                     uint32_t mod8 = local_edges.size() % 8;
                     if (mod8 != 0) {
                         // Pad with dummy edges to align to 8-edge boundary

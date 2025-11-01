@@ -35,7 +35,6 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
         algo_host.transfer_data_to_fpga(partition_container);
         std::vector<cl::Event> big_kernel_events(acc.num_big_krnl),
             little_kernel_events(acc.num_little_krnl),
-            apply_kernel_events(acc.num_apply_krnl),
             little_writer_events(acc.num_little_krnl),
             big_writer_events(acc.num_big_krnl);
 
@@ -44,7 +43,7 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
 
         algo_host.execute_kernel_iteration(
             partition_container, big_kernel_events, little_kernel_events,
-            apply_kernel_events, little_writer_events, big_writer_events);
+            little_writer_events, big_writer_events);
         auto kernel_enqueue_start = std::chrono::high_resolution_clock::now();
 
         // Wait for all kernels to finish
@@ -52,8 +51,6 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
             q.finish();
         // auto big_finish = std::chrono::high_resolution_clock::now();
         for (auto &q : acc.little_gs_queue)
-            q.finish();
-        for (auto &q : acc.apply_queue)
             q.finish();
         // auto apply_finish = std::chrono::high_resolution_clock::now();
         for (auto &q : acc.hbm_writer_little_queue)
@@ -99,22 +96,6 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
                       << "Little Kernel " << cnt++ << ", "
                       << "Time = " << (iteration_time_ns * 1.0e-6) << " ms, "
                       << "Throughput = " << mteps << " MTEPS" << std::endl;
-        }
-
-        for (auto &event : apply_kernel_events) {
-            unsigned long start = 0, end = 0;
-            event.getProfilingInfo(CL_PROFILING_COMMAND_START, &start);
-            event.getProfilingInfo(CL_PROFILING_COMMAND_END, &end);
-            double iteration_time_ns = end - start;
-            current_kernel_time_sec =
-                std::max(current_kernel_time_sec, iteration_time_ns * 1.0e-9);
-            double mteps =
-                (double)graph.num_edges / (iteration_time_ns * 1.0e-9) / 1.0e6;
-
-            std::cout << "FPGA Iteration " << iter << ": "
-                      << "Apply Kernel, "
-                      << "Time = " << (iteration_time_ns * 1.0e-6) << " ms, "
-                      << std::endl;
         }
 
         for (size_t idx = 0; idx < little_writer_events.size(); ++idx) {
