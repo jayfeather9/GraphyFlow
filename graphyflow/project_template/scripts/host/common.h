@@ -25,6 +25,7 @@
 #define WEIGHT_INTEGER_PART                                                    \
     DISTANCE_INTEGER_PART // Number of bits for the integer part of weight
 #define OUT_END_MARKER_BITWIDTH 4
+#define SRC_BUFFER_SIZE 4096
 
 // --- Host-side definition for the AXI bus word ---
 #define AXI_BUS_WIDTH 512

@@ -11,16 +11,20 @@ from .newbackend_manager import BackendManager
 
 # --- CONFIGURATION SECTION ---
 # You can change the number of kernels and their HBM mapping here.
-NUM_BIG_KERNELS = 3
-NUM_LITTLE_KERNELS = 0
+NUM_BIG_KERNELS = 2
+NUM_LITTLE_KERNELS = 2
 
 # HBM channel IDs for Big Kernels. The list length must match NUM_BIG_KERNELS.
-big_kernel_hbm_edge_id = [0, 1,2]
-big_kernel_hbm_node_id = [20,21,22]
+big_kernel_hbm_edge_id = [28,30]
+big_kernel_hbm_node_id = [11,12]
 
-big_kernel_slr = ["SLR1", "SLR2", "SLR1"]
-apply_kernel_slr = ["SLR2", "SLR2", "SLR2"]
-hbm_writer_slr = "SLR0"
+little_kernel_hbm_edge_id = [0,1]
+little_kernel_hbm_node_id = [9,10]
+
+big_kernel_slr = ["SLR1", "SLR2"]
+little_kernel_slr = ["SLR0", "SLR0"]
+apply_kernel_slr = ["SLR0", "SLR0", "SLR1","SLR2"]
+hbm_writer_slr = ["SLR0","SLR0","SLR1","SLR2"]
 
 # --- END CONFIGURATION SECTION ---
 
@@ -143,136 +147,151 @@ def _generate_hbm_writer(n: int, file_path: Path) -> None:
 
 def _create_cfg(dest: Path, kernel_name: str):
     """
-    根据此文件顶部定义的 Kernel 配置，
-    以编程方式生成 system.cfg 文件。
+    根据 *全局配置变量* 动态生成 Vitis 连接配置文件，
+    严格仿照示例文件的格式和注释。
+
+    Args:
+        dest (Path): 要写入配置文件的目标路径。
+        kernel_name (str): 内核的基本名称 (未使用, 但保留接口)。
     """
-    
-    # --- PHASE 1: Validation (验证) ---
-    # 确保 HBM ID 和 SLR 列表的长度与 Kernel 实例数匹配。
-    assert (
-        len(big_kernel_hbm_edge_id) == NUM_BIG_KERNELS
-    ), "Mismatch between NUM_BIG_KERNELS and big_kernel_hbm_edge_id list."
-    assert (
-        len(big_kernel_hbm_node_id) == NUM_BIG_KERNELS
-    ), "Mismatch between NUM_BIG_KERNELS and big_kernel_hbm_node_id list."
-    assert (
-        len(big_kernel_slr) == NUM_BIG_KERNELS
-    ), "Mismatch between NUM_BIG_KERNELS and big_kernel_slr list."
-    assert (
-        len(apply_kernel_slr) == NUM_BIG_KERNELS
-    ), "Mismatch between NUM_BIG_KERNELS and apply_kernel_slr list."
 
-    print(
-        f"[INFO] Generating system.cfg for {NUM_BIG_KERNELS} big kernel(s) and {NUM_LITTLE_KERNELS} little kernel(s)."
-    )
+    # --- 2. 派生配置和验证 ---
+    # (函数将直接读取上面定义的全局变量)
+    TOTAL_APPLY_KERNELS = NUM_BIG_KERNELS + NUM_LITTLE_KERNELS
 
-    # --- PHASE 2: Content Generation (内容生成) ---
-    
-    # 定义基础名称
-    big_kernel_base_name = f"{kernel_name}_big"
-    little_kernel_base_name = f"{kernel_name}_little"
-    apply_kernel_base_name = "apply_kernel"
-    hbm_writer_base_name = "hbm_writer"
+    try:
+        # 验证 Big Kernels
+        assert len(big_kernel_hbm_edge_id) == NUM_BIG_KERNELS
+        assert len(big_kernel_hbm_node_id) == NUM_BIG_KERNELS
+        assert len(big_kernel_slr) == NUM_BIG_KERNELS
 
-    # 生成实例名称列表
-    big_instance_names = [f"{big_kernel_base_name}_{i+1}" for i in range(NUM_BIG_KERNELS)]
-    little_instance_names = [f"{little_kernel_base_name}_{i+1}" for i in range(NUM_LITTLE_KERNELS)]
-    # apply_kernel 的实例数跟随 big_kernel
-    apply_instance_names = [f"{apply_kernel_base_name}_{i+1}" for i in range(NUM_BIG_KERNELS)]
-    # 只有一个 hbm_writer
-    hbm_writer_instance_name = f"{hbm_writer_base_name}_1"
-
-
-    content = ["[connectivity]"]
-    content.append("# --- 1. Kernel Instantiation (nk) ---")
-
-    # 定义每个 Kernel 类型的计算单元 (nk) 数量
-    if NUM_BIG_KERNELS > 0:
-        content.append(f"nk={big_kernel_base_name}:{NUM_BIG_KERNELS}:{'.'.join(big_instance_names)}")
-        # 添加 apply_kernel，其数量与 big_kernel 相同
-        content.append(f"nk={apply_kernel_base_name}:{NUM_BIG_KERNELS}:{'.'.join(apply_instance_names)}")
+        # 验证 Little Kernels
+        assert len(little_kernel_hbm_edge_id) == NUM_LITTLE_KERNELS
+        assert len(little_kernel_hbm_node_id) == NUM_LITTLE_KERNELS
+        assert len(little_kernel_slr) == NUM_LITTLE_KERNELS
         
-    if NUM_LITTLE_KERNELS > 0:
-        content.append(f"nk={little_kernel_base_name}:{NUM_LITTLE_KERNELS}:{'.'.join(little_instance_names)}")
-    
-    # 添加 hbm_writer
-    content.append(f"nk={hbm_writer_base_name}:1:{hbm_writer_instance_name}")
+        # 验证合并后的列表
+        assert len(apply_kernel_slr) == TOTAL_APPLY_KERNELS
+        assert len(hbm_writer_slr) == TOTAL_APPLY_KERNELS
+        
+    except AssertionError as e:
+        print(f"配置错误: 全局列表长度与 NUM_... 变量不匹配。", file=sys.stderr)
+        print(f"错误详情: {e}", file=sys.stderr)
+        return
+
+    # --- 3. 字符串构建 ---
+    content = []
+    content.append("[connectivity]")
+
+    # --- 1. Kernel Instantiation (nk) ---
+    content.append("\n# --- 1. Kernel Instantiation (nk) ---")
+    content.append(f"nk=graphyflow_little:{NUM_LITTLE_KERNELS}")
+    content.append(f"nk=graphyflow_big:{NUM_BIG_KERNELS}")
+    content.append(f"nk=hbm_writer_little:{NUM_LITTLE_KERNELS}")
+    content.append(f"nk=hbm_writer_big:{NUM_BIG_KERNELS}")
+    content.append(f"nk=apply_kernel:{TOTAL_APPLY_KERNELS}")
 
     # --- 2. HBM Port Mapping (sp) ---
     content.append("\n# --- 2. HBM Port Mapping (sp) ---")
 
-    # -- 映射 big kernel 实例 --
-    content.append(f"\n# -- Mapping for instance: {big_kernel_base_name} --")
+    # -- graphyflow_little (edge_props) --
+    for i in range(NUM_LITTLE_KERNELS):
+        instance_num = i + 1
+        hbm_id = little_kernel_hbm_edge_id[i]
+        content.append(f"\n# -- Mapping for instance: graphyflow_little_{instance_num} --")
+        content.append(f"sp=graphyflow_little_{instance_num}.edge_props:HBM[{hbm_id}]")
+
+    # -- graphyflow_big (edge_props) --
     for i in range(NUM_BIG_KERNELS):
-        instance_name = big_instance_names[i]
+        instance_num = i + 1
         hbm_id = big_kernel_hbm_edge_id[i]
-        content.append(f"sp={instance_name}.edge_props:HBM[{hbm_id}]")
+        content.append(f"\n# -- Mapping for instance: graphyflow_big_{instance_num} --")
+        content.append(f"sp=graphyflow_big_{instance_num}.edge_props:HBM[{hbm_id}]")
 
-    # -- 映射 hbm_writer 实例 --
-    # hbm_writer 的端口 (_1, _2, _3) 对应于 big kernel 的 HBM ID
-    content.append(f"\n# -- Mapping for instance: {hbm_writer_instance_name} --")
+    # -- hbm_writer_little & apply_kernel --
+    for i in range(NUM_LITTLE_KERNELS):
+        instance_num = i + 1
+        apply_instance_num = instance_num # apply_kernel 实例 1, 2, ...
+        hbm_id = little_kernel_hbm_node_id[i]
+        content.append(f"\n# -- Mapping for instance: hbm_writer_little_{instance_num} --")
+        content.append(f"sp=hbm_writer_little_{instance_num}.node_props:HBM[{hbm_id}]")
+        content.append(f"sp=hbm_writer_little_{instance_num}.output:HBM[{hbm_id}]")
+        content.append(f"sp=apply_kernel_{apply_instance_num}.node_props:HBM[{hbm_id}]")
+
+    # -- hbm_writer_big & apply_kernel --
     for i in range(NUM_BIG_KERNELS):
-        port_index = i + 1
+        instance_num = i + 1
+        apply_instance_num = instance_num + NUM_LITTLE_KERNELS 
         hbm_id = big_kernel_hbm_node_id[i]
-        content.append(f"sp={hbm_writer_instance_name}.node_props_{port_index}:HBM[{hbm_id}]")
-        content.append(f"sp={hbm_writer_instance_name}.output_{port_index}:HBM[{hbm_id}]")
+        content.append(f"\n# -- Mapping for instance: hbm_writer_big_{instance_num} --")
+        content.append(f"sp=hbm_writer_big_{instance_num}.node_props:HBM[{hbm_id}]")
+        content.append(f"sp=hbm_writer_big_{instance_num}.output:HBM[{hbm_id}]")
+        content.append(f"sp=apply_kernel_{apply_instance_num}.node_props:HBM[{hbm_id}]")
 
+    # --- 3. Stream Connections ---
+    content.append("\n# --- 3. Stream Connections ---")
 
-    # --- 3. Stream Connections (stream_connect) ---
-    content.append("\n# --- 3. Stream Connections (stream_connect) ---")
+    # -- Stream connections for little --
+    for i in range(NUM_LITTLE_KERNELS):
+        instance_num = i + 1
+        apply_instance_num = instance_num
+        content.append(f"\n# -- Stream connections for graphyflow_little_{instance_num} and apply_kernel_{apply_instance_num} --")
+        content.append(f"stream_connect=graphyflow_little_{instance_num}.ppb_req_stream:hbm_writer_little_{instance_num}.ppb_req_stream:16")
+        content.append(f"stream_connect=hbm_writer_little_{instance_num}.ppb_resp_stream:graphyflow_little_{instance_num}.ppb_resp_stream:16")
+        content.append(f"stream_connect=graphyflow_little_{instance_num}.kernel_out_stream:apply_kernel_{apply_instance_num}.kernel_out_stream:16")
+        content.append(f"stream_connect=apply_kernel_{apply_instance_num}.write_burst_stream:hbm_writer_little_{instance_num}.write_burst_stream:16")
 
-    # -- graphyflow_big <-> hbm_writer_1 : cacheline streams --
-    content.append(f"\n# {big_kernel_base_name} <-> {hbm_writer_instance_name} : cacheline streams")
+    # -- Stream connections for big --
     for i in range(NUM_BIG_KERNELS):
-        big_instance = big_instance_names[i]
-        port_index = i + 1
-        content.append(f"stream_connect={big_instance}.cacheline_req_stream:{hbm_writer_instance_name}.cacheline_req_stream_{port_index}:16")
-        content.append(f"stream_connect={hbm_writer_instance_name}.cacheline_resp_stream_{port_index}:{big_instance}.cacheline_resp_stream:16")
+        instance_num = i + 1
+        apply_instance_num = instance_num + NUM_LITTLE_KERNELS
+        content.append(f"\n# -- Stream connections for graphyflow_big_{instance_num} and apply_kernel_{apply_instance_num} --")
+        content.append(f"stream_connect=graphyflow_big_{instance_num}.cacheline_req_stream:hbm_writer_big_{instance_num}.cacheline_req_stream:16")
+        content.append(f"stream_connect=hbm_writer_big_{instance_num}.cacheline_resp_stream:graphyflow_big_{instance_num}.cacheline_resp_stream:16")
+        content.append(f"stream_connect=graphyflow_big_{instance_num}.kernel_out_stream:apply_kernel_{apply_instance_num}.kernel_out_stream:16")
+        content.append(f"stream_connect=apply_kernel_{apply_instance_num}.write_burst_stream:hbm_writer_big_{instance_num}.write_burst_stream:16")
 
-    # -- graphyflow_big -> apply_kernel --
-    content.append(f"\n# {big_kernel_base_name} -> {apply_kernel_base_name}")
-    for i in range(NUM_BIG_KERNELS):
-        big_instance = big_instance_names[i]
-        apply_instance = apply_instance_names[i]
-        content.append(f"stream_connect={big_instance}.kernel_out_stream:{apply_instance}.kernel_out_stream:16")
-
-    # -- hbm_writer_1 -> apply_kernel : cacheline data streams --
-    content.append(f"\n# {hbm_writer_instance_name} -> {apply_kernel_base_name} : cacheline data streams")
-    for i in range(NUM_BIG_KERNELS):
-        apply_instance = apply_instance_names[i]
-        port_index = i + 1
-        content.append(f"stream_connect={hbm_writer_instance_name}.cacheline_data_stream_{port_index}:{apply_instance}.cacheline_data_stream:16")
-
-    # -- apply_kernel -> hbm_writer_1 : write burst streams --
-    content.append(f"\n# {apply_kernel_base_name} -> {hbm_writer_instance_name} : write burst streams")
-    for i in range(NUM_BIG_KERNELS):
-        apply_instance = apply_instance_names[i]
-        port_index = i + 1
-        content.append(f"stream_connect={apply_instance}.write_burst_stream:{hbm_writer_instance_name}.write_burst_stream_{port_index}:16")
-
-    # --- 4. SLR Assignments (slr) ---
-    content.append("\n# --- 4. SLR Assignments (slr) ---")
+    # --- 4. SLR Placement ---
+    # (严格按照示例文件的顺序)
+    content.append("\n# --- 4. SLR Placement ---")
     
-    # -- 分配 big kernels --
+    for i in range(NUM_LITTLE_KERNELS):
+        content.append(f"slr=graphyflow_little_{i+1}:{little_kernel_slr[i]}")
+        
     for i in range(NUM_BIG_KERNELS):
-        content.append(f"slr={big_instance_names[i]}:{big_kernel_slr[i]}")
+        content.append(f"slr=graphyflow_big_{i+1}:{big_kernel_slr[i]}")
 
-    # -- 分配 apply kernels --
+    # (使用合并后的 hbm_writer_slr 列表)
+    for i in range(NUM_LITTLE_KERNELS):
+        # 索引 0, 1
+        content.append(f"slr=hbm_writer_little_{i+1}:{hbm_writer_slr[i]}")
+
     for i in range(NUM_BIG_KERNELS):
-        content.append(f"slr={apply_instance_names[i]}:{apply_kernel_slr[i]}")
+        # 索引 2, 3 (i + NUM_LITTLE_KERNELS)
+        content.append(f"slr=hbm_writer_big_{i+1}:{hbm_writer_slr[i + NUM_LITTLE_KERNELS]}")
 
-    # -- 分配 hbm_writer --
-    content.append(f"slr={hbm_writer_instance_name}:{hbm_writer_slr}")
+    # (使用合并后的 apply_kernel_slr 列表)
+    for i in range(NUM_LITTLE_KERNELS):
+        instance_num = i + 1
+        # 索引 0, 1
+        content.append(f"slr=apply_kernel_{instance_num}:{apply_kernel_slr[i]}")
+        
+    for i in range(NUM_BIG_KERNELS):
+        instance_num = i + 1 + NUM_LITTLE_KERNELS
+        # 索引 2, 3 (i + NUM_LITTLE_KERNELS)
+        content.append(f"slr=apply_kernel_{instance_num}:{apply_kernel_slr[i + NUM_LITTLE_KERNELS]}")
 
-
-    # --- PHASE 3: File Writing (文件写入) ---
-    final_content_str = "\n".join(content)
+    # --- 4. 写入文件 ---
     try:
-        dest.write_text(final_content_str)
-        print(f"[INFO] Successfully generated config file at: {dest}")
+        with open(dest, 'w', encoding='utf-8') as f:
+            f.write("\n".join(content))
+            f.write("\n") # 确保文件末尾有换行符
+        print(f"配置文件已成功生成 (读取全局变量): {dest}")
     except IOError as e:
-        print(f"[ERROR] Failed to write config file: {e}", file=sys.stderr)
-# --- MODIFICATION END ---
+        print(f"写入文件时出错 {dest}: {e}", file=sys.stderr)
+
+
+
 
 
 def fill_host_config(file_to_modify: Path):
@@ -360,7 +379,7 @@ def generate_project(
 
     # Call the new dynamic system.cfg generator
     _create_cfg(output_dir/"system.cfg", kernel_name)
-    _generate_hbm_writer(NUM_BIG_KERNELS,output_dir / "scripts" / "kernel" / "hbm_writer.cpp")
+    # _generate_hbm_writer(NUM_BIG_KERNELS,output_dir / "scripts" / "kernel" / "hbm_writer.cpp")
     # Template the Makefile and run.sh (placeholders might be simple)
     replacements = {
         "{{EXECUTABLE_NAME}}": executable_name,
@@ -378,7 +397,7 @@ def generate_project(
 
     # Generate Big Kernel
     bkd_mng.REDUCE_MODE = "big_pipeline"
-    kernel_h_big, kernel_cpp_big,apply_kernel_cpp = bkd_mng.generate_backend(
+    kernel_h_big, kernel_h_little, shared_kernel_params,kernel_cpp_big,kernel_cpp_little,apply_kernel_cpp = bkd_mng.generate_backend(
         copy.deepcopy(comp_col), global_graph, f"{kernel_name}_big"
     )
 
@@ -395,7 +414,10 @@ def generate_project(
     print(f"[4/6] Deploying Generated Kernel Files to '{kernel_script_dir}'")
     (kernel_script_dir / f"{kernel_name}_big.h").write_text(kernel_h_big)
     (kernel_script_dir / f"{kernel_name}_big.cpp").write_text(kernel_cpp_big)
+    (kernel_script_dir / f"{kernel_name}_little.h").write_text(kernel_h_little)
+    (kernel_script_dir / f"{kernel_name}_little.cpp").write_text(kernel_cpp_little)
     (kernel_script_dir / f"apply_kernel.cpp").write_text(apply_kernel_cpp)
+    (kernel_script_dir / f"shared_kernel_params.h").write_text(shared_kernel_params)
     #(kernel_script_dir / f"{kernel_name}_little.h").write_text(kernel_h_little)
     #(kernel_script_dir / f"{kernel_name}_little.cpp").write_text(kernel_cpp_little)
 

@@ -6,16 +6,11 @@
 #include "graph_preprocess/graph_preprocess.h"
 #include <vector>
 
-#include <vector>
-
 // Define a structure to hold all OpenCL buffers for a single kernel instance.
 // This improves code organization and simplifies buffer management.
 struct KernelBuffers {
     cl::Buffer edge_props_buf; // Buffer for edge properties (destination ID and
                                // source ID)
-    // cl::Buffer node_props_buf; // Buffer for node properties (distances),
-    //                            // updated each iteration
-    cl::Buffer output_buf; // Buffer for kernel results (only for hbm_writer)
 };
 
 // Structure to hold buffers for HBM writer kernel
@@ -23,10 +18,6 @@ struct WriterKernelBuffers {
     cl::Buffer node_props_buf; // Buffer for node properties (distances)
     cl::Buffer output_buf;     // Buffer for final output
 };
-
-// struct ApplyKernelBuffers {
-//     cl::Buffer node_props_buf; // Buffer for node properties (distances)
-// };
 
 struct HostInputBuffers {
     std::vector<bus_word_t, aligned_allocator<bus_word_t>> packed_edge_props;
@@ -43,13 +34,12 @@ class AlgorithmHost {
     void setup_buffers(const PartitionContainer &container);
     void update_data(const PartitionContainer &container);
     void transfer_data_to_fpga(const PartitionContainer &container);
-    void execute_kernel_iteration(
-        const PartitionContainer &container,
-        std::vector<cl::Event> &big_kernel_events,
-        std::vector<cl::Event> &little_kernel_events,
-        std::vector<cl::Event> &apply_kernel_events,
-        cl::Event &hbm_writer_event
-    );
+    void execute_kernel_iteration(const PartitionContainer &container,
+                                  std::vector<cl::Event> &big_kernel_events,
+                                  std::vector<cl::Event> &little_kernel_events,
+                                  std::vector<cl::Event> &apply_kernel_events,
+                                  std::vector<cl::Event> &little_writer_events,
+                                  std::vector<cl::Event> &big_writer_events);
     void transfer_data_from_fpga();
     bool check_convergence_and_update(const PartitionContainer &container);
     const std::vector<int> &get_results() const;
@@ -64,24 +54,17 @@ class AlgorithmHost {
     std::vector<distance_t> h_distances;
 
     // Buffer containers for big kernels (one entry per kernel instance)
-    std::vector<HostInputBuffers> big_kernel_input_buffers;
-    std::vector<KernelBuffers> big_kernel_buffers;
-    // std::vector<std::vector<bus_word_t, aligned_allocator<bus_word_t>>>
-    //     big_kernel_host_outputs;
-
-    // // Buffer containers for little kernels (one entry per kernel instance)
-    // std::vector<HostInputBuffers> little_kernel_input_buffers;
-    // std::vector<KernelBuffers> little_kernel_buffers;
-    // std::vector<std::vector<bus_word_t, aligned_allocator<bus_word_t>>>
-    //     little_kernel_host_outputs;
-
-    // ApplyKernelBuffers apply_kernel_buffers;
+    std::vector<HostInputBuffers> big_kernel_input_buffers,
+        little_kernel_input_buffers;
+    std::vector<KernelBuffers> big_kernel_buffers, little_kernel_buffers;
 
     // Buffer containers for HBM writer kernels (one entry per writer kernel
     // instance)
-    std::vector<WriterKernelBuffers> writer_kernel_buffers;
+    std::vector<WriterKernelBuffers> little_writer_kernel_buffers,
+        big_writer_kernel_buffers;
+    std::vector<cl::Buffer> apply_kernel_node_prop_buffers;
     std::vector<std::vector<bus_word_t, aligned_allocator<bus_word_t>>>
-        writer_kernel_host_outputs;
+        little_writer_host_outputs, big_writer_host_outputs;
 };
 
 #endif // __GENERATED_HOST_H__

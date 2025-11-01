@@ -53,35 +53,71 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
 
     // --- PHASE 1: Identify and Collect All Unique Destination Vertices ---
     std::set<int> unique_dst_vertices_set;
+    std::unordered_map<int, int> node_indegrees;
     for (int i = 0; i < graph->num_edges; ++i) {
-        unique_dst_vertices_set.insert(graph->columns[i]);
+        int dst = graph->columns[i];
+        unique_dst_vertices_set.insert(dst);
+        // if dst not in map, initialize indegree to 0
+        if (node_indegrees.find(dst) == node_indegrees.end()) {
+            node_indegrees[dst] = 0;
+        }
+        node_indegrees[dst]++;
     }
     std::vector<int> unique_dst_vertices(unique_dst_vertices_set.begin(),
                                          unique_dst_vertices_set.end());
+
+    // Sort unique_dst_vertices by indegree (descending order)
+    std::sort(unique_dst_vertices.begin(), unique_dst_vertices.end(),
+              [&node_indegrees](int a, int b) {
+                  return node_indegrees[a] > node_indegrees[b];
+              });
+
     std::cout << "[PHASE 1] Found " << unique_dst_vertices.size()
-              << " unique destination vertices." << std::endl;
+              << " unique destination vertices (sorted by indegree)."
+              << std::endl;
 
     // --- PHASE 2: Distribute Destination Vertices to Partitions ---
     std::vector<std::set<int>> dst_vertices_per_partition(num_partitions);
     std::unordered_map<int, int> dst_vertex_to_partition_map;
 
-    size_t base_dst_per_part = unique_dst_vertices.size() / num_partitions;
-    size_t remainder_dst = unique_dst_vertices.size() % num_partitions;
-    size_t current_dst_idx = 0;
+    const size_t DENSE_BLOCK_SIZE = 40000;
+    size_t num_dense_dst = LITTLE_KERNEL_NUM * DENSE_BLOCK_SIZE;
 
+    size_t dense_assignment_count =
+        std::min(num_dense_dst, unique_dst_vertices.size());
+    for (size_t i = 0; i < dense_assignment_count; ++i) {
+        int partition_id = i % LITTLE_KERNEL_NUM;
+        int vertex_id = unique_dst_vertices[i];
+        dst_vertices_per_partition[partition_id].insert(vertex_id);
+        dst_vertex_to_partition_map[vertex_id] = partition_id;
+    }
+
+    std::cout << "[PHASE 2] Assigned first " << dense_assignment_count
+              << " high-degree vertices to " << LITTLE_KERNEL_NUM
+              << " dense partitions." << std::endl;
+
+    for (size_t i = dense_assignment_count; i < unique_dst_vertices.size();
+         ++i) {
+        int partition_id =
+            LITTLE_KERNEL_NUM + ((i - dense_assignment_count) % BIG_KERNEL_NUM);
+        int vertex_id = unique_dst_vertices[i];
+        dst_vertices_per_partition[partition_id].insert(vertex_id);
+        dst_vertex_to_partition_map[vertex_id] = partition_id;
+    }
+
+    if (unique_dst_vertices.size() > dense_assignment_count) {
+        std::cout << "[PHASE 2] Assigned remaining "
+                  << (unique_dst_vertices.size() - dense_assignment_count)
+                  << " vertices to " << BIG_KERNEL_NUM << " sparse partitions."
+                  << std::endl;
+    }
+
+    // Print distribution statistics
     for (int i = 0; i < num_partitions; ++i) {
-        size_t num_dst_in_part =
-            base_dst_per_part + (i < remainder_dst ? 1 : 0);
-        for (size_t j = 0; j < num_dst_in_part; ++j) {
-            if (current_dst_idx < unique_dst_vertices.size()) {
-                int vertex_id = unique_dst_vertices[current_dst_idx];
-                dst_vertices_per_partition[i].insert(vertex_id);
-                dst_vertex_to_partition_map[vertex_id] = i;
-                current_dst_idx++;
-            }
-        }
-        std::cout << "[PHASE 2] Partition " << i << " assigned "
-                  << dst_vertices_per_partition[i].size()
+        std::string partition_type =
+            (i < LITTLE_KERNEL_NUM) ? "Dense" : "Sparse";
+        std::cout << "[PHASE 2] Partition " << i << " (" << partition_type
+                  << ") assigned " << dst_vertices_per_partition[i].size()
                   << " destination vertices." << std::endl;
     }
 
@@ -183,16 +219,33 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
                 }
             }
             p_graph.num_vertices = local_vertices_set.size();
-            p_graph.num_edges = partition_edges.size();
 
             // --- 4.2: Rewrite edges with local, compressed IDs ---
             std::vector<Edge> local_edges;
             local_edges.reserve(p_graph.num_edges);
+            uint32_t last_src_buffer = 0;
+            uint32_t last_src_id = 0;
             for (const auto &global_edge : partition_edges) {
-                local_edges.push_back({p_graph.vtx_map[global_edge.src],
-                                       p_graph.vtx_map[global_edge.dest],
-                                       global_edge.weight});
+                uint32_t src_id = p_graph.vtx_map[global_edge.src];
+                uint32_t dest_id = p_graph.vtx_map[global_edge.dest];
+                uint32_t weight = global_edge.weight;
+
+                uint32_t cur_src_buffer = floor(src_id / SRC_BUFFER_SIZE);
+                if (cur_src_buffer != last_src_buffer) {
+                    uint32_t mod8 = local_edges.size() % 8;
+                    if (mod8 != 0) {
+                        // Pad with dummy edges to align to 8-edge boundary
+                        for (uint32_t pad = 0; pad < (8 - mod8); pad++) {
+                            local_edges.push_back({last_src_id, 0x7FFFFFFF, 1});
+                        }
+                    }
+                    last_src_buffer = cur_src_buffer;
+                }
+                last_src_id = src_id;
+                local_edges.push_back({src_id, dest_id, weight});
             }
+
+            p_graph.num_edges = local_edges.size();
 
             // --- 4.3: Convert local edges to CSR format ---
             std::sort(

@@ -49,27 +49,33 @@ class BackendManager:
         self.L = 4  # For ReduceComponent buffer size
         # Mappings to store results of type analysis
         self.type_map: Dict[dftype.DfirType, HLSType] = {}
-        self.batch_type_map: Dict[HLSType, HLSType] = {}
         self.struct_definitions: Dict[str, Tuple[HLSType, List[str]]] = {}
-        self.unstreamed_funcs: set[str] = set()
 
         # State for code generation
-        self.hls_functions: Dict[int, HLSFunction] = {}
-        self.top_level_stream_decls: List[Tuple[CodeVarDecl, CodePragma]] = []
 
-        self.typedefs: Dict[HLSType,str] ={}
         self.defines: Dict[str,str]={}
-        # new
-        self.scatter_funcs: List[HLSFunction] = []
-        self.gather_funcs: List[HLSFunction] = []
-        self.apply_funcs: List[HLSFunction] = []
-        self.top_func = None
-        self.top_dataflow_funcs =  []
-        self.apply_top_func = None
-        self.hbm_writer_func = None
+        # funcs_for_big_kernel
+        self.big_scatter_funcs: List[HLSFunction] = []
+        self.big_gather_funcs: List[HLSFunction] = []
+        self.big_apply_funcs: List[HLSFunction] = []
+        self.big_top_func = None
+        self.big_top_dataflow_funcs =  []
+        self.big_apply_top_func = None
+        self.big_hbm_writer_func = None
+
+        # funcs_for_little_kernel
+        self.little_scatter_funcs: List[HLSFunction] = []
+        self.little_gather_funcs: List[HLSFunction] = []
+        self.little_apply_funcs: List[HLSFunction] = []
+        self.little_top_func = None
+        self.little_top_dataflow_funcs =  []
+        self.little_apply_top_func = None
+        self.little_hbm_writer_func = None
+
+        # other funcs:
         self.helper_funcs = [
 """
-ap_fixed_pod_t get_val_from_bus(const bus_word_t bus, int offset) {
+static ap_fixed_pod_t get_val_from_bus(const bus_word_t bus, int offset) {
 #pragma HLS INLINE
     switch (offset) {
     case 0:
@@ -110,7 +116,7 @@ ap_fixed_pod_t get_val_from_bus(const bus_word_t bus, int offset) {
 }
 """,
 """
-ap_uint<4> count_end_ones(ap_uint<PE_NUM> valid_mask) {
+static ap_uint<4> count_end_ones(ap_uint<PE_NUM> valid_mask) {
 #pragma HLS INLINE
     ap_uint<4> count = 0;
     switch (valid_mask) {
@@ -235,67 +241,111 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         # reduce_mode
         self.REDUCE_MODE = "big_pipeline"
     def _generate_hbm_writer(self):
-        hbm_writer_func = HLSFunction(name="hbm_writer", comp=None)
-        params = []
+        hbm_writer_little_func = HLSFunction(name="hbm_writer_little", comp=None)
+        params_hwl: List[HLSVar] = []
 
-        # --- 1. Define Types ---
+        # --- 1. 为此函数独立定义类型 ---
 
+        # 基本类型
         bus_word_t_type = HLSType(HLSBasicType.BUS_WORD_T)
-        bus_word_ptr_type = HLSType(HLSBasicType.POINTER, sub_types=[bus_word_t_type])
         uint_type = HLSType(HLSBasicType.UINT)
-
-        cacheline_request_pkt_t_type = HLSType(HLSBasicType.CACHELINE_REQUEST_PKT_T)
-        cacheline_req_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[cacheline_request_pkt_t_type])
-
-        cacheline_response_pkt_t_type = HLSType(HLSBasicType.CACHELINE_RESPONSE_PKT_T)
-        cacheline_resp_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[cacheline_response_pkt_t_type])
-
-        cacheline_data_pkt_t_type = HLSType(HLSBasicType.CACHELINE_DATA_PKT_T)
-        cacheline_data_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[cacheline_data_pkt_t_type])
-
+        ppb_request_pkt_t_type = HLSType(HLSBasicType.PPB_REQUEST_PKT_T)
+        ppb_response_pkt_t_type = HLSType(HLSBasicType.PPB_RESPONSE_PKT_T)
         write_burst_pkt_t_type = HLSType(HLSBasicType.WRITE_BURST_PKT_T)
-        write_burst_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[write_burst_pkt_t_type])
 
-        # --- 2. Define Params ---
+        # --- 2. 定义参数 HLSVars ---
 
-        # bus_word_t *
-        params.append(HLSVar(var_name="node_props_1", var_type=bus_word_ptr_type))
-        params.append(HLSVar(var_name="node_props_2", var_type=bus_word_ptr_type))
-        params.append(HLSVar(var_name="node_props_3", var_type=bus_word_ptr_type))
-        params.append(HLSVar(var_name="output_1", var_type=bus_word_ptr_type))
-        params.append(HLSVar(var_name="output_2", var_type=bus_word_ptr_type))
-        params.append(HLSVar(var_name="output_3", var_type=bus_word_ptr_type))
+        # Param 1: bus_word_t *node_props
+        param_node_props = HLSVar(var_name="node_props", 
+                                  var_type=HLSType(HLSBasicType.POINTER, sub_types=[bus_word_t_type]))
 
-        # uint32_t
-        params.append(HLSVar(var_name="dst_num_1", var_type=uint_type))
-        params.append(HLSVar(var_name="dst_num_2", var_type=uint_type))
-        params.append(HLSVar(var_name="dst_num_3", var_type=uint_type))
+        # Param 2: bus_word_t *output
+        param_output = HLSVar(var_name="output", 
+                              var_type=HLSType(HLSBasicType.POINTER, sub_types=[bus_word_t_type]))
 
-        # hls::stream<cacheline_request_pkt_t> &
-        params.append(HLSVar(var_name="cacheline_req_stream_1", var_type=cacheline_req_stream_type))
-        params.append(HLSVar(var_name="cacheline_req_stream_2", var_type=cacheline_req_stream_type))
-        params.append(HLSVar(var_name="cacheline_req_stream_3", var_type=cacheline_req_stream_type))
+        # Param 3: uint32_t dst_num
+        param_dst_num = HLSVar(var_name="dst_num", var_type=uint_type)
 
-        # hls::stream<cacheline_response_pkt_t> &
-        params.append(HLSVar(var_name="cacheline_resp_stream_1", var_type=cacheline_resp_stream_type))
-        params.append(HLSVar(var_name="cacheline_resp_stream_2", var_type=cacheline_resp_stream_type))
-        params.append(HLSVar(var_name="cacheline_resp_stream_3", var_type=cacheline_resp_stream_type))
+        # Param 4: hls::stream<ppb_request_pkt_t> &ppb_req_stream
+        param_ppb_req_stream = HLSVar(var_name="ppb_req_stream", 
+                                      var_type=HLSType(HLSBasicType.STREAM, sub_types=[ppb_request_pkt_t_type]))
 
-        # hls::stream<cacheline_data_pkt_t> &
-        params.append(HLSVar(var_name="cacheline_data_stream_1", var_type=cacheline_data_stream_type))
-        params.append(HLSVar(var_name="cacheline_data_stream_2", var_type=cacheline_data_stream_type))
-        params.append(HLSVar(var_name="cacheline_data_stream_3", var_type=cacheline_data_stream_type))
+        # Param 5: hls::stream<ppb_response_pkt_t> &ppb_resp_stream
+        param_ppb_resp_stream = HLSVar(var_name="ppb_resp_stream", 
+                                       var_type=HLSType(HLSBasicType.STREAM, sub_types=[ppb_response_pkt_t_type]))
 
-        # hls::stream<write_burst_pkt_t> &
-        params.append(HLSVar(var_name="write_burst_stream_1", var_type=write_burst_stream_type))
-        params.append(HLSVar(var_name="write_burst_stream_2", var_type=write_burst_stream_type))
-        params.append(HLSVar(var_name="write_burst_stream_3", var_type=write_burst_stream_type))
+        # Param 6: hls::stream<write_burst_pkt_t> &write_burst_stream
+        param_write_burst_stream = HLSVar(var_name="write_burst_stream", 
+                                          var_type=HLSType(HLSBasicType.STREAM, sub_types=[write_burst_pkt_t_type]))
 
-        # --- 3. Finalize ---
-        hbm_writer_func.params = params
-        self.hbm_writer_func = hbm_writer_func
+
+        params_hwl.extend([param_node_props, param_output, param_dst_num, 
+                           param_ppb_req_stream, param_ppb_resp_stream, param_write_burst_stream])
+        hbm_writer_little_func.params = params_hwl
+
+        # --- 3. 函数体 (构建本地列表) ---
+        code_lines_hwl: List[HLSCodeLine] = []
+
+        # (函数体为空)
+
+        # --- 4. 显式地将所有代码行赋值给函数 ---
+        hbm_writer_little_func.codes = code_lines_hwl
+        self.little_hbm_writer_func = hbm_writer_little_func
+
+        hbm_writer_big_func = HLSFunction(name="hbm_writer_big", comp=None)
+        params_hwb: List[HLSVar] = []
+
+        # --- 1. 为此函数独立定义类型 ---
+
+        # 基本类型
+        bus_word_t_type = HLSType(HLSBasicType.BUS_WORD_T)
+        uint_type = HLSType(HLSBasicType.UINT)
+        cacheline_request_pkt_t_type = HLSType(HLSBasicType.CACHELINE_REQUEST_PKT_T)
+        cacheline_response_pkt_t_type = HLSType(HLSBasicType.CACHELINE_RESPONSE_PKT_T)
+        write_burst_pkt_t_type = HLSType(HLSBasicType.WRITE_BURST_PKT_T)
+
+        # --- 2. 定义参数 HLSVars ---
+
+        # Param 1: bus_word_t *node_props
+        param_node_props = HLSVar(var_name="node_props", 
+                                  var_type=HLSType(HLSBasicType.POINTER, sub_types=[bus_word_t_type]))
+
+        # Param 2: bus_word_t *output
+        param_output = HLSVar(var_name="output", 
+                              var_type=HLSType(HLSBasicType.POINTER, sub_types=[bus_word_t_type]))
+
+        # Param 3: uint32_t dst_num
+        param_dst_num = HLSVar(var_name="dst_num", var_type=uint_type)
+
+        # Param 4: hls::stream<cacheline_request_pkt_t> &cacheline_req_stream
+        param_cacheline_req_stream = HLSVar(var_name="cacheline_req_stream", 
+                                            var_type=HLSType(HLSBasicType.STREAM, sub_types=[cacheline_request_pkt_t_type]))
+
+        # Param 5: hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream
+        param_cacheline_resp_stream = HLSVar(var_name="cacheline_resp_stream", 
+                                             var_type=HLSType(HLSBasicType.STREAM, sub_types=[cacheline_response_pkt_t_type]))
+
+        # Param 6: hls::stream<write_burst_pkt_t> &write_burst_stream
+        param_write_burst_stream = HLSVar(var_name="write_burst_stream", 
+                                          var_type=HLSType(HLSBasicType.STREAM, sub_types=[write_burst_pkt_t_type]))
+
+
+        params_hwb.extend([param_node_props, param_output, param_dst_num, 
+                           param_cacheline_req_stream, param_cacheline_resp_stream, param_write_burst_stream])
+        hbm_writer_big_func.params = params_hwb
+
+        # --- 3. 函数体 (构建本地列表) ---
+        code_lines_hwb: List[HLSCodeLine] = []
+
+        # (函数体为空)
+
+        # --- 4. 显式地将所有代码行赋值给函数 ---
+        hbm_writer_big_func.codes = code_lines_hwb
+        self.big_hbm_writer_func = hbm_writer_big_func
+
+        
     def _generate_apply(self):
-        code = "#include \"graphyflow_big.h\"\n\n"
+        code = "#include \"shared_kernel_params.h\"\n\n"
         def write_func_body(func: HLSFunction,is_top):
             nonlocal code
             params_str = ",\n ".join(
@@ -308,10 +358,10 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
             code += "".join([line.gen_code(1) for line in func.codes])
             code += "}\n\n"
 
-        for func in self.apply_funcs:
+        for func in self.big_apply_funcs:
             write_func_body(func,False) 
         
-        write_func_body(self.apply_top_func,True)
+        write_func_body(self.big_apply_top_func,True)
         return code
 
     def _dfirtype_to_hlstype(self, dfir_type: dftype.DfirType) -> HLSType:
@@ -442,17 +492,21 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
     
     def _generate_header_file(self):
 
-        def write_func_sig(func: HLSFunction):
-            nonlocal code
+        def write_func_sig(func: HLSFunction,header_file):
             params_str = ",\n ".join(
                 [p.type.get_upper_param(p.name, p.type.type != HLSBasicType.INT and p.type.type != HLSBasicType.UINT) for p in func.params]
             )
             
-            code += f"extern \"C\" void\n {func.name}({params_str} \n);\n\n"
+            header_file += f"extern \"C\" void\n {func.name}({params_str} \n);\n\n"
+            return header_file
             
         header_guard = f"__GRAPHYFLOW_GRAPHYFLOW_BIG_H__"
-        code = f"#ifndef {header_guard}\n#define {header_guard}\n\n"
-        code += "#include <hls_stream.h>\n#include <ap_fixed.h>\n#include <ap_int.h>\n"
+        big_header = f"#ifndef {header_guard}\n#define {header_guard}\n\n"
+        little_header = f"#ifndef __GRAPHYFLOW_GRAPHYFLOW_LITTLE_H__\n#define __GRAPHYFLOW_GRAPHYFLOW_LITTLE_H__\n\n"
+
+        shared_kernel_params = f"#ifndef __SHARED_KERNEL_PARAMS_H__\n#define __SHARED_KERNEL_PARAMS_H__\n\n"
+
+        code = "#include <hls_stream.h>\n#include <ap_fixed.h>\n#include <ap_int.h>\n"
         code += "#include <stdint.h>\n#include <ap_axi_sdata.h>\n"
         code += "#include <string.h>\n\n"
 
@@ -496,23 +550,149 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         code += "typedef ap_axiu<512, 0, 0, 8> cacheline_response_pkt_t;\n"
         code += "typedef ap_axiu<512, 0, 0, 0> cacheline_data_pkt_t;\n"
 
+        big_header += code
+
+        # little part:
+        code = ""
+        code += "#include <ap_axi_sdata.h>\n"
+        code += "#include <ap_fixed.h>\n"
+        code += "#include <ap_int.h>\n"
+        code += "#include <hls_stream.h>\n"
+        code += "#include <stdint.h>\n"
+        code += "// #include <stdio.h>\n"
+        code += "#include <string.h>\n"
+        code += "\n"
+        code += "#define PE_NUM 8\n"
+        code += "#define DBL_PE_NUM 16\n"
+        code += "#define LOG_PE_NUM 3\n"
+        code += "#ifdef EMULATION\n"
+        code += "#define MAX_NUM 512\n"
+        code += "#else\n"
+        code += "#define MAX_NUM 65536\n"
+        code += "#endif\n"
+        code += "#define L 4\n"
+        code += "#define SRC_BUFFER_SIZE 4096\n"
+        code += "#define LOG_SRC_BUFFER_SIZE 12\n"
+        code += "\n"
+        code += "// --- New Bitwidth Definitions for HLS Synthesis ---\n"
+        code += "#define NODE_ID_BITWIDTH 32\n"
+        code += "#define DISTANCE_BITWIDTH 32\n"
+        code += "#define DISTANCE_INTEGER_PART 16\n"
+        code += "#define WEIGHT_BITWIDTH DISTANCE_BITWIDTH\n"
+        code += "#define WEIGHT_INTEGER_PART DISTANCE_INTEGER_PART\n"
+        code += "#define OUT_END_MARKER_BITWIDTH 4\n"
+        code += "#define DIST_PER_WORD 16 // AXI_BUS_WIDTH / DISTANCE_BITWIDTH = 512 / 32 = 16\n"
+        code += "#define LOG_DIST_PER_WORD                                                 \\\n"
+        code += "    4 // log2(AXI_BUS_WIDTH / DISTANCE_BITWIDTH) = log2(512 / 32) = log2(16) = 4\n"
+        code += "\n"
+        code += "// --- New Memory Word and Bus Definitions ---\n"
+        code += "#define AXI_BUS_WIDTH 512\n"
+        code += "\n"
+        code += "#define REDUCE_MEM_WIDTH 64\n"
+        code += "typedef ap_uint<AXI_BUS_WIDTH> bus_word_t;\n"
+        code += "typedef ap_uint<REDUCE_MEM_WIDTH> reduce_word_t;\n"
+        code += "\n"
+        code += "const int INFINITY_DIST = 16384;\n"
+        code += "\n"
+        code += "// --- New Packing-related Constants ---\n"
+        code += "// Number of distances that can be packed into a single reduce memory word.\n"
+        code += "#define DISTANCES_PER_REDUCE_WORD (REDUCE_MEM_WIDTH / DISTANCE_BITWIDTH)\n"
+        code += "\n"
+        code += "// --- Redefinition of Core Graph Types for HLS ---\n"
+        code += "// These typedefs override the standard integer types from common.h for\n"
+        code += "// synthesis.\n"
+        code += "typedef ap_uint<NODE_ID_BITWIDTH> node_id_t;\n"
+        code += "typedef ap_uint<32> edge_id_t; // edge_id_t is not customized yet, keep as is.\n"
+        code += "typedef ap_uint<DISTANCE_BITWIDTH>\n"
+        code += "    ap_fixed_pod_t; // Used to hold bit representation of ap_fixed types\n"
+        code += "typedef ap_fixed<DISTANCE_BITWIDTH, DISTANCE_INTEGER_PART> distance_t;\n"
+        code += "typedef ap_uint<OUT_END_MARKER_BITWIDTH> out_end_marker_t;\n"
+        code += "typedef ap_axiu<256, 0, 0, 0> node_dist_pkt_t;\n"
+        code += "typedef ap_axiu<512, 0, 0, 0> write_burst_pkt_t;\n"
+        code += "typedef ap_axiu<32, 0, 0, 0> ppb_request_pkt_t;\n"
+        code += "typedef ap_axiu<512, 0, 0, 32> ppb_response_pkt_t;\n"
+        code += "typedef ap_axiu<512, 0, 0, 0> cacheline_data_pkt_t;\n"
+        little_header += code
+
+        # shared params part:
 
 
-        code += "// --- Struct Type Definitions ---\n"
+        code = ""
+        code += "#include <ap_axi_sdata.h>\n"
+        code += "#include <ap_fixed.h>\n"
+        code += "#include <ap_int.h>\n"
+        code += "#include <hls_stream.h>\n"
+        code += "#include <stdint.h>\n"
+        code += "#include <string.h>\n"
+        code += "\n"
+        code += "#define PE_NUM 8\n"
+        code += "#define DBL_PE_NUM 16\n"
+        code += "#define LOG_PE_NUM 3\n"
+        code += "#define L 4\n"
+        code += "#define SRC_BUFFER_SIZE 4096\n"
+        code += "#define LOG_SRC_BUFFER_SIZE 12\n"
+        code += "\n"
+        code += "#define NODE_ID_BITWIDTH 32\n"
+        code += "#define DISTANCE_BITWIDTH 32\n"
+        code += "#define DISTANCE_INTEGER_PART 16\n"
+        code += "#define WEIGHT_BITWIDTH DISTANCE_BITWIDTH\n"
+        code += "#define WEIGHT_INTEGER_PART DISTANCE_INTEGER_PART\n"
+        code += "#define OUT_END_MARKER_BITWIDTH 4\n"
+        code += "#define DIST_PER_WORD 16 // AXI_BUS_WIDTH / DISTANCE_BITWIDTH = 512 / 32 = 16\n"
+        code += "#define LOG_DIST_PER_WORD                                                 \\\n"
+        code += "    4 // log2(AXI_BUS_WIDTH / DISTANCE_BITWIDTH) = log2(512 / 32) = log2(16) = 4\n"
+        code += "\n"
+        code += "// --- New Memory Word and Bus Definitions ---\n"
+        code += "#define AXI_BUS_WIDTH 512\n"
+        code += "\n"
+        code += "#define REDUCE_MEM_WIDTH 64\n"
+        code += "typedef ap_uint<AXI_BUS_WIDTH> bus_word_t;\n"
+        code += "typedef ap_uint<REDUCE_MEM_WIDTH> reduce_word_t;\n"
+        code += "\n"
+        code += "const int INFINITY_DIST = 16384;\n"
+        code += "\n"
+        code += "#define DISTANCES_PER_REDUCE_WORD (REDUCE_MEM_WIDTH / DISTANCE_BITWIDTH)\n"
+        code += "\n"
+        code += "// --- Redefinition of Core Graph Types for HLS ---\n"
+        code += "// These typedefs override the standard integer types from common.h for\n"
+        code += "// synthesis.\n"
+        code += "typedef ap_uint<NODE_ID_BITWIDTH> node_id_t;\n"
+        code += "typedef ap_uint<32> edge_id_t; // edge_id_t is not customized yet, keep as is.\n"
+        code += "typedef ap_uint<DISTANCE_BITWIDTH>\n"
+        code += "    ap_fixed_pod_t; // Used to hold bit representation of ap_fixed types\n"
+        code += "typedef ap_fixed<DISTANCE_BITWIDTH, DISTANCE_INTEGER_PART> distance_t;\n"
+        code += "typedef ap_uint<OUT_END_MARKER_BITWIDTH> out_end_marker_t;\n"
+        code += "typedef ap_axiu<256, 0, 0, 0> node_dist_pkt_t;\n"
+        code += "typedef ap_axiu<512, 0, 0, 0> write_burst_pkt_t;\n"
+        code += "typedef ap_axiu<32, 0, 0, 8> cacheline_request_pkt_t;\n"
+        code += "typedef ap_axiu<512, 0, 0, 8> cacheline_response_pkt_t;\n"
+        code += "typedef ap_axiu<32, 0, 0, 0> ppb_request_pkt_t;\n"
+        code += "typedef ap_axiu<512, 0, 0, 32> ppb_response_pkt_t;\n"
+        code += "typedef ap_axiu<512, 0, 0, 0> cacheline_data_pkt_t;\n"
 
+        shared_kernel_params += code
 
+        big_header += "// --- Struct Type Definitions ---\n"
         sorted_defs = self._topologically_sort_structs()
         for hls_type, members in sorted_defs:
-            code += hls_type.gen_decl(members) + "\n"
+            big_header += hls_type.gen_decl(members) + "\n"
+            little_header += hls_type.gen_decl(members) + "\n"
+            shared_kernel_params += hls_type.gen_decl(members) + "\n"
 
-        code += "// --- Top-Level Function Prototypes ---\n"
+        big_header += "// --- Top-Level Function Prototypes ---\n"
         
-        write_func_sig(self.top_func)
-        write_func_sig(self.hbm_writer_func)
-        write_func_sig(self.apply_top_func)
+        big_header = write_func_sig(self.big_top_func,big_header)
+        little_header = write_func_sig(self.little_top_func,little_header)
+        shared_kernel_params = write_func_sig(self.big_top_func,shared_kernel_params)
+        shared_kernel_params = write_func_sig(self.little_top_func,shared_kernel_params)
+        shared_kernel_params = write_func_sig(self.big_hbm_writer_func,shared_kernel_params)
+        shared_kernel_params = write_func_sig(self.little_hbm_writer_func,shared_kernel_params)
 
-        code += f"#endif // {header_guard}\n"
-        return code
+        big_header += f"#endif // {header_guard}\n"
+        little_header += f"#endif // __GRAPHYFLOW_GRAPHYFLOW_LITTLE_H__\n"
+        shared_kernel_params += f"#endif // __SHARED_KERNEL_PARAMS_H__\n"
+        
+        return big_header,little_header,shared_kernel_params
     
 
     def _generate_top_func(self) -> Tuple[str, str]:
@@ -666,39 +846,170 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
 
         # --- Data Loading ---
         # edge_descriptor_loader(edge_props, stream_src_ids, edge_stream, num_edges);
-        code_lines.append(CodeCall(func=self.top_dataflow_funcs[0], params=[edge_props_var, stream_src_ids_var, edge_stream_var, num_edges_var]))
+        code_lines.append(CodeCall(func=self.big_top_dataflow_funcs[0], params=[edge_props_var, stream_src_ids_var, edge_stream_var, num_edges_var]))
 
         code_lines.append(CodeOther(text="")) # Blank line
 
         # --- New COO-style Source Property Loading Pipeline ---
         # dist_req_packer(stream_src_ids, stream_dist_req, num_edges);
-        code_lines.append(CodeCall(func=self.top_dataflow_funcs[1], params=[stream_src_ids_var, stream_dist_req_var, num_edges_var]))
+        code_lines.append(CodeCall(func=self.big_top_dataflow_funcs[1], params=[stream_src_ids_var, stream_dist_req_var, num_edges_var]))
 
         # cacheline_req_sender(stream_dist_req, cacheline_req_stream);
-        code_lines.append(CodeCall(func=self.top_dataflow_funcs[2], params=[stream_dist_req_var, cacheline_req_stream_var]))
+        code_lines.append(CodeCall(func=self.big_top_dataflow_funcs[2], params=[stream_dist_req_var, cacheline_req_stream_var]))
 
         # node_prop_resp_receiver(cacheline_resp_stream, stream_cachelines);
-        code_lines.append(CodeCall(func=self.top_dataflow_funcs[3], params=[cacheline_resp_stream_var, stream_cachelines_var]))
+        code_lines.append(CodeCall(func=self.big_top_dataflow_funcs[3], params=[cacheline_resp_stream_var, stream_cachelines_var]))
 
         # merge_node_props(stream_cachelines, edge_stream, stream_edge_data, num_edges);
-        code_lines.append(CodeCall(func=self.top_dataflow_funcs[4], params=[stream_cachelines_var, edge_stream_var, stream_edge_data_var, num_edges_var]))
+        code_lines.append(CodeCall(func=self.big_top_dataflow_funcs[4], params=[stream_cachelines_var, edge_stream_var, stream_edge_data_var, num_edges_var]))
 
         code_lines.append(CodeOther(text="")) # Blank line
 
         # --- Main Dataflow Processing ---
         # graphyflow_big_dataflow(stream_edge_data, kernel_out_stream, dst_num);
-        code_lines.append(CodeCall(func=self.top_dataflow_funcs[5], params=[stream_edge_data_var, kernel_out_stream_var, dst_num_var]))
+        code_lines.append(CodeCall(func=self.big_top_dataflow_funcs[5], params=[stream_edge_data_var, kernel_out_stream_var, dst_num_var]))
 
         code_lines.append(CodeOther(text="")) # Blank line
 
         # --- 4. Finalize ---
         graphyflow_big_func.codes = code_lines
-        self.top_func = graphyflow_big_func
+        self.big_top_func = graphyflow_big_func
+
+
+        # little part:
     
+        graphyflow_little_func = HLSFunction(name="graphyflow_little", comp=None)
+        params_gl: List[HLSVar] = []
+
+        # --- 1. 为此函数独立定义类型 ---
+
+        # 基本类型
+        int_type = HLSType(HLSBasicType.INT)
+        bus_word_t_type = HLSType(HLSBasicType.BUS_WORD_T)
+        ppb_request_pkt_t_type = HLSType(HLSBasicType.PPB_REQUEST_PKT_T)
+        ppb_response_pkt_t_type = HLSType(HLSBasicType.PPB_RESPONSE_PKT_T)
+        write_burst_pkt_t_type = HLSType(HLSBasicType.WRITE_BURST_PKT_T)
+        node_id_t_type = HLSType(HLSBasicType.NODE_ID)
+        ap_fixed_pod_t_type = HLSType(HLSBasicType.AP_FIXED_POD)
+        bool_type = HLSType(HLSBasicType.BOOL)
+        uint8_type = HLSType(HLSBasicType.UINT8)
+        reduce_word_t_type = HLSType(HLSBasicType.REDUCE_WORD_T)
+
+        # --- 2. 定义参数 HLSVars ---
+
+        # Param 1: const bus_word_t *edge_props
+        param_edge_props = HLSVar(var_name="edge_props", 
+                                  var_type=HLSType(HLSBasicType.POINTER, sub_types=[bus_word_t_type], is_const_ptr=True))
+
+        # Param 2: int32_t num_nodes
+        param_num_nodes = HLSVar(var_name="num_nodes", var_type=int_type)
+
+        # Param 3: int32_t num_edges
+        param_num_edges = HLSVar(var_name="num_edges", var_type=int_type)
+
+        # Param 4: int32_t dst_num
+        param_dst_num = HLSVar(var_name="dst_num", var_type=int_type)
+
+        # Param 5: hls::stream<ppb_request_pkt_t> &ppb_req_stream
+        param_ppb_req_stream = HLSVar(var_name="ppb_req_stream", 
+                                      var_type=HLSType(HLSBasicType.STREAM, sub_types=[ppb_request_pkt_t_type]))
+
+        # Param 6: hls::stream<ppb_response_pkt_t> &ppb_resp_stream
+        param_ppb_resp_stream = HLSVar(var_name="ppb_resp_stream", 
+                                       var_type=HLSType(HLSBasicType.STREAM, sub_types=[ppb_response_pkt_t_type]))
+
+        # Param 7: hls::stream<write_burst_pkt_t> &kernel_out_stream
+        param_kernel_out_stream = HLSVar(var_name="kernel_out_stream", 
+                                         var_type=HLSType(HLSBasicType.STREAM, sub_types=[write_burst_pkt_t_type]))
+
+        params_gl.extend([param_edge_props, param_num_nodes, param_num_edges, param_dst_num, 
+                          param_ppb_req_stream, param_ppb_resp_stream, param_kernel_out_stream])
+        graphyflow_little_func.params = params_gl
+
+        # --- 3. 函数体 (构建本地列表) ---
+        code_lines_gl: List[HLSCodeLine] = []
+
+        # Pragmas
+        code_lines_gl.append(CodePragma(content="INTERFACE m_axi port = edge_props offset = slave bundle = gmem0"))
+        code_lines_gl.append(CodePragma(content="INTERFACE s_axilite port = edge_props"))
+        code_lines_gl.append(CodePragma(content="INTERFACE s_axilite port = num_nodes"))
+        code_lines_gl.append(CodePragma(content="INTERFACE s_axilite port = num_edges"))
+        code_lines_gl.append(CodePragma(content="INTERFACE s_axilite port = dst_num"))
+        code_lines_gl.append(CodePragma(content="INTERFACE s_axilite port = return"))
+        code_lines_gl.append(CodePragma(content="DATAFLOW"))
+        code_lines_gl.append(CodeOther(text="")) # 空行
+
+        code_lines_gl.append(CodeComment(text="--- Existing streams ---"))
+
+        # --- 定义内部流类型 ---
+
+        # 内部类型 1: edge_descriptor_batch_t
+        edge_t_type = HLSType(basic_type=HLSBasicType.STRUCT, 
+                              struct_name="edge_t", 
+                              struct_prop_names=["src_id", "dst_id"], 
+                              sub_types=[node_id_t_type, node_id_t_type])
+        edge_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[edge_t_type], array_dims=["PE_NUM"])
+        edge_descriptor_batch_t_type = HLSType(basic_type=HLSBasicType.STRUCT, 
+                                               struct_name="edge_descriptor_batch_t", 
+                                               struct_prop_names=["edges", "end_pos"], 
+                                               sub_types=[edge_array_type, int_type])
+
+        # hls::stream<edge_descriptor_batch_t> edge_stream;
+        edge_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[edge_descriptor_batch_t_type])
+        code_lines_gl.append(CodeVarDecl(var_name="edge_stream", var_type=edge_stream_type))
+        code_lines_gl.append(CodePragma(content="STREAM variable = edge_stream depth = 32"))
+        # (创建 HLSVar 供 CodeCall 使用)
+        edge_stream_var = HLSVar(var_name="edge_stream", var_type=edge_stream_type)
+
+
+        # 内部类型 2: update_tuple_t
+        node_id_array_type_internal = HLSType(HLSBasicType.ARRAY, sub_types=[node_id_t_type], array_dims=["PE_NUM"])
+        prop_array_type_internal = HLSType(HLSBasicType.ARRAY, sub_types=[ap_fixed_pod_t_type], array_dims=["PE_NUM"])
+        update_tuple_t_type = HLSType(basic_type=HLSBasicType.STRUCT, 
+                                      struct_name="update_tuple_t", 
+                                      struct_prop_names=["node_id", "prop", "end_flag", "end_pos"], 
+                                      sub_types=[node_id_array_type_internal, prop_array_type_internal, bool_type, uint8_type])
+
+        # hls::stream<update_tuple_t> stream_edge_data;
+        stream_edge_data_type = HLSType(HLSBasicType.STREAM, sub_types=[update_tuple_t_type])
+        code_lines_gl.append(CodeVarDecl(var_name="stream_edge_data", var_type=stream_edge_data_type))
+        code_lines_gl.append(CodePragma(content="STREAM variable = stream_edge_data depth = 8"))
+        # (创建 HLSVar 供 CodeCall 使用)
+        stream_edge_data_var = HLSVar(var_name="stream_edge_data", var_type=stream_edge_data_type)
+
+
+        # 内部类型 3: hls::stream<reduce_word_t> pe_mem_outs[PE_NUM];
+        pe_mem_out_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[reduce_word_t_type])
+        pe_mem_outs_type = HLSType(HLSBasicType.ARRAY, sub_types=[pe_mem_out_stream_type], array_dims=["PE_NUM"])
+        code_lines_gl.append(CodeVarDecl(var_name="pe_mem_outs", var_type=pe_mem_outs_type))
+        code_lines_gl.append(CodePragma(content="STREAM variable = pe_mem_outs depth = 8"))
+        # (创建 HLSVar 供 CodeCall 使用)
+        pe_mem_outs_var = HLSVar(var_name="pe_mem_outs", var_type=pe_mem_outs_type)
+
+        code_lines_gl.append(CodeOther(text="")) # 空行
+
+        # --- Data Loading ---
+        code_lines_gl.append(CodeComment(text="--- Data Loading ---"))
+        code_lines_gl.append(CodeOther(text="edge_descriptor_loader(edge_props, edge_stream, num_edges);"))
+        code_lines_gl.append(CodeOther(text="request_manager(edge_stream, ppb_req_stream, ppb_resp_stream, stream_edge_data, num_edges);"))
+        code_lines_gl.append(CodeOther(text="")) # 空行
+
+        # --- Reduction ---
+        code_lines_gl.append(CodeComment(text="--- Reduction ---"))
+        code_lines_gl.append(CodeOther(text="Reduc_105_unit_reduce(stream_edge_data, pe_mem_outs, num_edges, dst_num);"))
+        code_lines_gl.append(CodeOther(text="Reduc_105_drain_multi_pe(pe_mem_outs, kernel_out_stream, dst_num);"))
+
+
+        # --- 4. 显式地将所有代码行赋值给函数 ---
+        graphyflow_little_func.codes = code_lines_gl
+
+        self.little_top_func = graphyflow_little_func
+
+
     def _generate_source_file(self, header_name: str) -> str:
         """Generates the full content of the .cpp source file with correct function order."""
 
-        code = f'#include "{header_name}"\n\n'
+        big_code = f'#include \"graphyflow_big.h\"\n\n'
 
         # --- Function Definition Order ---
         # 1. Memory helper functions (lowest level)
@@ -707,8 +1018,10 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         # 4. Top-level Memory/Dataflow functions (callers)
         # 5. Top-level AXI Kernel Wrapper (final orchestrator)
 
-        def write_func_body(func: HLSFunction,is_top):
-            nonlocal code
+        def write_func_body(func: HLSFunction,is_top,code):
+            
+            if func is None:
+                return code + "\nNot Implemented\n\n"
             params_str = ",\n ".join(
                 [p.type.get_upper_param(p.name, p.type.type != HLSBasicType.INT and p.type.type != HLSBasicType.UINT) for p in func.params]
             )
@@ -719,25 +1032,43 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
                     code += f"static void \n{func.name}({params_str}) " + "{\n"
                 code += "".join([line.gen_code(1) for line in func.codes])
                 code += "}\n\n"
+            return code
 
         for func in self.helper_funcs:
-            code = code + func + "\n\n"
+            big_code = big_code + func + "\n\n"
 
-        if self.scatter_funcs:
-            code += "// --- 1. scatter_funcs ---\n"
-            for func in self.scatter_funcs:
-                write_func_body(func,False)
+        if self.big_scatter_funcs:
+            big_code += "// --- 1. scatter_funcs ---\n"
+            for func in self.big_scatter_funcs:
+                big_code = write_func_body(func,False,big_code)
 
-        if self.gather_funcs:
-            code += "// --- 2. gather_funcs ---\n"
-            for func in self.gather_funcs:
-                write_func_body(func,False)
+        if self.big_gather_funcs:
+            big_code += "// --- 2. gather_funcs ---\n"
+            for func in self.big_gather_funcs:
+                big_code = write_func_body(func,False,big_code)
 
-        code += "// --- 4. top func ---\n"
-        write_func_body(self.top_func,True)
+        big_code += "// --- 4. top func ---\n"
+        big_code = write_func_body(self.big_top_func,True,big_code)
 
+        little_code = f'#include \"graphyflow_little.h\"\n\n'
 
-        return code
+        for func in self.helper_funcs:
+            little_code = little_code + func + "\n\n"
+
+        if self.little_scatter_funcs:
+            little_code += "// --- 1. scatter_funcs ---\n"
+            for func in self.little_scatter_funcs:
+                little_code = write_func_body(func,False,little_code)
+
+        if self.little_gather_funcs:
+            little_code += "// --- 2. gather_funcs ---\n"
+            for func in self.little_gather_funcs:
+                little_code = write_func_body(func,False,little_code)
+
+        little_code += "// --- 4. top func ---\n"
+        little_code = write_func_body(self.little_top_func,True,little_code)
+
+        return big_code,little_code
 
 
 
@@ -750,7 +1081,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         #                int32_t num_edges)
 
  
-        edge_descriptor_loader_func = HLSFunction(name="edge_descriptor_loader", comp=comp)
+        edge_descriptor_loader_func_b = HLSFunction(name="edge_descriptor_loader", comp=comp)
         params = []
 
         # 2. 定义函数参数
@@ -812,10 +1143,9 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
 
         # 2d. 组合参数
         params.extend([edge_props_ddr, stream_src_ids, edge_stream, num_edges])
-        edge_descriptor_loader_func.params = params
+        edge_descriptor_loader_func_b.params = params
 
         # 3. 设置相关的 #defines
-        # (假设 self.defines 是一个在此上下文中可用的 dict)
         self.defines["PE_NUM"] = "8" 
         self.defines["NODE_ID_BITWIDTH"] = "32"
         self.defines["WEIGHT_BITWIDTH"] = "32"
@@ -980,21 +1310,211 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         code_lines.append(CodeOther(text="#endif"))
 
         # 5. 完成函数体
-        edge_descriptor_loader_func.codes = code_lines
+        edge_descriptor_loader_func_b.codes = code_lines
 
         # (可选：添加一个结束注释)
         code_lines.append(CodeComment("End of Edge Descriptor Loader Function"))
+        
 
+        edge_descriptor_loader_func_l = HLSFunction(name="edge_descriptor_loader", comp=comp)
+        params_edl: List[HLSVar] = []
+
+        # --- 1. 为此函数独立定义类型 ---
+
+        # 基本类型
+        int_type = HLSType(HLSBasicType.INT)
+        bus_word_t_type = HLSType(HLSBasicType.BUS_WORD_T)
+        node_id_t_type = HLSType(HLSBasicType.NODE_ID)
+
+        # 结构体: edge_t
+        edge_t_type = HLSType(basic_type=HLSBasicType.STRUCT, 
+                              struct_name="edge_t", 
+                              struct_prop_names=["src_id", "dst_id"], 
+                              sub_types=[node_id_t_type, node_id_t_type])
+
+        # 结构体: edge_descriptor_batch_t
+        edge_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[edge_t_type], array_dims=["PE_NUM"])
+        edge_descriptor_batch_t_type = HLSType(basic_type=HLSBasicType.STRUCT, 
+                                               struct_name="edge_descriptor_batch_t", 
+                                               struct_prop_names=["edges", "end_pos"], 
+                                               sub_types=[edge_array_type, int_type])
+
+        # 结构体: node_id_burst_t
+        node_id_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[node_id_t_type], array_dims=["PE_NUM"])
+        node_id_burst_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
+                                       struct_name="node_id_burst_t",
+                                       struct_prop_names=["data"],
+                                       sub_types=[node_id_array_type])
+
+        # 特殊 ap_uint 类型 (用于 packed_edge)
+        # 我们将使用 CodeOther 来声明它，因为它的宽度是一个变量
+        # ap_uint_bits_per_edge_type = HLSType(HLSBasicType.AP_UINT, width=1) 
+        # ap_uint_bits_per_edge_type.name = "ap_uint<bits_per_edge>"
+
+
+        # --- 2. 定义参数 HLSVars ---
+
+        # Param 1: const bus_word_t *edge_props_ddr
+        param_edge_props_ddr = HLSVar(var_name="edge_props_ddr", 
+                                      var_type=HLSType(HLSBasicType.POINTER, sub_types=[bus_word_t_type], is_const_ptr=True))
+
+        # Param 2: hls::stream<edge_descriptor_batch_t> &edge_stream
+        param_edge_stream = HLSVar(var_name="edge_stream", 
+                                   var_type=HLSType(HLSBasicType.STREAM, sub_types=[edge_descriptor_batch_t_type]))
+
+        # Param 3: int32_t num_edges
+        param_num_edges = HLSVar(var_name="num_edges", var_type=int_type)
+
+        params_edl.extend([param_edge_props_ddr, param_edge_stream, param_num_edges])
+        edge_descriptor_loader_func_l.params = params_edl
+
+        # --- 3. 函数体 (构建本地列表) ---
+        code_lines_edl: List[HLSCodeLine] = []
+
+        # const int bits_per_edge = ...
+        code_lines_edl.append(CodeVarDecl(var_name="bits_per_edge", var_type=int_type, init_val="NODE_ID_BITWIDTH + WEIGHT_BITWIDTH", const=True))
+        # const int edges_per_word = ...
+        code_lines_edl.append(CodeVarDecl(var_name="edges_per_word", var_type=int_type, init_val="AXI_BUS_WIDTH / bits_per_edge", const=True))
+        # const int num_wide_reads = ...
+        code_lines_edl.append(CodeVarDecl(var_name="num_wide_reads", var_type=int_type, init_val="(num_edges + edges_per_word - 1) / edges_per_word", const=True))
+        num_wide_reads_var = HLSVar(var_name="num_wide_reads", var_type=int_type) # 用于 for 循环
+
+        # int edges_read = 0;
+        code_lines_edl.append(CodeVarDecl(var_name="edges_read", var_type=int_type, init_val=0))
+        edges_read_var = HLSVar(var_name="edges_read", var_type=int_type)
+
+        # edge_descriptor_batch_t edge_batch;
+        code_lines_edl.append(CodeVarDecl(var_name="edge_batch", var_type=edge_descriptor_batch_t_type))
+        edge_batch_var = HLSVar(var_name="edge_batch", var_type=edge_descriptor_batch_t_type)
+
+        # #pragma HLS ARRAY_PARTITION ...
+        code_lines_edl.append(CodePragma(content="ARRAY_PARTITION variable = edge_batch.edges complete dim = 0"))
+
+        # edge_batch.end_pos = 0;
+        edge_batch_end_pos_var = HLSVar(var_name="edge_batch.end_pos", var_type=int_type)
+        code_lines_edl.append(CodeAssign(var=edge_batch_end_pos_var, expr=HLSExpr(HLSExprT.CONST, 0)))
+
+        # node_id_burst_t src_id_burst;
+        code_lines_edl.append(CodeVarDecl(var_name="src_id_burst", var_type=node_id_burst_t_type))
+        # (HLSVar 供 write 使用)
+        src_id_burst_var = HLSVar(var_name="src_id_burst", var_type=node_id_burst_t_type)
+
+
+        # #pragma HLS ARRAY_PARTITION ...
+        code_lines_edl.append(CodePragma(content="ARRAY_PARTITION variable = src_id_burst.data complete dim = 0"))
+        code_lines_edl.append(CodeOther(text="")) # 空行
+
+        # #if (NODE_ID_BITWIDTH == 32) && (WEIGHT_BITWIDTH == 32)
+        code_lines_edl.append(CodeOther(text="#if (NODE_ID_BITWIDTH == 32) && (WEIGHT_BITWIDTH == 32)"))
+
+        # LOOP_EDL_READ: for (int i = 0; ...
+        for_loop_1_codes: List[HLSCodeLine] = []
+        for_loop_1 = CodeFor(codes=for_loop_1_codes,
+                             iter_limit=num_wide_reads_var, # HLSVar
+                             iter_cmp="<",
+                             iter_name="i",
+                             iter_start="0",
+                             iter_step="i++",
+                             iter_val_type=int_type)
+        code_lines_edl.append(CodeComment(text="LOOP_EDL_READ:"))
+        code_lines_edl.append(for_loop_1)
+
+        # --- 内部循环 1 ---
+        # #pragma HLS PIPELINE II = 1
+        for_loop_1_codes.append(CodePragma(content="PIPELINE II = 1"))
+
+        # bus_word_t wide_word = edge_props_ddr[i];
+        for_loop_1_codes.append(CodeVarDecl(var_name="wide_word", var_type=bus_word_t_type, init_val="edge_props_ddr[i]"))
+
+        # LOOP_EDL_UNPACK: for (int j = 0; ...
+        for_loop_2_codes: List[HLSCodeLine] = []
+        for_loop_2 = CodeFor(codes=for_loop_2_codes,
+                             iter_limit="edges_per_word", # 字符串
+                             iter_cmp="<",
+                             iter_name="j",
+                             iter_start="0",
+                             iter_step="j++",
+                             iter_val_type=int_type)
+        for_loop_1_codes.append(CodeComment(text="LOOP_EDL_UNPACK:"))
+        for_loop_1_codes.append(for_loop_2)
+
+        # --- 内部循环 2 ---
+        # #pragma HLS UNROLL
+        for_loop_2_codes.append(CodePragma(content="UNROLL"))
+
+        # if (edges_read + j < num_edges)
+        if_1_codes: List[HLSCodeLine] = []
+        if_1_expr = HLSExpr(HLSExprT.CONST, "edges_read + j < num_edges") # C++ 表达式
+        if_1 = CodeIf(expr=if_1_expr, if_codes=if_1_codes)
+        for_loop_2_codes.append(if_1)
+
+        # --- 内部 If ---
+        # ap_uint<bits_per_edge> packed_edge = ...
+        if_1_codes.append(CodeOther(text="ap_uint<bits_per_edge> packed_edge = wide_word.range((j + 1) * bits_per_edge - 1, j * bits_per_edge);"))
+
+        # edge_t edge;
+        if_1_codes.append(CodeVarDecl(var_name="edge", var_type=edge_t_type))
+        edge_var = HLSVar(var_name="edge", var_type=edge_t_type)
+
+        # node_id_t src_id;
+        if_1_codes.append(CodeVarDecl(var_name="src_id", var_type=node_id_t_type))
+        src_id_var = HLSVar(var_name="src_id", var_type=node_id_t_type)
+
+        # edge.dst_id = ...
+        if_1_codes.append(CodeOther(text="edge.dst_id = packed_edge.range(NODE_ID_BITWIDTH - 1, 0);"))
+        # edge.src_id = ...
+        if_1_codes.append(CodeOther(text="edge.src_id = packed_edge.range(bits_per_edge - 1, NODE_ID_BITWIDTH);"))
+
+        # src_id = edge.src_id;
+        edge_src_id_var = HLSVar(var_name="edge.src_id", var_type=node_id_t_type)
+        if_1_codes.append(CodeAssign(var=src_id_var, expr=HLSExpr(HLSExprT.VAR, edge_src_id_var)))
+
+        # edge_batch.edges[j] = edge;
+        if_1_codes.append(CodeOther(text="edge_batch.edges[j] = edge;"))
+        # src_id_burst.data[j] = src_id;
+        if_1_codes.append(CodeOther(text="src_id_burst.data[j] = src_id;"))
+        # --- 结束 If ---
+        # --- 结束 内部循环 2 ---
+
+        # edges_read += edges_per_word;
+        for_loop_1_codes.append(CodeOther(text="edges_read += edges_per_word;"))
+
+        # edge_batch.end_pos = (edges_read <= num_edges) ? ...
+        expr_ternary = HLSExpr(HLSExprT.CONST, "(edges_read <= num_edges) ? edges_per_word : (num_edges % edges_per_word)")
+        for_loop_1_codes.append(CodeAssign(var=edge_batch_end_pos_var, expr=expr_ternary))
+
+        # edge_stream.write(edge_batch);
+        for_loop_1_codes.append(CodeWriteStream(stream_var=param_edge_stream, in_expr=edge_batch_var))
+
+        # edge_batch.end_pos = 0;
+        for_loop_1_codes.append(CodeAssign(var=edge_batch_end_pos_var, expr=HLSExpr(HLSExprT.CONST, 0)))
+        # --- 结束 内部循环 1 ---
+
+        # #else
+        code_lines_edl.append(CodeOther(text="#else"))
+        # #error ...
+        code_lines_edl.append(CodeOther(text="#error \"edge_descriptor_loader currently only supports 32-bit node_id and 32-bit weight.\""))
+        # #endif
+        code_lines_edl.append(CodeOther(text="#endif"))
+
+
+        # --- 4. 显式地将所有代码行赋值给函数 ---
+        edge_descriptor_loader_func_l.codes = code_lines_edl
+
+        self.big_scatter_funcs.append(edge_descriptor_loader_func_b)
+        self.little_scatter_funcs.append(edge_descriptor_loader_func_l)
+
+        self.big_top_dataflow_funcs.append(edge_descriptor_loader_func_b)
+        self.little_top_dataflow_funcs.append(edge_descriptor_loader_func_l)
+
+
+
+        dist_req_packer_func = HLSFunction(name="dist_req_packer", comp=comp)
+        params = []
         #
         # dist_req_packer(hls::stream<node_id_burst_t> &src_id_burst_stream,
         #         hls::stream<distance_req_pack_t> &distance_req_pack_stream,
         #         int32_t num_nodes)
-        self.scatter_funcs.append(edge_descriptor_loader_func)
-        self.top_dataflow_funcs.append(edge_descriptor_loader_func)
-
-        dist_req_packer_func = HLSFunction(name="dist_req_packer", comp=comp)
-        params = []
-        
         # --- 1. Define Types & Params ---
         
         # Basic Types
@@ -1240,8 +1760,8 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         dist_req_packer_func.codes = code_lines
 
 
-        self.scatter_funcs.append(dist_req_packer_func)
-        self.top_dataflow_funcs.append(dist_req_packer_func)
+        self.big_scatter_funcs.append(dist_req_packer_func)
+        self.big_top_dataflow_funcs.append(dist_req_packer_func)
         # cacheline_req_sender(
         # hls::stream<distance_req_pack_t> &distance_req_pack_stream,
         # hls::stream<cacheline_request_pkt_t> &cacheline_req_stream)
@@ -1445,8 +1965,8 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         # --- 3. Finalize ---
         cacheline_req_sender_func.codes = code_lines
         code_lines.append(CodeComment("End of cacheline_req_sender Function"))
-        self.scatter_funcs.append(cacheline_req_sender_func)
-        self.top_dataflow_funcs.append(cacheline_req_sender_func)
+        self.big_scatter_funcs.append(cacheline_req_sender_func)
+        self.big_top_dataflow_funcs.append(cacheline_req_sender_func)
         #     node_prop_resp_receiver(
         # hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream,
         # hls::stream<bus_word_t> (&cacheline_streams)[PE_NUM])
@@ -1556,8 +2076,11 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         # --- 3. Finalize ---
         node_prop_resp_receiver_func.codes = code_lines
         code_lines.append(CodeComment("End of node_prop_resp_receiver Function"))
-        self.scatter_funcs.append(node_prop_resp_receiver_func)
-        self.top_dataflow_funcs.append(node_prop_resp_receiver_func)
+        self.big_scatter_funcs.append(node_prop_resp_receiver_func)
+        self.big_top_dataflow_funcs.append(node_prop_resp_receiver_func)
+
+
+
 
         
         
@@ -1915,8 +2438,8 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         # --- 3. Finalize ---
         merge_node_props_func.codes = code_lines
 
-        self.scatter_funcs.append(merge_node_props_func)
-        self.top_dataflow_funcs.append(merge_node_props_func)
+        self.big_scatter_funcs.append(merge_node_props_func)
+        self.big_top_dataflow_funcs.append(merge_node_props_func)
         # TODO 识别计算逻辑
 
 
@@ -2099,7 +2622,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
 
         # --- 3. Finalize ---
         demux_1_func.codes = code_lines
-        self.gather_funcs.append(demux_1_func)
+        self.big_gather_funcs.append(demux_1_func)
 
 
 
@@ -2291,7 +2814,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         # --- 3. Finalize ---
         sender_2_func.codes = code_lines
   
-        self.gather_funcs.append(sender_2_func)
+        self.big_gather_funcs.append(sender_2_func)
 
         receiver_2_func = HLSFunction(name="receiver_2", comp=comp)
         params = []
@@ -2476,7 +2999,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         
         # --- 3. Finalize ---
         receiver_2_func.codes = code_lines
-        self.gather_funcs.append(receiver_2_func)
+        self.big_gather_funcs.append(receiver_2_func)
 
         switch2x2_2_func = HLSFunction(name="switch2x2_2", comp=comp)
         params = []
@@ -2555,7 +3078,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
 
         # --- 3. Finalize ---
         switch2x2_2_func.codes = code_lines
-        self.gather_funcs.append(switch2x2_2_func)
+        self.big_gather_funcs.append(switch2x2_2_func)
 
 
 
@@ -2660,7 +3183,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
 
         # --- 3. Finalize ---
         omega_switch_2_func.codes = code_lines
-        self.gather_funcs.append(omega_switch_2_func)
+        self.big_gather_funcs.append(omega_switch_2_func)
 
         get_raw_val_func = HLSFunction(name="get_raw_val", comp=comp)
         params = []
@@ -3000,7 +3523,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
 
         # --- 3. Finalize ---
         Reduc_105_unit_reduce_single_pe_func.codes = code_lines
-        self.gather_funcs.append(Reduc_105_unit_reduce_single_pe_func)
+        self.big_gather_funcs.append(Reduc_105_unit_reduce_single_pe_func)
 
         Reduc_105_drain_multi_pe_func = HLSFunction(name="Reduc_105_drain_multi_pe", comp=comp)
         params = []
@@ -3100,7 +3623,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
 
         # --- 3. Finalize ---
         Reduc_105_drain_multi_pe_func.codes = code_lines
-        self.gather_funcs.append(Reduc_105_drain_multi_pe_func)
+        self.big_gather_funcs.append(Reduc_105_drain_multi_pe_func)
 
         graphyflow_big_dataflow_func = HLSFunction(name="graphyflow_big_dataflow", comp=comp)
         params = []
@@ -3242,8 +3765,8 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         
         
         
-        self.gather_funcs.append(graphyflow_big_dataflow_func)
-        self.top_dataflow_funcs.append(graphyflow_big_dataflow_func)
+        self.big_gather_funcs.append(graphyflow_big_dataflow_func)
+        self.big_top_dataflow_funcs.append(graphyflow_big_dataflow_func)
 
 
     def _analyse_reduce(self,comp,group:str,port_property:Dict[dfir.Port,Any],port_to_var,top_vars,target_codes):
@@ -3335,7 +3858,6 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
                             port_to_var[port] = top_vars["DST_ID_VAR"]
                     elif port_property[port][0] == "node":
                         port_to_var[port] = None
-            # self._translate_memory_read_op(comp) #这部分访存应该全是hard code
         
         elif isinstance(comp, dfir.FusedOpComponent):
             print(comp.port_mapping)
@@ -3511,7 +4033,6 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
                             port_to_var[port] = top_vars["init_val_1_var"]
                         else:
                             assert 0
-            # self._translate_memory_read_op(comp) #这部分访存应该全是hard code
         
         elif isinstance(comp, dfir.FusedOpComponent):
             print(comp.port_mapping)
@@ -3648,50 +4169,6 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
 
         return port_property, target_codes
     
-    def _build_reduce_subgraph(
-        self,
-        start_ports: List[dfir.Port],
-        end_port: dfir.Port,
-        io_var_map: Dict[dfir.Port, HLSVar],
-    ) -> List[HLSCodeLine]:
-        """
-        Traverses a sub-graph from start to end ports and generates the inlined logic.
-        (Refactored to use the _translate_inline_component helper).
-        """
-
-        q = []
-        visited_ids = set()
-        for p in start_ports:
-            assert p.connected
-            comp = p.connection.parent
-            if comp.readable_id not in visited_ids:
-                q.append(comp)
-                visited_ids.add(comp.readable_id)
-        head = 0
-
-        while head < len(q):
-            comp = q[head]
-            head += 1
-
-            inputs_ready = all(p.connection in p2var_map for p in comp.in_ports)
-            if not inputs_ready:
-                q.append(comp)
-                if head > len(q) * 2 + len(start_ports) * 2:
-                    raise RuntimeError(f"Deadlock in sub-graph topological sort at component {comp.name}")
-                continue
-
-
-            for p in comp.out_ports:
-                if p.connected and not isinstance(
-                    p.connection.parent,
-                    (dfir.ReduceComponent, dfir.UnusedEndMarkerComponent),
-                ):
-                    successor_comp = p.connection.parent
-                    if successor_comp.readable_id not in visited_ids:
-                        q.append(successor_comp)
-                        visited_ids.add(successor_comp.readable_id)
-
-        return q
     
     def process_scatter(self,scatter_stage_comps : List[dfir.Component],ReduceComp : dfir.ReduceComponent):
 
@@ -4026,11 +4503,874 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         # --- 3. Finalize ---
         merge_node_props_func.codes = code_lines
 
-        self.scatter_funcs.append(merge_node_props_func)
-        self.top_dataflow_funcs.append(merge_node_props_func)
+        self.big_scatter_funcs.append(merge_node_props_func)
+        self.big_top_dataflow_funcs.append(merge_node_props_func)
         
         print("========= Scatter Stage =========")
-        
+
+        ## Little part:
+
+        request_manager_func = HLSFunction(name="request_manager", comp=comp)
+        params_req: List[HLSVar] = []
+
+        # --- 1. 定义类型和参数 ---
+
+        # 基本类型
+        int_type = HLSType(HLSBasicType.INT)
+        uint_type = HLSType(HLSBasicType.UINT)
+        uint8_type = HLSType(HLSBasicType.UINT8)
+        bool_type = HLSType(HLSBasicType.BOOL)
+
+        # Typedefs (来自 HLSBasicType)
+        bus_word_t_type = HLSType(HLSBasicType.BUS_WORD_T)
+        distance_t_type = HLSType(HLSBasicType.DISTANCE_T)
+        ap_fixed_pod_t_type = HLSType(HLSBasicType.AP_FIXED_POD)
+        ppb_request_pkt_t_type = HLSType(HLSBasicType.PPB_REQUEST_PKT_T)
+        ppb_response_pkt_t_type = HLSType(HLSBasicType.PPB_RESPONSE_PKT_T)
+        node_id_t_type = HLSType(HLSBasicType.NODE_ID)
+
+        # --- 详细的 Struct 定义 (基于 graphyflow_little.h) ---
+
+        # 依赖: struct edge_t
+        edge_t_sub_types = [node_id_t_type, node_id_t_type]
+        edge_t_prop_names = ["src_id", "dst_id"]
+        edge_t_type = HLSType(HLSBasicType.STRUCT, 
+                              sub_types=edge_t_sub_types, 
+                              struct_name="edge_t", 
+                              struct_prop_names=edge_t_prop_names)
+
+        # 1. struct edge_descriptor_batch_t
+        edge_t_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[edge_t_type], array_dims=["PE_NUM"])
+        edge_desc_sub_types = [edge_t_array_type, int_type]
+        edge_desc_prop_names = ["edges", "end_pos"]
+        edge_descriptor_batch_t_type = HLSType(HLSBasicType.STRUCT, 
+                                               sub_types=edge_desc_sub_types, 
+                                               struct_name="edge_descriptor_batch_t", 
+                                               struct_prop_names=edge_desc_prop_names)
+
+        # 2. struct update_tuple_t
+        node_id_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[node_id_t_type], array_dims=["PE_NUM"])
+        prop_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[ap_fixed_pod_t_type], array_dims=["PE_NUM"])
+        update_tuple_sub_types = [node_id_array_type, prop_array_type, bool_type, uint8_type]
+        update_tuple_prop_names = ["node_id", "prop", "end_flag", "end_pos"]
+        update_tuple_t_type = HLSType(HLSBasicType.STRUCT, 
+                                      sub_types=update_tuple_sub_types, 
+                                      struct_name="update_tuple_t", 
+                                      struct_prop_names=update_tuple_prop_names)
+
+        # --- 结束 Struct 定义 ---
+
+
+        # Param 1: hls::stream<edge_descriptor_batch_t> &edge_burst_stm
+        edge_burst_stm_type = HLSType(HLSBasicType.STREAM, sub_types=[edge_descriptor_batch_t_type])
+        param_edge_burst_stm = HLSVar(var_name="edge_burst_stm", var_type=edge_burst_stm_type)
+
+        # Param 2: hls::stream<ppb_request_pkt_t> &ppb_request_stm
+        ppb_request_stm_type = HLSType(HLSBasicType.STREAM, sub_types=[ppb_request_pkt_t_type])
+        param_ppb_request_stm = HLSVar(var_name="ppb_request_stm", var_type=ppb_request_stm_type)
+
+        # Param 3: hls::stream<ppb_response_pkt_t> &ppb_response_stm
+        ppb_response_stm_type = HLSType(HLSBasicType.STREAM, sub_types=[ppb_response_pkt_t_type])
+        param_ppb_response_stm = HLSVar(var_name="ppb_response_stm", var_type=ppb_response_stm_type)
+
+        # Param 4: hls::stream<update_tuple_t> &update_set_stm
+        update_set_stm_type = HLSType(HLSBasicType.STREAM, sub_types=[update_tuple_t_type])
+        param_update_set_stm = HLSVar(var_name="update_set_stm", var_type=update_set_stm_type)
+
+        # Param 5: int32_t part_edge_num
+        param_part_edge_num = HLSVar(var_name="part_edge_num", var_type=int_type)
+
+        params_req.extend([param_edge_burst_stm, param_ppb_request_stm, param_ppb_response_stm, param_update_set_stm, param_part_edge_num])
+        request_manager_func.params = params_req
+
+        # --- 2. 函数体 (构建本地列表) ---
+        code_lines_req: List[HLSCodeLine] = []
+
+        # bus_word_t src_prop_buffer[PE_NUM][2][SRC_BUFFER_SIZE >> 4];
+        src_buffer_dims = ["PE_NUM", "2", "(SRC_BUFFER_SIZE >> 4)"] # 宏/表达式作为字符串
+        src_prop_buffer_type = HLSType(HLSBasicType.ARRAY, sub_types=[bus_word_t_type], array_dims=src_buffer_dims)
+        code_lines_req.append(CodeVarDecl(var_name="src_prop_buffer", var_type=src_prop_buffer_type))
+
+        # Pragmas for src_prop_buffer
+        code_lines_req.append(CodePragma(content="ARRAY_PARTITION variable = src_prop_buffer dim = 1 complete"))
+        code_lines_req.append(CodePragma(content="BIND_STORAGE variable = src_prop_buffer type = RAM_S2P impl = BRAM"))
+        code_lines_req.append(CodePragma(content="dependence variable = src_prop_buffer inter false"))
+
+        # int32_t pp_read_idx = 0;
+        code_lines_req.append(CodeVarDecl(var_name="pp_read_idx", var_type=int_type, init_val="0"))
+        pp_read_idx_var = HLSVar(var_name="pp_read_idx", var_type=int_type)
+
+        # int32_t pp_write_idx = 0;
+        code_lines_req.append(CodeVarDecl(var_name="pp_write_idx", var_type=int_type, init_val="0"))
+        pp_write_idx_var = HLSVar(var_name="pp_write_idx", var_type=int_type)
+
+        # int32_t pp_reponse_idx = 0;
+        code_lines_req.append(CodeVarDecl(var_name="pp_reponse_idx", var_type=int_type, init_val="0"))
+        pp_reponse_idx_var = HLSVar(var_name="pp_reponse_idx", var_type=int_type)
+
+        # int32_t pp_read_round = 0;
+        code_lines_req.append(CodeVarDecl(var_name="pp_read_round", var_type=int_type, init_val="0"))
+        pp_read_round_var = HLSVar(var_name="pp_read_round", var_type=int_type)
+
+        # int32_t pp_write_round = 0;
+        code_lines_req.append(CodeVarDecl(var_name="pp_write_round", var_type=int_type, init_val="0"))
+        pp_write_round_var = HLSVar(var_name="pp_write_round", var_type=int_type)
+
+        # int32_t pp_request_round = 0;
+        code_lines_req.append(CodeVarDecl(var_name="pp_request_round", var_type=int_type, init_val="0"))
+        pp_request_round_var = HLSVar(var_name="pp_request_round", var_type=int_type)
+
+        # int32_t edge_set_cnt = 0;
+        code_lines_req.append(CodeVarDecl(var_name="edge_set_cnt", var_type=int_type, init_val="0"))
+        edge_set_cnt_var = HLSVar(var_name="edge_set_cnt", var_type=int_type)
+
+        # const int32_t total_edge_sets = (part_edge_num + PE_NUM - 1) / PE_NUM;
+        code_lines_req.append(CodeVarDecl(var_name="total_edge_sets", var_type=int_type, init_val="(part_edge_num + PE_NUM - 1) / PE_NUM", const=True))
+        total_edge_sets_var = HLSVar(var_name="total_edge_sets", var_type=int_type)
+
+        # bool wait_flag = 0;
+        code_lines_req.append(CodeVarDecl(var_name="wait_flag", var_type=bool_type, init_val="0"))
+        wait_flag_var = HLSVar(var_name="wait_flag", var_type=bool_type)
+
+        # edge_descriptor_batch_t an_edge_burst;
+        code_lines_req.append(CodeVarDecl(var_name="an_edge_burst", var_type=edge_descriptor_batch_t_type))
+        an_edge_burst_var = HLSVar(var_name="an_edge_burst", var_type=edge_descriptor_batch_t_type)
+
+        #pragma HLS ARRAY_PARTITION variable = an_edge_burst.edges complete dim = 0
+        code_lines_req.append(CodePragma(content="ARRAY_PARTITION variable = an_edge_burst.edges complete dim = 0"))
+
+        # ppb_request_pkt_t one_ppb_request;
+        code_lines_req.append(CodeVarDecl(var_name="one_ppb_request", var_type=ppb_request_pkt_t_type))
+        one_ppb_request_var = HLSVar(var_name="one_ppb_request", var_type=ppb_request_pkt_t_type)
+
+        # ppb_response_pkt_t one_ppb_response;
+        code_lines_req.append(CodeVarDecl(var_name="one_ppb_response", var_type=ppb_response_pkt_t_type))
+        one_ppb_response_var = HLSVar(var_name="one_ppb_response", var_type=ppb_response_pkt_t_type)
+
+        # distance_t real_edge_weight = 1.0;
+        code_lines_req.append(CodeVarDecl(var_name="real_edge_weight", var_type=distance_t_type, init_val="1.0"))
+        real_edge_weight_var = HLSVar(var_name="real_edge_weight", var_type=distance_t_type)
+
+        # const ap_fixed_pod_t edge_weight = (*reinterpret_cast<ap_fixed_pod_t *>(&real_edge_weight));
+        code_lines_req.append(CodeVarDecl(var_name="edge_weight", var_type=ap_fixed_pod_t_type, init_val="(*reinterpret_cast<ap_fixed_pod_t *>(&real_edge_weight))", const=True))
+        edge_weight_var = HLSVar(var_name="edge_weight", var_type=ap_fixed_pod_t_type)
+
+        # const uint32_t total_rounds = (part_edge_num + SRC_BUFFER_SIZE - 1) / SRC_BUFFER_SIZE;
+        code_lines_req.append(CodeVarDecl(var_name="total_rounds", var_type=uint_type, init_val="(part_edge_num + SRC_BUFFER_SIZE - 1) / SRC_BUFFER_SIZE", const=True))
+        total_rounds_var = HLSVar(var_name="total_rounds", var_type=uint_type)
+
+
+        # while (true)
+        while_1_codes: List[HLSCodeLine] = []
+        while_1_expr = HLSExpr(HLSExprT.CONST, True) # 使用 Python bool
+        while_1 = CodeWhile(codes=while_1_codes, iter_expr=while_1_expr)
+        code_lines_req.append(while_1)
+
+        # --- 在 while(true) 循环内部 ---
+        # #pragma HLS PIPELINE II = 1
+        while_1_codes.append(CodePragma(content="PIPELINE II = 1"))
+
+        # if ((pp_request_round - pp_read_round) <= 1) { ... }
+        if_1_codes: List[HLSCodeLine] = []
+        # HLSExpr(HLSExprT.CONST, "...") 用于 CodeIf 的表达式
+        if_1_expr = HLSExpr(HLSExprT.CONST, "((pp_request_round - pp_read_round) <= 1)")
+        if_1 = CodeIf(expr=if_1_expr, if_codes=if_1_codes)
+        while_1_codes.append(if_1)
+
+        # --- 在 if( (pp_request_round - pp_read_round) <= 1 ) 内部 ---
+        # if (pp_request_round < pp_read_round)
+        if_2_codes: List[HLSCodeLine] = []
+        if_2_expr = HLSExpr(HLSExprT.CONST, "(pp_request_round < pp_read_round)")
+        if_2 = CodeIf(expr=if_2_expr, if_codes=if_2_codes)
+        if_1_codes.append(if_2)
+        # pp_request_round = pp_read_round;
+        if_2_codes.append(CodeAssign(var=pp_request_round_var, expr=HLSExpr(HLSExprT.VAR, pp_read_round_var)))
+
+        # one_ppb_request.data = pp_request_round;
+        one_ppb_request_data_var = HLSVar(var_name="one_ppb_request.data", var_type=int_type) # 假设 data 匹配 round 类型
+        if_1_codes.append(CodeAssign(var=one_ppb_request_data_var, expr=HLSExpr(HLSExprT.VAR, pp_request_round_var)))
+
+        # one_ppb_request.last = 0;
+        one_ppb_request_last_var = HLSVar(var_name="one_ppb_request.last", var_type=bool_type) # 假设
+        if_1_codes.append(CodeAssign(var=one_ppb_request_last_var, expr=HLSExpr(HLSExprT.CONST, 0))) # 使用 Python int
+
+        # ppb_request_stm.write(one_ppb_request);
+        if_1_codes.append(CodeWriteStream(stream_var=param_ppb_request_stm, in_expr=one_ppb_request_var))
+
+        # pp_request_round++;
+        if_1_codes.append(CodeOther(text="pp_request_round++;"))
+
+
+        # if (ppb_response_stm.read_nb(one_ppb_response)) { ... }
+        # (修正：直接在 CodeIf 中使用 read_nb 表达式字符串)
+        if_3_codes: List[HLSCodeLine] = []
+        if_3_expr = HLSExpr(HLSExprT.CONST, "ppb_response_stm.read_nb(one_ppb_response)")
+        if_3 = CodeIf(expr=if_3_expr, if_codes=if_3_codes)
+        while_1_codes.append(if_3)
+
+        # --- 在 if( read_nb ) 内部 ---
+        # pp_write_round = one_ppb_response.dest << 4 >> LOG_SRC_BUFFER_SIZE;
+        # (修正：CodeAssign 和 HLSExprT.CONST 字符串)
+        if_3_codes.append(CodeAssign(var=pp_write_round_var, expr=HLSExpr(HLSExprT.CONST, "one_ppb_response.dest << 4 >> LOG_SRC_BUFFER_SIZE")))
+
+        # bool write_buffer = pp_write_round & 0x1;
+        if_3_codes.append(CodeVarDecl(var_name="write_buffer", var_type=bool_type, init_val="(pp_write_round & 0x1)"))
+        write_buffer_var = HLSVar(var_name="write_buffer", var_type=bool_type)
+
+        # int32_t write_idx = one_ppb_response.dest & ((SRC_BUFFER_SIZE >> 4) - 1);
+        if_3_codes.append(CodeVarDecl(var_name="write_idx", var_type=int_type, init_val="one_ppb_response.dest & ((SRC_BUFFER_SIZE >> 4) - 1)"))
+        write_idx_var = HLSVar(var_name="write_idx", var_type=int_type)
+
+        # bus_word_t one_read_burst = one_ppb_response.data;
+        if_3_codes.append(CodeVarDecl(var_name="one_read_burst", var_type=bus_word_t_type, init_val="one_ppb_response.data"))
+        one_read_burst_var = HLSVar(var_name="one_read_burst", var_type=bus_word_t_type)
+
+        # for (int u = 0; u < PE_NUM; u++) { ... }
+        for_1_codes: List[HLSCodeLine] = []
+        for_1 = CodeFor(codes=for_1_codes, iter_limit="PE_NUM", iter_cmp="<", iter_name="u", iter_start="0", iter_step="u++", iter_val_type=int_type)
+        if_3_codes.append(for_1)
+        # #pragma HLS UNROLL
+        for_1_codes.append(CodePragma(content="UNROLL"))
+        # src_prop_buffer[u][write_buffer][write_idx] = one_read_burst;
+        for_1_codes.append(CodeOther(text="src_prop_buffer[u][write_buffer][write_idx] = one_read_burst;"))
+
+        # --- 结束 if( read_nb ) ---
+
+        # if (!wait_flag)
+        if_4_codes: List[HLSCodeLine] = []
+        if_4_expr = HLSExpr(HLSExprT.UOP, dfir.UnaryOp.NOT, operands=[HLSExpr(HLSExprT.VAR, wait_flag_var)])
+        if_4 = CodeIf(expr=if_4_expr, if_codes=if_4_codes)
+        while_1_codes.append(if_4)
+        # an_edge_burst = edge_burst_stm.read();
+        # (修正：添加 expr_val=None)
+        if_4_codes.append(CodeAssign(var=an_edge_burst_var, expr=HLSExpr(HLSExprT.STREAM_READ, expr_val=None, operands=[HLSExpr(HLSExprT.VAR, param_edge_burst_stm)])))
+
+        # pp_read_round = (an_edge_burst.edges[0].src_id / SRC_BUFFER_SIZE);
+        while_1_codes.append(CodeOther(text="pp_read_round = (an_edge_burst.edges[0].src_id / SRC_BUFFER_SIZE);"))
+
+        # wait_flag = (pp_read_round >= pp_write_round) ? 1 : 0;
+        # (CodeAssign 和 HLSExprT.CONST 字符串)
+        while_1_codes.append(CodeAssign(var=wait_flag_var, expr=HLSExpr(HLSExprT.CONST, "(pp_read_round >= pp_write_round) ? 1 : 0")))
+
+        # bool exit_flag = (wait_flag == 0) ? (edge_set_cnt + 1 >= total_edge_sets) : (edge_set_cnt >= total_edge_sets);
+        while_1_codes.append(CodeVarDecl(var_name="exit_flag", var_type=bool_type, init_val="(wait_flag == 0) ? (edge_set_cnt + 1 >= total_edge_sets) : (edge_set_cnt >= total_edge_sets)"))
+        exit_flag_var = HLSVar(var_name="exit_flag", var_type=bool_type)
+
+        # if (!wait_flag) { ... }
+        if_5_codes: List[HLSCodeLine] = []
+        if_5_expr = HLSExpr(HLSExprT.UOP, dfir.UnaryOp.NOT, operands=[HLSExpr(HLSExprT.VAR, wait_flag_var)])
+        if_5 = CodeIf(expr=if_5_expr, if_codes=if_5_codes)
+        while_1_codes.append(if_5)
+
+        # --- 在 if( !wait_flag ) 内部 ---
+        # bool read_buffer = pp_read_round & 0x1;
+        if_5_codes.append(CodeVarDecl(var_name="read_buffer", var_type=bool_type, init_val="(pp_read_round & 0x1)"))
+        read_buffer_var = HLSVar(var_name="read_buffer", var_type=bool_type)
+
+        # update_tuple_t an_update_set;
+        if_5_codes.append(CodeVarDecl(var_name="an_update_set", var_type=update_tuple_t_type))
+        an_update_set_var = HLSVar(var_name="an_update_set", var_type=update_tuple_t_type)
+
+        # Pragmas for an_update_set
+        if_5_codes.append(CodePragma(content="ARRAY_PARTITION variable = an_update_set.prop complete dim = 0"))
+        if_5_codes.append(CodePragma(content="ARRAY_PARTITION variable = an_update_set.node_id complete dim = 0"))
+
+        # for (int u = 0; u < PE_NUM; u++) { ... }
+        for_2_codes: List[HLSCodeLine] = []
+        for_2 = CodeFor(codes=for_2_codes, iter_limit="PE_NUM", iter_cmp="<", iter_name="u", iter_start="0", iter_step="u++", iter_val_type=int_type)
+        if_5_codes.append(for_2)
+
+        # --- 在 for(u) 内部 ---
+        # #pragma HLS UNROLL
+        for_2_codes.append(CodePragma(content="UNROLL"))
+
+        # ap_uint<31> idx = (an_edge_burst.edges[u].src_id % SRC_BUFFER_SIZE);
+        ap_uint_31_type = HLSType(basic_type=HLSBasicType.AP_UINT, width=31)
+        for_2_codes.append(CodeVarDecl(var_name="idx", var_type=ap_uint_31_type, init_val="(an_edge_burst.edges[u].src_id % SRC_BUFFER_SIZE)"))
+        idx_var = HLSVar(var_name="idx", var_type=ap_uint_31_type)
+
+        # ap_uint<30> uram_row_idx = idx >> 4;
+        ap_uint_30_type = HLSType(basic_type=HLSBasicType.AP_UINT, width=30)
+        for_2_codes.append(CodeVarDecl(var_name="uram_row_idx", var_type=ap_uint_30_type, init_val="(idx >> 4)"))
+        uram_row_idx_var = HLSVar(var_name="uram_row_idx", var_type=ap_uint_30_type)
+
+        # ap_uint<30> uram_row_offset = (idx & 0xf);
+        for_2_codes.append(CodeVarDecl(var_name="uram_row_offset", var_type=ap_uint_30_type, init_val="(idx & 0xf)"))
+        uram_row_offset_var = HLSVar(var_name="uram_row_offset", var_type=ap_uint_30_type)
+
+        # bus_word_t uram_row = src_prop_buffer[u][read_buffer][uram_row_idx];
+        for_2_codes.append(CodeOther(text="bus_word_t uram_row = src_prop_buffer[u][read_buffer][uram_row_idx];"))
+
+        # ap_fixed_pod_t src_prop = get_val_from_bus(uram_row, uram_row_offset);
+        for_2_codes.append(CodeVarDecl(var_name="src_prop", var_type=ap_fixed_pod_t_type, init_val="get_val_from_bus(uram_row, uram_row_offset)"))
+        src_prop_var = HLSVar(var_name="src_prop", var_type=ap_fixed_pod_t_type)
+
+
+        #============= begin inline logic ===============
+        port_to_var = {}
+        for_2_codes.append(CodeOther(text="// Begin inline logic"))
+        DST_ID_VAR = HLSVar(var_name="DST_ID_VAR", var_type=node_id_type)
+        for_2_codes.append(CodeVarDecl(var_name="DST_ID_VAR", var_type=node_id_type, init_val="an_edge_burst.edges[u].dst_id"))
+        SRC_PROP_VAR = src_prop_var
+        EDGE_WEIGHT_VAR = edge_weight_var
+        top_vars = {
+            "DST_ID_VAR": DST_ID_VAR,
+            "SRC_PROP_VAR": SRC_PROP_VAR,
+            "EDGE_WEIGHT_VAR": EDGE_WEIGHT_VAR
+        }
+        # an_update_set.prop[u] = (src_prop + edge_weight);
+        #for_2_codes.append(CodeOther(text="an_update_set.prop[u] = (src_prop + edge_weight);"))
+
+        # an_update_set.node_id[u] = an_edge_burst.edges[u].dst_id;
+        #for_2_codes.append(CodeOther(text="an_update_set.node_id[u] = an_edge_burst.edges[u].dst_id;"))
+        an_update_set_prop_var = HLSVar(var_name="an_update_set.prop[u]", var_type=ap_fixed_pod_t_type)
+        an_update_set_node_id_var = HLSVar(var_name="an_update_set.node_id[u]", var_type=node_id_type)
+        top_vars["FINAL_PROP_VAR"] = an_update_set_prop_var
+        top_vars["FINAL_DST_ID_VAR"] = an_update_set_node_id_var
+        port_property = {} # 只能是src , dst, edge_prop这三项或组合
+        inlinecodes = []
+        for comp in scatter_stage_comps:
+            port_property,inlinecodes = self._scatter_analyze(comp,port_property,port_to_var,top_vars,target_codes=inlinecodes)
+        for_2_codes.extend(inlinecodes)
+        for_2_codes.append(CodeOther(text="// End inline logic"))
+        # =========== end inline logic ==============
+        # --- 结束 for(u) ---
+
+        # update_set_stm.write(an_update_set);
+        if_5_codes.append(CodeWriteStream(stream_var=param_update_set_stm, in_expr=an_update_set_var))
+
+        # edge_set_cnt++;
+        if_5_codes.append(CodeOther(text="edge_set_cnt++;"))
+
+        # --- 结束 if( !wait_flag ) ---
+
+        # if (exit_flag) { ... }
+        if_6_codes: List[HLSCodeLine] = []
+        if_6_expr = HLSExpr(HLSExprT.VAR, exit_flag_var)
+        if_6 = CodeIf(expr=if_6_expr, if_codes=if_6_codes)
+        while_1_codes.append(if_6)
+
+        # --- 在 if( exit_flag ) 内部 ---
+        # one_ppb_request.last = 1;
+        if_6_codes.append(CodeAssign(var=one_ppb_request_last_var, expr=HLSExpr(HLSExprT.CONST, 1))) # 使用 Python int
+
+        # ppb_request_stm.write(one_ppb_request);
+        if_6_codes.append(CodeWriteStream(stream_var=param_ppb_request_stm, in_expr=one_ppb_request_var))
+
+        # while (true) { ... } (内部退出循环)
+        while_2_codes: List[HLSCodeLine] = []
+        while_2_expr = HLSExpr(HLSExprT.CONST, True) # 使用 Python bool
+        while_2 = CodeWhile(codes=while_2_codes, iter_expr=while_2_expr)
+        if_6_codes.append(while_2)
+
+        # --- 在内部 while(true) 循环 ---
+        # ppb_response_stm.read(one_ppb_response);
+        while_2_codes.append(CodeOther(text="ppb_response_stm.read(one_ppb_response);"))
+
+        # if (one_ppb_response.last)
+        if_7_codes: List[HLSCodeLine] = []
+        if_7_expr = HLSExpr(HLSExprT.CONST, "one_ppb_response.last") # 使用 C++ 表达式字符串
+        if_7 = CodeIf(expr=if_7_expr, if_codes=if_7_codes)
+        while_2_codes.append(if_7)
+        # break;
+        if_7_codes.append(CodeBreak())
+
+        # --- 结束内部 while(true) ---
+
+        # break; (退出外部 while 循环)
+        if_6_codes.append(CodeBreak())
+
+        # --- 结束 if( exit_flag ) ---
+        # --- 结束 while(true) ---
+
+
+        # --- 3. 显式地将所有代码行赋值给函数 ---
+        request_manager_func.codes = code_lines_req
+
+        self.little_scatter_funcs.append(request_manager_func)
+        self.little_top_dataflow_funcs.append(request_manager_func)
+
+
+        set_word_in_bus_func = HLSFunction(name="set_word_in_bus", comp=comp)
+        params_swib: List[HLSVar] = []
+
+        # --- 1. 定义类型和参数 ---
+
+        # 基本类型
+        int_type = HLSType(HLSBasicType.INT)
+        bus_word_t_type = HLSType(HLSBasicType.BUS_WORD_T)
+        ap_fixed_pod_t_type = HLSType(HLSBasicType.AP_FIXED_POD)
+
+        # Param 1: bus_word_t &bus_word
+        # (HLSType 不需要 &，gen_code 会处理引用)
+        param_bus_word = HLSVar(var_name="bus_word", var_type=bus_word_t_type)
+
+        # Param 2: int idx
+        param_idx = HLSVar(var_name="idx", var_type=int_type)
+
+        # Param 3: ap_fixed_pod_t pod_low
+        param_pod_low = HLSVar(var_name="pod_low", var_type=ap_fixed_pod_t_type)
+
+        # Param 4: ap_fixed_pod_t pod_high
+        param_pod_high = HLSVar(var_name="pod_high", var_type=ap_fixed_pod_t_type)
+
+        params_swib.extend([param_bus_word, param_idx, param_pod_low, param_pod_high])
+        set_word_in_bus_func.params = params_swib
+
+        # --- 2. 函数体 (构建本地列表) ---
+        code_lines_swib: List[HLSCodeLine] = []
+
+        # #pragma HLS INLINE
+        code_lines_swib.append(CodePragma(content="INLINE"))
+
+        # --- switch (idx) ---
+        # (按照要求，使用 CodeOther 实现整个 switch 块)
+        switch_block_text = """switch (idx) {
+            case 0:
+                bus_word.range(31, 0) = pod_low;
+                bus_word.range(63, 32) = pod_high;
+                break;
+            case 1:
+                bus_word.range(95, 64) = pod_low;
+                bus_word.range(127, 96) = pod_high;
+                ;
+                break;
+            case 2:
+                bus_word.range(159, 128) = pod_low;
+                bus_word.range(191, 160) = pod_high;
+                break;
+            case 3:
+                bus_word.range(223, 192) = pod_low;
+                bus_word.range(255, 224) = pod_high;
+                break;
+            case 4:
+                bus_word.range(287, 256) = pod_low;
+                bus_word.range(319, 288) = pod_high;
+                break;
+            case 5:
+                bus_word.range(351, 320) = pod_low;
+                bus_word.range(383, 352) = pod_high;
+                break;
+            case 6:
+                bus_word.range(415, 384) = pod_low;
+                bus_word.range(447, 416) = pod_high;
+                break;
+            case 7:
+                bus_word.range(479, 448) = pod_low;
+                bus_word.range(511, 480) = pod_high;
+                break;
+            default:
+                break;
+            }"""
+        code_lines_swib.append(CodeOther(text=switch_block_text))
+
+
+        # --- 3. 显式地将所有代码行赋值给函数 ---
+        set_word_in_bus_func.codes = code_lines_swib
+        self.little_scatter_funcs.append(set_word_in_bus_func)
+
+        Reduc_105_unit_reduce_func = HLSFunction(name="Reduc_105_unit_reduce", comp=comp)
+        params_rur: List[HLSVar] = []
+
+        # --- 1. 定义类型和参数 ---
+
+        # 基本类型
+        int_type = HLSType(HLSBasicType.INT)
+        bool_type = HLSType(HLSBasicType.BOOL)
+        uint8_type = HLSType(HLSBasicType.UINT8)
+        node_id_t_type = HLSType(HLSBasicType.NODE_ID)
+        ap_fixed_pod_t_type = HLSType(HLSBasicType.AP_FIXED_POD)
+        reduce_word_t_type = HLSType(HLSBasicType.REDUCE_WORD_T)
+
+        # 依赖: struct update_tuple_t
+        # (假设已在作用域中定义或从 'graphyflow_little.h' 导入)
+        node_id_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[node_id_t_type], array_dims=["PE_NUM"])
+        prop_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[ap_fixed_pod_t_type], array_dims=["PE_NUM"])
+        update_tuple_sub_types = [node_id_array_type, prop_array_type, bool_type, uint8_type]
+        update_tuple_prop_names = ["node_id", "prop", "end_flag", "end_pos"]
+        update_tuple_t_type = HLSType(HLSBasicType.STRUCT, 
+                                      sub_types=update_tuple_sub_types, 
+                                      struct_name="update_tuple_t", 
+                                      struct_prop_names=update_tuple_prop_names)
+
+        # Param 1: hls::stream<update_tuple_t> &update_set_stm
+        update_set_stm_type = HLSType(HLSBasicType.STREAM, sub_types=[update_tuple_t_type])
+        param_update_set_stm = HLSVar(var_name="update_set_stm", var_type=update_set_stm_type)
+
+        # Param 2: hls::stream<reduce_word_t> (&pe_mem_outs)[PE_NUM]
+        pe_mem_out_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[reduce_word_t_type])
+        pe_mem_outs_type = HLSType(HLSBasicType.ARRAY, sub_types=[pe_mem_out_stream_type], array_dims=["PE_NUM"])
+        param_pe_mem_outs = HLSVar(var_name="pe_mem_outs", var_type=pe_mem_outs_type)
+
+        # Param 3: int32_t edge_num
+        param_edge_num = HLSVar(var_name="edge_num", var_type=int_type)
+
+        # Param 4: int32_t dst_num
+        param_dst_num = HLSVar(var_name="dst_num", var_type=int_type)
+
+        params_rur.extend([param_update_set_stm, param_pe_mem_outs, param_edge_num, param_dst_num])
+        Reduc_105_unit_reduce_func.params = params_rur
+
+        # --- 2. 函数体 (构建本地列表) ---
+        code_lines_rur: List[HLSCodeLine] = []
+
+        code_lines_rur.append(CodeComment(text="--- Phase 1: Memory Declaration ---"))
+
+        # const int MEM_SIZE = MAX_NUM / DISTANCES_PER_REDUCE_WORD;
+        code_lines_rur.append(CodeVarDecl(var_name="MEM_SIZE", var_type=int_type, init_val="MAX_NUM / DISTANCES_PER_REDUCE_WORD", const=True))
+
+        # reduce_word_t prop_mem[PE_NUM][MEM_SIZE];
+        prop_mem_type = HLSType(HLSBasicType.ARRAY, sub_types=[reduce_word_t_type], array_dims=["PE_NUM", "MEM_SIZE"])
+        code_lines_rur.append(CodeVarDecl(var_name="prop_mem", var_type=prop_mem_type))
+
+        # Pragmas for prop_mem
+        code_lines_rur.append(CodePragma(content="ARRAY_PARTITION variable = prop_mem complete dim = 1"))
+        code_lines_rur.append(CodePragma(content="BIND_STORAGE variable = prop_mem type = RAM_S2P impl = URAM"))
+        code_lines_rur.append(CodePragma(content="dependence variable = prop_mem inter false"))
+
+        # reduce_word_t cache_data_buffer[PE_NUM][L + 1];
+        cache_data_buffer_type = HLSType(HLSBasicType.ARRAY, sub_types=[reduce_word_t_type], array_dims=["PE_NUM", "L + 1"])
+        code_lines_rur.append(CodeVarDecl(var_name="cache_data_buffer", var_type=cache_data_buffer_type))
+        code_lines_rur.append(CodePragma(content="ARRAY_PARTITION variable = cache_data_buffer complete dim = 0"))
+
+        # int32_t cache_addr_buffer[PE_NUM][L + 1];
+        cache_addr_buffer_type = HLSType(HLSBasicType.ARRAY, sub_types=[int_type], array_dims=["PE_NUM", "L + 1"])
+        code_lines_rur.append(CodeVarDecl(var_name="cache_addr_buffer", var_type=cache_addr_buffer_type))
+        code_lines_rur.append(CodePragma(content="ARRAY_PARTITION variable = cache_addr_buffer complete dim = 0"))
+
+        # const int32_t num_words = ...
+        code_lines_rur.append(CodeVarDecl(var_name="num_words", var_type=int_type, init_val="(dst_num + DISTANCES_PER_REDUCE_WORD - 1) / DISTANCES_PER_REDUCE_WORD", const=True))
+        num_words_var = HLSVar(var_name="num_words", var_type=int_type)
+
+        #ifdef EMULATION
+        code_lines_rur.append(CodeOther(text="#ifdef EMULATION"))
+        code_lines_rur.append(CodeOther(text="    memset(prop_mem, 0, sizeof(reduce_word_t) * PE_NUM * MEM_SIZE);"))
+        code_lines_rur.append(CodeOther(text="#endif"))
+
+        # LOOP_INIT_CACHE_ADDR: for (int i = 0; ...
+        for_1_codes: List[HLSCodeLine] = []
+        for_1 = CodeFor(codes=for_1_codes, iter_limit="L + 1", iter_cmp="<", iter_name="i", iter_start="0", iter_step="i++", iter_val_type=int_type)
+
+        # --- Inside for(i) ---
+        for_1_codes.append(CodePragma(content="UNROLL"))
+        # for (int pe = 0; ...
+        for_2_codes: List[HLSCodeLine] = []
+        for_2 = CodeFor(codes=for_2_codes, iter_limit="PE_NUM", iter_cmp="<", iter_name="pe", iter_start="0", iter_step="pe++", iter_val_type=int_type)
+
+        # --- Inside for(pe) ---
+        for_2_codes.append(CodePragma(content="UNROLL"))
+        # cache_addr_buffer[pe][i] = -1;
+        for_2_codes.append(CodeOther(text="cache_addr_buffer[pe][i] = -1;"))
+
+        # Assemble init loops
+        for_1_codes.append(for_2)
+        code_lines_rur.append(CodeOther(text="LOOP_INIT_CACHE_ADDR:"))
+        code_lines_rur.append(for_1)
+
+        # const int32_t total_updates = ...
+        code_lines_rur.append(CodeVarDecl(var_name="total_updates", var_type=int_type, init_val="(edge_num + PE_NUM - 1) / PE_NUM", const=True))
+        total_updates_var = HLSVar(var_name="total_updates", var_type=int_type)
+
+        # const int32_t last_pack_size = ...
+        code_lines_rur.append(CodeVarDecl(var_name="last_pack_size", var_type=int_type, init_val="(edge_num % PE_NUM == 0) ? PE_NUM : (edge_num % PE_NUM)", const=True))
+        last_pack_size_var = HLSVar(var_name="last_pack_size", var_type=int_type)
+
+        code_lines_rur.append(CodeComment(text="--- Phase 3: Aggregation Loop ---"))
+
+        # LOOP_AGGREGATE: for (int update_idx = 0; ...
+        for_3_codes: List[HLSCodeLine] = []
+        for_3 = CodeFor(codes=for_3_codes, iter_limit=total_updates_var, iter_cmp="<", iter_name="update_idx", iter_start="0", iter_step="update_idx++", iter_val_type=int_type)
+
+        # --- Inside for(update_idx) ---
+        for_3_codes.append(CodePragma(content="PIPELINE II = 1"))
+
+        # update_tuple_t one_update;
+        for_3_codes.append(CodeVarDecl(var_name="one_update", var_type=update_tuple_t_type))
+        one_update_var = HLSVar(var_name="one_update", var_type=update_tuple_t_type)
+        for_3_codes.append(CodePragma(content="ARRAY_PARTITION variable = one_update.prop complete dim = 0"))
+        for_3_codes.append(CodePragma(content="ARRAY_PARTITION variable = one_update.node_id complete dim = 0"))
+
+        # one_update = update_set_stm.read();
+        read_expr = HLSExpr(HLSExprT.STREAM_READ, expr_val=None, operands=[HLSExpr(HLSExprT.VAR, param_update_set_stm)])
+        for_3_codes.append(CodeAssign(var=one_update_var, expr=read_expr))
+
+        # int32_t cur_pe_end = ...
+        for_3_codes.append(CodeVarDecl(var_name="cur_pe_end", var_type=int_type, init_val="(update_idx == total_updates - 1) ? last_pack_size : PE_NUM"))
+        cur_pe_end_var = HLSVar(var_name="cur_pe_end", var_type=int_type)
+
+        # for (int pe = 0; ...
+        for_4_codes: List[HLSCodeLine] = []
+        for_4 = CodeFor(codes=for_4_codes, iter_limit="PE_NUM", iter_cmp="<", iter_name="pe", iter_start="0", iter_step="pe++", iter_val_type=int_type)
+
+        # --- Inside for(pe) ---
+        for_4_codes.append(CodePragma(content="UNROLL"))
+
+        # int32_t key = one_update.node_id[pe];
+        for_4_codes.append(CodeVarDecl(var_name="key", var_type=int_type, init_val="one_update.node_id[pe]"))
+
+        # if (pe < cur_pe_end && (key & 0x40000000) == 0) { ... }
+        if_1_codes: List[HLSCodeLine] = []
+        if_1_expr = HLSExpr(HLSExprT.CONST, "(pe < cur_pe_end && (key & 0x40000000) == 0)")
+        if_1 = CodeIf(expr=if_1_expr, if_codes=if_1_codes)
+
+        # --- Inside if(pe < cur_pe_end...) ---
+        # ap_fixed_pod_t incoming_dist_pod = one_update.prop[pe];
+        if_1_codes.append(CodeVarDecl(var_name="incoming_dist_pod", var_type=ap_fixed_pod_t_type, init_val="one_update.prop[pe]"))
+
+        # int32_t word_addr = (key >> 1);
+        if_1_codes.append(CodeVarDecl(var_name="word_addr", var_type=int_type, init_val="(key >> 1)"))
+        word_addr_var = HLSVar(var_name="word_addr", var_type=int_type)
+
+        # int32_t pack_idx = (key & 1);
+        if_1_codes.append(CodeVarDecl(var_name="pack_idx", var_type=int_type, init_val="(key & 1)"))
+
+        # reduce_word_t current_word = prop_mem[pe][word_addr];
+        if_1_codes.append(CodeOther(text="reduce_word_t current_word = prop_mem[pe][word_addr];"))
+        current_word_var = HLSVar(var_name="current_word", var_type=reduce_word_t_type)
+
+        # for (int i = L; i >= 0; --i) { ... } (Cache check)
+        for_5_codes: List[HLSCodeLine] = []
+        for_5 = CodeFor(codes=for_5_codes, iter_limit="0", iter_cmp=">=", iter_name="i", iter_start="L", iter_step="--i", iter_val_type=int_type)
+        for_5_codes.append(CodePragma(content="UNROLL"))
+
+        # if (cache_addr_buffer[pe][i] == word_addr)
+        if_2_codes: List[HLSCodeLine] = []
+        if_2_expr = HLSExpr(HLSExprT.CONST, "cache_addr_buffer[pe][i] == word_addr")
+        if_2 = CodeIf(expr=if_2_expr, if_codes=if_2_codes)
+        # current_word = cache_data_buffer[pe][i];
+        if_2_codes.append(CodeOther(text="current_word = cache_data_buffer[pe][i];"))
+        # break;
+        if_2_codes.append(CodeBreak())
+        for_5_codes.append(if_2)
+        if_1_codes.append(for_5)
+
+        # for (int i = 0; i < L; i++) { ... } (Cache shift)
+        for_6_codes: List[HLSCodeLine] = []
+        for_6 = CodeFor(codes=for_6_codes, iter_limit="L", iter_cmp="<", iter_name="i", iter_start="0", iter_step="i++", iter_val_type=int_type)
+        for_6_codes.append(CodePragma(content="UNROLL"))
+        # cache_addr_buffer[pe][i] = cache_addr_buffer[pe][i + 1];
+        for_6_codes.append(CodeOther(text="cache_addr_buffer[pe][i] = cache_addr_buffer[pe][i + 1];"))
+        # cache_data_buffer[pe][i] = cache_data_buffer[pe][i + 1];
+        for_6_codes.append(CodeOther(text="cache_data_buffer[pe][i] = cache_data_buffer[pe][i + 1];"))
+        if_1_codes.append(for_6)
+
+        # ap_fixed_pod_t old_dist_pod = get_raw_val(current_word, pack_idx);
+        if_1_codes.append(CodeVarDecl(var_name="old_dist_pod", var_type=ap_fixed_pod_t_type, init_val="get_raw_val(current_word, pack_idx)"))
+
+        # ap_fixed_pod_t new_dist_pod = ...
+        if_1_codes.append(CodeVarDecl(var_name="new_dist_pod", var_type=ap_fixed_pod_t_type, init_val="(old_dist_pod < incoming_dist_pod && old_dist_pod != 0x0) ? old_dist_pod : incoming_dist_pod"))
+
+        # set_raw_val(current_word, pack_idx, new_dist_pod);
+        if_1_codes.append(CodeOther(text="set_raw_val(current_word, pack_idx, new_dist_pod);"))
+
+        # prop_mem[pe][word_addr] = current_word;
+        if_1_codes.append(CodeOther(text="prop_mem[pe][word_addr] = current_word;"))
+
+        # cache_addr_buffer[pe][L] = word_addr;
+        if_1_codes.append(CodeOther(text="cache_addr_buffer[pe][L] = word_addr;"))
+
+        # cache_data_buffer[pe][L] = current_word;
+        if_1_codes.append(CodeOther(text="cache_data_buffer[pe][L] = current_word;"))
+
+        # Assemble aggregate loops
+        for_4_codes.append(if_1)
+        for_3_codes.append(for_4)
+        code_lines_rur.append(CodeOther(text="LOOP_AGGREGATE:"))
+        code_lines_rur.append(for_3)
+
+
+        code_lines_rur.append(CodeComment(text="--- Phase 4: Stream out aggregated memory ---"))
+
+        # LOOP_STREAM_OUT: for (int i = 0; i < num_words; i++) {
+        for_7_codes: List[HLSCodeLine] = []
+        for_7 = CodeFor(codes=for_7_codes, iter_limit=num_words_var, iter_cmp="<", iter_name="i", iter_start="0", iter_step="i++", iter_val_type=int_type)
+
+        # --- Inside for(i) ---
+        for_7_codes.append(CodePragma(content="PIPELINE II = 1"))
+
+        # for (int pe = 0; pe < PE_NUM; pe++) {
+        for_8_codes: List[HLSCodeLine] = []
+        for_8 = CodeFor(codes=for_8_codes, iter_limit="PE_NUM", iter_cmp="<", iter_name="pe", iter_start="0", iter_step="pe++", iter_val_type=int_type)
+
+        # --- Inside for(pe) ---
+        for_8_codes.append(CodePragma(content="UNROLL"))
+
+        # reduce_word_t word = prop_mem[pe][i];
+        for_8_codes.append(CodeVarDecl(var_name="word", var_type=reduce_word_t_type, init_val="prop_mem[pe][i]"))
+        word_var = HLSVar(var_name="word", var_type=reduce_word_t_type)
+
+        # pe_mem_outs[pe].write(word);
+        pe_mem_out_pe_var = HLSVar(var_name="pe_mem_outs[pe]", var_type=pe_mem_out_stream_type)
+        for_8_codes.append(CodeWriteStream(stream_var=pe_mem_out_pe_var, in_expr=word_var))
+
+        # prop_mem[pe][i] = 0;
+        for_8_codes.append(CodeOther(text="prop_mem[pe][i] = 0;"))
+
+        # Assemble stream out loops
+        for_7_codes.append(for_8)
+        code_lines_rur.append(CodeOther(text="LOOP_STREAM_OUT:"))
+        code_lines_rur.append(for_7)
+
+
+        # --- 3. 显式地将所有代码行赋值给函数 ---
+        Reduc_105_unit_reduce_func.codes = code_lines_rur
+        self.little_scatter_funcs.append(Reduc_105_unit_reduce_func)
+
+        Reduc_105_drain_multi_pe_func = HLSFunction(name="Reduc_105_drain_multi_pe", comp=comp)
+        params_rur_drain: List[HLSVar] = []
+
+        # --- 1. 定义类型和参数 ---
+
+        # (复用之前定义的基本类型)
+        # int_type = HLSType(HLSBasicType.INT)
+        # uint_type = HLSType(HLSBasicType.UINT)
+        # reduce_word_t_type = HLSType(HLSBasicType.REDUCE_WORD_T)
+        # ap_fixed_pod_t_type = HLSType(HLSBasicType.AP_FIXED_POD)
+
+        # 新增类型
+        write_burst_pkt_t_type = HLSType(HLSBasicType.WRITE_BURST_PKT_T)
+        distance_t_type = HLSType(HLSBasicType.DISTANCE_T)
+        uint_type = HLSType(HLSBasicType.UINT) # for uint32_t
+
+        # Param 1: hls::stream<reduce_word_t> (&pe_mem_in)[PE_NUM]
+        pe_mem_in_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[reduce_word_t_type])
+        pe_mem_in_type = HLSType(HLSBasicType.ARRAY, sub_types=[pe_mem_in_stream_type], array_dims=["PE_NUM"])
+        param_pe_mem_in = HLSVar(var_name="pe_mem_in", var_type=pe_mem_in_type)
+
+        # Param 2: hls::stream<write_burst_pkt_t> &kernel_out_stream
+        kernel_out_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[write_burst_pkt_t_type])
+        param_kernel_out_stream = HLSVar(var_name="kernel_out_stream", var_type=kernel_out_stream_type)
+
+        # Param 3: int32_t dst_num
+        # (param_dst_num 已在上面定义)
+        # param_dst_num = HLSVar(var_name="dst_num", var_type=int_type)
+
+        params_rur_drain.extend([param_pe_mem_in, param_kernel_out_stream, param_dst_num])
+        Reduc_105_drain_multi_pe_func.params = params_rur_drain
+
+        # --- 2. 函数体 (构建本地列表) ---
+        code_lines_rur_drain: List[HLSCodeLine] = []
+
+        code_lines_rur_drain.append(CodeComment(text="--- Phase 2: High-Performance Drain Loop ---"))
+
+        # write_burst_pkt_t one_write_burst;
+        code_lines_rur_drain.append(CodeVarDecl(var_name="one_write_burst", var_type=write_burst_pkt_t_type))
+        one_write_burst_var = HLSVar(var_name="one_write_burst", var_type=write_burst_pkt_t_type)
+        one_write_burst_data_var = HLSVar(var_name="one_write_burst.data", var_type=HLSType(HLSBasicType.BUS_WORD_T)) # for set_word_in_bus
+
+        # one_write_burst.last = 0;
+        one_write_burst_last_var = HLSVar(var_name="one_write_burst.last", var_type=HLSType(HLSBasicType.AP_UINT, width=1))
+        code_lines_rur_drain.append(CodeAssign(var=one_write_burst_last_var, expr=HLSExpr(HLSExprT.CONST, 0)))
+
+        # uint32_t waiting_count = 0;
+        code_lines_rur_drain.append(CodeVarDecl(var_name="waiting_count", var_type=uint_type, init_val="0"))
+        waiting_count_var = HLSVar(var_name="waiting_count", var_type=uint_type)
+
+        # distance_t max_val = (distance_t)(16384.0);
+        code_lines_rur_drain.append(CodeVarDecl(var_name="max_val", var_type=distance_t_type, init_val="(distance_t)(16384.0)"))
+        max_val_var = HLSVar(var_name="max_val", var_type=distance_t_type)
+
+        # ap_fixed_pod_t max_pod = *reinterpret_cast<ap_fixed_pod_t *>(&max_val);
+        code_lines_rur_drain.append(CodeVarDecl(var_name="max_pod", var_type=ap_fixed_pod_t_type, init_val="*reinterpret_cast<ap_fixed_pod_t *>(&max_val)"))
+        max_pod_var = HLSVar(var_name="max_pod", var_type=ap_fixed_pod_t_type)
+
+        # LOOP_DRAIN_ADDR: for (int32_t base_addr = 0; ...
+        for_loop_drain_addr_codes: List[HLSCodeLine] = []
+        for_loop_drain_addr = CodeFor(codes=for_loop_drain_addr_codes,
+                                        iter_limit=param_dst_num, # HLSVar from params
+                                        iter_cmp="<",
+                                        iter_name="base_addr",
+                                        iter_start="0",
+                                        iter_step="base_addr += DISTANCES_PER_REDUCE_WORD",
+                                        iter_val_type=int_type)
+
+        # --- Inside for(base_addr) ---
+        for_loop_drain_addr_codes.append(CodePragma(content="PIPELINE II = 1"))
+
+        # ap_fixed_pod_t uram_res_low = max_pod;
+        for_loop_drain_addr_codes.append(CodeVarDecl(var_name="uram_res_low", var_type=ap_fixed_pod_t_type, init_val="max_pod"))
+        uram_res_low_var = HLSVar(var_name="uram_res_low", var_type=ap_fixed_pod_t_type)
+
+        # ap_fixed_pod_t uram_res_high = max_pod;
+        for_loop_drain_addr_codes.append(CodeVarDecl(var_name="uram_res_high", var_type=ap_fixed_pod_t_type, init_val="max_pod"))
+        uram_res_high_var = HLSVar(var_name="uram_res_high", var_type=ap_fixed_pod_t_type)
+
+        # LOOP_FOR_57: for (uint32_t pe_idx = 0; ...
+        for_loop_57_codes: List[HLSCodeLine] = []
+        for_loop_57 = CodeFor(codes=for_loop_57_codes,
+                                iter_limit="PE_NUM",
+                                iter_cmp="<",
+                                iter_name="pe_idx",
+                                iter_start="0",
+                                iter_step="pe_idx++",
+                                iter_val_type=uint_type)
+
+        # --- Inside for(pe_idx) ---
+        for_loop_57_codes.append(CodePragma(content="UNROLL"))
+
+        # reduce_word_t word = pe_mem_in[pe_idx].read();
+        for_loop_57_codes.append(CodeVarDecl(var_name="word", var_type=reduce_word_t_type, init_val="pe_mem_in[pe_idx].read()"))
+
+        # ap_fixed_pod_t incoming_dist_pod_low = word.range(31, 0);
+        for_loop_57_codes.append(CodeVarDecl(var_name="incoming_dist_pod_low", var_type=ap_fixed_pod_t_type, init_val="word.range(31, 0)"))
+
+        # ap_fixed_pod_t incoming_dist_pod_high = word.range(63, 32);
+        for_loop_57_codes.append(CodeVarDecl(var_name="incoming_dist_pod_high", var_type=ap_fixed_pod_t_type, init_val="word.range(63, 32)"))
+
+        # uram_res_low = ... (ternary op)
+        # 使用 CodeOther 处理复杂的原地更新
+        for_loop_57_codes.append(CodeOther(text="uram_res_low = (uram_res_low < incoming_dist_pod_low || incoming_dist_pod_low == 0x0) ? uram_res_low : incoming_dist_pod_low;"))
+
+        # uram_res_high = ... (ternary op)
+        for_loop_57_codes.append(CodeOther(text="uram_res_high = (uram_res_high < incoming_dist_pod_high || incoming_dist_pod_high == 0x0) ? uram_res_high : incoming_dist_pod_high;"))
+
+        # Assemble for(pe_idx)
+        for_loop_drain_addr_codes.append(CodeOther(text="LOOP_FOR_57:"))
+        for_loop_drain_addr_codes.append(for_loop_57)
+
+        # set_word_in_bus(...)
+        # (假设 set_word_in_bus_func 已在作用域中定义)
+        call_params_swib = [one_write_burst_data_var, waiting_count_var, uram_res_low_var, uram_res_high_var]
+        # 假设 set_word_in_bus_func 是一个 HLSFunction 实例
+        # set_word_in_bus_func = HLSFunction(name="set_word_in_bus", comp=comp) # 占位符
+        # for_loop_drain_addr_codes.append(CodeCall(func=set_word_in_bus_func, params=call_params_swib))
+        # 鉴于 set_word_in_bus_func 可能未定义，先使用 CodeOther
+        for_loop_drain_addr_codes.append(CodeOther(text="set_word_in_bus(one_write_burst.data, waiting_count, uram_res_low, uram_res_high);"))
+
+
+        # waiting_count++;
+        for_loop_drain_addr_codes.append(CodeOther(text="waiting_count++;"))
+
+        # if (waiting_count == 8) { ... }
+        if_wc8_codes: List[HLSCodeLine] = []
+        if_wc8_expr = HLSExpr(HLSExprT.CONST, "waiting_count == 8")
+        if_wc8 = CodeIf(expr=if_wc8_expr, if_codes=if_wc8_codes)
+
+        # waiting_count = 0;
+        if_wc8_codes.append(CodeAssign(var=waiting_count_var, expr=HLSExpr(HLSExprT.CONST, 0)))
+        # kernel_out_stream.write(one_write_burst);
+        if_wc8_codes.append(CodeWriteStream(stream_var=param_kernel_out_stream, in_expr=one_write_burst_var))
+
+        for_loop_drain_addr_codes.append(if_wc8)
+
+        # Assemble for(base_addr)
+        code_lines_rur_drain.append(CodeOther(text="LOOP_DRAIN_ADDR:"))
+        code_lines_rur_drain.append(for_loop_drain_addr)
+
+        # if (waiting_count != 0) { ... }
+        if_wc_not0_codes: List[HLSCodeLine] = []
+        if_wc_not0_expr = HLSExpr(HLSExprT.CONST, "waiting_count != 0")
+        if_wc_not0 = CodeIf(expr=if_wc_not0_expr, if_codes=if_wc_not0_codes)
+
+        # kernel_out_stream.write(one_write_burst);
+        if_wc_not0_codes.append(CodeWriteStream(stream_var=param_kernel_out_stream, in_expr=one_write_burst_var))
+
+        code_lines_rur_drain.append(if_wc_not0)
+
+        # --- 3. 显式地将所有代码行赋值给函数 ---
+        Reduc_105_drain_multi_pe_func.codes = code_lines_rur_drain
+        self.little_scatter_funcs.append(Reduc_105_drain_multi_pe_func)
+
         
 
 
@@ -4042,7 +5382,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
             
     def process_apply(self,apply_stage_comps : List[dfir.Component]):
 
- 
+        """
         # translate funstions
         apply_kernel_inter_func = HLSFunction(name="apply_kernel_inter", comp=None)
         params = []
@@ -4201,71 +5541,263 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
 
         # --- 3. Finalize ---
         apply_kernel_inter_func.codes = code_lines
-        self.apply_funcs.append(apply_kernel_inter_func)
 
-        apply_kernel_func = HLSFunction(name="apply_kernel", comp=None)
+        """
+        apply_kernel_inter_func = HLSFunction(name="apply_kernel_inter", comp=None)
         params = []
 
-        # --- 1. Define Types & Params ---
+        # --- 1. 定义类型和参数 ---
 
-        # Basic Types
+        # 基本类型
         uint_type = HLSType(HLSBasicType.UINT)
+        bool_type = HLSType(HLSBasicType.BOOL)
+        int_type = HLSType(HLSBasicType.INT) # 用于 for 循环的 'i'
 
-        # Param 1: uint32_t dst_num
-        dst_num_var = HLSVar(var_name="dst_num", var_type=uint_type)
-
-        # Param 2: hls::stream<cacheline_data_pkt_t> &cacheline_data_stream
-        cacheline_data_pkt_t_type = HLSType(HLSBasicType.CACHELINE_DATA_PKT_T)
-        cacheline_data_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[cacheline_data_pkt_t_type])
-        cacheline_data_stream = HLSVar(var_name="cacheline_data_stream", var_type=cacheline_data_stream_type)
-
-        # Param 3: hls::stream<write_burst_pkt_t> &kernel_out_stream
+        # Typedefs (来自 HLSBasicType)
+        bus_word_t_type = HLSType(HLSBasicType.BUS_WORD_T)
         write_burst_pkt_t_type = HLSType(HLSBasicType.WRITE_BURST_PKT_T)
-        write_burst_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[write_burst_pkt_t_type])
-        kernel_out_stream = HLSVar(var_name="kernel_out_stream", var_type=write_burst_stream_type)
+        ap_fixed_pod_t_type = HLSType(HLSBasicType.AP_FIXED_POD)
+
+        # Param 1: bus_word_t *node_props
+        node_props_type = HLSType(HLSBasicType.POINTER, sub_types=[bus_word_t_type])
+        node_props = HLSVar(var_name="node_props", var_type=node_props_type)
+
+        # Param 2: uint32_t dst_num
+        dst_num = HLSVar(var_name="dst_num", var_type=uint_type)
+
+        # Param 3: hls::stream<write_burst_pkt_t> &node_distance_burst_stream
+        node_distance_burst_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[write_burst_pkt_t_type])
+        node_distance_burst_stream = HLSVar(var_name="node_distance_burst_stream", var_type=node_distance_burst_stream_type)
 
         # Param 4: hls::stream<write_burst_pkt_t> &write_burst_stream
+        write_burst_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[write_burst_pkt_t_type])
         write_burst_stream = HLSVar(var_name="write_burst_stream", var_type=write_burst_stream_type)
 
-        params.extend([dst_num_var, cacheline_data_stream, kernel_out_stream, write_burst_stream])
-        apply_kernel_func.params = params
+        params.extend([node_props, dst_num, node_distance_burst_stream, write_burst_stream])
+        apply_kernel_inter_func.params = params
 
-        # --- 2. Function Body ---
+        # --- 2. 函数体 ---
         code_lines: List[HLSCodeLine] = []
+        apply_kernel_inter_func.codes = code_lines
+
+        # uint32_t read_idx = 0;
+        code_lines.append(CodeVarDecl(var_name="read_idx", var_type=uint_type, init_val="0"))
+        read_idx_var = HLSVar(var_name="read_idx", var_type=uint_type)
+
+        # uint32_t addr = 0;
+        code_lines.append(CodeVarDecl(var_name="addr", var_type=uint_type, init_val="0"))
+        addr_var = HLSVar(var_name="addr", var_type=uint_type)
+
+        # bool pkt_ready = false;
+        code_lines.append(CodeVarDecl(var_name="pkt_ready", var_type=bool_type, init_val="false"))
+        pkt_ready_var = HLSVar(var_name="pkt_ready", var_type=bool_type)
+
+        # write_burst_pkt_t pkt;
+        code_lines.append(CodeVarDecl(var_name="pkt", var_type=write_burst_pkt_t_type))
+        pkt_var = HLSVar(var_name="pkt", var_type=write_burst_pkt_t_type)
+
+        # while (true)
+        while_loop_codes: List[HLSCodeLine] = []
+        while_expr = HLSExpr(HLSExprT.CONST, "true")
+        while_loop = CodeWhile(codes=while_loop_codes, iter_expr=while_expr)
+        code_lines.append(while_loop)
+
+        # --- 在 while(true) 循环内部 ---
+        # #pragma HLS PIPELINE II = 1
+        while_loop_codes.append(CodePragma(content="PIPELINE II = 1"))
+
+        # if (!pkt_ready) { ... }
+        if_1_codes: List[HLSCodeLine] = []
+        not_pkt_ready_expr = HLSExpr(HLSExprT.UOP, dfir.UnaryOp.NOT, operands=[HLSExpr(HLSExprT.VAR, pkt_ready_var)])
+        if_1 = CodeIf(expr=not_pkt_ready_expr, if_codes=if_1_codes)
+        while_loop_codes.append(if_1)
+
+        # pkt_ready = node_distance_burst_stream.read_nb(pkt);
+        # read_nb 是一个非阻塞读，返回bool并修改参数。
+        # 这不适合 CodeAssign 或 CodeWriteStream。使用 CodeOther。
+        if_1_codes.append(CodeOther(text="pkt_ready = node_distance_burst_stream.read_nb(pkt);"))
+
+        # if (pkt_ready) { ... }
+        if_2_codes: List[HLSCodeLine] = []
+        pkt_ready_expr = HLSExpr(HLSExprT.VAR, pkt_ready_var)
+        if_2 = CodeIf(expr=pkt_ready_expr, if_codes=if_2_codes)
+        while_loop_codes.append(if_2)
+
+        # --- 在 if(pkt_ready) 内部 ---
+
+        # pkt_ready = false;
+        assign_pkt_ready_false = CodeAssign(var=pkt_ready_var, expr=HLSExpr(HLSExprT.CONST, "false"))
+        if_2_codes.append(assign_pkt_ready_false)
+
+        # bus_word_t wide_word = pkt.data;
+        # (假设 pkt.data 是 bus_word_t 类型)
+        if_2_codes.append(CodeVarDecl(var_name="wide_word", var_type=bus_word_t_type, init_val="pkt.data"))
+        wide_word_var = HLSVar(var_name="wide_word", var_type=bus_word_t_type)
+
+        # bus_word_t node_prop = node_props[read_idx];
+        # (指针/数组访问作为 init_val 字符串)
+        if_2_codes.append(CodeVarDecl(var_name="node_prop", var_type=bus_word_t_type, init_val="node_props[read_idx]"))
+        node_prop_var = HLSVar(var_name="node_prop", var_type=bus_word_t_type)
+
+        # bus_word_t new_node_prop;
+        if_2_codes.append(CodeVarDecl(var_name="new_node_prop", var_type=bus_word_t_type))
+        new_node_prop_var = HLSVar(var_name="new_node_prop", var_type=bus_word_t_type)
+
+        # for (int i = 0; i < DBL_PE_NUM; i++) { ... }
+        for_loop_1_codes: List[HLSCodeLine] = []
+        for_loop_1 = CodeFor(codes=for_loop_1_codes,
+                               iter_limit="DBL_PE_NUM", # 假设 DBL_PE_NUM 是一个宏
+                               iter_cmp="<",
+                               iter_name="i",
+                               iter_start="0",
+                               iter_step="i++",
+                               iter_val_type=int_type)
+        if_2_codes.append(for_loop_1)
+
+        # --- 在 for(i) 循环内部 ---
+        # #pragma HLS UNROLL
+        for_loop_1_codes.append(CodePragma(content="UNROLL"))
+
+        # ap_fixed_pod_t update_dist = wide_word.range(31 + (i << 5), (i << 5));
+        # (使用 init_val 字符串处理 .range() 初始化)
+        for_loop_1_codes.append(CodeVarDecl(var_name="update_dist", var_type=ap_fixed_pod_t_type, init_val="wide_word.range(31 + (i << 5), (i << 5))"))
+        update_dist_var = HLSVar(var_name="update_dist", var_type=ap_fixed_pod_t_type)
+
+        # ap_fixed_pod_t current_dist = node_prop.range(31 + (i << 5), (i << 5));
+        for_loop_1_codes.append(CodeVarDecl(var_name="current_dist", var_type=ap_fixed_pod_t_type, init_val="node_prop.range(31 + (i << 5), (i << 5))"))
+        current_dist_var = HLSVar(var_name="current_dist", var_type=ap_fixed_pod_t_type)
+
+        result_var3 = HLSVar(var_name="new_dist", var_type=ap_fixed_pod_t_type)
+        for_loop_1_codes.append(CodeVarDecl(var_name="new_dist", var_type=ap_fixed_pod_t_type))
+        # ================ begin inline fused op =============================
+        for_loop_1_codes.append(CodeOther(text="// Begin inline fused op"))
+        inline_codes = []
+        port_property = {}
+        port_to_var = {}
+        top_vars = {
+            "init_val_1_var": update_dist_var,
+            "init_val_2_var": current_dist_var,
+            "result_val3": result_var3
+        }
+        for comp in apply_stage_comps:
+            port_property,inline_codes = self._apply_analyze(comp,port_property,port_to_var,top_vars,target_codes=inline_codes)
+        for_loop_1_codes.extend(inline_codes)
+        for_loop_1_codes.append(CodeOther(text="// End inline fused op"))
+        
+            
+        # ========================= end inline fused op ===========================
+
+        # ap_fixed_pod_t new_dist = (update_dist < current_dist) ? update_dist : current_dist;
+        # (三元运算符作为 init_val 字符串)
+        
+        # new_dist_var = HLSVar(var_name="new_dist", var_type=ap_fixed_pod_t_type)
+
+        # (跳过注释)
+
+        # new_node_prop.range(31 + (i << 5), (i << 5)) = new_dist;
+        # (对 .range() 的赋值使用 CodeOther，遵循示例)
+        for_loop_1_codes.append(CodeOther(text=f"new_node_prop.range(31 + (i << 5), (i << 5)) = {result_var3.name};"))
+
+        # --- 结束 for(i) 循环 ---
+
+        # write_burst_pkt_t out_pkt;
+        if_2_codes.append(CodeVarDecl(var_name="out_pkt", var_type=write_burst_pkt_t_type))
+        out_pkt_var = HLSVar(var_name="out_pkt", var_type=write_burst_pkt_t_type)
+
+        # out_pkt.data = new_node_prop;
+        # (假设 out_pkt.data 也是 bus_word_t 类型)
+        out_pkt_data_var = HLSVar(var_name="out_pkt.data", var_type=bus_word_t_type)
+        assign_out_pkt_data = CodeAssign(var=out_pkt_data_var, expr=HLSExpr(HLSExprT.VAR, new_node_prop_var))
+        if_2_codes.append(assign_out_pkt_data)
+
+        # out_pkt.last = false;
+        # (遵循示例，.last 是 ap_uint<1>)
+        out_pkt_last_type = HLSType(basic_type=HLSBasicType.AP_UINT, width=1)
+        out_pkt_last_var = HLSVar(var_name="out_pkt.last", var_type=out_pkt_last_type)
+        assign_out_pkt_last = CodeAssign(var=out_pkt_last_var, expr=HLSExpr(HLSExprT.CONST, "false"))
+        if_2_codes.append(assign_out_pkt_last)
+
+        # write_burst_stream.write(out_pkt);
+        write_stream_code = CodeWriteStream(stream_var=write_burst_stream, in_expr=out_pkt_var)
+        if_2_codes.append(write_stream_code)
+
+        # read_idx++;
+        if_2_codes.append(CodeOther(text="read_idx++;"))
+
+        # addr += (PE_NUM << 1);
+        if_2_codes.append(CodeOther(text="addr += (PE_NUM << 1);")) # 假设 PE_NUM 是宏
+
+        # if (addr >= dst_num) { break; }
+        if_3_codes: List[HLSCodeLine] = []
+        if_3_codes.append(CodeBreak())
+
+        addr_var_expr = HLSExpr(HLSExprT.VAR, addr_var)
+        dst_num_var_expr = HLSExpr(HLSExprT.VAR, dst_num) # 这是来自参数的 HLSVar
+        if_3_expr = HLSExpr(HLSExprT.BINOP, dfir.BinOp.GE, operands=[addr_var_expr, dst_num_var_expr])
+
+        if_3 = CodeIf(expr=if_3_expr, if_codes=if_3_codes)
+        if_2_codes.append(if_3)
+
+        self.big_apply_funcs.append(apply_kernel_inter_func)
+
+        apply_kernel_func = HLSFunction(name="apply_kernel", comp=comp)
+        params_kernel = []
+
+        # --- 1. 定义类型和参数 (for apply_kernel) ---
+        # (重用上面定义的类型和 HLSVar)
+
+        # Param 1: bus_word_t *node_props (重用 'node_props' HLSVar)
+        # Param 2: uint32_t dst_num (重用 'dst_num' HLSVar)
+
+        # Param 3: hls::stream<write_burst_pkt_t> &kernel_out_stream
+        kernel_out_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[write_burst_pkt_t_type])
+        kernel_out_stream = HLSVar(var_name="kernel_out_stream", var_type=kernel_out_stream_type)
+
+        # Param 4: hls::stream<write_burst_pkt_t> &write_burst_stream (重用 'write_burst_stream' HLSVar)
+
+        params_kernel.extend([node_props, dst_num, kernel_out_stream, write_burst_stream])
+        apply_kernel_func.params = params_kernel
+
+        # --- 2. 函数体 (for apply_kernel) ---
+        code_lines_kernel: List[HLSCodeLine] = []
+        apply_kernel_func.codes = code_lines_kernel
+
+        # #pragma HLS INTERFACE m_axi port = node_props offset = slave bundle = gmem1
+        code_lines_kernel.append(CodePragma(content="INTERFACE m_axi port = node_props offset = slave bundle = gmem1"))
+
+        # #pragma HLS INTERFACE s_axilite port = node_props bundle = control
+        code_lines_kernel.append(CodePragma(content="INTERFACE s_axilite port = node_props bundle = control"))
 
         # #pragma HLS INTERFACE s_axilite port = dst_num bundle = control
-        code_lines.append(CodePragma(content="INTERFACE s_axilite port = dst_num bundle = control"))
+        code_lines_kernel.append(CodePragma(content="INTERFACE s_axilite port = dst_num bundle = control"))
 
         # #pragma HLS INTERFACE s_axilite port = return bundle = control
-        code_lines.append(CodePragma(content="INTERFACE s_axilite port = return bundle = control"))
+        code_lines_kernel.append(CodePragma(content="INTERFACE s_axilite port = return bundle = control"))
 
         # #pragma HLS DATAFLOW
-        code_lines.append(CodePragma(content="DATAFLOW"))
+        code_lines_kernel.append(CodePragma(content="DATAFLOW"))
 
-        code_lines.append(CodeOther(text="")) # Blank line
+        # apply_kernel_inter(node_props, dst_num, kernel_out_stream, write_burst_stream);
+        # (注意：这里我们将 'kernel_out_stream' 作为第3个参数传递)
+        call_params = [node_props, dst_num, kernel_out_stream, write_burst_stream]
+        code_lines_kernel.append(CodeCall(func=apply_kernel_inter_func, params=call_params))
 
-        # apply_kernel_inter(dst_num, cacheline_data_stream, kernel_out_stream, write_burst_stream);
-        # (Assuming apply_kernel_inter_func is defined)
-        code_lines.append(CodeCall(func=apply_kernel_inter_func, params=[dst_num_var, cacheline_data_stream, kernel_out_stream, write_burst_stream]))
-
-        # --- 3. Finalize ---
-        apply_kernel_func.codes = code_lines
-        self.apply_top_func = apply_kernel_func
+        self.big_apply_top_func = apply_kernel_func
 
     # 识别出S G A 三部分计算逻辑
     def generate_backend(
         self, comp_col: dfir.ComponentCollection, global_graph: Any, top_func_name: str
     ) -> Tuple[str, str]:
         
-        
         self.global_graph_store = global_graph
         self.comp_col_store = comp_col
         
-
-        self.scatter_funcs.clear()
-        self.gather_funcs.clear()
-        self.apply_funcs.clear()
-
+        self.big_scatter_funcs.clear()
+        self.big_gather_funcs.clear()
+        self.big_apply_funcs.clear()
+        self.little_scatter_funcs.clear()
+        self.little_gather_funcs.clear()
+        self.little_apply_funcs.clear()
         component_list = comp_col.topo_sort()
 
         scatter_stage_comps = []        
@@ -4276,7 +5808,7 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         reduce_out_ports = []
 
         for comp in component_list:
-            print(f"{type(comp)}: id:{comp.readable_id}")
+            # print(f"{type(comp)}: id:{comp.readable_id}")
             for port in comp.ports:
                 conn_id = port.connection.readable_id if port.connection else "None"
                 print(f"    Port: {port.readable_id}, name:{port.name},Type: {port.port_type}, Connected to: {conn_id}")
@@ -4327,10 +5859,14 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
         self._generate_top_func()
         
         self._generate_hbm_writer()
+
         header_name = "graphyflow_big.h"
-        source_code = self._generate_source_file(header_name)
-        header_code = self._generate_header_file()
+        big_source_code , little_source_code = self._generate_source_file(header_name)
+
+        big_header_code , little_header_code, shared_kernel_params= self._generate_header_file()
         apply_kernel = self._generate_apply()
         
-        return header_code,source_code,apply_kernel
+
+        return big_header_code, little_header_code, shared_kernel_params, big_source_code, little_source_code, apply_kernel
+        
     

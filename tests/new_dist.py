@@ -26,7 +26,8 @@ g = GlobalGraph(
 edges = g.add_graph_input("edge")
 pdu = edges.map_(map_func=lambda edge: (edge.src.distance, edge.dst, edge.weight))
 
-pdu = pdu.map_(map_func=lambda src_dist, dst, edge_w: (src_dist, dst, edge_w + 1.0))
+pdu = pdu.map_(map_func=lambda src_dist, dst, edge_w: (src_dist, dst, edge_w + 0.0))
+pdu = pdu.map_(map_func=lambda src_dist, dst, edge_w: (src_dist, dst, edge_w / 1.0))
 # pdu = pdu.filter(filter_func=lambda x, y, z: z >= 0.0)
 min_dist = pdu.reduce_by(
     reduce_key=lambda src_dist, dst, edge_w: dst.id,
@@ -34,7 +35,8 @@ min_dist = pdu.reduce_by(
     reduce_method=lambda x, y: (lambda_min(x[0], y[0]), x[1]),
 )
 updated_nodes = min_dist.map_(map_func=lambda dist, node: (lambda_min(dist, node.distance), node))
-
+updated_nodes = updated_nodes.map_(map_func=lambda dist, node:(dist + 0.0 , node))
+updated_nodes = updated_nodes.map_(map_func=lambda dist, node:(dist / 1.0 , node))
 # ==================== 2. 前端处理 =======================
 print("\n--- Frontend Processing ---")
 dfirs = g.to_dfir()
