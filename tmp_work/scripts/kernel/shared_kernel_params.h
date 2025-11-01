@@ -19,7 +19,7 @@
 #define LOG_DIST_BITWIDTH 3 // log2_floor(8)
 #define AXI_BUS_WIDTH 512
 #define REDUCE_MEM_WIDTH 64
-#define DISTANCES_PER_REDUCE_WORD 8 // 64 / 8
+#define DISTANCES_PER_REDUCE_WORD 8     // 64 / 8
 #define LOG_DISTANCES_PER_REDUCE_WORD 3 // log2_floor(8)
 
 #ifndef INT_DISTANCE
@@ -31,7 +31,7 @@ typedef ap_uint<DISTANCE_BITWIDTH> distance_t;
 #define INFINITY_DIST 126 // (1ULL << (8 - 1)) - 2
 #endif
 
-#define DIST_PER_WORD 64 // 512 / 8
+#define DIST_PER_WORD 64    // 512 / 8
 #define LOG_DIST_PER_WORD 6 // log2_floor(64)
 
 typedef ap_uint<AXI_BUS_WIDTH> bus_word_t;
@@ -62,15 +62,15 @@ extern "C" void hbm_writer(
     uint32_t dst_num_1,
     //    uint32_t dst_num_2, uint32_t dst_num_3,
     //    uint32_t dst_num_4, uint32_t dst_num_5,
-    hls::stream<ppb_request_pkt_t> &ppb_req_stream_1,
+    // hls::stream<ppb_request_pkt_t> &ppb_req_stream_1,
     //    hls::stream<ppb_request_pkt_t> &ppb_req_stream_2,
     //    hls::stream<ppb_request_pkt_t> &ppb_req_stream_3,
-    //    hls::stream<cacheline_request_pkt_t> &cacheline_req_stream_1,
+    hls::stream<cacheline_request_pkt_t> &cacheline_req_stream_1,
     //    hls::stream<cacheline_request_pkt_t> &cacheline_req_stream_5,
-    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_1,
+    // hls::stream<ppb_response_pkt_t> &ppb_resp_stream_1,
     //    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_2,
     //    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_3,
-    //    hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream_1,
+    hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream_1,
     //    hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream_5,
     hls::stream<cacheline_data_pkt_t> &cacheline_data_stream_1,
     //    hls::stream<cacheline_data_pkt_t> &cacheline_data_stream_2,
