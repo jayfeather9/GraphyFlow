@@ -492,8 +492,7 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
     hbm_ext_apply.obj = apply_kernel_node_props.data();
     hbm_ext_apply.param = 0;
 
-    size_t apply_node_words =
-        little_kernel_input_buffers[0].packed_node_props.size();
+    size_t apply_node_words = apply_kernel_node_props.size();
     OCL_CHECK(err, apply_kernel_node_prop_buffer =
                        cl::Buffer(acc.context,
                                   CL_MEM_READ_WRITE | CL_MEM_EXT_PTR_XILINX |
@@ -728,6 +727,8 @@ void AlgorithmHost::execute_kernel_iteration(
     uint32_t dists_per_word = AXI_BUS_WIDTH / DISTANCE_BITWIDTH;
     uint32_t little_dst_word_num =
         (little_num_dsts + dists_per_word - 1) / dists_per_word;
+    uint32_t big_dst_word_num =
+        (big_num_dsts + dists_per_word - 1) / dists_per_word;
     uint32_t big_dst_offset = little_dst_word_num;
 
     // 3.1: Enqueue BIG gs kernels (one per pipeline, each with different edges,
@@ -778,8 +779,9 @@ void AlgorithmHost::execute_kernel_iteration(
         int arg_idx = 0;
         OCL_CHECK(err, err = apply_kernel.setArg(
                            arg_idx++, apply_kernel_node_prop_buffer));
-        OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, little_num_dsts));
-        OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, big_num_dsts));
+        OCL_CHECK(err,
+                  err = apply_kernel.setArg(arg_idx++, little_dst_word_num));
+        OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, big_dst_word_num));
         OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, little_dst_offset));
         OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, big_dst_offset));
 
