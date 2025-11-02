@@ -12,19 +12,19 @@ from .newbackend_manager import BackendManager
 # --- CONFIGURATION SECTION ---
 # You can change the number of kernels and their HBM mapping here.
 NUM_BIG_KERNELS = 2
-NUM_LITTLE_KERNELS = 2
+NUM_LITTLE_KERNELS = 1
 
 # HBM channel IDs for Big Kernels. The list length must match NUM_BIG_KERNELS.
 big_kernel_hbm_edge_id = [28,30]
 big_kernel_hbm_node_id = [11,12]
 
-little_kernel_hbm_edge_id = [0,1]
-little_kernel_hbm_node_id = [9,10]
+little_kernel_hbm_edge_id = [0]
+little_kernel_hbm_node_id = [9]
 
 big_kernel_slr = ["SLR1", "SLR2"]
-little_kernel_slr = ["SLR0", "SLR0"]
-apply_kernel_slr = ["SLR0", "SLR0", "SLR1","SLR2"]
-hbm_writer_slr = ["SLR0","SLR0","SLR1","SLR2"]
+little_kernel_slr = ["SLR0"]
+apply_kernel_slr = ["SLR0", "SLR1","SLR2"]
+hbm_writer_slr = ["SLR0","SLR1","SLR2"]
 
 # --- END CONFIGURATION SECTION ---
 
@@ -310,7 +310,8 @@ def fill_host_config(file_to_modify: Path):
             "{{BIG_KERNEL_HBM_EDGE_ID}}": big_kernel_hbm_edge_id,
             "{{BIG_KERNEL_HBM_NODE_ID}}": big_kernel_hbm_node_id,
 
-
+            "{{LITTLE_KERNEL_HBM_EDGE_ID}}": little_kernel_hbm_edge_id,
+            "{{LITTLE_KERNEL_HBM_NODE_ID}}": little_kernel_hbm_node_id,
         }
 
         original_content = file_to_modify.read_text(encoding="utf-8")
