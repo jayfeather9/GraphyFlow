@@ -1,66 +1,104 @@
 #include "shared_kernel_params.h"
 
-static void
-apply_kernel_inter(bus_word_t *node_props, uint32_t dst_num,
-                   hls::stream<write_burst_pkt_t> &node_distance_burst_stream,
-                   hls::stream<write_burst_pkt_t> &write_burst_stream) {
-    uint32_t read_idx = 0;
-    uint32_t addr = 0;
-    bool pkt_ready = false;
-    write_burst_pkt_t pkt;
-LOOP_APPLY:
+void merge_big_little_writes(
+    hls::stream<write_burst_pkt_t> &little_kernel_out_stream,
+    hls::stream<write_burst_pkt_t> &big_kernel_out_stream,
+    hls::stream<in_write_burst_w_dst_pkt_t> &kernel_out_stream,
+    uint32_t little_kernel_length, uint32_t big_kernel_length,
+    uint32_t little_kernel_st_offset, uint32_t big_kernel_st_offset) {
+    write_burst_pkt_t big_tmp_prop_pkt;
+    write_burst_pkt_t little_tmp_prop_pkt;
+
+    uint32_t little_idx = little_kernel_st_offset;
+    uint32_t big_idx = big_kernel_st_offset;
+    uint32_t total_length = little_kernel_length + big_kernel_length;
+
+LOOP_MERGE_WRITES:
     while (true) {
-#pragma HLS PIPELINE II = 1
-        if (!pkt_ready) {
-            pkt_ready = node_distance_burst_stream.read_nb(pkt);
+        if (total_length == 0) {
+            in_write_burst_w_dst_pkt_t end_pkt;
+            end_pkt.end_flag = true;
+            kernel_out_stream.write(end_pkt);
+            break;
         }
-        if (pkt_ready) {
-            pkt_ready = false;
-            bus_word_t wide_word = pkt.data;
 
-            bus_word_t node_prop = node_props[read_idx];
-            bus_word_t new_node_prop;
-
-            for (int i = 0; i < DBL_PE_NUM; i++) {
-#pragma HLS UNROLL
-                ap_fixed_pod_t update_dist =
-                    wide_word.range(31 + (i << 5), (i << 5));
-                ap_fixed_pod_t current_dist =
-                    node_prop.range(31 + (i << 5), (i << 5));
-                ap_fixed_pod_t new_dist =
-                    (update_dist < current_dist) ? update_dist : current_dist;
-                // printf("Node %d: current dist = %f, update dist = %f, new
-                // dist = %f\n",
-                //        addr + i, ap_fixed_to_float(current_dist),
-                //        ap_fixed_to_float(update_dist),
-                //        ap_fixed_to_float(new_dist));
-                // fflush(NULL);
-                new_node_prop.range(31 + (i << 5), (i << 5)) = new_dist;
-            }
-
-            write_burst_pkt_t out_pkt;
-            out_pkt.data = new_node_prop;
-            out_pkt.last = false;
-            write_burst_stream.write(out_pkt);
-            read_idx++;
-            addr += (PE_NUM << 1);
-            if (addr >= dst_num) {
-                break;
-            }
+        if (little_kernel_out_stream.read_nb(little_tmp_prop_pkt)) {
+            in_write_burst_w_dst_pkt_t little_write_burst;
+            little_write_burst.data = little_tmp_prop_pkt.data;
+            little_write_burst.dest_addr = little_idx;
+            little_write_burst.end_flag = false;
+            kernel_out_stream.write(little_write_burst);
+            little_idx++;
+            total_length--;
+        } else if (big_kernel_out_stream.read_nb(big_tmp_prop_pkt)) {
+            in_write_burst_w_dst_pkt_t big_write_burst;
+            big_write_burst.data = big_tmp_prop_pkt.data;
+            big_write_burst.dest_addr = big_idx;
+            big_write_burst.end_flag = false;
+            kernel_out_stream.write(big_write_burst);
+            big_idx++;
+            total_length--;
         }
     }
 }
 
+static void
+apply_func(bus_word_t *node_props,
+           hls::stream<in_write_burst_w_dst_pkt_t> &write_burst_stream,
+           hls::stream<write_burst_w_dst_pkt_t> &kernel_out_stream) {
+APPLY_LOOP:
+    while (true) {
+        in_write_burst_w_dst_pkt_t in_pkt = write_burst_stream.read();
+        if (in_pkt.end_flag) {
+            write_burst_w_dst_pkt_t end_pkt;
+            end_pkt.last = true;
+            kernel_out_stream.write(end_pkt);
+            break;
+        }
+
+        uint32_t dest_addr = in_pkt.dest_addr;
+        bus_word_t ori_props = node_props[dest_addr];
+        bus_word_t new_props;
+
+        write_burst_w_dst_pkt_t out_pkt;
+        out_pkt.dest = dest_addr;
+        out_pkt.last = false;
+
+        for (int i = 0; i < 16; i++) {
+#pragma HLS UNROLL
+            ap_fixed_pod_t update = in_pkt.data.range(31 + (i << 5), (i << 5));
+            ap_fixed_pod_t old = ori_props.range(31 + (i << 5), (i << 5));
+            ap_fixed_pod_t new_prop = (old < update) ? old : update;
+            new_props.range(31 + (i << 5), (i << 5)) = new_prop;
+        }
+
+        out_pkt.data = new_props;
+        kernel_out_stream.write(out_pkt);
+    }
+}
+
 extern "C" void
-apply_kernel(bus_word_t *node_props, uint32_t dst_num,
-             hls::stream<write_burst_pkt_t> &kernel_out_stream,
-             hls::stream<write_burst_pkt_t> &write_burst_stream) {
-#pragma HLS INTERFACE m_axi port = node_props offset = slave bundle = gmem1
+apply_kernel(bus_word_t *node_props, uint32_t little_kernel_length,
+             uint32_t big_kernel_length, uint32_t little_kernel_st_offset,
+             uint32_t big_kernel_st_offset,
+             hls::stream<write_burst_pkt_t> &little_kernel_out_stream,
+             hls::stream<write_burst_pkt_t> &big_kernel_out_stream,
+             hls::stream<write_burst_w_dst_pkt_t> &kernel_out_stream) {
+#pragma HLS INTERFACE m_axi port = node_props offset = slave bundle = gmem0
 #pragma HLS INTERFACE s_axilite port = node_props bundle = control
-#pragma HLS INTERFACE s_axilite port = dst_num bundle = control
+#pragma HLS INTERFACE s_axilite port = little_kernel_length bundle = control
+#pragma HLS INTERFACE s_axilite port = big_kernel_length bundle = control
+#pragma HLS INTERFACE s_axilite port = little_kernel_st_offset bundle = control
+#pragma HLS INTERFACE s_axilite port = big_kernel_st_offset bundle = control
 #pragma HLS INTERFACE s_axilite port = return bundle = control
 #pragma HLS DATAFLOW
 
-    apply_kernel_inter(node_props, dst_num, kernel_out_stream,
-                       write_burst_stream);
+    hls::stream<in_write_burst_w_dst_pkt_t> write_burst_stream;
+#pragma HLS STREAM variable = write_burst_stream depth = 16
+
+    merge_big_little_writes(little_kernel_out_stream, big_kernel_out_stream,
+                            write_burst_stream, little_kernel_length,
+                            big_kernel_length, little_kernel_st_offset,
+                            big_kernel_st_offset);
+    apply_func(node_props, write_burst_stream, kernel_out_stream);
 }
