@@ -81,7 +81,7 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
     std::unordered_map<int, int> dst_vertex_to_partition_map;
 
     const size_t DENSE_BLOCK_SIZE =
-        std::min(40000, (int)(unique_dst_vertices.size() / 2));
+        std::min(40000, (int)(unique_dst_vertices.size() / (LITTLE_KERNEL_NUM + BIG_KERNEL_NUM)));
     size_t num_dense_dst = LITTLE_KERNEL_NUM * DENSE_BLOCK_SIZE;
 
     size_t dense_assignment_count =
