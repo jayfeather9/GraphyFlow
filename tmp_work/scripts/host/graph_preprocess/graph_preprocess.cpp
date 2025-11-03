@@ -43,9 +43,6 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
     printf("Global graph has %d vertices and %d edges.\n", graph->num_vertices,
            graph->num_edges);
 
-    const int LITTLE_MAX_DST = 65536;
-    const int BIG_MAX_DST = 524288;
-
     std::cout << "[INFO] Creating 2 partitions: 1 little (max "
               << LITTLE_MAX_DST << " dsts) and 1 big (max " << BIG_MAX_DST
               << " dsts)" << std::endl;
@@ -76,40 +73,63 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
               << std::endl;
 
     // --- PHASE 2: Distribute Destination Vertices to 2 Partitions ---
-    std::set<int> little_dst_set, big_dst_set;
+    std::vector<std::set<int>> little_dst_sets, big_dst_sets;
     std::unordered_map<int, int>
-        dst_vertex_to_partition_map; // 0 = little, 1 = big
+        dst_vertex_to_partition_map; // 0 ~ little_partition_sizes.size()-1 => little
 
-    // Assign high-degree vertices to little partition (up to LITTLE_MAX_DST)
-    size_t little_count =
-        std::min((size_t)LITTLE_MAX_DST, unique_dst_vertices.size());
-    if (little_count == unique_dst_vertices.size()) {
-        little_count = (size_t)((float)unique_dst_vertices.size() * 0.8);
-        std::cout << "[INFO] Adjusted little partition size to " << little_count
-                  << " dsts to balance partitions." << std::endl;
-    }
-    for (size_t i = 0; i < little_count; ++i) {
-        int vertex_id = unique_dst_vertices[i];
-        little_dst_set.insert(vertex_id);
-        dst_vertex_to_partition_map[vertex_id] = 0; // Little partition
-    }
+    std::vector<size_t> little_partition_sizes;
+    std::vector<size_t> big_partition_sizes;
 
-    // Assign remaining vertices to big partition (up to BIG_MAX_DST)
-    size_t big_count = std::min((size_t)BIG_MAX_DST,
-                                unique_dst_vertices.size() - little_count);
-    for (size_t i = little_count; i < little_count + big_count; ++i) {
-        int vertex_id = unique_dst_vertices[i];
-        big_dst_set.insert(vertex_id);
-        dst_vertex_to_partition_map[vertex_id] = 1; // Big partition
+    size_t remaining_dsts = unique_dst_vertices.size();
+    while (remaining_dsts > 0) {
+        size_t assign_to_little = std::min((size_t)LITTLE_MAX_DST, remaining_dsts);
+        if (assign_to_little == remaining_dsts) {
+            assign_to_little = (size_t)(remaining_dsts * 0.8);
+        }
+        little_partition_sizes.push_back(assign_to_little);
+        little_dst_sets.emplace_back();
+        remaining_dsts -= assign_to_little;
+
+        size_t assign_to_big = std::min((size_t)BIG_MAX_DST, remaining_dsts);
+        big_partition_sizes.push_back(assign_to_big);
+        big_dst_sets.emplace_back();
+        remaining_dsts -= assign_to_big;
     }
 
-    std::cout << "[PHASE 2] Little partition assigned " << little_dst_set.size()
-              << " high-degree destination vertices." << std::endl;
-    std::cout << "[PHASE 2] Big partition assigned " << big_dst_set.size()
-              << " remaining destination vertices." << std::endl;
+    size_t vertex_idx = 0;
+    for (size_t p = 0; p < little_partition_sizes.size(); ++p) {
+        size_t part_size = little_partition_sizes[p];
+        for (size_t i = 0; i < part_size; ++i) {
+            int vertex_id = unique_dst_vertices[vertex_idx++];
+            little_dst_sets[p].insert(vertex_id);
+            dst_vertex_to_partition_map[vertex_id] = p; // Little partition
+        }
+    }
+
+    for (size_t p = 0; p < big_partition_sizes.size(); ++p) {
+        size_t part_size = big_partition_sizes[p];
+        for (size_t i = 0; i < part_size; ++i) {
+            int vertex_id = unique_dst_vertices[vertex_idx++];
+            big_dst_sets[p].insert(vertex_id);
+            dst_vertex_to_partition_map[vertex_id] =
+                p + little_partition_sizes.size(); // Big partition
+        }
+    }
+
+    std::cout << "[PHASE 2] Little partition assigned "
+              << std::accumulate(little_partition_sizes.begin(),
+                                 little_partition_sizes.end(), 0)
+              << " dst vertices across " << little_partition_sizes.size()
+              << " partitions." << std::endl;
+    std::cout << "[PHASE 2] Big partition assigned "
+              << std::accumulate(big_partition_sizes.begin(), big_partition_sizes.end(), 0)
+              << " dst vertices across " << big_partition_sizes.size()
+              << " partitions." << std::endl;
 
     // --- PHASE 3: Assign Edges to 2 Partitions Based on Destination Vertex ---
-    std::vector<Edge> little_edges, big_edges;
+    std::vector<std::vector<Edge>> edges_lists;
+    edges_lists.resize(little_partition_sizes.size() + big_partition_sizes.size());
+    size_t little_edge_num = 0, big_edge_num = 0;
     for (int u = 0; u < graph->num_vertices; ++u) {
         for (int i = graph->offsets[u]; i < graph->offsets[u + 1]; ++i) {
             int v = graph->columns[i];
@@ -118,22 +138,28 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
             // Find which partition this edge belongs to
             auto it = dst_vertex_to_partition_map.find(v);
             if (it != dst_vertex_to_partition_map.end()) {
-                if (it->second == 0) {
-                    little_edges.push_back({u, v, w});
+                int partition_idx = it->second;
+                edges_lists[partition_idx].push_back({u, v, w});
+                if (partition_idx < little_partition_sizes.size()) {
+                    little_edge_num++;
                 } else {
-                    big_edges.push_back({u, v, w});
+                    big_edge_num++;
                 }
+            } else {
+                std::cerr << "[ERROR] Destination vertex " << v
+                          << " not found in any partition!" << std::endl;
+                exit(1);
             }
         }
     }
-    std::cout << "[PHASE 3] Little partition has " << little_edges.size()
-              << " edges." << std::endl;
-    std::cout << "[PHASE 3] Big partition has " << big_edges.size() << " edges."
-              << std::endl;
+    std::cout << "[PHASE 3] Assigned " << little_edge_num
+              << " edges to little partitions." << std::endl;
+    std::cout << "[PHASE 3] Assigned " << big_edge_num
+              << " edges to big partitions." << std::endl;
 
     // --- PHASE 4: Process Each Partition (Compress IDs and Distribute Edges)
     // ---
-    std::cout << "[PHASE 4] Processing 2 partitions..." << std::endl;
+    std::cout << "[PHASE 4] Processing partitions..." << std::endl;
 
     // Helper lambda to process a partition
     auto process_partition = [&](const std::vector<Edge> &partition_edges,
@@ -189,10 +215,26 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
             std::vector<Edge> local_edges;
             local_edges.reserve(partition_edges.size());
 
+            uint32_t last_src_buffer = 0;
+            uint32_t last_src_id = 0;
+
             for (const auto &global_edge : partition_edges) {
                 uint32_t src_id = pd.vtx_map[global_edge.src];
                 uint32_t dest_id = pd.vtx_map[global_edge.dest];
                 uint32_t weight = global_edge.weight;
+
+                uint32_t cur_src_buffer = floor(src_id / SRC_BUFFER_SIZE);
+                if (is_dense && cur_src_buffer != last_src_buffer) {
+                    uint32_t mod8 = local_edges.size() % 8;
+                    if (mod8 != 0) {
+                        // Pad with dummy edges to align to 8-edge boundary
+                        for (uint32_t pad = 0; pad < (8 - mod8); pad++) {
+                            local_edges.push_back({last_src_id, 0x7FFFFFFF, 1});
+                        }
+                    }
+                    last_src_buffer = cur_src_buffer;
+                }
+                last_src_id = src_id;
                 local_edges.push_back({(int)src_id, (int)dest_id, (int)weight});
             }
 
@@ -252,23 +294,26 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
         return pd;
     };
 
-    // Process little partition (11 pipelines)
-    PartitionDescriptor little_pd = process_partition(
-        little_edges, little_dst_set, true, LITTLE_KERNEL_NUM);
-    container.DPs.push_back(little_pd);
-    std::cout << "  - Little partition: " << little_pd.num_vertices
-              << " vertices, " << little_pd.num_dsts << " dsts, "
-              << little_pd.num_edges << " edges distributed to "
-              << little_pd.num_pipelines << " pipelines." << std::endl;
+    for (size_t p = 0; p < little_partition_sizes.size(); ++p) {
+        PartitionDescriptor little_pd = process_partition(
+            edges_lists[p], little_dst_sets[p], true, LITTLE_KERNEL_NUM);
+        container.DPs.push_back(little_pd);
+        std::cout << "  - Little partition " << p << ": " << little_pd.num_vertices
+                  << " vertices, " << little_pd.num_dsts << " dsts, "
+                  << little_pd.num_edges << " edges distributed to "
+                  << little_pd.num_pipelines << " pipelines." << std::endl;
+    }
 
-    // Process big partition (3 pipelines)
-    PartitionDescriptor big_pd =
-        process_partition(big_edges, big_dst_set, false, BIG_KERNEL_NUM);
-    container.SPs.push_back(big_pd);
-    std::cout << "  - Big partition: " << big_pd.num_vertices << " vertices, "
-              << big_pd.num_dsts << " dsts, " << big_pd.num_edges
-              << " edges distributed to " << big_pd.num_pipelines
-              << " pipelines." << std::endl;
+    for (size_t p = 0; p < big_partition_sizes.size(); ++p) {
+        PartitionDescriptor big_pd = process_partition(
+            edges_lists[p + little_partition_sizes.size()],
+            big_dst_sets[p], false, BIG_KERNEL_NUM);
+        container.SPs.push_back(big_pd);
+        std::cout << "  - Big partition " << p << ": " << big_pd.num_vertices
+                  << " vertices, " << big_pd.num_dsts << " dsts, "
+                  << big_pd.num_edges << " edges distributed to "
+                  << big_pd.num_pipelines << " pipelines." << std::endl;
+    }
 
     container.num_dense_partitions = container.DPs.size();
     container.num_sparse_partitions = container.SPs.size();

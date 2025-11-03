@@ -6,21 +6,16 @@
 #include "graph_preprocess/graph_preprocess.h"
 #include <vector>
 
-// Define a structure to hold all OpenCL buffers for a single kernel instance.
-// This improves code organization and simplifies buffer management.
-struct KernelBuffers {
-    cl::Buffer edge_props_buf; // Buffer for edge properties (destination ID and
-                               // source ID)
-};
-
-// Structure to hold buffers for HBM writer kernel
-struct WriterKernelBuffers {
-    cl::Buffer node_props_buf; // Buffer for node properties (distances)
-    cl::Buffer output_buf;     // Buffer for final output
-};
-
-struct HostInputBuffers {
+// Buffer for one big or little pipeline, host + device side
+struct PipelineBuffer {
     std::vector<bus_word_t, aligned_allocator<bus_word_t>> packed_edge_props;
+    cl::Buffer edge_props_buffer;
+};
+
+// One dense / sparse partition buffer including multiple pipelines
+struct PartitionBuffer {
+    std::vector<PipelineBuffer> pipelines;
+    std::vector<bus_word_t, aligned_allocator<bus_word_t>> packed_dst_props;
     std::vector<bus_word_t, aligned_allocator<bus_word_t>> packed_node_props;
 };
 
@@ -48,10 +43,8 @@ class AlgorithmHost {
     // Host-side master distance vector using original (global) vertex IDs
     std::vector<distance_t> h_distances;
 
-    // Buffer containers for big kernels (one entry per kernel instance)
-    std::vector<HostInputBuffers> big_kernel_input_buffers,
-        little_kernel_input_buffers;
-    std::vector<KernelBuffers> big_kernel_buffers, little_kernel_buffers;
+    // Buffer containers for kernels (big + little)
+    std::vector<PartitionBuffer> dense_buffers, sparse_buffers;
 
     // Buffer containers for HBM writer kernels (one entry per writer kernel
     // instance)
@@ -62,6 +55,7 @@ class AlgorithmHost {
     cl::Buffer apply_kernel_node_prop_buffer;
     std::vector<bus_word_t, aligned_allocator<bus_word_t>>
         writer_kernel_host_outputs;
+    uint32_t big_dst_offset = 0;
 };
 
 #endif // __GENERATED_HOST_H__

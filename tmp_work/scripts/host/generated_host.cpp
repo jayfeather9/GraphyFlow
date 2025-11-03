@@ -12,6 +12,9 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                                  int start_node) {
     std::cout << "--- [Host] Phase 0: Preparing data structures ---"
               << std::endl;
+    
+    auto start_time = std::chrono::system_clock::now();
+    auto current_time = start_time;
 
     // 1. Initialize algorithm state
     m_num_vertices = container.num_graph_vertices;
@@ -21,26 +24,23 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
     }
 
     // 2. Prepare host-side input buffers for each pipeline
-    // Now we have 1 little partition with LITTLE_KERNEL_NUM pipelines
-    // and 1 big partition with BIG_KERNEL_NUM pipelines
     const size_t bytes_per_word = AXI_BUS_WIDTH / 8;
-    little_kernel_input_buffers.resize(LITTLE_KERNEL_NUM);
-    big_kernel_input_buffers.resize(BIG_KERNEL_NUM);
-    std::vector<bus_word_t, aligned_allocator<bus_word_t>> big_dst_node_props,
-        little_dst_node_props;
+    dense_buffers.resize(container.num_dense_partitions);
+    sparse_buffers.resize(container.num_sparse_partitions);
 
-    auto start_time = std::chrono::system_clock::now();
-    auto current_time = start_time;
+    for (int i = 0; i < container.num_dense_partitions; ++i) {
+        dense_buffers[i].pipelines.resize(LITTLE_KERNEL_NUM);
+    }
+    for (int i = 0; i < container.num_sparse_partitions; ++i) {
+        sparse_buffers[i].pipelines.resize(BIG_KERNEL_NUM);
+    }
 
     // --- 2.1: Prepare BIG partition data (shared node props, separate edge
     // props per pipeline) ---
-    if (!container.SPs.empty()) {
-        const auto &big_partition = container.SPs[0];
+    for (int i = 0; i < container.num_sparse_partitions; ++i) {
+        const auto &big_partition = container.SPs[i];
 
-        // Pack node distances ONCE for the big partition (shared across all big
-        // pipelines)
-        std::vector<bus_word_t, aligned_allocator<bus_word_t>>
-            shared_big_node_props;
+        // Pack node distances ONCE for the big partition (shared)
         {
             const size_t bytes_per_dist = DISTANCE_BITWIDTH / 8;
             const size_t dist_per_word = bytes_per_word / bytes_per_dist;
@@ -69,10 +69,10 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                 temp_byte_buffer.insert(temp_byte_buffer.end(), data_ptr,
                                         data_ptr + bytes_per_dist);
             }
-            shared_big_node_props.resize(
+            sparse_buffers[i].packed_node_props.resize(
                 (temp_byte_buffer.size() + bytes_per_word - 1) / bytes_per_word,
                 0);
-            std::memcpy(shared_big_node_props.data(), temp_byte_buffer.data(),
+            std::memcpy(sparse_buffers[i].packed_node_props.data(), temp_byte_buffer.data(),
                         temp_byte_buffer.size());
 
             const size_t dst_word_number =
@@ -96,10 +96,10 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                 temp_byte_buffer.insert(temp_byte_buffer.end(), data_ptr,
                                         data_ptr + bytes_per_dist);
             }
-            big_dst_node_props.resize(
+            sparse_buffers[i].packed_dst_props.resize(
                 (temp_byte_buffer.size() + bytes_per_word - 1) / bytes_per_word,
                 0);
-            std::memcpy(big_dst_node_props.data(), temp_byte_buffer.data(),
+            std::memcpy(sparse_buffers[i].packed_dst_props.data(), temp_byte_buffer.data(),
                         temp_byte_buffer.size());
         }
 
@@ -113,14 +113,6 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
         // Pack edge properties for EACH big pipeline
         for (int pip = 0; pip < BIG_KERNEL_NUM; ++pip) {
             const auto &pipeline_edges = big_partition.pipeline_edges[pip];
-
-            // Copy shared node props to this pipeline's buffer
-            big_kernel_input_buffers[pip].packed_node_props.resize(
-                shared_big_node_props.size());
-            std::memcpy(big_kernel_input_buffers[pip].packed_node_props.data(),
-                        shared_big_node_props.data(),
-                        shared_big_node_props.size() * sizeof(bus_word_t));
-
             // Pack this pipeline's edge properties
             const size_t bytes_per_edge =
                 (NODE_ID_BITWIDTH + NODE_ID_BITWIDTH) / 8;
@@ -164,10 +156,10 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                                             edge_bytes + bytes_per_edge);
                 }
             }
-            big_kernel_input_buffers[pip].packed_edge_props.resize(
+            sparse_buffers[i].pipelines[pip].packed_edge_props.resize(
                 (temp_byte_buffer.size() + bytes_per_word - 1) / bytes_per_word,
                 0);
-            std::memcpy(big_kernel_input_buffers[pip].packed_edge_props.data(),
+            std::memcpy(sparse_buffers[i].pipelines[pip].packed_edge_props.data(),
                         temp_byte_buffer.data(), temp_byte_buffer.size());
         }
 
@@ -182,13 +174,10 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
 
     // --- 2.2: Prepare LITTLE partition data (shared node props, separate edge
     // props per pipeline) ---
-    if (!container.DPs.empty()) {
-        const auto &little_partition = container.DPs[0];
+    for (int i = 0; i < container.num_dense_partitions; ++i) {
+        const auto &little_partition = container.DPs[i];
 
-        // Pack node distances ONCE for the little partition (shared across all
-        // little pipelines)
-        std::vector<bus_word_t, aligned_allocator<bus_word_t>>
-            shared_little_node_props;
+        // Pack node distances ONCE for the little partition (shared)
         {
             const size_t bytes_per_dist = DISTANCE_BITWIDTH / 8;
             const size_t dist_per_word = bytes_per_word / bytes_per_dist;
@@ -215,10 +204,10 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                 temp_byte_buffer.insert(temp_byte_buffer.end(), data_ptr,
                                         data_ptr + bytes_per_dist);
             }
-            shared_little_node_props.resize(
+            sparse_buffers[i].packed_node_props.resize(
                 (temp_byte_buffer.size() + bytes_per_word - 1) / bytes_per_word,
                 0);
-            std::memcpy(shared_little_node_props.data(),
+            std::memcpy(sparse_buffers[i].packed_node_props.data(),
                         temp_byte_buffer.data(), temp_byte_buffer.size());
 
             const size_t dst_word_number =
@@ -242,10 +231,10 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                 temp_byte_buffer.insert(temp_byte_buffer.end(), data_ptr,
                                         data_ptr + bytes_per_dist);
             }
-            little_dst_node_props.resize(
+            sparse_buffers[i].packed_dst_props.resize(
                 (temp_byte_buffer.size() + bytes_per_word - 1) / bytes_per_word,
                 0);
-            std::memcpy(little_dst_node_props.data(), temp_byte_buffer.data(),
+            std::memcpy(sparse_buffers[i].packed_dst_props.data(), temp_byte_buffer.data(),
                         temp_byte_buffer.size());
         }
 
@@ -259,14 +248,6 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
         // Pack edge properties for EACH little pipeline
         for (int pip = 0; pip < LITTLE_KERNEL_NUM; ++pip) {
             const auto &pipeline_edges = little_partition.pipeline_edges[pip];
-
-            // Copy shared node props to this pipeline's buffer
-            little_kernel_input_buffers[pip].packed_node_props.resize(
-                shared_little_node_props.size());
-            std::memcpy(
-                little_kernel_input_buffers[pip].packed_node_props.data(),
-                shared_little_node_props.data(),
-                shared_little_node_props.size() * sizeof(bus_word_t));
 
             // Pack this pipeline's edge properties
             const size_t bytes_per_edge =
@@ -311,11 +292,11 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                                             edge_bytes + bytes_per_edge);
                 }
             }
-            little_kernel_input_buffers[pip].packed_edge_props.resize(
+            sparse_buffers[i].pipelines[pip].packed_edge_props.resize(
                 (temp_byte_buffer.size() + bytes_per_word - 1) / bytes_per_word,
                 0);
             std::memcpy(
-                little_kernel_input_buffers[pip].packed_edge_props.data(),
+                sparse_buffers[i].pipelines[pip].packed_edge_props.data(),
                 temp_byte_buffer.data(), temp_byte_buffer.size());
         }
 
@@ -327,19 +308,31 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
             << " sec) ---" << std::endl;
         start_time = current_time;
     }
-    apply_kernel_node_props.resize(little_dst_node_props.size() +
-                                   big_dst_node_props.size());
-    std::memcpy(apply_kernel_node_props.data(), little_dst_node_props.data(),
-                little_dst_node_props.size() * sizeof(bus_word_t));
-    std::memcpy(apply_kernel_node_props.data() + little_dst_node_props.size(),
-                big_dst_node_props.data(),
-                big_dst_node_props.size() * sizeof(bus_word_t));
+
+    // apply kernel node props should be first each little partition's dst props,
+    // then each big partition's dst props
+    apply_kernel_node_props.clear();
+    for (int i = 0; i < container.num_dense_partitions; ++i) {
+        apply_kernel_node_props.insert(
+            apply_kernel_node_props.end(),
+            dense_buffers[i].packed_dst_props.begin(),
+            dense_buffers[i].packed_dst_props.end());
+    }
+    big_dst_offset = apply_kernel_node_props.size();
+    for (int i = 0; i < container.num_sparse_partitions; ++i) {
+        apply_kernel_node_props.insert(
+            apply_kernel_node_props.end(),
+            sparse_buffers[i].packed_dst_props.begin(),
+            sparse_buffers[i].packed_dst_props.end());
+    }
     current_time = std::chrono::system_clock::now();
     std::cout
         << "--- [Host] Phase 0: Prepared apply kernel node props ("
         << std::chrono::duration<double>(current_time - start_time).count()
         << " sec) ---" << std::endl;
 }
+
+// --------- modified done until here ---------
 
 // --- PHASE 1: BUFFER SETUP ---
 // MODIFIED: Create separate edge buffers for each pipeline, but share node
