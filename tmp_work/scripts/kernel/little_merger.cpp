@@ -1,19 +1,19 @@
 #include "shared_kernel_params.h"
 
 void merge_little_kernels(
-    hls::stream<write_burst_pkt_t> &little_kernel_1_out_stream,
-    hls::stream<write_burst_pkt_t> &little_kernel_2_out_stream,
-    hls::stream<write_burst_pkt_t> &little_kernel_3_out_stream,
-    hls::stream<write_burst_pkt_t> &little_kernel_4_out_stream,
-    hls::stream<write_burst_pkt_t> &little_kernel_5_out_stream,
-    hls::stream<write_burst_pkt_t> &little_kernel_6_out_stream,
-    hls::stream<write_burst_pkt_t> &little_kernel_7_out_stream,
-    hls::stream<write_burst_pkt_t> &little_kernel_8_out_stream,
-    hls::stream<write_burst_pkt_t> &little_kernel_9_out_stream,
-    hls::stream<write_burst_pkt_t> &little_kernel_10_out_stream,
-    hls::stream<write_burst_pkt_t> &little_kernel_11_out_stream,
+    hls::stream<little_out_pkt_t> &little_kernel_1_out_stream,
+    hls::stream<little_out_pkt_t> &little_kernel_2_out_stream,
+    hls::stream<little_out_pkt_t> &little_kernel_3_out_stream,
+    hls::stream<little_out_pkt_t> &little_kernel_4_out_stream,
+    hls::stream<little_out_pkt_t> &little_kernel_5_out_stream,
+    hls::stream<little_out_pkt_t> &little_kernel_6_out_stream,
+    hls::stream<little_out_pkt_t> &little_kernel_7_out_stream,
+    hls::stream<little_out_pkt_t> &little_kernel_8_out_stream,
+    hls::stream<little_out_pkt_t> &little_kernel_9_out_stream,
+    hls::stream<little_out_pkt_t> &little_kernel_10_out_stream,
+    hls::stream<little_out_pkt_t> &little_kernel_11_out_stream,
     hls::stream<write_burst_pkt_t> &kernel_out_stream) {
-    write_burst_pkt_t tmp_prop_pkt[LITTLE_MERGER_LENGTH];
+    little_out_pkt_t tmp_prop_pkt[LITTLE_MERGER_LENGTH];
 #pragma HLS ARRAY_PARTITION variable = tmp_prop_pkt dim = 0 complete
 
     bool process_flag[LITTLE_MERGER_LENGTH];
@@ -24,14 +24,11 @@ void merge_little_kernels(
         process_flag[i] = 0;
     }
 
-    bus_word_t merged_write_burst;
+    reduce_word_t merged_write_burst;
 
-    write_burst_pkt_t one_write_burst;
+    bus_word_t one_write_burst;
 
-    uint32_t outer_idx = 0;
-
-    ap_fixed_pod_t tmp_prop_arrary[16];
-#pragma HLS ARRAY_PARTITION variable = tmp_prop_arrary dim = 0 complete
+    uint32_t inner_idx = 0;
 
     distance_t max_val = (distance_t)(16384.0);
     ap_fixed_pod_t max_pod = *reinterpret_cast<ap_fixed_pod_t *>(&max_val);
@@ -80,32 +77,36 @@ merge_tmp_prop_big_krnls:
                           process_flag[9] & process_flag[10] & 1;
 
         if (merge_flag) {
-            for (int i = 0; i < 16; i++) {
-#pragma HLS UNROLL
-                tmp_prop_arrary[i] = max_pod;
-            }
+            ap_fixed_pod_t uram_high = max_pod;;
+            ap_fixed_pod_t uram_low = max_pod;
 
             for (int i = 0; i < LITTLE_MERGER_LENGTH; i++) {
 #pragma HLS UNROLL
-                for (int j = 0; j < 16; j++) {
-#pragma HLS UNROLL
-                    ap_fixed_pod_t update =
-                        tmp_prop_pkt[i].data.range(31 + (j << 5), (j << 5));
-                    tmp_prop_arrary[j] =
-                        (tmp_prop_arrary[j] < update || update == 0x0)
-                            ? tmp_prop_arrary[j]
-                            : update;
-                }
+                ap_fixed_pod_t update_low = tmp_prop_pkt[i].data.range(31, 0);
+                ap_fixed_pod_t update_high = tmp_prop_pkt[i].data.range(63, 32);
+                uram_low = (uram_low < update_low || update_low == 0x0)
+                               ? uram_low
+                               : update_low;
+                uram_high = (uram_high < update_high || update_high == 0x0)
+                                ? uram_high
+                                : update_high;
             }
 
-            for (int i = 0; i < 16; i++) {
-#pragma HLS UNROLL
-                merged_write_burst.range(31 + (i << 5), (i << 5)) =
-                    tmp_prop_arrary[i];
-            }
+            merged_write_burst.range(31, 0) = uram_low;
+            merged_write_burst.range(63, 32) = uram_high;
 
-            one_write_burst.data = merged_write_burst;
-            kernel_out_stream.write(one_write_burst);
+            one_write_burst.range(63 + (inner_idx << 6), (inner_idx << 6)) =
+                merged_write_burst;
+            inner_idx++;
+
+            if (inner_idx == 8) {
+                write_burst_pkt_t out_pkt;
+                out_pkt.data = one_write_burst;
+                out_pkt.last = 0;
+                kernel_out_stream.write(out_pkt);
+                inner_idx = 0;
+                one_write_burst = 0;
+            }
 
             for (int i = 0; i < LITTLE_MERGER_LENGTH; i++) {
 #pragma HLS unroll
@@ -116,17 +117,17 @@ merge_tmp_prop_big_krnls:
 }
 
 extern "C" void
-little_merger(hls::stream<write_burst_pkt_t> &little_kernel_1_out_stream,
-              hls::stream<write_burst_pkt_t> &little_kernel_2_out_stream,
-              hls::stream<write_burst_pkt_t> &little_kernel_3_out_stream,
-              hls::stream<write_burst_pkt_t> &little_kernel_4_out_stream,
-              hls::stream<write_burst_pkt_t> &little_kernel_5_out_stream,
-              hls::stream<write_burst_pkt_t> &little_kernel_6_out_stream,
-              hls::stream<write_burst_pkt_t> &little_kernel_7_out_stream,
-              hls::stream<write_burst_pkt_t> &little_kernel_8_out_stream,
-              hls::stream<write_burst_pkt_t> &little_kernel_9_out_stream,
-              hls::stream<write_burst_pkt_t> &little_kernel_10_out_stream,
-              hls::stream<write_burst_pkt_t> &little_kernel_11_out_stream,
+little_merger(hls::stream<little_out_pkt_t> &little_kernel_1_out_stream,
+              hls::stream<little_out_pkt_t> &little_kernel_2_out_stream,
+              hls::stream<little_out_pkt_t> &little_kernel_3_out_stream,
+              hls::stream<little_out_pkt_t> &little_kernel_4_out_stream,
+              hls::stream<little_out_pkt_t> &little_kernel_5_out_stream,
+              hls::stream<little_out_pkt_t> &little_kernel_6_out_stream,
+              hls::stream<little_out_pkt_t> &little_kernel_7_out_stream,
+              hls::stream<little_out_pkt_t> &little_kernel_8_out_stream,
+              hls::stream<little_out_pkt_t> &little_kernel_9_out_stream,
+              hls::stream<little_out_pkt_t> &little_kernel_10_out_stream,
+              hls::stream<little_out_pkt_t> &little_kernel_11_out_stream,
               hls::stream<write_burst_pkt_t> &kernel_out_stream) {
 
 #pragma HLS interface ap_ctrl_none port = return

@@ -56,6 +56,7 @@ typedef ap_fixed<DISTANCE_BITWIDTH, DISTANCE_INTEGER_PART> distance_t;
 typedef ap_uint<OUT_END_MARKER_BITWIDTH> out_end_marker_t;
 typedef ap_axiu<256, 0, 0, 0> node_dist_pkt_t;
 typedef ap_axiu<512, 0, 0, 0> write_burst_pkt_t;
+typedef ap_axiu<64, 0, 0, 0> little_out_pkt_t;
 typedef ap_axiu<32, 0, 0, 0> ppb_request_pkt_t;
 typedef ap_axiu<512, 0, 0, 32> ppb_response_pkt_t;
 typedef ap_axiu<512, 0, 0, 0> cacheline_data_pkt_t;
@@ -221,6 +222,6 @@ graphyflow_little(const bus_word_t *edge_props, int32_t num_nodes,
                   int32_t num_edges, int32_t dst_num,
                   hls::stream<ppb_request_pkt_t> &ppb_req_stream,
                   hls::stream<ppb_response_pkt_t> &ppb_resp_stream,
-                  hls::stream<write_burst_pkt_t> &kernel_out_stream);
+                  hls::stream<little_out_pkt_t> &kernel_out_stream);
 
 #endif // __GRAPHYFLOW_GRAPHYFLOW_LITTLE_H__

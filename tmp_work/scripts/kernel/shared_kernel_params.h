@@ -51,6 +51,7 @@ typedef ap_fixed<DISTANCE_BITWIDTH, DISTANCE_INTEGER_PART> distance_t;
 typedef ap_uint<OUT_END_MARKER_BITWIDTH> out_end_marker_t;
 typedef ap_axiu<256, 0, 0, 0> node_dist_pkt_t;
 typedef ap_axiu<512, 0, 0, 0> write_burst_pkt_t;
+typedef ap_axiu<64, 0, 0, 0> little_out_pkt_t;
 typedef ap_axiu<512, 0, 0, 32> write_burst_w_dst_pkt_t;
 typedef ap_axiu<32, 0, 0, 8> cacheline_request_pkt_t;
 typedef ap_axiu<512, 0, 0, 8> cacheline_response_pkt_t;
@@ -79,17 +80,17 @@ big_merger(hls::stream<write_burst_pkt_t> &big_kernel_1_out_stream,
            hls::stream<write_burst_pkt_t> &kernel_out_stream);
 
 extern "C" void
-little_merger(hls::stream<write_burst_pkt_t> &little_kernel_1_out_stream,
-              hls::stream<write_burst_pkt_t> &little_kernel_2_out_stream,
-              hls::stream<write_burst_pkt_t> &little_kernel_3_out_stream,
-              hls::stream<write_burst_pkt_t> &little_kernel_4_out_stream,
-              hls::stream<write_burst_pkt_t> &little_kernel_5_out_stream,
-              hls::stream<write_burst_pkt_t> &little_kernel_6_out_stream,
-              hls::stream<write_burst_pkt_t> &little_kernel_7_out_stream,
-              hls::stream<write_burst_pkt_t> &little_kernel_8_out_stream,
-              hls::stream<write_burst_pkt_t> &little_kernel_9_out_stream,
-              hls::stream<write_burst_pkt_t> &little_kernel_10_out_stream,
-              hls::stream<write_burst_pkt_t> &little_kernel_11_out_stream,
+little_merger(hls::stream<little_out_pkt_t> &little_kernel_1_out_stream,
+              hls::stream<little_out_pkt_t> &little_kernel_2_out_stream,
+              hls::stream<little_out_pkt_t> &little_kernel_3_out_stream,
+              hls::stream<little_out_pkt_t> &little_kernel_4_out_stream,
+              hls::stream<little_out_pkt_t> &little_kernel_5_out_stream,
+              hls::stream<little_out_pkt_t> &little_kernel_6_out_stream,
+              hls::stream<little_out_pkt_t> &little_kernel_7_out_stream,
+              hls::stream<little_out_pkt_t> &little_kernel_8_out_stream,
+              hls::stream<little_out_pkt_t> &little_kernel_9_out_stream,
+              hls::stream<little_out_pkt_t> &little_kernel_10_out_stream,
+              hls::stream<little_out_pkt_t> &little_kernel_11_out_stream,
               hls::stream<write_burst_pkt_t> &kernel_out_stream);
 
 extern "C" void hbm_writer(

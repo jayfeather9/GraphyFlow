@@ -282,6 +282,7 @@ Reduc_105_unit_reduce(hls::stream<update_tuple_t> &update_set_stm,
 
     const int32_t num_words =
         (dst_num + DISTANCES_PER_REDUCE_WORD - 1) / DISTANCES_PER_REDUCE_WORD;
+    const int32_t rounded_num_words = (num_words + 7) / 8 * 8;
 
 #ifdef EMULATION
     memset(prop_mem, 0, sizeof(reduce_word_t) * PE_NUM * MEM_SIZE);
@@ -357,7 +358,7 @@ LOOP_AGGREGATE:
 
     // --- Phase 4: Stream out aggregated memory ---
 LOOP_STREAM_OUT:
-    for (int i = 0; i < num_words; i++) {
+    for (int i = 0; i < rounded_num_words; i++) {
 #pragma HLS PIPELINE II = 1
         for (int pe = 0; pe < PE_NUM; pe++) {
 #pragma HLS UNROLL
@@ -414,18 +415,23 @@ void set_word_in_bus(bus_word_t &bus_word, int idx, ap_fixed_pod_t pod_low,
 // Collects aggregated data from all PEs and outputs final results
 static void
 Reduc_105_drain_multi_pe(hls::stream<reduce_word_t> (&pe_mem_in)[PE_NUM],
-                         hls::stream<write_burst_pkt_t> &kernel_out_stream,
+                         hls::stream<little_out_pkt_t> &kernel_out_stream,
                          int32_t dst_num) {
 
     // --- Phase 2: High-Performance Drain Loop ---
-    write_burst_pkt_t one_write_burst;
+    little_out_pkt_t one_write_burst;
     one_write_burst.last = 0;
-    uint32_t waiting_count = 0;
     distance_t max_val = (distance_t)(16384.0);
     ap_fixed_pod_t max_pod = *reinterpret_cast<ap_fixed_pod_t *>(&max_val);
 
+    // round dst_num to be 8 * DISTANCES_PER_REDUCE_WORD
+    int32_t rounded_dst_num =
+        ((dst_num + (8 * DISTANCES_PER_REDUCE_WORD) - 1) /
+         (8 * DISTANCES_PER_REDUCE_WORD)) *
+        (8 * DISTANCES_PER_REDUCE_WORD);
+
 LOOP_DRAIN_ADDR:
-    for (int32_t base_addr = 0; base_addr < dst_num;
+    for (int32_t base_addr = 0; base_addr < rounded_dst_num;
          base_addr += DISTANCES_PER_REDUCE_WORD) {
 #pragma HLS PIPELINE II = 1
         ap_fixed_pod_t uram_res_low = max_pod;
@@ -446,15 +452,10 @@ LOOP_DRAIN_ADDR:
                                 ? uram_res_high
                                 : incoming_dist_pod_high;
         }
-        set_word_in_bus(one_write_burst.data, waiting_count, uram_res_low,
-                        uram_res_high);
-        waiting_count++;
-        if (waiting_count == 8) {
-            waiting_count = 0;
-            kernel_out_stream.write(one_write_burst);
-        }
-    }
-    if (waiting_count != 0) {
+        reduce_word_t merged_word;
+        merged_word.range(31, 0) = uram_res_low;
+        merged_word.range(63, 32) = uram_res_high;
+        one_write_burst.data = merged_word;
         kernel_out_stream.write(one_write_burst);
     }
 }
@@ -465,7 +466,7 @@ graphyflow_little(const bus_word_t *edge_props, int32_t num_nodes,
                   int32_t num_edges, int32_t dst_num,
                   hls::stream<ppb_request_pkt_t> &ppb_req_stream,
                   hls::stream<ppb_response_pkt_t> &ppb_resp_stream,
-                  hls::stream<write_burst_pkt_t> &kernel_out_stream) {
+                  hls::stream<little_out_pkt_t> &kernel_out_stream) {
 #pragma HLS INTERFACE m_axi port = edge_props offset = slave bundle = gmem0
 #pragma HLS INTERFACE s_axilite port = edge_props
 #pragma HLS INTERFACE s_axilite port = num_nodes
