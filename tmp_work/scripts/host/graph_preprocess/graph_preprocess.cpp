@@ -251,18 +251,20 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
 
             // --- 4.3: Distribute edges evenly among pipelines ---
             pd.pipeline_edges.resize(num_pipelines);
-            int edges_per_pipeline = pd.num_edges / num_pipelines;
+            int edges_per_pipeline =
+                (pd.num_edges + num_pipelines - 1) / num_pipelines;
 
             for (int pip = 0; pip < num_pipelines; ++pip) {
                 pd.pipeline_edges[pip].pipeline_id = pip;
-                int start_idx = pip * edges_per_pipeline;
+                int start_idx =
+                    std::min(pip * edges_per_pipeline, (int)pd.num_edges);
                 int end_idx =
                     std::min(start_idx + edges_per_pipeline, (int)pd.num_edges);
-                if (pip == num_pipelines - 1) {
-                    end_idx =
-                        pd.num_edges; // Last pipeline takes remaining edges
-                }
                 pd.pipeline_edges[pip].num_edges = end_idx - start_idx;
+
+                int padding_size =
+                    (8 - (pd.pipeline_edges[pip].num_edges % 8)) % 8;
+                pd.pipeline_edges[pip].num_edges += padding_size;
 
                 // Build CSR for this pipeline
                 pd.pipeline_edges[pip].offsets.resize(pd.num_vertices + 1, 0);
@@ -275,6 +277,12 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
                 std::vector<int> out_degree(pd.num_vertices, 0);
                 for (int j = start_idx; j < end_idx; ++j) {
                     out_degree[local_edges[j].src]++;
+                    if (j == end_idx - 1) {
+                        // If this is the last edge, add padding edges if needed
+                        for (int p = 0; p < padding_size; ++p) {
+                            out_degree[local_edges[j].src]++;
+                        }
+                    }
                 }
 
                 // Build offsets
@@ -294,6 +302,15 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
                         local_edges[j].dest);
                     pd.pipeline_edges[pip].weights.push_back(
                         local_edges[j].weight);
+                    if (j == end_idx - 1) {
+                        // If this is the last edge, add padding edges if needed
+                        for (int p = 0; p < padding_size; ++p) {
+                            idx = current_offset[src]++;
+                            pd.pipeline_edges[pip].columns.push_back(
+                                0x7FFFFFFF);
+                            pd.pipeline_edges[pip].weights.push_back(1);
+                        }
+                    }
                 }
             }
         }

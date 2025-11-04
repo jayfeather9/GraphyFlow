@@ -985,42 +985,52 @@ LOOP_AGGREGATE:
         if (kt_elem.end_flag) {
             break;
         }
-        int32_t key = kt_elem.node_id >> LOG_PE_NUM;
-        ap_fixed_pod_t incoming_dist_pod = kt_elem.prop;
+        if ((kt_elem.node_id & 0x40000000) == 0) {
+            int32_t key = kt_elem.node_id >> LOG_PE_NUM;
+            ap_fixed_pod_t incoming_dist_pod = kt_elem.prop;
+            int32_t word_addr = (key >> 1);
+            int32_t pack_idx = (key & 1);
 
-        int32_t word_addr = (key >> 1);
-        int32_t pack_idx = (key & 1);
+            reduce_word_t current_word = prop_mem[word_addr];
 
-        reduce_word_t current_word = prop_mem[word_addr];
-
-        // Check cache first
-        for (int i = L; i >= 0; --i) {
+            // Check cache first
+            for (int i = L; i >= 0; --i) {
 #pragma HLS UNROLL
-            if (cache_addr_buffer[i] == word_addr) {
-                current_word = cache_data_buffer[i];
-                break;
+                if (cache_addr_buffer[i] == word_addr) {
+                    current_word = cache_data_buffer[i];
+                    break;
+                }
             }
-        }
 
-        // Shift cache
-        for (int i = 0; i < L; i++) {
+            // Shift cache
+            for (int i = 0; i < L; i++) {
 #pragma HLS UNROLL
-            cache_addr_buffer[i] = cache_addr_buffer[i + 1];
-            cache_data_buffer[i] = cache_data_buffer[i + 1];
+                cache_addr_buffer[i] = cache_addr_buffer[i + 1];
+                cache_data_buffer[i] = cache_data_buffer[i + 1];
+            }
+
+            ap_fixed_pod_t old_dist_pod = get_raw_val(current_word, pack_idx);
+            ap_fixed_pod_t new_dist_pod =
+                (old_dist_pod < incoming_dist_pod && old_dist_pod != 0x0)
+                    ? old_dist_pod
+                    : incoming_dist_pod;
+
+            // distance_t old_dist = *reinterpret_cast<distance_t
+            // *>(&old_dist_pod); distance_t incoming_dist =
+            // *reinterpret_cast<distance_t *>(&incoming_dist_pod); distance_t
+            // new_dist = *reinterpret_cast<distance_t *>(&new_dist_pod);
+            // printf("PE %d key %d: old_dist %.3f, incoming_dist %.3f, new_dist
+            // %.3f\n",
+            //        (int)pe_id, (int)key, (float)old_dist,
+            //        (float)incoming_dist, (float)new_dist);
+
+            set_raw_val(current_word, pack_idx, new_dist_pod);
+
+            // Write back to URAM and update cache
+            prop_mem[word_addr] = current_word;
+            cache_addr_buffer[L] = word_addr;
+            cache_data_buffer[L] = current_word;
         }
-
-        ap_fixed_pod_t old_dist_pod = get_raw_val(current_word, pack_idx);
-        ap_fixed_pod_t new_dist_pod =
-            (old_dist_pod < incoming_dist_pod && old_dist_pod != 0x0)
-                ? old_dist_pod
-                : incoming_dist_pod;
-
-        set_raw_val(current_word, pack_idx, new_dist_pod);
-
-        // Write back to URAM and update cache
-        prop_mem[word_addr] = current_word;
-        cache_addr_buffer[L] = word_addr;
-        cache_data_buffer[L] = current_word;
     }
 
     // --- Phase 4: Stream out aggregated memory ---

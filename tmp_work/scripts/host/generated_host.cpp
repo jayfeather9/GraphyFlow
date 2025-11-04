@@ -135,17 +135,23 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
             const size_t bytes_per_edge =
                 (NODE_ID_BITWIDTH + NODE_ID_BITWIDTH) / 8;
             const size_t edges_per_word = bytes_per_word / bytes_per_edge;
+
+            // Check if this pipeline has no edges - if so, add 8 dummy edges
+            const size_t actual_edges =
+                (pipeline_edges.num_edges == 0) ? 8 : pipeline_edges.num_edges;
             const size_t word_number =
-                (pipeline_edges.num_edges + edges_per_word - 1) /
-                edges_per_word;
+                (actual_edges + edges_per_word - 1) / edges_per_word;
             std::vector<char> temp_byte_buffer;
             temp_byte_buffer.reserve(word_number * bytes_per_word);
 
-            // Iterate through vertices, then their edges
-            for (int v = 0; v < big_partition.num_vertices; ++v) {
-                node_id_t src_id = v;
-                for (int edge_idx = pipeline_edges.offsets[v];
-                     edge_idx < pipeline_edges.offsets[v + 1]; ++edge_idx) {
+            if (pipeline_edges.num_edges == 0) {
+                printf("Padding SP No.%d, big pipe No.%d with 8 dummy edges.\n",
+                       i, pip);
+                // Add 8 dummy edges with dst_id = 0x7FFFFFFF and src_id = 0
+                const uint32_t dummy_dst_id = 0x7FFFFFFF;
+                const uint32_t dummy_src_id = 0;
+
+                for (int dummy_idx = 0; dummy_idx < 8; ++dummy_idx) {
                     if ((temp_byte_buffer.size() % bytes_per_word) +
                             bytes_per_edge >
                         bytes_per_word) {
@@ -157,21 +163,55 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                     }
 
                     char edge_bytes[bytes_per_edge];
-                    uint32_t dest_id = pipeline_edges.columns[edge_idx];
 
                     // Pack dst_id (first NODE_ID_BITWIDTH bits)
                     for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
-                        edge_bytes[b] = (dest_id >> (8 * b)) & 0xFF;
+                        edge_bytes[b] = (dummy_dst_id >> (8 * b)) & 0xFF;
                     }
 
                     // Pack src_id (next NODE_ID_BITWIDTH bits)
                     for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
                         edge_bytes[(NODE_ID_BITWIDTH / 8) + b] =
-                            (src_id >> (8 * b)) & 0xFF;
+                            (dummy_src_id >> (8 * b)) & 0xFF;
                     }
 
                     temp_byte_buffer.insert(temp_byte_buffer.end(), edge_bytes,
                                             edge_bytes + bytes_per_edge);
+                }
+            } else {
+                // Iterate through vertices, then their edges
+                for (int v = 0; v < big_partition.num_vertices; ++v) {
+                    node_id_t src_id = v;
+                    for (int edge_idx = pipeline_edges.offsets[v];
+                         edge_idx < pipeline_edges.offsets[v + 1]; ++edge_idx) {
+                        if ((temp_byte_buffer.size() % bytes_per_word) +
+                                bytes_per_edge >
+                            bytes_per_word) {
+                            size_t padding_needed =
+                                bytes_per_word -
+                                (temp_byte_buffer.size() % bytes_per_word);
+                            temp_byte_buffer.insert(temp_byte_buffer.end(),
+                                                    padding_needed, 0);
+                        }
+
+                        char edge_bytes[bytes_per_edge];
+                        uint32_t dest_id = pipeline_edges.columns[edge_idx];
+
+                        // Pack dst_id (first NODE_ID_BITWIDTH bits)
+                        for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
+                            edge_bytes[b] = (dest_id >> (8 * b)) & 0xFF;
+                        }
+
+                        // Pack src_id (next NODE_ID_BITWIDTH bits)
+                        for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
+                            edge_bytes[(NODE_ID_BITWIDTH / 8) + b] =
+                                (src_id >> (8 * b)) & 0xFF;
+                        }
+
+                        temp_byte_buffer.insert(temp_byte_buffer.end(),
+                                                edge_bytes,
+                                                edge_bytes + bytes_per_edge);
+                    }
                 }
             }
             sparse_buffers[i].pipelines[pip].packed_edge_props.resize(
@@ -291,17 +331,24 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
             const size_t bytes_per_edge =
                 (NODE_ID_BITWIDTH + NODE_ID_BITWIDTH) / 8;
             const size_t edges_per_word = bytes_per_word / bytes_per_edge;
+
+            // Check if this pipeline has no edges - if so, add 8 dummy edges
+            const size_t actual_edges =
+                (pipeline_edges.num_edges == 0) ? 8 : pipeline_edges.num_edges;
             const size_t word_number =
-                (pipeline_edges.num_edges + edges_per_word - 1) /
-                edges_per_word;
+                (actual_edges + edges_per_word - 1) / edges_per_word;
             std::vector<char> temp_byte_buffer;
             temp_byte_buffer.reserve(word_number * bytes_per_word);
 
-            // Iterate through vertices, then their edges
-            for (int v = 0; v < little_partition.num_vertices; ++v) {
-                node_id_t src_id = v;
-                for (int edge_idx = pipeline_edges.offsets[v];
-                     edge_idx < pipeline_edges.offsets[v + 1]; ++edge_idx) {
+            if (pipeline_edges.num_edges == 0) {
+                printf(
+                    "Padding DP No.%d, little pipe No.%d with 8 dummy edges.\n",
+                    i, pip);
+                // Add 8 dummy edges with dst_id = 0x7FFFFFFF and src_id = 0
+                const uint32_t dummy_dst_id = 0x7FFFFFFF;
+                const uint32_t dummy_src_id = 0;
+
+                for (int dummy_idx = 0; dummy_idx < 8; ++dummy_idx) {
                     if ((temp_byte_buffer.size() % bytes_per_word) +
                             bytes_per_edge >
                         bytes_per_word) {
@@ -313,21 +360,55 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                     }
 
                     char edge_bytes[bytes_per_edge];
-                    uint32_t dest_id = pipeline_edges.columns[edge_idx];
 
                     // Pack dst_id (first NODE_ID_BITWIDTH bits)
                     for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
-                        edge_bytes[b] = (dest_id >> (8 * b)) & 0xFF;
+                        edge_bytes[b] = (dummy_dst_id >> (8 * b)) & 0xFF;
                     }
 
                     // Pack src_id (next NODE_ID_BITWIDTH bits)
                     for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
                         edge_bytes[(NODE_ID_BITWIDTH / 8) + b] =
-                            (src_id >> (8 * b)) & 0xFF;
+                            (dummy_src_id >> (8 * b)) & 0xFF;
                     }
 
                     temp_byte_buffer.insert(temp_byte_buffer.end(), edge_bytes,
                                             edge_bytes + bytes_per_edge);
+                }
+            } else {
+                // Iterate through vertices, then their edges
+                for (int v = 0; v < little_partition.num_vertices; ++v) {
+                    node_id_t src_id = v;
+                    for (int edge_idx = pipeline_edges.offsets[v];
+                         edge_idx < pipeline_edges.offsets[v + 1]; ++edge_idx) {
+                        if ((temp_byte_buffer.size() % bytes_per_word) +
+                                bytes_per_edge >
+                            bytes_per_word) {
+                            size_t padding_needed =
+                                bytes_per_word -
+                                (temp_byte_buffer.size() % bytes_per_word);
+                            temp_byte_buffer.insert(temp_byte_buffer.end(),
+                                                    padding_needed, 0);
+                        }
+
+                        char edge_bytes[bytes_per_edge];
+                        uint32_t dest_id = pipeline_edges.columns[edge_idx];
+
+                        // Pack dst_id (first NODE_ID_BITWIDTH bits)
+                        for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
+                            edge_bytes[b] = (dest_id >> (8 * b)) & 0xFF;
+                        }
+
+                        // Pack src_id (next NODE_ID_BITWIDTH bits)
+                        for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
+                            edge_bytes[(NODE_ID_BITWIDTH / 8) + b] =
+                                (src_id >> (8 * b)) & 0xFF;
+                        }
+
+                        temp_byte_buffer.insert(temp_byte_buffer.end(),
+                                                edge_bytes,
+                                                edge_bytes + bytes_per_edge);
+                    }
                 }
             }
             dense_buffers[i].pipelines[pip].packed_edge_props.resize(
@@ -471,6 +552,8 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
 
             size_t num_edge_words =
                 sparse_buffers[i].pipelines[pip].packed_edge_props.size();
+            printf("BIG SP No.%d, pipe No.%d, edge words %d\n", i, pip,
+                   (int)num_edge_words);
             OCL_CHECK(err, edge_props_buf = cl::Buffer(
                                acc.context,
                                CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX |
@@ -862,8 +945,11 @@ void AlgorithmHost::execute_kernel_iteration(
         for (int pip = 0; pip < BIG_KERNEL_NUM; ++pip) {
             auto &kernel = acc.big_gs_krnls[pip];
             auto &buffer = sparse_buffers[i].pipelines[pip].edge_props_buffer;
-            uint32_t pip_num_edges =
+            uint32_t original_num_edges =
                 container.SPs[i].pipeline_edges[pip].num_edges;
+            // Use 8 dummy edges if the pipeline has no edges
+            uint32_t pip_num_edges =
+                (original_num_edges == 0) ? 8 : original_num_edges;
             uint32_t big_num_vertices = container.SPs[i].num_vertices;
             uint32_t big_num_dsts = container.SPs[i].num_dsts;
             uint32_t memory_offset = sparse_buffers[i].node_prop_offset;
@@ -893,8 +979,11 @@ void AlgorithmHost::execute_kernel_iteration(
         for (int pip = 0; pip < LITTLE_KERNEL_NUM; ++pip) {
             auto &kernel = acc.little_gs_krnls[pip];
             auto &buffer = dense_buffers[i].pipelines[pip].edge_props_buffer;
-            uint32_t pip_num_edges =
+            uint32_t original_num_edges =
                 container.DPs[i].pipeline_edges[pip].num_edges;
+            // Use 8 dummy edges if the pipeline has no edges
+            uint32_t pip_num_edges =
+                (original_num_edges == 0) ? 8 : original_num_edges;
             uint32_t little_num_vertices = container.DPs[i].num_vertices;
             uint32_t little_num_dsts = container.DPs[i].num_dsts;
             uint32_t memory_offset = dense_buffers[i].src_buf_offset;
