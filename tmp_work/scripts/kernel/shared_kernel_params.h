@@ -99,6 +99,7 @@ extern "C" void hbm_writer(
     bus_word_t *src_prop_7, bus_word_t *src_prop_8, bus_word_t *src_prop_9,
     bus_word_t *src_prop_10, bus_word_t *src_prop_11, bus_word_t *src_prop_12,
     bus_word_t *src_prop_13, bus_word_t *src_prop_14, bus_word_t *output,
+    uint32_t num_partitions_little, uint32_t num_partitions_big,
     hls::stream<ppb_request_pkt_t> &ppb_req_stream_1,
     hls::stream<ppb_response_pkt_t> &ppb_resp_stream_1,
     hls::stream<ppb_request_pkt_t> &ppb_req_stream_2,

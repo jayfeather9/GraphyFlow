@@ -75,14 +75,16 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
     // --- PHASE 2: Distribute Destination Vertices to 2 Partitions ---
     std::vector<std::set<int>> little_dst_sets, big_dst_sets;
     std::unordered_map<int, int>
-        dst_vertex_to_partition_map; // 0 ~ little_partition_sizes.size()-1 => little
+        dst_vertex_to_partition_map; // 0 ~ little_partition_sizes.size()-1 =>
+                                     // little
 
     std::vector<size_t> little_partition_sizes;
     std::vector<size_t> big_partition_sizes;
 
     size_t remaining_dsts = unique_dst_vertices.size();
     while (remaining_dsts > 0) {
-        size_t assign_to_little = std::min((size_t)LITTLE_MAX_DST, remaining_dsts);
+        size_t assign_to_little =
+            std::min((size_t)LITTLE_MAX_DST, remaining_dsts);
         if (assign_to_little == remaining_dsts) {
             assign_to_little = (size_t)(remaining_dsts * 0.8);
         }
@@ -122,13 +124,15 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
               << " dst vertices across " << little_partition_sizes.size()
               << " partitions." << std::endl;
     std::cout << "[PHASE 2] Big partition assigned "
-              << std::accumulate(big_partition_sizes.begin(), big_partition_sizes.end(), 0)
+              << std::accumulate(big_partition_sizes.begin(),
+                                 big_partition_sizes.end(), 0)
               << " dst vertices across " << big_partition_sizes.size()
               << " partitions." << std::endl;
 
     // --- PHASE 3: Assign Edges to 2 Partitions Based on Destination Vertex ---
     std::vector<std::vector<Edge>> edges_lists;
-    edges_lists.resize(little_partition_sizes.size() + big_partition_sizes.size());
+    edges_lists.resize(little_partition_sizes.size() +
+                       big_partition_sizes.size());
     size_t little_edge_num = 0, big_edge_num = 0;
     for (int u = 0; u < graph->num_vertices; ++u) {
         for (int i = graph->offsets[u]; i < graph->offsets[u + 1]; ++i) {
@@ -247,14 +251,17 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
 
             // --- 4.3: Distribute edges evenly among pipelines ---
             pd.pipeline_edges.resize(num_pipelines);
-            int edges_per_pipeline =
-                (pd.num_edges + num_pipelines - 1) / num_pipelines;
+            int edges_per_pipeline = pd.num_edges / num_pipelines;
 
             for (int pip = 0; pip < num_pipelines; ++pip) {
                 pd.pipeline_edges[pip].pipeline_id = pip;
                 int start_idx = pip * edges_per_pipeline;
                 int end_idx =
                     std::min(start_idx + edges_per_pipeline, (int)pd.num_edges);
+                if (pip == num_pipelines - 1) {
+                    end_idx =
+                        pd.num_edges; // Last pipeline takes remaining edges
+                }
                 pd.pipeline_edges[pip].num_edges = end_idx - start_idx;
 
                 // Build CSR for this pipeline
@@ -298,21 +305,34 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
         PartitionDescriptor little_pd = process_partition(
             edges_lists[p], little_dst_sets[p], true, LITTLE_KERNEL_NUM);
         container.DPs.push_back(little_pd);
-        std::cout << "  - Little partition " << p << ": " << little_pd.num_vertices
-                  << " vertices, " << little_pd.num_dsts << " dsts, "
-                  << little_pd.num_edges << " edges distributed to "
-                  << little_pd.num_pipelines << " pipelines." << std::endl;
+        std::cout << "  - Little partition " << p << ": "
+                  << little_pd.num_vertices << " vertices, "
+                  << little_pd.num_dsts << " dsts, " << little_pd.num_edges
+                  << " edges distributed to " << little_pd.num_pipelines
+                  << " pipelines." << std::endl;
+        // print how much edge for each partition each pipeline
+        for (int pip = 0; pip < LITTLE_KERNEL_NUM; ++pip) {
+            std::cout << "    - Pipeline " << pip << ": "
+                      << little_pd.pipeline_edges[pip].num_edges << " edges."
+                      << std::endl;
+        }
     }
 
     for (size_t p = 0; p < big_partition_sizes.size(); ++p) {
-        PartitionDescriptor big_pd = process_partition(
-            edges_lists[p + little_partition_sizes.size()],
-            big_dst_sets[p], false, BIG_KERNEL_NUM);
+        PartitionDescriptor big_pd =
+            process_partition(edges_lists[p + little_partition_sizes.size()],
+                              big_dst_sets[p], false, BIG_KERNEL_NUM);
         container.SPs.push_back(big_pd);
         std::cout << "  - Big partition " << p << ": " << big_pd.num_vertices
                   << " vertices, " << big_pd.num_dsts << " dsts, "
                   << big_pd.num_edges << " edges distributed to "
                   << big_pd.num_pipelines << " pipelines." << std::endl;
+        // print how much edge for each partition each pipeline
+        for (int pip = 0; pip < BIG_KERNEL_NUM; ++pip) {
+            std::cout << "    - Pipeline " << pip << ": "
+                      << big_pd.pipeline_edges[pip].num_edges << " edges."
+                      << std::endl;
+        }
     }
 
     container.num_dense_partitions = container.DPs.size();

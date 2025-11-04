@@ -1,8 +1,7 @@
 #include "shared_kernel_params.h"
 
 static void little_node_prop_loader(
-    int i, const bus_word_t *node_distances_ddr,
-    uint32_t num_partitions,
+    int i, const bus_word_t *node_distances_ddr, uint32_t num_partitions,
     hls::stream<ppb_request_pkt_t> &ppb_req_stream,
     hls::stream<ppb_response_pkt_t> &ppb_resp_stream
     // hls::stream<cacheline_data_pkt_t> &cacheline_data_stream
@@ -44,8 +43,7 @@ littleKernelReadMemory:
 }
 
 static void big_node_prop_loader(
-    int i, const bus_word_t *node_distances_ddr,
-    uint32_t num_partitions,
+    int i, const bus_word_t *node_distances_ddr, uint32_t num_partitions,
     hls::stream<cacheline_request_pkt_t> &cacheline_req_stream,
     hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream
     // hls::stream<cacheline_data_pkt_t> &cacheline_data_stream
@@ -72,14 +70,15 @@ LOOP_BIG_KRL_READ_MEMORY:
         ap_uint<8> dst_pe;
         bus_word_t out_data;
         bool out_end_flag;
-        bool end_flag_get = false;
 
         if (process_flag) {
             // printf("Waiting for cacheline request...\n");fflush(NULL);
             // printf("Received cacheline request for idx %d from PE %d\n",
             // (int)cache_req.idx, (int)cache_req.target_pe); fflush(NULL);
             if (end_flag) {
-                end_flag_get = true;
+                out_data = 0;
+                last_cache_idx = -1;
+                left_partitions--;
             } else {
                 if (idx == last_cache_idx) {
                     out_data = last_cacheline;
@@ -100,11 +99,8 @@ LOOP_BIG_KRL_READ_MEMORY:
             // printf("Sent cacheline response for idx %d to PE %d\n",
             // (int)cache_req.idx, (int)cache_req.target_pe); fflush(NULL);
         }
-        if (end_flag_get) {
-            left_partitions--;
-            if (left_partitions == 0) {
-                break;
-            }
+        if (left_partitions == 0) {
+            break;
         }
     }
 }
@@ -137,8 +133,7 @@ extern "C" void hbm_writer(
     bus_word_t *src_prop_7, bus_word_t *src_prop_8, bus_word_t *src_prop_9,
     bus_word_t *src_prop_10, bus_word_t *src_prop_11, bus_word_t *src_prop_12,
     bus_word_t *src_prop_13, bus_word_t *src_prop_14, bus_word_t *output,
-    uint32_t num_partitions_little,
-    uint32_t num_partitions_big,
+    uint32_t num_partitions_little, uint32_t num_partitions_big,
     hls::stream<ppb_request_pkt_t> &ppb_req_stream_1,
     hls::stream<ppb_response_pkt_t> &ppb_resp_stream_1,
     hls::stream<ppb_request_pkt_t> &ppb_req_stream_2,
@@ -198,23 +193,39 @@ extern "C" void hbm_writer(
 #pragma HLS INTERFACE s_axilite port = src_prop_13 bundle = control
 #pragma HLS INTERFACE s_axilite port = src_prop_14 bundle = control
 #pragma HLS INTERFACE s_axilite port = output bundle = control
+#pragma HLS INTERFACE s_axilite port = num_partitions_little bundle = control
+#pragma HLS INTERFACE s_axilite port = num_partitions_big bundle = control
 #pragma HLS INTERFACE s_axilite port = return bundle = control
 #pragma HLS DATAFLOW
 
-    little_node_prop_loader(0, src_prop_1, num_partitions_little, ppb_req_stream_1, ppb_resp_stream_1);
-    little_node_prop_loader(1, src_prop_2, num_partitions_little, ppb_req_stream_2, ppb_resp_stream_2);
-    little_node_prop_loader(2, src_prop_3, num_partitions_little, ppb_req_stream_3, ppb_resp_stream_3);
-    little_node_prop_loader(3, src_prop_4, num_partitions_little, ppb_req_stream_4, ppb_resp_stream_4);
-    little_node_prop_loader(4, src_prop_5, num_partitions_little, ppb_req_stream_5, ppb_resp_stream_5);
-    little_node_prop_loader(5, src_prop_6, num_partitions_little, ppb_req_stream_6, ppb_resp_stream_6);
-    little_node_prop_loader(6, src_prop_7, num_partitions_little, ppb_req_stream_7, ppb_resp_stream_7);
-    little_node_prop_loader(7, src_prop_8, num_partitions_little, ppb_req_stream_8, ppb_resp_stream_8);
-    little_node_prop_loader(8, src_prop_9, num_partitions_little, ppb_req_stream_9, ppb_resp_stream_9);
-    little_node_prop_loader(9, src_prop_10, num_partitions_little, ppb_req_stream_10, ppb_resp_stream_10);
-    little_node_prop_loader(10, src_prop_11, num_partitions_little, ppb_req_stream_11, ppb_resp_stream_11);
-    big_node_prop_loader(0, src_prop_12, num_partitions_big, cacheline_req_stream_1, cacheline_resp_stream_1);
-    big_node_prop_loader(1, src_prop_13, num_partitions_big, cacheline_req_stream_2, cacheline_resp_stream_2);
-    big_node_prop_loader(2, src_prop_14, num_partitions_big, cacheline_req_stream_3, cacheline_resp_stream_3);
+    little_node_prop_loader(0, src_prop_1, num_partitions_little,
+                            ppb_req_stream_1, ppb_resp_stream_1);
+    little_node_prop_loader(1, src_prop_2, num_partitions_little,
+                            ppb_req_stream_2, ppb_resp_stream_2);
+    little_node_prop_loader(2, src_prop_3, num_partitions_little,
+                            ppb_req_stream_3, ppb_resp_stream_3);
+    little_node_prop_loader(3, src_prop_4, num_partitions_little,
+                            ppb_req_stream_4, ppb_resp_stream_4);
+    little_node_prop_loader(4, src_prop_5, num_partitions_little,
+                            ppb_req_stream_5, ppb_resp_stream_5);
+    little_node_prop_loader(5, src_prop_6, num_partitions_little,
+                            ppb_req_stream_6, ppb_resp_stream_6);
+    little_node_prop_loader(6, src_prop_7, num_partitions_little,
+                            ppb_req_stream_7, ppb_resp_stream_7);
+    little_node_prop_loader(7, src_prop_8, num_partitions_little,
+                            ppb_req_stream_8, ppb_resp_stream_8);
+    little_node_prop_loader(8, src_prop_9, num_partitions_little,
+                            ppb_req_stream_9, ppb_resp_stream_9);
+    little_node_prop_loader(9, src_prop_10, num_partitions_little,
+                            ppb_req_stream_10, ppb_resp_stream_10);
+    little_node_prop_loader(10, src_prop_11, num_partitions_little,
+                            ppb_req_stream_11, ppb_resp_stream_11);
+    big_node_prop_loader(0, src_prop_12, num_partitions_big,
+                         cacheline_req_stream_1, cacheline_resp_stream_1);
+    big_node_prop_loader(1, src_prop_13, num_partitions_big,
+                         cacheline_req_stream_2, cacheline_resp_stream_2);
+    big_node_prop_loader(2, src_prop_14, num_partitions_big,
+                         cacheline_req_stream_3, cacheline_resp_stream_3);
 
     write_out(output, write_burst_stream);
 }

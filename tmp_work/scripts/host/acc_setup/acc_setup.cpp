@@ -48,9 +48,6 @@ AccDescriptor initAccelerator(const std::string xclbin_path) {
               << device.getInfo<CL_DEVICE_NAME>() << std::endl;
     cl::Program program(acc.context, {device}, bins, nullptr, &err);
 
-    acc.big_kernel_events.resize(acc.num_big_krnl);
-    acc.little_kernel_events.resize(acc.num_little_krnl);
-
     if (err != CL_SUCCESS) {
         std::cout << "Failed to program device with xclbin file!\n";
         exit(EXIT_FAILURE);

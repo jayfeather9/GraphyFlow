@@ -98,7 +98,7 @@ void request_manager(hls::stream<edge_descriptor_batch_t> &edge_burst_stm,
                      hls::stream<ppb_request_pkt_t> &ppb_request_stm,
                      hls::stream<ppb_response_pkt_t> &ppb_response_stm,
                      hls::stream<update_tuple_t> &update_set_stm,
-                     int32_t part_edge_num) {
+                     int32_t memory_offset, int32_t part_edge_num) {
     // as we can buffer two vertices in one row with width of 64-bit, we can let
     // the depth go as MAX_VERTICES_IN_ONE_PARTITION / 2.
     bus_word_t src_prop_buffer[PE_NUM][2][SRC_BUFFER_SIZE >> 4];
@@ -143,14 +143,16 @@ scatterLoop:
         if ((pp_request_round - pp_read_round) <= 1) {
             if (pp_request_round < pp_read_round)
                 pp_request_round = pp_read_round;
-            one_ppb_request.data = pp_request_round;
+            one_ppb_request.data = pp_request_round + memory_offset;
             one_ppb_request.last = 0;
             ppb_request_stm.write(one_ppb_request);
             pp_request_round++;
         }
 
         if (ppb_response_stm.read_nb(one_ppb_response)) {
-            pp_write_round = one_ppb_response.dest << 4 >> LOG_SRC_BUFFER_SIZE;
+            pp_write_round =
+                (one_ppb_response.dest << 4 >> LOG_SRC_BUFFER_SIZE) -
+                memory_offset;
 
             bool write_buffer = pp_write_round & 0x1;
 
@@ -160,6 +162,20 @@ scatterLoop:
             bus_word_t one_read_burst =
                 one_ppb_response
                     .data; // src_prop[(base_addr >> 4) + pp_write_idx];
+
+            // for (int j = 0; j < 16; j++) {
+            //     ap_fixed_pod_t distance =
+            //         one_ppb_response.data.range(
+            //             (j + 1) * 32 - 1, j * 32);
+            //     distance_t real_prop =
+            //         *reinterpret_cast<distance_t *>(&distance);
+            //     // printf(
+            //     //     "memory_offset %d prop[%d] = %.3f, write_idx %d,
+            //     write_buffer %d\n",
+            //     //     memory_offset, j,
+            //     //     (float)real_prop, write_idx, write_buffer);
+            //     // fflush(NULL);
+            // }
 
             for (int u = 0; u < PE_NUM; u++) {
 #pragma HLS UNROLL
@@ -198,6 +214,17 @@ scatterLoop:
                     src_prop_buffer[u][read_buffer][uram_row_idx];
                 ap_fixed_pod_t src_prop =
                     get_val_from_bus(uram_row, uram_row_offset);
+
+                // distance_t real_src_prop =
+                //     *reinterpret_cast<distance_t *>(&src_prop);
+                // printf(
+                //     "Little PE %d memory_offset %d u %d read_buffer %d
+                //     uram_row_idx %d edge src_id %d dst_id %d: loaded src_prop
+                //     %.3f\n", (int)u, (int)memory_offset, (int)u,
+                //     (int)read_buffer, (int)uram_row_idx,
+                //     (int)an_edge_burst.edges[u].src_id,
+                //     (int)an_edge_burst.edges[u].dst_id,
+                //     (float)real_src_prop);
 
                 an_update_set.prop[u] = (src_prop + edge_weight);
                 an_update_set.node_id[u] = an_edge_burst.edges[u].dst_id;
@@ -346,6 +373,18 @@ LOOP_AGGREGATE:
                         ? old_dist_pod
                         : incoming_dist_pod;
 
+                // distance_t old_dist =
+                //     *reinterpret_cast<distance_t *>(&old_dist_pod);
+                // distance_t new_dist =
+                //     *reinterpret_cast<distance_t *>(&new_dist_pod);
+                // printf(
+                //     "Little PE %d updating node_id %d: old_dist %.3f,
+                //     incoming_dist "
+                //     "%.3f, new_dist %.3f\n",
+                //     (int)pe, (int)key, (float)old_dist,
+                //     (float)*reinterpret_cast<distance_t
+                //     *>(&incoming_dist_pod), (float)new_dist);
+
                 set_raw_val(current_word, pack_idx, new_dist_pod);
 
                 // Write back to URAM and update cache
@@ -425,10 +464,9 @@ Reduc_105_drain_multi_pe(hls::stream<reduce_word_t> (&pe_mem_in)[PE_NUM],
     ap_fixed_pod_t max_pod = *reinterpret_cast<ap_fixed_pod_t *>(&max_val);
 
     // round dst_num to be 8 * DISTANCES_PER_REDUCE_WORD
-    int32_t rounded_dst_num =
-        ((dst_num + (8 * DISTANCES_PER_REDUCE_WORD) - 1) /
-         (8 * DISTANCES_PER_REDUCE_WORD)) *
-        (8 * DISTANCES_PER_REDUCE_WORD);
+    int32_t rounded_dst_num = ((dst_num + (8 * DISTANCES_PER_REDUCE_WORD) - 1) /
+                               (8 * DISTANCES_PER_REDUCE_WORD)) *
+                              (8 * DISTANCES_PER_REDUCE_WORD);
 
 LOOP_DRAIN_ADDR:
     for (int32_t base_addr = 0; base_addr < rounded_dst_num;
@@ -463,7 +501,7 @@ LOOP_DRAIN_ADDR:
 // --- 5. Top-level AXI Kernel Wrapper ---
 extern "C" void
 graphyflow_little(const bus_word_t *edge_props, int32_t num_nodes,
-                  int32_t num_edges, int32_t dst_num,
+                  int32_t num_edges, int32_t dst_num, int32_t memory_offset,
                   hls::stream<ppb_request_pkt_t> &ppb_req_stream,
                   hls::stream<ppb_response_pkt_t> &ppb_resp_stream,
                   hls::stream<little_out_pkt_t> &kernel_out_stream) {
@@ -486,7 +524,7 @@ graphyflow_little(const bus_word_t *edge_props, int32_t num_nodes,
     // --- Data Loading ---
     edge_descriptor_loader(edge_props, edge_stream, num_edges);
     request_manager(edge_stream, ppb_req_stream, ppb_resp_stream,
-                    stream_edge_data, num_edges);
+                    stream_edge_data, memory_offset, num_edges);
 
     // --- Reduction ---
     Reduc_105_unit_reduce(stream_edge_data, pe_mem_outs, num_edges, dst_num);

@@ -28,8 +28,8 @@
 #define SRC_BUFFER_SIZE 4096
 
 #ifdef EMULATION
-const int LITTLE_MAX_DST = 512;
-const int BIG_MAX_DST = 512;
+const int LITTLE_MAX_DST = 32;
+const int BIG_MAX_DST = 32;
 #else
 const int LITTLE_MAX_DST = 65536;
 const int BIG_MAX_DST = 524288;

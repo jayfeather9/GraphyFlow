@@ -211,17 +211,18 @@ LOOP_DRP_SEND_REQ:
 
     distance_req_pack_t end_req_pack;
     end_req_pack.end_flag = true;
-    end_req_pack.offset = 8;
+    end_req_pack.offset = 7;
     distance_req_pack_stream.write(end_req_pack);
 }
 
-static void cacheline_req_sender(
-    hls::stream<distance_req_pack_t> &distance_req_pack_stream,
-    hls::stream<cacheline_request_pkt_t> &cacheline_req_stream) {
+static void
+cacheline_req_sender(hls::stream<distance_req_pack_t> &distance_req_pack_stream,
+                     hls::stream<cacheline_request_pkt_t> &cacheline_req_stream,
+                     int32_t memory_offset) {
 
     cacheline_request_pkt_t cache_req;
     cache_req.last = false;
-    cache_req.data = 0;
+    cache_req.data = memory_offset;
     cache_req.dest = 0;
     cacheline_req_stream.write(cache_req);
 
@@ -244,7 +245,7 @@ LOOP_SEND_CACHE_REQ:
             for (ap_uint<4> i = req_pack.offset; i < PE_NUM; i++) {
 #pragma HLS PIPELINE II = 1 rewind
 #pragma HLS unroll factor = 1
-                cache_req.data = cacheline_idx[i];
+                cache_req.data = cacheline_idx[i] + memory_offset;
                 cache_req.dest = i;
                 cache_req.last = req_pack.end_flag;
                 cacheline_req_stream.write(cache_req);
@@ -257,8 +258,6 @@ LOOP_SEND_CACHE_REQ:
             break;
         }
     }
-    cache_req.last = true;
-    cacheline_req_stream.write(cache_req);
 }
 
 // --- 1. Memory Helper Functions ---
@@ -467,6 +466,15 @@ LOOP_SCATTER_EDGES:
                 // out_batch.dsts[pe_idx] = edge_batch.edges[pe_idx].dst_id;
                 out_batch.node_id[pe_idx] = edge_batch.edges[pe_idx].dst_id;
                 out_batch.prop[pe_idx] = (prop + edge_weight);
+
+                // distance_t real_prop = *reinterpret_cast<distance_t
+                // *>(&prop); printf(
+                //     "PE %d edge src_id %d dst_id %d: loaded prop %.3f, "
+                //     "updated prop "
+                //     "%.3f\n",
+                //     (int)pe_idx, (int)edge_batch.edges[pe_idx].src_id,
+                //     (int)edge_batch.edges[pe_idx].dst_id, (float)real_prop,
+                //     (float)(real_prop + real_edge_weight));
 
                 if (pe_idx == PE_NUM - 1) {
                     cur_last_cacheline = cacheline;
@@ -1024,9 +1032,9 @@ LOOP_STREAM_OUT:
     }
 }
 
-// float ap_fixed_to_float2(ap_fixed_pod_t val) {
-//     return (float)*reinterpret_cast<distance_t *>(&val);
-// }
+float ap_fixed_to_float(ap_fixed_pod_t val) {
+    return (float)*reinterpret_cast<distance_t *>(&val);
+}
 
 // Multi-PE drain function
 // Collects aggregated data from all PEs and outputs final results
@@ -1055,8 +1063,8 @@ LOOP_DRAIN_ADDR:
                 word.range(63, 32);
 
             // printf("Drained word from PE %d: lower=%f upper=%f\n", pe_idx,
-            //        ap_fixed_to_float2(word.range(31, 0)),
-            //        ap_fixed_to_float2(word.range(63, 32)));
+            //        ap_fixed_to_float(word.range(31, 0)),
+            //        ap_fixed_to_float(word.range(63, 32)));
         }
         kernel_out_stream.write(one_write_burst);
     }
@@ -1194,10 +1202,8 @@ LOOP_FOR_60:
 
 // --- 5. Top-level AXI Kernel Wrapper ---
 extern "C" void
-graphyflow_big(const bus_word_t *edge_props,
-               //    const bus_word_t *node_props,
-               //    bus_word_t *output,
-               int32_t num_nodes, int32_t num_edges, int32_t dst_num,
+graphyflow_big(const bus_word_t *edge_props, int32_t num_nodes,
+               int32_t num_edges, int32_t dst_num, int32_t memory_offset,
                hls::stream<cacheline_request_pkt_t> &cacheline_req_stream,
                hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream,
                hls::stream<write_burst_pkt_t> &kernel_out_stream) {
@@ -1210,8 +1216,12 @@ graphyflow_big(const bus_word_t *edge_props,
 #pragma HLS INTERFACE s_axilite port = num_nodes
 #pragma HLS INTERFACE s_axilite port = num_edges
 #pragma HLS INTERFACE s_axilite port = dst_num
+#pragma HLS INTERFACE s_axilite port = memory_offset
 #pragma HLS INTERFACE s_axilite port = return
 #pragma HLS DATAFLOW
+
+    // printf("GraphyFlow Big Kernel Started.\n");
+    // fflush(NULL);
 
     // Streams for the new COO-style property loading
     hls::stream<node_id_burst_t> stream_src_ids;
@@ -1246,7 +1256,11 @@ graphyflow_big(const bus_word_t *edge_props,
 
     // --- New COO-style Source Property Loading Pipeline ---
     dist_req_packer(stream_src_ids, stream_dist_req, num_edges);
-    cacheline_req_sender(stream_dist_req, cacheline_req_stream);
+    // printf("Distance Request Packer Completed.\n");
+    // fflush(NULL);
+    cacheline_req_sender(stream_dist_req, cacheline_req_stream, memory_offset);
+    // printf("Cacheline Request Sender Completed.\n");
+    // fflush(NULL);
     // node_property_loader(node_props, stream_cache_req, stream_cache_resp,
     //                      node_distance_burst_stream, num_nodes);
     node_prop_resp_receiver(cacheline_resp_stream, stream_cachelines);
@@ -1259,6 +1273,8 @@ graphyflow_big(const bus_word_t *edge_props,
 
     // --- Main Dataflow Processing ---
     graphyflow_big_dataflow(stream_edge_data, kernel_out_stream, dst_num);
+    // printf("GraphyFlow Big Kernel Completed.\n");
+    // fflush(NULL);
 
     // --- Final Writeback ---
     // final_writeback(stream_result_data, dst_num, output);

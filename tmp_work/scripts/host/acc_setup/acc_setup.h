@@ -21,8 +21,8 @@ typedef struct AccDescriptor {
     cl::Kernel apply_krnl;
     cl::Kernel hbm_writer_krnl;
 
-    std::vector<cl::Event> big_kernel_events;
-    std::vector<cl::Event> little_kernel_events;
+    std::vector<std::vector<cl::Event>> big_kernel_events;
+    std::vector<std::vector<cl::Event>> little_kernel_events;
     cl::Event apply_kernel_event;
     cl::Event hbm_writer_event;
 

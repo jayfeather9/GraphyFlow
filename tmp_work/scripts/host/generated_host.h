@@ -17,6 +17,9 @@ struct PartitionBuffer {
     std::vector<PipelineBuffer> pipelines;
     std::vector<bus_word_t, aligned_allocator<bus_word_t>> packed_dst_props;
     std::vector<bus_word_t, aligned_allocator<bus_word_t>> packed_node_props;
+    uint32_t node_prop_offset;
+    uint32_t dst_prop_offset;
+    uint32_t src_buf_offset;
 };
 
 class AlgorithmHost {
@@ -53,6 +56,8 @@ class AlgorithmHost {
     std::vector<bus_word_t, aligned_allocator<bus_word_t>>
         apply_kernel_node_props;
     cl::Buffer apply_kernel_node_prop_buffer;
+    std::vector<std::vector<bus_word_t, aligned_allocator<bus_word_t>>>
+        writer_kernel_node_props;
     std::vector<bus_word_t, aligned_allocator<bus_word_t>>
         writer_kernel_host_outputs;
     uint32_t big_dst_offset = 0;
