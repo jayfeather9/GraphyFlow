@@ -60,7 +60,7 @@ void request_manager(hls::stream<edge_descriptor_batch_t> &edge_burst_stm,
     int32_t pp_request_round = 0;
 
     int32_t edge_set_cnt = 0;
-    const int32_t total_edge_sets = (part_edge_num + PE_NUM - 1) / PE_NUM;
+    const int32_t total_edge_sets = part_edge_num >> LOG_PE_NUM;
 
     bool wait_flag = 0;
 
@@ -74,9 +74,6 @@ void request_manager(hls::stream<edge_descriptor_batch_t> &edge_burst_stm,
         1.0; // All edge weights are 1.0 in unweighted graph
     const ap_fixed_pod_t edge_weight =
         (*reinterpret_cast<ap_fixed_pod_t *>(&real_edge_weight));
-
-    const uint32_t total_rounds =
-        (part_edge_num + SRC_BUFFER_SIZE - 1) / SRC_BUFFER_SIZE;
 
 scatterLoop:
     while (true) {
@@ -140,12 +137,10 @@ scatterLoop:
                     src_prop_buffer[u][read_buffer][uram_row_idx];
                 ap_fixed_pod_t src_prop = uram_row.range(
                     31 + (uram_row_offset << 5), (uram_row_offset << 5));
+                ap_fixed_pod_t update = src_prop + edge_weight;
 
-                update_t an_update;
-
-                an_update.node_id = an_edge_burst.edges[u].dst_id;
-                an_update.prop = (src_prop + edge_weight);
-                an_update_set.data[u] = an_update;
+                an_update_set.data[u].node_id = an_edge_burst.edges[u].dst_id;
+                an_update_set.data[u].prop = update;
             }
             update_set_stm.write(an_update_set);
 
@@ -201,8 +196,7 @@ LOOP_INIT_CACHE_ADDR:
         }
     }
 
-    const uint32_t total_updates =
-        (edge_num + PE_NUM - 1) / PE_NUM; // Assuming one update per node
+    const uint32_t total_updates = edge_num >> LOG_PE_NUM; // Assuming one update per node
     // --- Phase 3: Aggregation Loop ---
 LOOP_AGGREGATE:
     for (int update_idx = 0; update_idx < total_updates; update_idx++) {
