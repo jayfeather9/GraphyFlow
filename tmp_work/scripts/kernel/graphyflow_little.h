@@ -17,7 +17,7 @@
 #else
 #define MAX_NUM 65536
 #endif
-#define L 4
+#define L 3
 #define SRC_BUFFER_SIZE 4096
 #define LOG_SRC_BUFFER_SIZE 12
 
@@ -203,17 +203,13 @@ struct KernelOutputBatch {
 //     uint8_t end_pos;
 // };
 
-struct update_tuple_t {
-    ap_uint<20> node_id[PE_NUM];
-    ap_fixed_pod_t prop[PE_NUM];
-    bool end_flag;
-    uint8_t end_pos;
+struct update_t {
+    ap_uint<20> node_id;
+    ap_fixed_pod_t prop;
 };
 
-struct net_wrapper_kt_pair_105_t_t {
-    node_id_t node_id;
-    ap_fixed_pod_t prop;
-    bool end_flag;
+struct update_tuple_t {
+    update_t data[PE_NUM];
 };
 
 struct ppb_request_t {

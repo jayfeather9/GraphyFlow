@@ -17,7 +17,7 @@
 #else
 #define MAX_NUM 524288
 #endif
-#define L 4
+#define L 3
 
 // --- New Bitwidth Definitions for HLS Synthesis ---
 #define NODE_ID_BITWIDTH 32
@@ -126,8 +126,8 @@ struct node_id_burst_t {
 };
 
 struct distance_req_pack_t {
-    node_id_t idx[PE_NUM];
-    ap_uint<4> offset; // [offset, offset + PE_NUM) are valid
+    ap_uint<26> idx[PE_NUM];
+    ap_uint<4> offset;
     bool end_flag;
 };
 
@@ -212,17 +212,23 @@ struct KernelOutputBatch {
 //     uint8_t end_pos;
 // };
 
-struct update_tuple_t {
-    ap_uint<20> node_id[PE_NUM];
-    ap_fixed_pod_t prop[PE_NUM];
-    bool end_flag;
-    uint8_t end_pos;
-};
+// struct update_tuple_t {
+//     ap_uint<20> node_id[PE_NUM];
+//     ap_fixed_pod_t prop[PE_NUM];
+//     bool end_flag;
+//     uint8_t end_pos;
+// };
 
 struct net_wrapper_kt_pair_105_t_t {
     ap_uint<20> node_id;
     ap_fixed_pod_t prop;
     bool end_flag;
+};
+
+struct update_tuple_t {
+    net_wrapper_kt_pair_105_t_t data[PE_NUM];
+    // ap_uint<4> end_pos;
+    // bool end_flag;
 };
 
 // --- Function Prototypes ---

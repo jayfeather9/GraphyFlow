@@ -45,7 +45,7 @@ LOOP_MERGE_WRITES:
 static void
 apply_func(bus_word_t *node_props,
            hls::stream<in_write_burst_w_dst_pkt_t> &write_burst_stream,
-           hls::stream<write_burst_w_dst_pkt_t> &kernel_out_stream) {
+           hls::stream<write_burst_w_dst_pkt_t> &kernel_out_stream) {// DIFF write_burst_w_dst_pkt_t 这个里面不一样
 APPLY_LOOP:
     while (true) {
         in_write_burst_w_dst_pkt_t in_pkt = write_burst_stream.read();
@@ -78,8 +78,10 @@ APPLY_LOOP:
 }
 
 extern "C" void
-apply_kernel(bus_word_t *node_props, uint32_t little_kernel_length,
-             uint32_t big_kernel_length, uint32_t little_kernel_st_offset,
+apply_kernel(bus_word_t *node_props, 
+             uint32_t little_kernel_length,
+             uint32_t big_kernel_length, 
+             uint32_t little_kernel_st_offset,
              uint32_t big_kernel_st_offset,
              hls::stream<write_burst_pkt_t> &little_kernel_out_stream,
              hls::stream<write_burst_pkt_t> &big_kernel_out_stream,
