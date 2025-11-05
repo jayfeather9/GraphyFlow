@@ -59,7 +59,7 @@ typedef ap_axiu<32, 0, 0, 0> ppb_request_pkt_t;
 typedef ap_axiu<512, 0, 0, 32> ppb_response_pkt_t;
 typedef ap_axiu<512, 0, 0, 0> cacheline_data_pkt_t;
 
-struct __attribute__((packed)) in_write_burst_w_dst_pkt_t {
+struct in_write_burst_w_dst_pkt_t {
     bus_word_t data;
     ap_uint<32> dest_addr;
     bool end_flag;

@@ -188,11 +188,27 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
             // ---
             std::vector<Edge> local_edges;
             local_edges.reserve(partition_edges.size());
+            
+            uint32_t last_src_buffer = 0;
+            uint32_t last_src_id = 0;
 
             for (const auto &global_edge : partition_edges) {
                 uint32_t src_id = pd.vtx_map[global_edge.src];
                 uint32_t dest_id = pd.vtx_map[global_edge.dest];
                 uint32_t weight = global_edge.weight;
+
+                uint32_t cur_src_buffer = floor(src_id / SRC_BUFFER_SIZE);
+                if (is_dense && cur_src_buffer != last_src_buffer) {
+                    uint32_t mod8 = local_edges.size() % 8;
+                    if (mod8 != 0) {
+                        // Pad with dummy edges to align to 8-edge boundary
+                        for (uint32_t pad = 0; pad < (8 - mod8); pad++) {
+                            local_edges.push_back({last_src_id, 0x7FFFFFFF, 1});
+                        }
+                    }
+                    last_src_buffer = cur_src_buffer;
+                }
+                last_src_id = src_id;
                 local_edges.push_back({(int)src_id, (int)dest_id, (int)weight});
             }
 

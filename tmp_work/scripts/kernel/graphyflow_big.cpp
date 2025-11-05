@@ -1,5 +1,50 @@
 #include "graphyflow_big.h"
 
+template <typename T1, typename T2>
+void stream2axistream(
+                    hls::stream<T1> &stream,
+                    hls::stream<T2> &axi_stream
+                    ){
+    
+    stream2axistream:
+    while (true){
+
+        T1 tmp_t1 = stream.read();
+        
+        T2 tmp_t2;
+        tmp_t2.data = tmp_t1.idx;
+        tmp_t2.dest = tmp_t1.dst;
+        tmp_t2.last = tmp_t1.end_flag;
+
+        axi_stream.write(tmp_t2);
+
+        if(tmp_t1.end_flag) break;
+    }
+}
+
+
+
+template <typename T1, typename T2>
+void axistream2stream(
+                    hls::stream<T1> &axi_stream,
+                    hls::stream<T2> &stream
+                    ){
+    
+    axistream2stream:
+    while (true){
+
+        T1 tmp_t1 = axi_stream.read();
+
+        T2 tmp_t2;
+        tmp_t2.data = tmp_t1.data;
+        tmp_t2.dst = tmp_t1.dest;
+        tmp_t2.end_flag = tmp_t1.last;
+        
+        stream.write(tmp_t2);
+        if(tmp_t2.end_flag) break;
+    }
+}
+
 static void src_id_loader(const bus_word_t *node_ids_ddr,
                           hls::stream<node_id_burst_t> &src_id_burst_stream_1,
                           hls::stream<node_id_burst_t> &src_id_burst_stream_2,
@@ -11,8 +56,8 @@ static void src_id_loader(const bus_word_t *node_ids_ddr,
     int nodes_read = 0;
     int burst_idx = 0;
     node_id_burst_t burst1, burst2;
-#pragma HLS ARRAY_PARTITION variable = burst1.data complete dim = 0
-#pragma HLS ARRAY_PARTITION variable = burst2.data complete dim = 0
+// #pragma HLS ARRAY_PARTITION variable = burst1.data complete dim = 0
+// #pragma HLS ARRAY_PARTITION variable = burst2.data complete dim = 0
 LOOP_SIL_READ:
     for (int i = 0; i < num_wide_reads; i++) {
 #pragma HLS PIPELINE II = 2
@@ -62,11 +107,11 @@ edge_descriptor_loader(const bus_word_t *edge_props_ddr,
 
     int edges_read = 0;
     edge_descriptor_batch_t edge_batch;
-#pragma HLS ARRAY_PARTITION variable = edge_batch.edges complete dim = 0
+// #pragma HLS ARRAY_PARTITION variable = edge_batch.edges complete dim = 0
     edge_batch.end_pos = 0;
 
     node_id_burst_t src_id_burst;
-#pragma HLS ARRAY_PARTITION variable = src_id_burst.data complete dim = 0
+// #pragma HLS ARRAY_PARTITION variable = src_id_burst.data complete dim = 0
 
 #if (NODE_ID_BITWIDTH == 32) && (WEIGHT_BITWIDTH == 32)
 LOOP_EDL_READ:
@@ -81,7 +126,7 @@ LOOP_EDL_READ:
                     (j + 1) * bits_per_edge - 1, j * bits_per_edge);
                 edge_t edge;
                 node_id_t src_id;
-                edge.dst_id = packed_edge.range(NODE_ID_BITWIDTH - 1, 0);
+                edge.dst_id = packed_edge.range(19, 0);
                 edge.src_id =
                     packed_edge.range(bits_per_edge - 1, NODE_ID_BITWIDTH);
                 src_id = edge.src_id;
@@ -157,7 +202,7 @@ LOOP_DRP_SEND_REQ:
         ap_uint<NODE_ID_BITWIDTH - LOG_DIST_PER_WORD> cache_idx[PE_NUM];
 #pragma HLS ARRAY_PARTITION variable = cache_idx complete dim = 0
         node_id_burst_t node_id_burst = src_id_burst_stream.read();
-#pragma HLS ARRAY_PARTITION variable = node_id_burst.data complete dim = 0
+// #pragma HLS ARRAY_PARTITION variable = node_id_burst.data complete dim = 0
         for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
             cache_idx[pe_idx] = node_id_burst.data[pe_idx] >> LOG_DIST_PER_WORD;
@@ -192,7 +237,7 @@ LOOP_DRP_SEND_REQ:
             // fflush(NULL);
 
             distance_req_pack_t req_pack;
-#pragma HLS ARRAY_PARTITION variable = req_pack.idx complete dim = 0
+// #pragma HLS ARRAY_PARTITION variable = req_pack.idx complete dim = 0
             req_pack.offset = num_unread;
             req_pack.end_flag = false;
 
@@ -211,19 +256,21 @@ LOOP_DRP_SEND_REQ:
 
     distance_req_pack_t end_req_pack;
     end_req_pack.end_flag = true;
-    end_req_pack.offset = 8;
+    end_req_pack.offset = 7;
     distance_req_pack_stream.write(end_req_pack);
 }
 
 static void cacheline_req_sender(
     hls::stream<distance_req_pack_t> &distance_req_pack_stream,
-    hls::stream<cacheline_request_pkt_t> &cacheline_req_stream) {
+    hls::stream<cacheline_req_t> &cacheline_req_stream) {
 
-    cacheline_request_pkt_t cache_req;
-    cache_req.last = false;
-    cache_req.data = 0;
-    cache_req.dest = 0;
-    cacheline_req_stream.write(cache_req);
+    {  
+        cacheline_req_t cache_req;
+        cache_req.end_flag = false;
+        cache_req.idx = 0;
+        cache_req.dst = 0;
+        cacheline_req_stream.write(cache_req);
+    }
 
     ap_uint<NODE_ID_BITWIDTH - LOG_DIST_PER_WORD> cacheline_idx[PE_NUM];
 #pragma HLS ARRAY_PARTITION variable = cacheline_idx complete dim = 0
@@ -233,7 +280,7 @@ LOOP_SEND_CACHE_REQ:
 #pragma HLS PIPELINE II = 1
 #pragma HLS dependence variable = cacheline_idx inter false
         distance_req_pack_t req_pack = distance_req_pack_stream.read();
-#pragma HLS ARRAY_PARTITION variable = req_pack.idx complete dim = 0
+// #pragma HLS ARRAY_PARTITION variable = req_pack.idx complete dim = 0
         for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
             cacheline_idx[pe_idx] = req_pack.idx[pe_idx];
@@ -244,9 +291,10 @@ LOOP_SEND_CACHE_REQ:
             for (ap_uint<4> i = req_pack.offset; i < PE_NUM; i++) {
 #pragma HLS PIPELINE II = 1 rewind
 #pragma HLS unroll factor = 1
-                cache_req.data = cacheline_idx[i];
-                cache_req.dest = i;
-                cache_req.last = req_pack.end_flag;
+                cacheline_req_t cache_req;
+                cache_req.idx = cacheline_idx[i];
+                cache_req.dst = i;
+                cache_req.end_flag = req_pack.end_flag;
                 cacheline_req_stream.write(cache_req);
                 // printf("Sent cacheline req for idx %d to PE %d\n",
                 // (int)cache_req.idx, (int)cache_req.target_pe); fflush(NULL);
@@ -257,8 +305,8 @@ LOOP_SEND_CACHE_REQ:
             break;
         }
     }
-    cache_req.last = true;
-    cacheline_req_stream.write(cache_req);
+    // cache_req.last = true;
+    // cacheline_req_stream.write(cache_req);
 }
 
 // --- 1. Memory Helper Functions ---
@@ -337,10 +385,10 @@ LOOP_SEND_CACHE_REQ:
 // }
 
 static void node_prop_resp_receiver(
-    hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream,
+    hls::stream<cacheline_resp_t> &cacheline_resp_stream,
     hls::stream<bus_word_t> (&cacheline_streams)[PE_NUM]) {
 
-    cacheline_response_pkt_t cache_resp = cacheline_resp_stream.read();
+    cacheline_resp_t cache_resp = cacheline_resp_stream.read();
     bus_word_t first_line = cache_resp.data;
     for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
@@ -351,55 +399,55 @@ LOOP_RECEIVE_CACHE_RESP:
     while (true) {
 #pragma HLS PIPELINE II = 1
         if (cacheline_resp_stream.read_nb(cache_resp)) {
-            if (cache_resp.last) {
+            if (cache_resp.end_flag) {
                 break;
             }
             bus_word_t resp_line = cache_resp.data;
-            ap_uint<8> target_pe = cache_resp.dest;
+            ap_uint<8> target_pe = cache_resp.dst;
             cacheline_streams[target_pe].write(resp_line);
         }
     }
 }
 
-ap_fixed_pod_t get_val_from_bus(const bus_word_t bus, int offset) {
-#pragma HLS INLINE
-    switch (offset) {
-    case 0:
-        return bus.range(31, 0);
-    case 1:
-        return bus.range(63, 32);
-    case 2:
-        return bus.range(95, 64);
-    case 3:
-        return bus.range(127, 96);
-    case 4:
-        return bus.range(159, 128);
-    case 5:
-        return bus.range(191, 160);
-    case 6:
-        return bus.range(223, 192);
-    case 7:
-        return bus.range(255, 224);
-    case 8:
-        return bus.range(287, 256);
-    case 9:
-        return bus.range(319, 288);
-    case 10:
-        return bus.range(351, 320);
-    case 11:
-        return bus.range(383, 352);
-    case 12:
-        return bus.range(415, 384);
-    case 13:
-        return bus.range(447, 416);
-    case 14:
-        return bus.range(479, 448);
-    case 15:
-        return bus.range(511, 480);
-    default:
-        return 0;
-    }
-}
+// ap_fixed_pod_t get_val_from_bus(const bus_word_t bus, int offset) {
+// #pragma HLS INLINE
+//     switch (offset) {
+//     case 0:
+//         return bus.range(31, 0);
+//     case 1:
+//         return bus.range(63, 32);
+//     case 2:
+//         return bus.range(95, 64);
+//     case 3:
+//         return bus.range(127, 96);
+//     case 4:
+//         return bus.range(159, 128);
+//     case 5:
+//         return bus.range(191, 160);
+//     case 6:
+//         return bus.range(223, 192);
+//     case 7:
+//         return bus.range(255, 224);
+//     case 8:
+//         return bus.range(287, 256);
+//     case 9:
+//         return bus.range(319, 288);
+//     case 10:
+//         return bus.range(351, 320);
+//     case 11:
+//         return bus.range(383, 352);
+//     case 12:
+//         return bus.range(415, 384);
+//     case 13:
+//         return bus.range(447, 416);
+//     case 14:
+//         return bus.range(479, 448);
+//     case 15:
+//         return bus.range(511, 480);
+//     default:
+//         return 0;
+//     }
+// }
 
 static void
 merge_node_props(hls::stream<bus_word_t> (&cacheline_streams)[PE_NUM],
@@ -432,14 +480,14 @@ LOOP_SCATTER_EDGES:
          edge_batch_idx++) {
 #pragma HLS PIPELINE II = 1
         edge_descriptor_batch_t edge_batch;
-#pragma HLS ARRAY_PARTITION variable = edge_batch.edges complete dim = 0
+// #pragma HLS ARRAY_PARTITION variable = edge_batch.edges complete dim = 0
         edge_batch = edge_stream.read();
         //         node_id_burst_t src_id_burst = src_id_burst_stream.read();
         // #pragma HLS ARRAY_PARTITION variable = src_id_burst.data complete dim
         // = 0
         update_tuple_t out_batch;
-#pragma HLS ARRAY_PARTITION variable = out_batch.node_id complete dim = 0
-#pragma HLS ARRAY_PARTITION variable = out_batch.prop complete dim = 0
+// #pragma HLS ARRAY_PARTITION variable = out_batch.node_id complete dim = 0
+// #pragma HLS ARRAY_PARTITION variable = out_batch.prop complete dim = 0
         out_batch.end_flag = false;
         out_batch.end_pos = edge_batch.end_pos;
         bus_word_t cur_last_cacheline;
@@ -458,9 +506,9 @@ LOOP_SCATTER_EDGES:
                     cacheline = cacheline_streams[pe_idx].read();
                 }
 
-                // ap_fixed_pod_t prop = cacheline.range(
-                //     31 + (offset << 5), offset << 5);
-                ap_fixed_pod_t prop = get_val_from_bus(cacheline, offset);
+                ap_fixed_pod_t prop = cacheline.range(
+                    31 + (offset << 5), offset << 5);
+                // ap_fixed_pod_t prop = get_val_from_bus(cacheline, offset);
 
                 // out_batch.src_distances[pe_idx] = prop;
                 // out_batch.weights[pe_idx] = edge_weight;
@@ -604,15 +652,15 @@ static void
 demux_1(hls::stream<update_tuple_t> &in_batch_stream,
         hls::stream<net_wrapper_kt_pair_105_t_t> (&out_streams)[8]) {
     update_tuple_t in_batch;
-#pragma HLS ARRAY_PARTITION variable = in_batch.node_id complete dim = 0
-#pragma HLS ARRAY_PARTITION variable = in_batch.prop complete dim = 0
+// #pragma HLS ARRAY_PARTITION variable = in_batch.node_id complete dim = 0
+// #pragma HLS ARRAY_PARTITION variable = in_batch.prop complete dim = 0
 LOOP_WHILE_22:
     while (true) {
 #pragma HLS PIPELINE
         in_batch = in_batch_stream.read();
         net_wrapper_kt_pair_105_t_t wrapper_data;
-#pragma HLS ARRAY_PARTITION variable = wrapper_data.node_id complete dim = 0
-#pragma HLS ARRAY_PARTITION variable = wrapper_data.prop complete dim = 0
+// #pragma HLS ARRAY_PARTITION variable = wrapper_data.node_id complete dim = 0
+// #pragma HLS ARRAY_PARTITION variable = wrapper_data.prop complete dim = 0
     LOOP_FOR_20:
         for (uint32_t i = 0; i < PE_NUM; i++) {
 #pragma HLS UNROLL
@@ -863,43 +911,43 @@ inline ap_fixed_pod_t get_raw_val(reduce_word_t word, int idx) {
     case 1:
         bits = word.range((DISTANCE_BITWIDTH << 1) - 1, DISTANCE_BITWIDTH);
         break;
-    case 2:
-        bits =
-            word.range((DISTANCE_BITWIDTH * 3) - 1, (DISTANCE_BITWIDTH << 1));
-        break;
+    // case 2:
+    //     bits =
+    //         word.range((DISTANCE_BITWIDTH * 3) - 1, (DISTANCE_BITWIDTH << 1));
+    //     break;
     default:
-        bits = 0;
+        // bits = 0;
         break;
     }
     return bits;
 }
 
-inline distance_t get_val(reduce_word_t word, int idx) {
-#pragma HLS INLINE
-    ap_fixed_pod_t raw_val = get_raw_val(word, idx);
-    distance_t val = *reinterpret_cast<distance_t *>(&raw_val);
-    return val;
-}
+// inline distance_t get_val(reduce_word_t word, int idx) {
+// #pragma HLS INLINE
+//     ap_fixed_pod_t raw_val = get_raw_val(word, idx);
+//     distance_t val = *reinterpret_cast<distance_t *>(&raw_val);
+//     return val;
+// }
 
-inline void set_val(reduce_word_t &word, int idx, distance_t val) {
-#pragma HLS INLINE
-    ap_uint<DISTANCE_BITWIDTH> val_bits =
-        *reinterpret_cast<ap_uint<DISTANCE_BITWIDTH> *>(&val);
-    switch (idx) {
-    case 0:
-        word.range(DISTANCE_BITWIDTH - 1, 0) = val_bits;
-        break;
-    case 1:
-        word.range((DISTANCE_BITWIDTH << 1) - 1, DISTANCE_BITWIDTH) = val_bits;
-        break;
-    case 2:
-        word.range((DISTANCE_BITWIDTH * 3) - 1, (DISTANCE_BITWIDTH << 1)) =
-            val_bits;
-        break;
-    default:
-        break;
-    }
-}
+// inline void set_val(reduce_word_t &word, int idx, distance_t val) {
+// #pragma HLS INLINE
+//     ap_uint<DISTANCE_BITWIDTH> val_bits =
+//         *reinterpret_cast<ap_uint<DISTANCE_BITWIDTH> *>(&val);
+//     switch (idx) {
+//     case 0:
+//         word.range(DISTANCE_BITWIDTH - 1, 0) = val_bits;
+//         break;
+//     case 1:
+//         word.range((DISTANCE_BITWIDTH << 1) - 1, DISTANCE_BITWIDTH) = val_bits;
+//         break;
+//     case 2:
+//         word.range((DISTANCE_BITWIDTH * 3) - 1, (DISTANCE_BITWIDTH << 1)) =
+//             val_bits;
+//         break;
+//     default:
+//         break;
+//     }
+// }
 
 inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
 #pragma HLS INLINE
@@ -911,10 +959,10 @@ inline void set_raw_val(reduce_word_t &word, int idx, ap_fixed_pod_t pod_val) {
     case 1:
         word.range((DISTANCE_BITWIDTH << 1) - 1, DISTANCE_BITWIDTH) = val_bits;
         break;
-    case 2:
-        word.range((DISTANCE_BITWIDTH * 3) - 1, (DISTANCE_BITWIDTH << 1)) =
-            val_bits;
-        break;
+    // case 2:
+    //     word.range((DISTANCE_BITWIDTH * 3) - 1, (DISTANCE_BITWIDTH << 1)) =
+    //         val_bits;
+    //     break;
     default:
         break;
     }
@@ -1240,16 +1288,23 @@ graphyflow_big(const bus_word_t *edge_props,
     //     hls::stream<internal_end_data_batch_t> stream_result_data;
     // #pragma HLS STREAM variable = stream_result_data depth = 16
 
+    hls::stream<cacheline_req_t> cacheline_req;
+#pragma HLS STREAM variable = cacheline_req depth = 32
+    hls::stream<cacheline_resp_t> cacheline_resp;
+#pragma HLS STREAM variable = cacheline_resp depth = 32
+
     // --- Data Loading ---
     // src_id_loader(src_ids, stream_src_ids_1, stream_src_ids_2, num_edges);
     edge_descriptor_loader(edge_props, stream_src_ids, edge_stream, num_edges);
 
     // --- New COO-style Source Property Loading Pipeline ---
     dist_req_packer(stream_src_ids, stream_dist_req, num_edges);
-    cacheline_req_sender(stream_dist_req, cacheline_req_stream);
+    cacheline_req_sender(stream_dist_req, cacheline_req);
+    stream2axistream(cacheline_req, cacheline_req_stream);
+    axistream2stream(cacheline_resp_stream, cacheline_resp);
     // node_property_loader(node_props, stream_cache_req, stream_cache_resp,
     //                      node_distance_burst_stream, num_nodes);
-    node_prop_resp_receiver(cacheline_resp_stream, stream_cachelines);
+    node_prop_resp_receiver(cacheline_resp, stream_cachelines);
     merge_node_props(stream_cachelines, edge_stream, stream_edge_data,
                      num_edges);
 
@@ -1258,7 +1313,60 @@ graphyflow_big(const bus_word_t *edge_props,
     // stream_node_dist_data);
 
     // --- Main Dataflow Processing ---
-    graphyflow_big_dataflow(stream_edge_data, kernel_out_stream, dst_num);
+    // graphyflow_big_dataflow(stream_edge_data, kernel_out_stream, dst_num);
+
+    hls::stream<net_wrapper_kt_pair_105_t_t> reduce_105_d2o_pair[8];
+#pragma HLS STREAM variable = reduce_105_d2o_pair depth = 16
+#pragma HLS ARRAY_PARTITION variable = reduce_105_d2o_pair complete dim = 0
+    hls::stream<net_wrapper_kt_pair_105_t_t> reduce_105_o2u_pair[8];
+#pragma HLS STREAM variable = reduce_105_o2u_pair depth = 2
+#pragma HLS ARRAY_PARTITION variable = reduce_105_o2u_pair complete dim = 0
+
+    demux_1(stream_edge_data, reduce_105_d2o_pair);
+    
+    // omega_switch_2(reduce_105_d2o_pair, reduce_105_o2u_pair);
+
+    hls::stream<net_wrapper_kt_pair_105_t_t> stream_stage_0[8];
+#pragma HLS STREAM variable = stream_stage_0 depth = 2
+#pragma HLS ARRAY_PARTITION variable = stream_stage_0 complete dim = 0
+    hls::stream<net_wrapper_kt_pair_105_t_t> stream_stage_1[8];
+#pragma HLS STREAM variable = stream_stage_1 depth = 2
+#pragma HLS ARRAY_PARTITION variable = stream_stage_1 complete dim = 0
+    switch2x2_2(2, reduce_105_d2o_pair[0], reduce_105_d2o_pair[1], stream_stage_0[0],
+                stream_stage_0[1]);
+    switch2x2_2(2, reduce_105_d2o_pair[2], reduce_105_d2o_pair[3], stream_stage_0[2],
+                stream_stage_0[3]);
+    switch2x2_2(2, reduce_105_d2o_pair[4], reduce_105_d2o_pair[5], stream_stage_0[4],
+                stream_stage_0[5]);
+    switch2x2_2(2, reduce_105_d2o_pair[6], reduce_105_d2o_pair[7], stream_stage_0[6],
+                stream_stage_0[7]);
+    switch2x2_2(1, stream_stage_0[0], stream_stage_0[4], stream_stage_1[0],
+                stream_stage_1[1]);
+    switch2x2_2(1, stream_stage_0[1], stream_stage_0[5], stream_stage_1[2],
+                stream_stage_1[3]);
+    switch2x2_2(1, stream_stage_0[2], stream_stage_0[6], stream_stage_1[4],
+                stream_stage_1[5]);
+    switch2x2_2(1, stream_stage_0[3], stream_stage_0[7], stream_stage_1[6],
+                stream_stage_1[7]);
+    switch2x2_2(0, stream_stage_1[0], stream_stage_1[4], reduce_105_o2u_pair[0],
+                reduce_105_o2u_pair[1]);
+    switch2x2_2(0, stream_stage_1[1], stream_stage_1[5], reduce_105_o2u_pair[2],
+                reduce_105_o2u_pair[3]);
+    switch2x2_2(0, stream_stage_1[2], stream_stage_1[6], reduce_105_o2u_pair[4],
+                reduce_105_o2u_pair[5]);
+    switch2x2_2(0, stream_stage_1[3], stream_stage_1[7], reduce_105_o2u_pair[6],
+                reduce_105_o2u_pair[7]);
+    // Reduc_105_unit_reduce(reduce_105_o2u_pair, stream_o_0_107, dst_num);
+    hls::stream<reduce_word_t> pe_mem_out_streams[PE_NUM];
+#pragma HLS STREAM variable = pe_mem_out_streams depth = 4
+LOOP_FOR_60:
+    for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
+#pragma HLS UNROLL
+        Reduc_105_unit_reduce_single_pe(reduce_105_o2u_pair[pe_idx],
+                                        pe_mem_out_streams[pe_idx], pe_idx,
+                                        dst_num);
+    }
+    Reduc_105_drain_multi_pe(pe_mem_out_streams, kernel_out_stream, dst_num);
 
     // --- Final Writeback ---
     // final_writeback(stream_result_data, dst_num, output);
