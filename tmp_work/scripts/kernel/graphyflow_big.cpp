@@ -25,8 +25,6 @@ LOOP_SIL_READ:
                 node_id_t cur_id = wide_word.range(
                     (j + 1) * NODE_ID_BITWIDTH - 1, j * NODE_ID_BITWIDTH);
                 burst1.data[j] = cur_id;
-                // printf("Loaded node ID %d at burst %d, position %d\n",
-                // (int)cur_id, burst_idx, j); fflush(NULL);
             }
         }
         bool burst2_valid = false;
@@ -36,8 +34,6 @@ LOOP_SIL_READ:
                 burst2.data[j - 8] = wide_word.range(
                     (j + 1) * NODE_ID_BITWIDTH - 1, j * NODE_ID_BITWIDTH);
                 burst2_valid |= true;
-                // printf("Loaded node ID %d at burst %d, position %d\n",
-                // (int)burst2.data[j - 8], burst_idx + 1, j - 8); fflush(NULL);
             }
         }
         src_id_burst_stream_1.write(burst1);
@@ -161,9 +157,6 @@ LOOP_DRP_SEND_REQ:
         for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
             cache_idx[pe_idx] = node_id_burst.data[pe_idx] >> LOG_DIST_PER_WORD;
-            // printf("PE %d requests node ID %d (cache idx %d)\n", pe_idx,
-            // (int)node_id_burst.data[pe_idx], (int)cache_idx[pe_idx]);
-            // fflush(NULL);
         }
 
         ap_uint<NODE_ID_BITWIDTH - LOG_DIST_PER_WORD> cache_idx_diffs[PE_NUM];
@@ -171,8 +164,6 @@ LOOP_DRP_SEND_REQ:
         for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
             cache_idx_diffs[pe_idx] = cache_idx[pe_idx] - last_idx_max;
-            // printf("PE %d cache idx diff: %d\n", pe_idx,
-            // (int)cache_idx_diffs[pe_idx]); fflush(NULL);
         }
 
         // if not all diffs are zero, send a req_pack
@@ -188,8 +179,6 @@ LOOP_DRP_SEND_REQ:
             }
 
             ap_uint<4> num_unread = count_end_ones(valid_mask);
-            // printf("Packing req for %d unread PEs\n", (int)num_unread);
-            // fflush(NULL);
 
             distance_req_pack_t req_pack;
 #pragma HLS ARRAY_PARTITION variable = req_pack.idx complete dim = 0
@@ -199,8 +188,6 @@ LOOP_DRP_SEND_REQ:
             for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
                 req_pack.idx[pe_idx] = cache_idx[pe_idx];
-                // printf("Req pack PE %d node ID: %d\n", pe_idx,
-                // (int)req_pack.node_ids[pe_idx]); fflush(NULL);
             }
 
             distance_req_pack_stream.write(req_pack);
@@ -249,8 +236,6 @@ LOOP_SEND_CACHE_REQ:
                 cache_req.dest = i;
                 cache_req.last = req_pack.end_flag;
                 cacheline_req_stream.write(cache_req);
-                // printf("Sent cacheline req for idx %d to PE %d\n",
-                // (int)cache_req.idx, (int)cache_req.target_pe); fflush(NULL);
             }
         }
 
@@ -259,81 +244,6 @@ LOOP_SEND_CACHE_REQ:
         }
     }
 }
-
-// --- 1. Memory Helper Functions ---
-// --- MODIFIED: Reads 512-bit words and unpacks 24-bit distance values.
-// static void node_property_loader(
-//     const bus_word_t *node_distances_ddr,
-//     hls::stream<cacheline_req_t> &cacheline_req_stream,
-//     hls::stream<cacheline_resp_t> &cacheline_resp_stream,
-//     hls::stream<node_distance_burst_t> &node_distance_burst_stream,
-//     int32_t num_nodes) {
-
-//     ap_uint<NODE_ID_BITWIDTH - LOG_DIST_PER_WORD> last_cache_idx = -1;
-//     bus_word_t last_cacheline;
-//     cacheline_resp_t cache_resp;
-//     bool end_flag_get = false;
-
-//     // Stream 0
-// LOOP_NPL_S0_READ:
-//     while (true) {
-// #pragma HLS PIPELINE II = 1
-//         if (!cacheline_req_stream.empty()) {
-//             // printf("Waiting for cacheline request...\n");fflush(NULL);
-//             cacheline_req_t cache_req = cacheline_req_stream.read();
-//             // printf("Received cacheline request for idx %d from PE %d\n",
-//             // (int)cache_req.idx, (int)cache_req.target_pe); fflush(NULL);
-//             if (cache_req.end_flag) {
-//                 cache_resp.end_flag = true;
-//                 end_flag_get = true;
-//             } else {
-//                 cache_resp.end_flag = false;
-//                 if (cache_req.idx == last_cache_idx) {
-//                     cache_resp.data = last_cacheline;
-//                 } else {
-//                     cache_resp.data = node_distances_ddr[cache_req.idx];
-//                 }
-//             }
-
-//             last_cacheline = cache_resp.data;
-//             last_cache_idx = cache_req.idx;
-//             cache_resp.target_pe = cache_req.target_pe;
-//             cacheline_resp_stream.write(cache_resp);
-//             // printf("Sent cacheline response for idx %d to PE %d\n",
-//             // (int)cache_req.idx, (int)cache_req.target_pe); fflush(NULL);
-//             if (end_flag_get) {
-//                 break;
-//             }
-//         }
-//     }
-
-//     // Stream 1
-//     int nodes_read_s1 = 0;
-//     int burst_idx1 = 0, burst_idx2 = 0;
-//     // printf("Loading node distances for %d nodes (%d wide reads)\n",
-//     // num_nodes, num_wide_reads); fflush(NULL);
-//     const int num_ids_per_word = AXI_BUS_WIDTH / DISTANCE_BITWIDTH;
-//     const int num_wide_reads =
-//         (num_nodes + num_ids_per_word - 1) / num_ids_per_word;
-// LOOP_NPL_S1_READ:
-//     for (int i = 0; i < num_wide_reads; i++) {
-// #pragma HLS PIPELINE II = 1
-//         bus_word_t wide_word = node_distances_ddr[i];
-//         node_distance_burst_t burst;
-
-//     LOOP_NPL_S1_UNPACK:
-//         for (int j = 0; j < DBL_PE_NUM; j++) {
-// #pragma HLS UNROLL
-//             if (nodes_read_s1 + j < num_nodes) {
-//                 burst.data[j] = wide_word.range((j + 1) * DISTANCE_BITWIDTH -
-//                 1,
-//                                                 j * DISTANCE_BITWIDTH);
-//             }
-//         }
-//         nodes_read_s1 += DBL_PE_NUM;
-//         node_distance_burst_stream.write(burst);
-//     }
-// }
 
 static void node_prop_resp_receiver(
     hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream,
@@ -420,12 +330,9 @@ LOOP_INIT_CACHELINE:
     }
 
     const uint32_t scatter_size = (edge_num + PE_NUM - 1) / PE_NUM;
-    distance_t real_edge_weight =
-        1.0; // All edge weights are 1.0 in unweighted graph
-    const ap_fixed_pod_t edge_weight = (*reinterpret_cast<ap_fixed_pod_t *>(
-        &real_edge_weight)); // All edge weights are 1.0 in unweighted graph
-// printf("Merging node properties for %d edges (%d scatter batches)\n",
-// edge_num, scatter_size); fflush(NULL);
+    distance_t real_edge_weight = 1.0;
+    const ap_fixed_pod_t edge_weight =
+        (*reinterpret_cast<ap_fixed_pod_t *>(&real_edge_weight));
 LOOP_SCATTER_EDGES:
     for (int32_t edge_batch_idx = 0; edge_batch_idx < scatter_size;
          edge_batch_idx++) {
@@ -433,9 +340,6 @@ LOOP_SCATTER_EDGES:
         edge_descriptor_batch_t edge_batch;
 #pragma HLS ARRAY_PARTITION variable = edge_batch.edges complete dim = 0
         edge_batch = edge_stream.read();
-        //         node_id_burst_t src_id_burst = src_id_burst_stream.read();
-        // #pragma HLS ARRAY_PARTITION variable = src_id_burst.data complete dim
-        // = 0
         update_tuple_t out_batch;
 #pragma HLS ARRAY_PARTITION variable = out_batch.node_id complete dim = 0
 #pragma HLS ARRAY_PARTITION variable = out_batch.prop complete dim = 0
@@ -457,24 +361,10 @@ LOOP_SCATTER_EDGES:
                     cacheline = cacheline_streams[pe_idx].read();
                 }
 
-                // ap_fixed_pod_t prop = cacheline.range(
-                //     31 + (offset << 5), offset << 5);
                 ap_fixed_pod_t prop = get_val_from_bus(cacheline, offset);
 
-                // out_batch.src_distances[pe_idx] = prop;
-                // out_batch.weights[pe_idx] = edge_weight;
-                // out_batch.dsts[pe_idx] = edge_batch.edges[pe_idx].dst_id;
                 out_batch.node_id[pe_idx] = edge_batch.edges[pe_idx].dst_id;
                 out_batch.prop[pe_idx] = (prop + edge_weight);
-
-                // distance_t real_prop = *reinterpret_cast<distance_t
-                // *>(&prop); printf(
-                //     "PE %d edge src_id %d dst_id %d: loaded prop %.3f, "
-                //     "updated prop "
-                //     "%.3f\n",
-                //     (int)pe_idx, (int)edge_batch.edges[pe_idx].src_id,
-                //     (int)edge_batch.edges[pe_idx].dst_id, (float)real_prop,
-                //     (float)(real_prop + real_edge_weight));
 
                 if (pe_idx == PE_NUM - 1) {
                     cur_last_cacheline = cacheline;
@@ -483,8 +373,6 @@ LOOP_SCATTER_EDGES:
             }
         }
         edge_batch_stream.write(out_batch);
-        // printf("Sent edge batch with %d entries\n", (int)out_batch.end_pos);
-        // fflush(NULL);
         for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
             last_cacheline[pe_idx] = cur_last_cacheline;
@@ -497,114 +385,6 @@ LOOP_SCATTER_EDGES:
     end_batch.end_pos = 0;
     edge_batch_stream.write(end_batch);
 }
-
-// static void node_property_responder(
-//     hls::stream<node_distance_burst_t> &node_distance_burst_stream,
-//     int32_t num_nodes, hls::stream<node_dist_batch_t> &all_distances_stream)
-//     { node_dist_batch_t dist_batch;
-// #pragma HLS ARRAY_PARTITION variable = dist_batch.data complete dim = 0
-//     dist_batch.end_flag = false;
-//     int32_t nodes_read = 0;
-//     const int num_reads = (num_nodes + DBL_PE_NUM - 1) / DBL_PE_NUM;
-//     const int for_compare = num_nodes - DBL_PE_NUM;
-
-// LOOP_FOR_14:
-//     for (int32_t read_idx = 0; read_idx < num_reads; read_idx++) {
-// #pragma HLS PIPELINE II = 1
-//         // Read packet from stream
-//         node_distance_burst_t node_dist_burst =
-//             node_distance_burst_stream.read();
-
-//     LOOP_FOR_13:
-//         for (uint32_t pe_idx = 0; pe_idx < DBL_PE_NUM; pe_idx++) {
-// #pragma HLS UNROLL
-//             dist_batch.data[pe_idx] = node_dist_burst.data[pe_idx];
-//         }
-//         uint32_t maybe_remain_num = num_nodes - nodes_read;
-//         uint32_t cur_node_read =
-//             (nodes_read < for_compare) ? DBL_PE_NUM : maybe_remain_num;
-//         dist_batch.end_pos = cur_node_read;
-//         nodes_read += cur_node_read;
-//         // printf("Writing distance batch with %d entries\n",
-//         // (int)cur_node_read); fflush(NULL);
-//         all_distances_stream.write(dist_batch);
-//     }
-
-//     dist_batch.end_flag = true;
-//     dist_batch.end_pos = 0;
-//     all_distances_stream.write(dist_batch);
-// }
-
-// --- REWRITTEN: New final_writeback function packs only distances (no node
-// IDs) into 512-bit words. Node IDs are implicit: they are sequential from 0 to
-// num_dsts-1.
-// static void
-// pack_distances_to_bus_words(hls::stream<internal_end_data_batch_t>
-// &in_stream,
-//                             hls::stream<write_burst_pkt_t> &output_stream) {
-//     bus_word_t word;
-//     int pkt_idx = 0;
-
-// LOOP_PACK_TO_BUS:
-//     while (true) {
-// #pragma HLS PIPELINE II = 1
-//         internal_end_data_batch_t in_batch = in_stream.read();
-// #pragma HLS ARRAY_PARTITION variable = in_batch.data complete dim = 0
-
-//         if (in_batch.end_pos == 0 && in_batch.end_flag) {
-//             break;
-//         }
-
-//     LOOP_PACK_BATCH:
-//         for (int i = 0; i < DBL_PE_NUM; i++) {
-// #pragma HLS UNROLL
-//             ap_fixed_pod_t distance = in_batch.data[i];
-//             word.range((i + 1) * DISTANCE_BITWIDTH - 1, i *
-//             DISTANCE_BITWIDTH) =
-//                 distance;
-//         }
-
-//         write_burst_pkt_t pkt;
-//         pkt.data = word;
-//         pkt.dest = pkt_idx;
-//         pkt.last = false;
-//         pkt_idx++;
-
-//         output_stream.write(pkt);
-
-//         if (in_batch.end_flag) {
-//             break;
-//         }
-//     }
-
-//     write_burst_pkt_t pkt;
-//     pkt.last = true;
-//     output_stream.write(pkt);
-// }
-
-// Write bus words from stream to DDR memory
-// Writes exactly the number of words needed to cover dst_num distances
-// static void write_bus_words_to_ddr(hls::stream<bus_word_t> &in_bus_stream,
-//                                    bus_word_t *out_ddr, int32_t dst_num) {
-//     const int dists_per_word =
-//         AXI_BUS_WIDTH / DISTANCE_BITWIDTH; // 16 distances per 512-bit word
-//     int total_words = (dst_num + dists_per_word - 1) / dists_per_word;
-//     int word_idx = 0;
-
-// LOOP_WRITE_TO_DDR:
-//     while (true) {
-// #pragma HLS PIPELINE II = 1
-//         if (!in_bus_stream.empty()) {
-//             bus_word_t word = in_bus_stream.read();
-//             out_ddr[word_idx] = word;
-//             // printf("Wrote bus word %d to DDR.\n", word_idx); fflush(NULL);
-//             // printf("Total words to write: %d\n", total_words);
-//             fflush(NULL); word_idx++; if (word_idx >= total_words) {
-//                 break;
-//             }
-//         }
-//     }
-// }
 
 // --- 2. Utility Network Functions ---
 
@@ -1015,15 +795,6 @@ LOOP_AGGREGATE:
                     ? old_dist_pod
                     : incoming_dist_pod;
 
-            // distance_t old_dist = *reinterpret_cast<distance_t
-            // *>(&old_dist_pod); distance_t incoming_dist =
-            // *reinterpret_cast<distance_t *>(&incoming_dist_pod); distance_t
-            // new_dist = *reinterpret_cast<distance_t *>(&new_dist_pod);
-            // printf("PE %d key %d: old_dist %.3f, incoming_dist %.3f, new_dist
-            // %.3f\n",
-            //        (int)pe_id, (int)key, (float)old_dist,
-            //        (float)incoming_dist, (float)new_dist);
-
             set_raw_val(current_word, pack_idx, new_dist_pod);
 
             // Write back to URAM and update cache
@@ -1071,10 +842,6 @@ LOOP_DRAIN_ADDR:
             one_write_burst.data.range(31 + (pe_idx << 5) + 256,
                                        (pe_idx << 5) + 256) =
                 word.range(63, 32);
-
-            // printf("Drained word from PE %d: lower=%f upper=%f\n", pe_idx,
-            //        ap_fixed_to_float(word.range(31, 0)),
-            //        ap_fixed_to_float(word.range(63, 32)));
         }
         kernel_out_stream.write(one_write_burst);
     }
@@ -1218,11 +985,7 @@ graphyflow_big(const bus_word_t *edge_props, int32_t num_nodes,
                hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream,
                hls::stream<write_burst_pkt_t> &kernel_out_stream) {
 #pragma HLS INTERFACE m_axi port = edge_props offset = slave bundle = gmem0
-// #pragma HLS INTERFACE m_axi port = node_props offset = slave bundle = gmem1
-// #pragma HLS INTERFACE m_axi port = output offset = slave bundle = gmem2
 #pragma HLS INTERFACE s_axilite port = edge_props
-// #pragma HLS INTERFACE s_axilite port = node_props
-// #pragma HLS INTERFACE s_axilite port = output
 #pragma HLS INTERFACE s_axilite port = num_nodes
 #pragma HLS INTERFACE s_axilite port = num_edges
 #pragma HLS INTERFACE s_axilite port = dst_num
@@ -1230,35 +993,17 @@ graphyflow_big(const bus_word_t *edge_props, int32_t num_nodes,
 #pragma HLS INTERFACE s_axilite port = return
 #pragma HLS DATAFLOW
 
-    // printf("GraphyFlow Big Kernel Started.\n");
-    // fflush(NULL);
-
     // Streams for the new COO-style property loading
     hls::stream<node_id_burst_t> stream_src_ids;
 #pragma HLS STREAM variable = stream_src_ids depth = 16
-    //     hls::stream<node_id_burst_t> stream_src_ids_2;
-    // #pragma HLS STREAM variable = stream_src_ids_2 depth = 16
     hls::stream<distance_req_pack_t> stream_dist_req;
 #pragma HLS STREAM variable = stream_dist_req depth = 32
-    //     hls::stream<cacheline_req_t> stream_cache_req;
-    // #pragma HLS STREAM variable = stream_cache_req depth = 16
-    //     hls::stream<cacheline_resp_t> stream_cache_resp;
-    // #pragma HLS STREAM variable = stream_cache_resp depth = 16
     hls::stream<bus_word_t> stream_cachelines[PE_NUM];
 #pragma HLS STREAM variable = stream_cachelines depth = 32
-    // #pragma HLS ARRAY_PARTITION variable = stream_cachelines complete dim = 0
-
-    // Existing streams
-    //     hls::stream<node_distance_burst_t> node_distance_burst_stream;
-    // #pragma HLS STREAM variable = node_distance_burst_stream depth = 16
     hls::stream<edge_descriptor_batch_t> edge_stream;
 #pragma HLS STREAM variable = edge_stream depth = 32
     hls::stream<update_tuple_t> stream_edge_data;
 #pragma HLS STREAM variable = stream_edge_data depth = 16
-    //     hls::stream<node_dist_batch_t> stream_node_dist_data;
-    // #pragma HLS STREAM variable = stream_node_dist_data depth = 16
-    //     hls::stream<internal_end_data_batch_t> stream_result_data;
-    // #pragma HLS STREAM variable = stream_result_data depth = 16
 
     // --- Data Loading ---
     // src_id_loader(src_ids, stream_src_ids_1, stream_src_ids_2, num_edges);
@@ -1266,30 +1011,11 @@ graphyflow_big(const bus_word_t *edge_props, int32_t num_nodes,
 
     // --- New COO-style Source Property Loading Pipeline ---
     dist_req_packer(stream_src_ids, stream_dist_req, num_edges);
-    // printf("Distance Request Packer Completed.\n");
-    // fflush(NULL);
     cacheline_req_sender(stream_dist_req, cacheline_req_stream, memory_offset);
-    // printf("Cacheline Request Sender Completed.\n");
-    // fflush(NULL);
-    // node_property_loader(node_props, stream_cache_req, stream_cache_resp,
-    //                      node_distance_burst_stream, num_nodes);
     node_prop_resp_receiver(cacheline_resp_stream, stream_cachelines);
     merge_node_props(stream_cachelines, edge_stream, stream_edge_data,
                      num_edges);
 
-    // --- Node Property Responder for Reduce Operation ---
-    // node_property_responder(node_distance_burst_stream, num_nodes,
-    // stream_node_dist_data);
-
     // --- Main Dataflow Processing ---
     graphyflow_big_dataflow(stream_edge_data, kernel_out_stream, dst_num);
-    // printf("GraphyFlow Big Kernel Completed.\n");
-    // fflush(NULL);
-
-    // --- Final Writeback ---
-    // final_writeback(stream_result_data, dst_num, output);
-    //     hls::stream<bus_word_t> bus_word_stream;
-    // #pragma HLS STREAM variable = bus_word_stream depth = 4
-    // pack_distances_to_bus_words(stream_result_data, kernel_out_stream);
-    // write_bus_words_to_ddr(bus_word_stream, output, dst_num);
 }

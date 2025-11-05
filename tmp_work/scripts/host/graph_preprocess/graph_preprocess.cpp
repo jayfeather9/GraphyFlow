@@ -219,26 +219,10 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
             std::vector<Edge> local_edges;
             local_edges.reserve(partition_edges.size());
 
-            uint32_t last_src_buffer = 0;
-            uint32_t last_src_id = 0;
-
             for (const auto &global_edge : partition_edges) {
                 uint32_t src_id = pd.vtx_map[global_edge.src];
                 uint32_t dest_id = pd.vtx_map[global_edge.dest];
                 uint32_t weight = global_edge.weight;
-
-                uint32_t cur_src_buffer = floor(src_id / SRC_BUFFER_SIZE);
-                if (is_dense && cur_src_buffer != last_src_buffer) {
-                    uint32_t mod8 = local_edges.size() % 8;
-                    if (mod8 != 0) {
-                        // Pad with dummy edges to align to 8-edge boundary
-                        for (uint32_t pad = 0; pad < (8 - mod8); pad++) {
-                            local_edges.push_back({last_src_id, 0x7FFFFFFF, 1});
-                        }
-                    }
-                    last_src_buffer = cur_src_buffer;
-                }
-                last_src_id = src_id;
                 local_edges.push_back({(int)src_id, (int)dest_id, (int)weight});
             }
 
@@ -255,12 +239,36 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
                 (pd.num_edges + num_pipelines - 1) / num_pipelines;
 
             for (int pip = 0; pip < num_pipelines; ++pip) {
+                std::vector<Edge> cur_pip_edges;
                 pd.pipeline_edges[pip].pipeline_id = pip;
                 int start_idx =
                     std::min(pip * edges_per_pipeline, (int)pd.num_edges);
                 int end_idx =
                     std::min(start_idx + edges_per_pipeline, (int)pd.num_edges);
-                pd.pipeline_edges[pip].num_edges = end_idx - start_idx;
+
+                uint32_t last_src_buffer = 0;
+                uint32_t last_src_id = 0;
+                for (const auto &local_edge : local_edges) {
+                    uint32_t src_id = local_edge.src;
+                    uint32_t dest_id = local_edge.dest;
+                    uint32_t weight = local_edge.weight;
+                    uint32_t cur_src_buffer = floor(src_id / SRC_BUFFER_SIZE);
+                    if (is_dense && cur_src_buffer != last_src_buffer) {
+                        uint32_t mod8 = cur_pip_edges.size() % 8;
+                        if (mod8 != 0) {
+                            // Pad with dummy edges to align to 8-edge boundary
+                            for (uint32_t pad = 0; pad < (8 - mod8); pad++) {
+                                cur_pip_edges.push_back(
+                                    {last_src_id, 0x7FFFFFFF, 1});
+                            }
+                        }
+                        last_src_buffer = cur_src_buffer;
+                    }
+                    last_src_id = src_id;
+                    cur_pip_edges.push_back({src_id, dest_id, weight});
+                }
+
+                pd.pipeline_edges[pip].num_edges = cur_pip_edges.size();
 
                 int padding_size =
                     (8 - (pd.pipeline_edges[pip].num_edges % 8)) % 8;
@@ -275,12 +283,12 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
 
                 // Count out-degrees for this pipeline's edges
                 std::vector<int> out_degree(pd.num_vertices, 0);
-                for (int j = start_idx; j < end_idx; ++j) {
-                    out_degree[local_edges[j].src]++;
-                    if (j == end_idx - 1) {
+                for (int j = 0; j < cur_pip_edges.size(); ++j) {
+                    out_degree[cur_pip_edges[j].src]++;
+                    if (j == cur_pip_edges.size() - 1) {
                         // If this is the last edge, add padding edges if needed
                         for (int p = 0; p < padding_size; ++p) {
-                            out_degree[local_edges[j].src]++;
+                            out_degree[cur_pip_edges[j].src]++;
                         }
                     }
                 }
@@ -295,14 +303,14 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
                 // Fill columns and weights
                 std::vector<int> current_offset =
                     pd.pipeline_edges[pip].offsets;
-                for (int j = start_idx; j < end_idx; ++j) {
-                    int src = local_edges[j].src;
+                for (int j = 0; j < cur_pip_edges.size(); ++j) {
+                    int src = cur_pip_edges[j].src;
                     int idx = current_offset[src]++;
                     pd.pipeline_edges[pip].columns.push_back(
-                        local_edges[j].dest);
+                        cur_pip_edges[j].dest);
                     pd.pipeline_edges[pip].weights.push_back(
-                        local_edges[j].weight);
-                    if (j == end_idx - 1) {
+                        cur_pip_edges[j].weight);
+                    if (j == cur_pip_edges.size() - 1) {
                         // If this is the last edge, add padding edges if needed
                         for (int p = 0; p < padding_size; ++p) {
                             idx = current_offset[src]++;

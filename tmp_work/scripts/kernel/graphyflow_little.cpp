@@ -163,20 +163,6 @@ scatterLoop:
                 one_ppb_response
                     .data; // src_prop[(base_addr >> 4) + pp_write_idx];
 
-            // for (int j = 0; j < 16; j++) {
-            //     ap_fixed_pod_t distance =
-            //         one_ppb_response.data.range(
-            //             (j + 1) * 32 - 1, j * 32);
-            //     distance_t real_prop =
-            //         *reinterpret_cast<distance_t *>(&distance);
-            //     // printf(
-            //     //     "memory_offset %d prop[%d] = %.3f, write_idx %d,
-            //     write_buffer %d\n",
-            //     //     memory_offset, j,
-            //     //     (float)real_prop, write_idx, write_buffer);
-            //     // fflush(NULL);
-            // }
-
             for (int u = 0; u < PE_NUM; u++) {
 #pragma HLS UNROLL
                 src_prop_buffer[u][write_buffer][write_idx] = one_read_burst;
@@ -214,17 +200,6 @@ scatterLoop:
                     src_prop_buffer[u][read_buffer][uram_row_idx];
                 ap_fixed_pod_t src_prop =
                     get_val_from_bus(uram_row, uram_row_offset);
-
-                // distance_t real_src_prop =
-                //     *reinterpret_cast<distance_t *>(&src_prop);
-                // printf(
-                //     "Little PE %d memory_offset %d u %d read_buffer %d
-                //     uram_row_idx %d edge src_id %d dst_id %d: loaded src_prop
-                //     %.3f\n", (int)u, (int)memory_offset, (int)u,
-                //     (int)read_buffer, (int)uram_row_idx,
-                //     (int)an_edge_burst.edges[u].src_id,
-                //     (int)an_edge_burst.edges[u].dst_id,
-                //     (float)real_src_prop);
 
                 an_update_set.prop[u] = (src_prop + edge_weight);
                 an_update_set.node_id[u] = an_edge_burst.edges[u].dst_id;
@@ -372,18 +347,6 @@ LOOP_AGGREGATE:
                     (old_dist_pod < incoming_dist_pod && old_dist_pod != 0x0)
                         ? old_dist_pod
                         : incoming_dist_pod;
-
-                // distance_t old_dist =
-                //     *reinterpret_cast<distance_t *>(&old_dist_pod);
-                // distance_t new_dist =
-                //     *reinterpret_cast<distance_t *>(&new_dist_pod);
-                // printf(
-                //     "Little PE %d updating node_id %d: old_dist %.3f,
-                //     incoming_dist "
-                //     "%.3f, new_dist %.3f\n",
-                //     (int)pe, (int)key, (float)old_dist,
-                //     (float)*reinterpret_cast<distance_t
-                //     *>(&incoming_dist_pod), (float)new_dist);
 
                 set_raw_val(current_word, pack_idx, new_dist_pod);
 

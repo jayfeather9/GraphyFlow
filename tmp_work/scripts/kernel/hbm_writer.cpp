@@ -72,9 +72,6 @@ LOOP_BIG_KRL_READ_MEMORY:
         bool out_end_flag;
 
         if (process_flag) {
-            // printf("Waiting for cacheline request...\n");fflush(NULL);
-            // printf("Received cacheline request for idx %d from PE %d\n",
-            // (int)cache_req.idx, (int)cache_req.target_pe); fflush(NULL);
             if (end_flag) {
                 out_data = 0;
                 last_cache_idx = -1;
@@ -96,8 +93,6 @@ LOOP_BIG_KRL_READ_MEMORY:
             cache_resp.dest = dst_pe;
             cache_resp.last = out_end_flag;
             cacheline_resp_stream.write(cache_resp);
-            // printf("Sent cacheline response for idx %d to PE %d\n",
-            // (int)cache_req.idx, (int)cache_req.target_pe); fflush(NULL);
         }
         if (left_partitions == 0) {
             break;
