@@ -17,7 +17,7 @@
 #else
 #define MAX_NUM 65536
 #endif
-#define L 4
+#define L 3
 #define SRC_BUFFER_SIZE 4096
 #define LOG_SRC_BUFFER_SIZE 12
 

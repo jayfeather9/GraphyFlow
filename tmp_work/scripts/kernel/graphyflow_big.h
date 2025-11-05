@@ -17,7 +17,7 @@
 #else
 #define MAX_NUM 524288
 #endif
-#define L 4
+#define L 3
 
 // --- New Bitwidth Definitions for HLS Synthesis ---
 #define NODE_ID_BITWIDTH 32

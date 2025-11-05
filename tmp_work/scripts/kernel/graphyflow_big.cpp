@@ -268,20 +268,11 @@ LOOP_SCATTER_EDGES:
 
             ap_fixed_pod_t prop =
                 cacheline.range(31 + (offset << 5), offset << 5);
+            ap_fixed_pod_t update = prop + edge_weight;
 
             out_batch.data[pe_idx].node_id = edge_batch.edges[pe_idx].dst_id;
-            out_batch.data[pe_idx].prop = (prop + edge_weight);
-            out_batch.data[pe_idx].end_flag = false;
-            // printf("PE %d edge src %u dst %u prop %f\n", pe_idx,
-            //        (uint32_t)(edge_batch.edges[pe_idx].src_id),
-            //        (uint32_t)(edge_batch.edges[pe_idx].dst_id),
-            //        (float)*reinterpret_cast<distance_t
-            //        *>(&out_batch.data[pe_idx].prop));
-            // // print data from out_batch before writing to stream
-            // printf("PE %d out_batch node id %u prop %f\n", pe_idx,
-            //        (uint32_t)(out_batch.data[pe_idx].node_id),
-            //        (float)*reinterpret_cast<distance_t
-            //        *>(&out_batch.data[pe_idx].prop));
+            out_batch.data[pe_idx].prop = update;
+            out_batch.data[pe_idx].end_flag = 0;
 
             if (pe_idx == PE_NUM - 1) {
                 last_cacheline[pe_idx] = cacheline;
@@ -290,7 +281,7 @@ LOOP_SCATTER_EDGES:
         }
         edge_batch_stream.write(out_batch);
 
-        for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
+        for (int32_t pe_idx = 0; pe_idx < (PE_NUM - 1); pe_idx++) {
 #pragma HLS UNROLL
             last_cacheline[pe_idx] = last_cacheline[PE_NUM - 1];
             last_cache_idx[pe_idx] = last_cache_idx[PE_NUM - 1];
@@ -314,11 +305,9 @@ LOOP_WHILE_22:
     LOOP_FOR_20:
         for (uint32_t i = 0; i < PE_NUM; i++) {
 #pragma HLS UNROLL
-            out_streams[i].write(in_batch.data[i]);
-            // printf("Demux send node id %u with dist %f to out_stream %u\n",
-            //        (uint32_t)(in_batch.data[i].node_id),
-            //        (float)*reinterpret_cast<distance_t
-            //        *>(&in_batch.data[i].prop), i);
+            if (in_batch.data[i].node_id.range(19, 19) == 0) {
+                out_streams[i].write(in_batch.data[i]);
+            }
         }
     }
     // Propagate end_flag to all output streams
@@ -495,64 +484,59 @@ LOOP_AGGREGATE:
         if (kt_elem.end_flag) {
             break;
         }
-        if (kt_elem.node_id.range(19, 19) == 0) {
-            uint32_t key = kt_elem.node_id >> LOG_PE_NUM;
-            ap_fixed_pod_t incoming_dist_pod = kt_elem.prop;
-            // printf("PE recv node id %u with dist %f\n",
-            // (uint32_t)(kt_elem.node_id),
-            //        (float)*reinterpret_cast<distance_t
-            //        *>(&incoming_dist_pod));
+        uint32_t key = (kt_elem.node_id >> LOG_PE_NUM);
+        ap_fixed_pod_t incoming_dist_pod = kt_elem.prop;
 
-            uint32_t word_addr = (key >> 1);
+        uint32_t word_addr = (key >> 1);
 
-            reduce_word_t current_word = prop_mem[word_addr];
+        reduce_word_t current_word = prop_mem[word_addr];
 
-            // Check cache first
-            for (int i = L; i >= 0; --i) {
+        // Check cache first
+        // for (int i = L; i >= 0; --i) {
+        for (int i = 0; i < L + 1; i++) {
 #pragma HLS UNROLL
-                if (cache_addr_buffer[i] == word_addr) {
-                    current_word = cache_data_buffer[i];
-                    break;
-                }
+            if (cache_addr_buffer[i] == word_addr) {
+                current_word = cache_data_buffer[i];
+                // break;
             }
-
-            // Shift cache
-            for (int i = 0; i < L; i++) {
-#pragma HLS UNROLL
-                cache_addr_buffer[i] = cache_addr_buffer[i + 1];
-                cache_data_buffer[i] = cache_data_buffer[i + 1];
-            }
-
-            reduce_word_t tmp_cur_word = current_word;
-
-            ap_fixed_pod_t msb = tmp_cur_word.range(63, 32);
-            ap_fixed_pod_t lsb = tmp_cur_word.range(31, 0);
-
-            ap_fixed_pod_t msb_out = (msb < incoming_dist_pod && msb != 0x0)
-                                         ? msb
-                                         : incoming_dist_pod;
-            ap_fixed_pod_t lsb_out = (lsb < incoming_dist_pod && lsb != 0x0)
-                                         ? lsb
-                                         : incoming_dist_pod;
-
-            reduce_word_t accumulated_msb;
-            reduce_word_t accumulated_lsb;
-
-            accumulated_msb.range(63, 32) = msb_out;
-            accumulated_msb.range(31, 0) = tmp_cur_word.range(31, 0);
-
-            accumulated_lsb.range(63, 32) = tmp_cur_word.range(63, 32);
-            accumulated_lsb.range(31, 0) = lsb_out;
-
-            if (key & 0x01) {
-                prop_mem[word_addr] = accumulated_msb;
-                cache_data_buffer[L] = accumulated_msb;
-            } else {
-                prop_mem[word_addr] = accumulated_lsb;
-                cache_data_buffer[L] = accumulated_lsb;
-            }
-            cache_addr_buffer[L] = word_addr;
         }
+
+        // Shift cache
+        for (int i = 0; i < L; i++) {
+#pragma HLS UNROLL
+            cache_addr_buffer[i] = cache_addr_buffer[i + 1];
+            cache_data_buffer[i] = cache_data_buffer[i + 1];
+        }
+
+        reduce_word_t tmp_cur_word = current_word;
+
+        ap_fixed_pod_t msb = tmp_cur_word.range(63, 32);
+        ap_fixed_pod_t lsb = tmp_cur_word.range(31, 0);
+
+        ap_fixed_pod_t msb_out = (msb < incoming_dist_pod && msb != 0x0)
+                                        ? msb
+                                        : incoming_dist_pod;
+        ap_fixed_pod_t lsb_out = (lsb < incoming_dist_pod && lsb != 0x0)
+                                        ? lsb
+                                        : incoming_dist_pod;
+
+        reduce_word_t accumulated_msb;
+        reduce_word_t accumulated_lsb;
+
+        accumulated_msb.range(63, 32) = msb_out;
+        accumulated_msb.range(31, 0) = tmp_cur_word.range(31, 0);
+
+        accumulated_lsb.range(63, 32) = tmp_cur_word.range(63, 32);
+        accumulated_lsb.range(31, 0) = lsb_out;
+
+        if (key & 0x01) {
+            prop_mem[word_addr] = accumulated_msb;
+            cache_data_buffer[L] = accumulated_msb;
+        } else {
+            prop_mem[word_addr] = accumulated_lsb;
+            cache_data_buffer[L] = accumulated_lsb;
+        }
+        cache_addr_buffer[L] = word_addr;
     }
 
     // --- Phase 4: Stream out aggregated memory ---
