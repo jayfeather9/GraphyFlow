@@ -806,61 +806,62 @@ void AlgorithmHost::update_data(const PartitionContainer &container) {
     }
 
     // Print writer kernel node prop data
-    for (size_t pip = 0; pip < 20; pip += 12) {
-        const auto &node_props = writer_kernel_node_props[pip];
-        bool is_dense = (pip < LITTLE_KERNEL_NUM);
-        std::cout << "Pipeline " << pip << std::endl;
-        if (is_dense) {
-            std::cout << "  (Dense partition)" << std::endl;
-        } else {
-            std::cout << "  (Sparse partition)" << std::endl;
-        }
-        size_t partition_cnt = 0;
-        size_t nxt_offset = 0;
-        size_t cur_valid_node_num =
-            is_dense ? dense_buffers[partition_cnt].node_prop_offset +
-                           container.DPs[partition_cnt].num_vertices
-                     : sparse_buffers[partition_cnt].node_prop_offset +
-                           container.SPs[partition_cnt].num_vertices;
+    // for (size_t pip = 0; pip < 20; pip += 12) {
+    //     const auto &node_props = writer_kernel_node_props[pip];
+    //     bool is_dense = (pip < LITTLE_KERNEL_NUM);
+    //     std::cout << "Pipeline " << pip << std::endl;
+    //     if (is_dense) {
+    //         std::cout << "  (Dense partition)" << std::endl;
+    //     } else {
+    //         std::cout << "  (Sparse partition)" << std::endl;
+    //     }
+    //     size_t partition_cnt = 0;
+    //     size_t nxt_offset = 0;
+    //     size_t cur_valid_node_num =
+    //         is_dense ? dense_buffers[partition_cnt].node_prop_offset +
+    //                        container.DPs[partition_cnt].num_vertices
+    //                  : sparse_buffers[partition_cnt].node_prop_offset +
+    //                        container.SPs[partition_cnt].num_vertices;
 
-        for (size_t word_idx = 0; word_idx < node_props.size(); ++word_idx) {
-            const bus_word_t &word = node_props[word_idx];
-            std::cout << "Pipeline " << pip << ", Word " << word_idx << ": ";
+    //     for (size_t word_idx = 0; word_idx < node_props.size(); ++word_idx) {
+    //         const bus_word_t &word = node_props[word_idx];
+    //         std::cout << "Pipeline " << pip << ", Word " << word_idx << ": ";
 
-            for (size_t data_idx = 0; data_idx < dists_per_word; ++data_idx) {
-                distance_t dist =
-                    reinterpret_cast<const distance_t *>(&word)[data_idx];
-                float dist_float = static_cast<float>(dist);
-                std::cout << dist_float;
-                size_t cur_idx = word_idx * dists_per_word + data_idx;
+    //         for (size_t data_idx = 0; data_idx < dists_per_word; ++data_idx)
+    //         {
+    //             distance_t dist =
+    //                 reinterpret_cast<const distance_t *>(&word)[data_idx];
+    //             float dist_float = static_cast<float>(dist);
+    //             std::cout << dist_float;
+    //             size_t cur_idx = word_idx * dists_per_word + data_idx;
 
-                if (cur_idx >= nxt_offset && cur_idx < cur_valid_node_num) {
-                    std::cout << " (valid) ";
-                } else {
-                    if (cur_idx == cur_valid_node_num) {
-                        partition_cnt++;
-                        if (is_dense) {
-                            nxt_offset =
-                                dense_buffers[partition_cnt].node_prop_offset *
-                                dists_per_word;
-                            cur_valid_node_num =
-                                nxt_offset +
-                                container.DPs[partition_cnt].num_vertices;
-                        } else {
-                            nxt_offset =
-                                sparse_buffers[partition_cnt].node_prop_offset *
-                                dists_per_word;
-                            cur_valid_node_num =
-                                nxt_offset +
-                                container.SPs[partition_cnt].num_vertices;
-                        }
-                    }
-                    std::cout << " (invalid) ";
-                }
-            }
-            std::cout << std::endl;
-        }
-    }
+    //             if (cur_idx >= nxt_offset && cur_idx < cur_valid_node_num) {
+    //                 std::cout << " (valid) ";
+    //             } else {
+    //                 if (cur_idx == cur_valid_node_num) {
+    //                     partition_cnt++;
+    //                     if (is_dense) {
+    //                         nxt_offset =
+    //                             dense_buffers[partition_cnt].node_prop_offset
+    //                             * dists_per_word;
+    //                         cur_valid_node_num =
+    //                             nxt_offset +
+    //                             container.DPs[partition_cnt].num_vertices;
+    //                     } else {
+    //                         nxt_offset =
+    //                             sparse_buffers[partition_cnt].node_prop_offset
+    //                             * dists_per_word;
+    //                         cur_valid_node_num =
+    //                             nxt_offset +
+    //                             container.SPs[partition_cnt].num_vertices;
+    //                     }
+    //                 }
+    //                 std::cout << " (invalid) ";
+    //             }
+    //         }
+    //         std::cout << std::endl;
+    //     }
+    // }
 
     std::cout << "[SUCCESS] Host-side data updated for new iteration."
               << std::endl;
