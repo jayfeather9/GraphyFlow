@@ -220,13 +220,12 @@ LOOP_RECEIVE_CACHE_RESP:
 static void
 merge_node_props(hls::stream<bus_word_t> (&cacheline_streams)[PE_NUM],
                  hls::stream<edge_descriptor_batch_t> &edge_stream,
-                 //  hls::stream<node_id_burst_t> &src_id_burst_stream,
                  hls::stream<update_tuple_t> &edge_batch_stream,
                  uint32_t edge_num) {
 
     bus_word_t last_cacheline[PE_NUM] = {0};
 #pragma HLS ARRAY_PARTITION variable = last_cacheline complete dim = 0
-    uint32_t last_cache_idx[PE_NUM] = {0};
+    ap_uint<26> last_cache_idx[PE_NUM] = {0};
 #pragma HLS ARRAY_PARTITION variable = last_cache_idx complete dim = 0
 
 // Init first cacheline for each PE
@@ -237,7 +236,7 @@ LOOP_INIT_CACHELINE:
         last_cache_idx[pe_idx] = 0x0;
     }
 
-    const uint32_t scatter_size = (edge_num + PE_NUM - 1) / PE_NUM;
+    const uint32_t scatter_size = (edge_num >> LOG_PE_NUM);
     distance_t real_edge_weight =
         1.0; // All edge weights are 1.0 in unweighted graph
     const ap_fixed_pod_t edge_weight =
@@ -254,10 +253,10 @@ LOOP_SCATTER_EDGES:
 
         for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
-            uint32_t cacheline_idx =
+            ap_uint<26> cacheline_idx =
                 (edge_batch.edges[pe_idx].src_id.range(30, 0) >>
                  LOG_DIST_PER_WORD);
-            uint32_t offset = (edge_batch.edges[pe_idx].src_id.range(30, 0) &
+            ap_uint<4> offset = (edge_batch.edges[pe_idx].src_id.range(30, 0) &
                                (DIST_PER_WORD - 1));
             bus_word_t cacheline;
             if (cacheline_idx == last_cache_idx[pe_idx]) {
@@ -461,9 +460,8 @@ Reduc_105_unit_reduce_single_pe(hls::stream<update_t> &kt_wrap_item_single,
     uint32_t cache_addr_buffer[L + 1];
 #pragma HLS ARRAY_PARTITION variable = cache_addr_buffer complete dim = 0
 
-    const uint32_t num_words =
-        (dst_num + DISTANCES_PER_REDUCE_WORD - 1) / DISTANCES_PER_REDUCE_WORD;
-    const uint32_t num_word_per_pe = (num_words + PE_NUM - 1) / PE_NUM;
+    const uint32_t num_words = (dst_num + 1) / DISTANCES_PER_REDUCE_WORD;
+    const uint32_t num_word_per_pe = (num_words + PE_NUM - 1) >> LOG_PE_NUM;
 
 #ifdef EMULATION
     memset(prop_mem, 0, sizeof(reduce_word_t) * MEM_SIZE);
@@ -472,7 +470,8 @@ Reduc_105_unit_reduce_single_pe(hls::stream<update_t> &kt_wrap_item_single,
 LOOP_INIT_CACHE_ADDR:
     for (int i = 0; i < L + 1; i++) {
 #pragma HLS UNROLL
-        cache_addr_buffer[i] = 0x7FFFFFFF; // Invalidate cache
+        cache_addr_buffer[i] = 0x0; // Invalidate cache
+        cache_data_buffer[i] = 0;
     }
 
     // --- Phase 3: Aggregation Loop ---
@@ -484,10 +483,10 @@ LOOP_AGGREGATE:
         if (kt_elem.end_flag) {
             break;
         }
-        uint32_t key = (kt_elem.node_id >> LOG_PE_NUM);
+        ap_uint<20> key = (kt_elem.node_id >> LOG_PE_NUM);
         ap_fixed_pod_t incoming_dist_pod = kt_elem.prop;
 
-        uint32_t word_addr = (key >> 1);
+        ap_uint<20> word_addr = (key >> 1);
 
         reduce_word_t current_word = prop_mem[word_addr];
 
@@ -615,36 +614,34 @@ graphyflow_big(const bus_word_t *edge_props, int32_t num_nodes,
     // --- Data Loading ---
     const int edges_per_word =
         AXI_BUS_WIDTH / (NODE_ID_BITWIDTH + NODE_ID_BITWIDTH);
-    const int num_wide_reads =
-        (num_edges + edges_per_word - 1) / edges_per_word;
-
-    int edges_read = 0;
+    const int num_wide_reads = num_edges / edges_per_word;
 
 LOOP_EDL_READ:
     for (int i = 0; i < num_wide_reads; i++) {
 #pragma HLS PIPELINE II = 1
         bus_word_t wide_word = edge_props[i];
         edge_descriptor_batch_t edge_batch;
-        node_id_burst_t src_id_burst;
+        
     LOOP_EDL_UNPACK:
         for (int j = 0; j < edges_per_word; j++) {
 #pragma HLS UNROLL
-            if (edges_read + j < num_edges) {
-                ap_uint<64> packed_edge =
-                    wide_word.range(63 + (j << 6), (j << 6));
-                edge_t edge;
-                node_id_t src_id;
-                edge.dst_id = packed_edge.range(19, 0);
-                edge.src_id = packed_edge.range(63, 32);
-                src_id = edge.src_id;
+            ap_uint<64> packed_edge =
+                wide_word.range(63 + (j << 6), (j << 6));
+            edge_t edge;
+            edge.dst_id = packed_edge.range(19, 0);
+            edge.src_id = packed_edge.range(63, 32);
+            edge_batch.edges[j] = edge;
+        }
+        edge_stream.write(edge_batch);
 
-                edge_batch.edges[j] = edge;
-                src_id_burst.data[j] = src_id;
-            }
+        node_id_burst_t src_id_burst;
+        for (int j = 0; j < edges_per_word; j++) {
+#pragma HLS UNROLL
+            node_id_t src_id;
+            src_id = edge_batch.edges[j].src_id;
+            src_id_burst.data[j] = src_id;
         }
         stream_src_ids.write(src_id_burst);
-        edges_read += edges_per_word;
-        edge_stream.write(edge_batch);
     }
 
     // --- New COO-style Source Property Loading Pipeline ---
