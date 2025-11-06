@@ -128,10 +128,10 @@ scatterLoop:
 
             for (int u = 0; u < PE_NUM; u++) {
 #pragma HLS UNROLL
-                ap_uint<31> idx = (an_edge_burst.edges[u].src_id.range(30, 0) %
+                ap_uint<12> idx = (an_edge_burst.edges[u].src_id.range(30, 0) %
                                    SRC_BUFFER_SIZE);
-                ap_uint<30> uram_row_idx = idx >> 4;
-                ap_uint<30> uram_row_offset = (idx & 0xf);
+                ap_uint<8> uram_row_idx = idx >> 4;
+                ap_uint<4> uram_row_offset = (idx & 0xf);
 
                 bus_word_t uram_row =
                     src_prop_buffer[u][read_buffer][uram_row_idx];
@@ -177,7 +177,7 @@ Reduc_105_unit_reduce(hls::stream<update_tuple_t> &update_set_stm,
     // Latency-hiding cache for recently accessed URAM words
     reduce_word_t cache_data_buffer[PE_NUM][L + 1];
 #pragma HLS ARRAY_PARTITION variable = cache_data_buffer complete dim = 0
-    uint32_t cache_addr_buffer[PE_NUM][L + 1];
+    ap_uint<20> cache_addr_buffer[PE_NUM][L + 1];
 #pragma HLS ARRAY_PARTITION variable = cache_addr_buffer complete dim = 0
 
     const uint32_t num_words = (dst_num + 1) >> 1;
@@ -192,7 +192,8 @@ LOOP_INIT_CACHE_ADDR:
 #pragma HLS UNROLL
         for (int pe = 0; pe < PE_NUM; pe++) {
 #pragma HLS UNROLL
-            cache_addr_buffer[pe][i] = 0x7FFFFFFF; // Invalidate cache
+            cache_addr_buffer[pe][i] = 0x0; // Invalidate cache
+            cache_data_buffer[pe][i] = 0x0;
         }
     }
 
@@ -208,10 +209,10 @@ LOOP_AGGREGATE:
 #pragma HLS UNROLL
             if ((one_update.data[pe].node_id.range(19, 19) ==
                  0)) { // Valid key check
-                uint32_t key = one_update.data[pe].node_id;
+                ap_uint<20> key = one_update.data[pe].node_id;
                 uint32_t incoming_dist_pod = one_update.data[pe].prop;
 
-                uint32_t word_addr = (key >> 1);
+                ap_uint<20> word_addr = (key >> 1);
 
                 reduce_word_t current_word = prop_mem[pe][word_addr];
 
@@ -357,10 +358,7 @@ graphyflow_little(const bus_word_t *edge_props, int32_t num_nodes,
     // --- Data Loading ---
     const int edges_per_word =
         AXI_BUS_WIDTH / (NODE_ID_BITWIDTH + NODE_ID_BITWIDTH);
-    const int num_wide_reads =
-        (num_edges + edges_per_word - 1) / edges_per_word;
-
-    int edges_read = 0;
+    const int num_wide_reads = num_edges / edges_per_word;
 
 LOOP_EDL_READ:
     for (int i = 0; i < num_wide_reads; i++) {
@@ -370,15 +368,11 @@ LOOP_EDL_READ:
     LOOP_EDL_UNPACK:
         for (int j = 0; j < edges_per_word; j++) {
 #pragma HLS UNROLL
-            if (edges_read + j < num_edges) {
-                ap_uint<64> packed_edge =
-                    wide_word.range(63 + (j << 6), (j << 6));
-                edge_t edge;
-                edge_batch.edges[j].dst_id = packed_edge.range(19, 0);
-                edge_batch.edges[j].src_id = packed_edge.range(63, 32);
-            }
+            ap_uint<64> packed_edge =
+                wide_word.range(63 + (j << 6), (j << 6));
+            edge_batch.edges[j].dst_id = packed_edge.range(19, 0);
+            edge_batch.edges[j].src_id = packed_edge.range(63, 32);
         }
-        edges_read += edges_per_word;
         edge_stream.write(edge_batch);
     }
 

@@ -457,7 +457,7 @@ Reduc_105_unit_reduce_single_pe(hls::stream<update_t> &kt_wrap_item_single,
     // Latency-hiding cache for recently accessed URAM words
     reduce_word_t cache_data_buffer[L + 1];
 #pragma HLS ARRAY_PARTITION variable = cache_data_buffer complete dim = 0
-    uint32_t cache_addr_buffer[L + 1];
+    ap_uint<20> cache_addr_buffer[L + 1];
 #pragma HLS ARRAY_PARTITION variable = cache_addr_buffer complete dim = 0
 
     const uint32_t num_words = (dst_num + 1) / DISTANCES_PER_REDUCE_WORD;
@@ -484,7 +484,7 @@ LOOP_AGGREGATE:
             break;
         }
         ap_uint<20> key = (kt_elem.node_id >> LOG_PE_NUM);
-        ap_fixed_pod_t incoming_dist_pod = kt_elem.prop;
+        uint32_t incoming_dist_pod = kt_elem.prop;
 
         ap_uint<20> word_addr = (key >> 1);
 
@@ -509,13 +509,13 @@ LOOP_AGGREGATE:
 
         reduce_word_t tmp_cur_word = current_word;
 
-        ap_fixed_pod_t msb = tmp_cur_word.range(63, 32);
-        ap_fixed_pod_t lsb = tmp_cur_word.range(31, 0);
+        uint32_t msb = tmp_cur_word.range(63, 32);
+        uint32_t lsb = tmp_cur_word.range(31, 0);
 
-        ap_fixed_pod_t msb_out = (msb < incoming_dist_pod && msb != 0x0)
+        uint32_t msb_out = (msb < incoming_dist_pod && msb != 0x0)
                                         ? msb
                                         : incoming_dist_pod;
-        ap_fixed_pod_t lsb_out = (lsb < incoming_dist_pod && lsb != 0x0)
+        uint32_t lsb_out = (lsb < incoming_dist_pod && lsb != 0x0)
                                         ? lsb
                                         : incoming_dist_pod;
 
