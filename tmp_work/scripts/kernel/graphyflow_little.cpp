@@ -128,15 +128,15 @@ scatterLoop:
 
             for (int u = 0; u < PE_NUM; u++) {
 #pragma HLS UNROLL
-                ap_uint<12> idx = (an_edge_burst.edges[u].src_id.range(30, 0) %
-                                   SRC_BUFFER_SIZE);
-                ap_uint<8> uram_row_idx = idx >> 4;
-                ap_uint<4> uram_row_offset = (idx & 0xf);
+                ap_uint<12> idx = an_edge_burst.edges[u].src_id.range(11, 0);
+                ap_uint<8> uram_row_idx = idx.range(11, 4);
+                ap_uint<4> uram_row_offset = idx.range(3, 0);
 
                 bus_word_t uram_row =
                     src_prop_buffer[u][read_buffer][uram_row_idx];
-                ap_fixed_pod_t src_prop = uram_row.range(
-                    31 + (uram_row_offset << 5), (uram_row_offset << 5));
+                ap_fixed_pod_t src_prop =
+                    uram_row.range(31 + ((ap_uint<9>)uram_row_offset << 5),
+                                   ((ap_uint<9>)uram_row_offset << 5));
                 ap_fixed_pod_t update = src_prop + edge_weight;
 
                 an_update_set.data[u].node_id = an_edge_burst.edges[u].dst_id;
@@ -197,7 +197,8 @@ LOOP_INIT_CACHE_ADDR:
         }
     }
 
-    const uint32_t total_updates = edge_num >> LOG_PE_NUM; // Assuming one update per node
+    const uint32_t total_updates =
+        edge_num >> LOG_PE_NUM; // Assuming one update per node
     // --- Phase 3: Aggregation Loop ---
 LOOP_AGGREGATE:
     for (int update_idx = 0; update_idx < total_updates; update_idx++) {
@@ -368,8 +369,7 @@ LOOP_EDL_READ:
     LOOP_EDL_UNPACK:
         for (int j = 0; j < edges_per_word; j++) {
 #pragma HLS UNROLL
-            ap_uint<64> packed_edge =
-                wide_word.range(63 + (j << 6), (j << 6));
+            ap_uint<64> packed_edge = wide_word.range(63 + (j << 6), (j << 6));
             edge_batch.edges[j].dst_id = packed_edge.range(19, 0);
             edge_batch.edges[j].src_id = packed_edge.range(63, 32);
         }

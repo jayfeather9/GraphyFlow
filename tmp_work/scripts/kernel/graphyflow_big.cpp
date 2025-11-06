@@ -254,10 +254,8 @@ LOOP_SCATTER_EDGES:
         for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
             ap_uint<26> cacheline_idx =
-                (edge_batch.edges[pe_idx].src_id.range(30, 0) >>
-                 LOG_DIST_PER_WORD);
-            ap_uint<4> offset = (edge_batch.edges[pe_idx].src_id.range(30, 0) &
-                               (DIST_PER_WORD - 1));
+                edge_batch.edges[pe_idx].src_id.range(29, 4);
+            ap_uint<4> offset = edge_batch.edges[pe_idx].src_id.range(3, 0);
             bus_word_t cacheline;
             if (cacheline_idx == last_cache_idx[pe_idx]) {
                 cacheline = last_cacheline[pe_idx];
@@ -265,8 +263,8 @@ LOOP_SCATTER_EDGES:
                 cacheline = cacheline_streams[pe_idx].read();
             }
 
-            ap_fixed_pod_t prop =
-                cacheline.range(31 + (offset << 5), offset << 5);
+            ap_fixed_pod_t prop = cacheline.range(
+                31 + ((ap_uint<9>)offset << 5), ((ap_uint<9>)offset << 5));
             ap_fixed_pod_t update = prop + edge_weight;
 
             out_batch.data[pe_idx].node_id = edge_batch.edges[pe_idx].dst_id;
@@ -484,7 +482,7 @@ LOOP_AGGREGATE:
             break;
         }
         ap_uint<20> key = (kt_elem.node_id >> LOG_PE_NUM);
-        uint32_t incoming_dist_pod = kt_elem.prop;
+        ap_fixed_pod_t incoming_dist_pod = kt_elem.prop;
 
         ap_uint<20> word_addr = (key >> 1);
 
@@ -509,15 +507,13 @@ LOOP_AGGREGATE:
 
         reduce_word_t tmp_cur_word = current_word;
 
-        uint32_t msb = tmp_cur_word.range(63, 32);
-        uint32_t lsb = tmp_cur_word.range(31, 0);
+        ap_fixed_pod_t msb = tmp_cur_word.range(63, 32);
+        ap_fixed_pod_t lsb = tmp_cur_word.range(31, 0);
 
-        uint32_t msb_out = (msb < incoming_dist_pod && msb != 0x0)
-                                        ? msb
-                                        : incoming_dist_pod;
-        uint32_t lsb_out = (lsb < incoming_dist_pod && lsb != 0x0)
-                                        ? lsb
-                                        : incoming_dist_pod;
+        ap_fixed_pod_t msb_out =
+            (msb < incoming_dist_pod && msb != 0x0) ? msb : incoming_dist_pod;
+        ap_fixed_pod_t lsb_out =
+            (lsb < incoming_dist_pod && lsb != 0x0) ? lsb : incoming_dist_pod;
 
         reduce_word_t accumulated_msb;
         reduce_word_t accumulated_lsb;
@@ -621,12 +617,11 @@ LOOP_EDL_READ:
 #pragma HLS PIPELINE II = 1
         bus_word_t wide_word = edge_props[i];
         edge_descriptor_batch_t edge_batch;
-        
+
     LOOP_EDL_UNPACK:
         for (int j = 0; j < edges_per_word; j++) {
 #pragma HLS UNROLL
-            ap_uint<64> packed_edge =
-                wide_word.range(63 + (j << 6), (j << 6));
+            ap_uint<64> packed_edge = wide_word.range(63 + (j << 6), (j << 6));
             edge_t edge;
             edge.dst_id = packed_edge.range(19, 0);
             edge.src_id = packed_edge.range(63, 32);
