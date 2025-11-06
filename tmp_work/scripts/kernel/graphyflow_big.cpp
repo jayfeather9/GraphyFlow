@@ -444,7 +444,7 @@ static void switch2x2_2(int32_t i, hls::stream<update_t> &in1,
 static void
 Reduc_105_unit_reduce_single_pe(hls::stream<update_t> &kt_wrap_item_single,
                                 hls::stream<reduce_word_t> &pe_mem_out,
-                                int32_t dst_num) {
+                                uint32_t num_word_per_pe) {
 
     // --- Phase 1: Memory Declaration ---
     const int MEM_SIZE = (MAX_NUM >> LOG_PE_NUM) / DISTANCES_PER_REDUCE_WORD;
@@ -457,9 +457,6 @@ Reduc_105_unit_reduce_single_pe(hls::stream<update_t> &kt_wrap_item_single,
 #pragma HLS ARRAY_PARTITION variable = cache_data_buffer complete dim = 0
     ap_uint<20> cache_addr_buffer[L + 1];
 #pragma HLS ARRAY_PARTITION variable = cache_addr_buffer complete dim = 0
-
-    const uint32_t num_words = (dst_num + 1) / DISTANCES_PER_REDUCE_WORD;
-    const uint32_t num_word_per_pe = (num_words + PE_NUM - 1) >> LOG_PE_NUM;
 
 #ifdef EMULATION
     memset(prop_mem, 0, sizeof(reduce_word_t) * MEM_SIZE);
@@ -547,10 +544,9 @@ LOOP_STREAM_OUT:
 static void
 Reduc_105_drain_multi_pe(hls::stream<reduce_word_t> (&pe_mem_in)[PE_NUM],
                          hls::stream<write_burst_pkt_t> &kernel_out_stream,
-                         int32_t dst_num) {
+                         uint32_t num_word_per_pe) {
 LOOP_DRAIN_ADDR:
-    for (int32_t base_addr = 0; base_addr < dst_num;
-         base_addr += (PE_NUM << 1)) {
+    for (int32_t i = 0; i < num_word_per_pe; i++) {
 #pragma HLS PIPELINE II = 1
         write_burst_pkt_t one_write_burst;
         reduce_word_t tmp_data[PE_NUM];
@@ -589,11 +585,11 @@ graphyflow_big(const bus_word_t *edge_props, int32_t num_nodes,
     hls::stream<node_id_burst_t> stream_src_ids;
 #pragma HLS STREAM variable = stream_src_ids depth = 16
     hls::stream<distance_req_pack_t> stream_dist_req;
-#pragma HLS STREAM variable = stream_dist_req depth = 32
+#pragma HLS STREAM variable = stream_dist_req depth = 16
     hls::stream<bus_word_t> stream_cachelines[PE_NUM];
-#pragma HLS STREAM variable = stream_cachelines depth = 32
+#pragma HLS STREAM variable = stream_cachelines depth = 16
     hls::stream<edge_descriptor_batch_t> edge_stream;
-#pragma HLS STREAM variable = edge_stream depth = 32
+#pragma HLS STREAM variable = edge_stream depth = 16
     hls::stream<update_tuple_t> stream_edge_data;
 #pragma HLS STREAM variable = stream_edge_data depth = 16
     hls::stream<cacheline_req_t> cacheline_req;
@@ -601,11 +597,14 @@ graphyflow_big(const bus_word_t *edge_props, int32_t num_nodes,
     hls::stream<cacheline_resp_t> cacheline_resp;
 #pragma HLS STREAM variable = cacheline_resp depth = 32
     hls::stream<update_t> reduce_105_d2o_pair[8];
-#pragma HLS STREAM variable = reduce_105_d2o_pair depth = 16
+#pragma HLS STREAM variable = reduce_105_d2o_pair depth = 8
 #pragma HLS ARRAY_PARTITION variable = reduce_105_d2o_pair complete dim = 0
     hls::stream<update_t> reduce_105_o2u_pair[8];
 #pragma HLS STREAM variable = reduce_105_o2u_pair depth = 2
 #pragma HLS ARRAY_PARTITION variable = reduce_105_o2u_pair complete dim = 0
+
+    const uint32_t num_words = (dst_num + 1) / DISTANCES_PER_REDUCE_WORD;
+    const uint32_t num_word_per_pe = (num_words + PE_NUM - 1) >> LOG_PE_NUM;
 
     // --- Data Loading ---
     const int edges_per_word =
@@ -687,7 +686,9 @@ LOOP_FOR_60:
     for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
         Reduc_105_unit_reduce_single_pe(reduce_105_o2u_pair[pe_idx],
-                                        pe_mem_out_streams[pe_idx], dst_num);
+                                        pe_mem_out_streams[pe_idx],
+                                        num_word_per_pe);
     }
-    Reduc_105_drain_multi_pe(pe_mem_out_streams, kernel_out_stream, dst_num);
+    Reduc_105_drain_multi_pe(pe_mem_out_streams, kernel_out_stream,
+                             num_word_per_pe);
 }
