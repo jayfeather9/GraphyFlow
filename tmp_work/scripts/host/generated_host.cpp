@@ -414,6 +414,11 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
             dense_buffers[i].pipelines[pip].packed_edge_props.resize(
                 (temp_byte_buffer.size() + bytes_per_word - 1) / bytes_per_word,
                 0);
+            // printf("DP No.%d, little pipe No.%d, edge words %d = %d edges\n", i, pip,
+            //        (int)dense_buffers[i].pipelines[pip]
+            //            .packed_edge_props.size(),
+            //         (int)dense_buffers[i].pipelines[pip]
+            //            .packed_edge_props.size() * edges_per_word);
             std::memcpy(
                 dense_buffers[i].pipelines[pip].packed_edge_props.data(),
                 temp_byte_buffer.data(), temp_byte_buffer.size());
@@ -1112,9 +1117,9 @@ bool AlgorithmHost::check_convergence_and_update(
                 if (global_id < m_num_vertices) {
                     distance_t new_dist =
                         *reinterpret_cast<distance_t *>(&dist_pod);
-                    printf("DP No.%d, little pipe No.%d, local_id %d, "
-                           "global_id %d, new_dist %f\n",
-                           i, 0, local_id, global_id, (float)new_dist);
+                    // printf("DP No.%d, little pipe No.%d, local_id %d, "
+                    //        "global_id %d, new_dist %f\n",
+                    //        i, 0, local_id, global_id, (float)new_dist);
 
                     if (min_distances.find(global_id) == min_distances.end() ||
                         new_dist < min_distances[global_id]) {
@@ -1135,9 +1140,9 @@ bool AlgorithmHost::check_convergence_and_update(
              local_id < little_partition.num_vertices; ++local_id) {
             if (little_partition.vtx_map_rev.count(local_id)) {
                 int global_id = little_partition.vtx_map_rev.at(local_id);
-                printf("DP No.%d, little pipe No.%d, local_id %d, global_id "
-                       "%d, not dst node\n",
-                       i, 0, local_id, global_id);
+                // printf("DP No.%d, little pipe No.%d, local_id %d, global_id "
+                //        "%d, not dst node\n",
+                //        i, 0, local_id, global_id);
             }
         }
     }
@@ -1162,9 +1167,9 @@ bool AlgorithmHost::check_convergence_and_update(
                 if (global_id < m_num_vertices) {
                     distance_t new_dist =
                         *reinterpret_cast<distance_t *>(&dist_pod);
-                    printf("SP No.%d, big pipe No.%d, local_id %d, global_id "
-                           "%d, new_dist %f\n",
-                           i, 0, local_id, global_id, (float)new_dist);
+                    // printf("SP No.%d, big pipe No.%d, local_id %d, global_id "
+                    //        "%d, new_dist %f\n",
+                    //        i, 0, local_id, global_id, (float)new_dist);
 
                     if (min_distances.find(global_id) == min_distances.end() ||
                         new_dist < min_distances[global_id]) {
@@ -1184,9 +1189,9 @@ bool AlgorithmHost::check_convergence_and_update(
              local_id < big_partition.num_vertices; ++local_id) {
             if (big_partition.vtx_map_rev.count(local_id)) {
                 int global_id = big_partition.vtx_map_rev.at(local_id);
-                printf("SP No.%d, big pipe No.%d, local_id %d, global_id %d, "
-                       "not dst node\n",
-                       i, 0, local_id, global_id);
+                // printf("SP No.%d, big pipe No.%d, local_id %d, global_id %d, "
+                //        "not dst node\n",
+                //        i, 0, local_id, global_id);
             }
         }
     }

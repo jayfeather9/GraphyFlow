@@ -70,8 +70,8 @@ struct cacheline_resp_t {
     bool end_flag;
 };
 
-struct node_id_burst_t {
-    node_id_t data[PE_NUM];
+struct src_cache_idx_burst_t {
+    ap_uint<26> data[PE_NUM];
 };
 
 struct distance_req_pack_t {
@@ -82,6 +82,12 @@ struct distance_req_pack_t {
 
 struct edge_t {
     node_id_t src_id;
+    ap_uint<20> dst_id;
+};
+
+struct edge_sep_t {
+    ap_uint<26> cache_idx;
+    ap_uint<4> offset;
     ap_uint<20> dst_id;
 };
 
@@ -97,6 +103,15 @@ struct update_t {
 
 struct update_tuple_t {
     update_t data[PE_NUM];
+};
+
+struct update_noend_t {
+    ap_uint<20> node_id;
+    ap_fixed_pod_t prop;
+};
+
+struct update_tuple_noend_t {
+    update_noend_t data[PE_NUM];
 };
 
 // --- Top-Level Function Prototype ---

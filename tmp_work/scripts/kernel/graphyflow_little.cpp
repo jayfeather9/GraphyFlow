@@ -41,7 +41,7 @@ void request_manager(hls::stream<edge_descriptor_batch_t> &edge_burst_stm,
                      hls::stream<ppb_request_t> &ppb_request_stm,
                      hls::stream<ppb_response_t> &ppb_response_stm,
                      hls::stream<update_tuple_t> &update_set_stm,
-                     uint32_t memory_offset, uint32_t part_edge_num) {
+                     uint32_t memory_offset, uint32_t total_edge_sets) {
     // as we can buffer two vertices in one row with width of 64-bit, we can let
     // the depth go as MAX_VERTICES_IN_ONE_PARTITION / 2.
     bus_word_t src_prop_buffer[PE_NUM][2][SRC_BUFFER_SIZE >> 4];
@@ -55,16 +55,10 @@ void request_manager(hls::stream<edge_descriptor_batch_t> &edge_burst_stm,
     ap_uint<22> pp_request_round = 0;
 
     int32_t edge_set_cnt = 0;
-    const int32_t total_edge_sets = part_edge_num >> LOG_PE_NUM;
 
     bool wait_flag = 0;
 
     edge_descriptor_batch_t an_edge_burst;
-
-    distance_t real_edge_weight =
-        1.0; // All edge weights are 1.0 in unweighted graph
-    const ap_fixed_pod_t edge_weight =
-        (*reinterpret_cast<ap_fixed_pod_t *>(&real_edge_weight));
 
 scatterLoop:
     while (true) {
@@ -82,13 +76,14 @@ scatterLoop:
 
         ppb_response_t one_ppb_response;
         if (ppb_response_stm.read_nb(one_ppb_response)) {
+            ap_uint<32> resp_addr = one_ppb_response.addr;
             pp_write_round =
-                (one_ppb_response.addr << 4 >> LOG_SRC_BUFFER_SIZE) -
+                (resp_addr << 4 >> LOG_SRC_BUFFER_SIZE) -
                 memory_offset;
 
             bool write_buffer = pp_write_round.range(0, 0);
 
-            ap_uint<8> write_idx = one_ppb_response.addr.range(7, 0);
+            ap_uint<8> write_idx = resp_addr.range(7, 0);
             // one_ppb_response.addr & ((SRC_BUFFER_SIZE >> 4) - 1);
             // 4096 >> 4 = 256 - 1 = 255 = 2^8 -1
 
@@ -120,7 +115,8 @@ scatterLoop:
 
             for (int u = 0; u < PE_NUM; u++) {
 #pragma HLS UNROLL
-                ap_uint<12> idx = an_edge_burst.edges[u].src_id.range(11, 0);
+                edge_t an_edge = an_edge_burst.edges[u];
+                ap_uint<12> idx = an_edge.src_id.range(11, 0);
                 ap_uint<8> uram_row_idx = idx.range(11, 4);
                 ap_uint<4> uram_row_offset = idx.range(3, 0);
 
@@ -129,10 +125,10 @@ scatterLoop:
                 ap_fixed_pod_t src_prop =
                     uram_row.range(31 + ((ap_uint<9>)uram_row_offset << 5),
                                    ((ap_uint<9>)uram_row_offset << 5));
-                ap_fixed_pod_t update = src_prop + edge_weight;
+                // ap_fixed_pod_t update = src_prop + edge_weight;
 
-                an_update_set.data[u].node_id = an_edge_burst.edges[u].dst_id;
-                an_update_set.data[u].prop = update;
+                an_update_set.data[u].node_id = an_edge.dst_id;
+                an_update_set.data[u].prop = src_prop;
             }
             update_set_stm.write(an_update_set);
 
@@ -154,12 +150,38 @@ scatterLoop:
     }
 }
 
+static void
+update_data(hls::stream<update_tuple_t> &manager_output,
+            hls::stream<update_tuple_t> &reducer_input, uint32_t total_edge_sets) {
+    distance_t real_edge_weight =
+        1.0; // All edge weights are 1.0 in unweighted graph
+    const ap_fixed_pod_t edge_weight =
+        (*reinterpret_cast<ap_fixed_pod_t *>(&real_edge_weight));
+
+    LOOP_UPDATE_DATA:
+    for (int edge_set_idx = 0; edge_set_idx < total_edge_sets; edge_set_idx++) {
+#pragma HLS PIPELINE II = 1
+        update_tuple_t one_update_set;
+        one_update_set = manager_output.read();
+        update_tuple_t updated_update_set;
+    LOOP_FOR_56:
+        for (int u = 0; u < PE_NUM; u++) {
+#pragma HLS UNROLL
+            updated_update_set.data[u].node_id = one_update_set.data[u].node_id;
+            updated_update_set.data[u].prop =
+                one_update_set.data[u].prop + edge_weight;
+        }
+        reducer_input.write(updated_update_set);
+    }
+}
+
 // Single-PE aggregation function
 // Handles initialization and aggregation for one PE
 static void
 Reduc_105_unit_reduce(hls::stream<update_tuple_t> &update_set_stm,
-                      hls::stream<reduce_word_t> (&pe_mem_outs)[PE_NUM],
-                      int32_t edge_num, uint32_t rounded_num_words) {
+                      hls::stream<reduce_word_t> (&pe_mem_outs_1)[4],
+                      hls::stream<reduce_word_t> (&pe_mem_outs_2)[4],
+                      uint32_t total_edge_sets, uint32_t rounded_num_words) {
     // --- Phase 1: Memory Declaration ---
     const int MEM_SIZE = MAX_NUM / DISTANCES_PER_REDUCE_WORD;
     reduce_word_t prop_mem[PE_NUM][MEM_SIZE];
@@ -187,11 +209,9 @@ LOOP_INIT_CACHE_ADDR:
         }
     }
 
-    const uint32_t total_updates =
-        edge_num >> LOG_PE_NUM; // Assuming one update per node
     // --- Phase 3: Aggregation Loop ---
 LOOP_AGGREGATE:
-    for (int update_idx = 0; update_idx < total_updates; update_idx++) {
+    for (int update_idx = 0; update_idx < total_edge_sets; update_idx++) {
 #pragma HLS PIPELINE II = 1
         update_tuple_t one_update;
         one_update = update_set_stm.read();
@@ -224,32 +244,54 @@ LOOP_AGGREGATE:
 
                 reduce_word_t tmp_cur_word = current_word;
 
-                ap_fixed_pod_t msb = current_word.range(63, 32);
-                ap_fixed_pod_t lsb = current_word.range(31, 0);
+                // ap_fixed_pod_t msb = current_word.range(63, 32);
+                // ap_fixed_pod_t lsb = current_word.range(31, 0);
 
-                ap_fixed_pod_t msb_out = (msb < incoming_dist_pod && msb != 0x0)
-                                             ? msb
-                                             : incoming_dist_pod;
-                ap_fixed_pod_t lsb_out = (lsb < incoming_dist_pod && lsb != 0x0)
-                                             ? lsb
-                                             : incoming_dist_pod;
+                // ap_fixed_pod_t msb_out = (msb < incoming_dist_pod && msb != 0x0)
+                //                              ? msb
+                //                              : incoming_dist_pod;
+                // ap_fixed_pod_t lsb_out = (lsb < incoming_dist_pod && lsb != 0x0)
+                //                              ? lsb
+                //                              : incoming_dist_pod;
 
-                reduce_word_t accumulate_msb;
-                reduce_word_t accumulate_lsb;
+                // reduce_word_t accumulate_msb;
+                // reduce_word_t accumulate_lsb;
 
-                accumulate_msb.range(63, 32) = msb_out;
-                accumulate_msb.range(31, 0) = tmp_cur_word.range(31, 0);
+                // accumulate_msb.range(63, 32) = msb_out;
+                // accumulate_msb.range(31, 0) = tmp_cur_word.range(31, 0);
 
-                accumulate_lsb.range(63, 32) = tmp_cur_word.range(63, 32);
-                accumulate_lsb.range(31, 0) = lsb_out;
+                // accumulate_lsb.range(63, 32) = tmp_cur_word.range(63, 32);
+                // accumulate_lsb.range(31, 0) = lsb_out;
 
-                if (key & 0x01) {
-                    prop_mem[pe][word_addr] = accumulate_msb;
-                    cache_data_buffer[pe][L] = accumulate_msb;
+                ap_fixed_pod_t cur_data = (key.range(0, 0))
+                                                ? current_word.range(63, 32)
+                                                : current_word.range(31, 0);
+                ap_fixed_pod_t updated_data =
+                    (cur_data < incoming_dist_pod && cur_data != 0x0)
+                        ? cur_data
+                        : incoming_dist_pod;
+                
+                reduce_word_t updated_word;
+                if (key.range(0, 0)) {
+                    // Update MSB
+                    updated_word.range(63, 32) = updated_data;
+                    updated_word.range(31, 0) = tmp_cur_word.range(31, 0);
                 } else {
-                    prop_mem[pe][word_addr] = accumulate_lsb;
-                    cache_data_buffer[pe][L] = accumulate_lsb;
+                    // Update LSB
+                    updated_word.range(63, 32) = tmp_cur_word.range(63, 32);
+                    updated_word.range(31, 0) = updated_data;
                 }
+
+                prop_mem[pe][word_addr] = updated_word;
+                cache_data_buffer[pe][L] = updated_word;
+
+                // if (key & 0x01) {
+                //     prop_mem[pe][word_addr] = accumulate_msb;
+                //     cache_data_buffer[pe][L] = accumulate_msb;
+                // } else {
+                //     prop_mem[pe][word_addr] = accumulate_lsb;
+                //     cache_data_buffer[pe][L] = accumulate_lsb;
+                // }
                 cache_addr_buffer[pe][L] = word_addr;
             }
         }
@@ -259,52 +301,87 @@ LOOP_AGGREGATE:
 LOOP_STREAM_OUT:
     for (int i = 0; i < rounded_num_words; i++) {
 #pragma HLS PIPELINE
-        for (int pe = 0; pe < PE_NUM; pe++) {
+        for (int pe = 0; pe < 4; pe++) {
 #pragma HLS UNROLL
             reduce_word_t word = prop_mem[pe][i];
             prop_mem[pe][i] = 0;
-            pe_mem_outs[pe].write(word);
+            pe_mem_outs_1[pe].write(word);
+        }
+        for (int pe = 0; pe < 4; pe++) {
+#pragma HLS UNROLL
+            reduce_word_t word = prop_mem[pe + 4][i];
+            prop_mem[pe + 4][i] = 0;
+            pe_mem_outs_2[pe].write(word);
         }
     }
 }
 
-// Multi-PE drain function
-// Collects aggregated data from all PEs and outputs final results
 static void
-Reduc_105_drain_multi_pe(hls::stream<reduce_word_t> (&pe_mem_in)[PE_NUM],
-                         hls::stream<little_out_pkt_t> &kernel_out_stream,
-                         uint32_t rounded_num_words) {
-
-    // --- Phase 2: High-Performance Drain Loop ---
-    little_out_pkt_t one_write_burst;
-    one_write_burst.last = 0;
-    distance_t max_val = (distance_t)(16384.0);
-    ap_fixed_pod_t max_pod = *reinterpret_cast<ap_fixed_pod_t *>(&max_val);
-
-LOOP_DRAIN_ADDR:
+Reduc_105_partial_drain_impl(
+    int i,
+    hls::stream<reduce_word_t> (&pe_mem_in)[4],
+    hls::stream<reduce_word_t> &partial_out_stream, uint32_t rounded_num_words,
+    ap_fixed_pod_t max_pod) {
+#pragma HLS function_instantiate variable = i
+LOOP_PARTIAL_ADDR:
     for (int32_t i = 0; i < rounded_num_words; i++) {
 #pragma HLS PIPELINE II = 1
-        ap_fixed_pod_t uram_res_low = max_pod;
-        ap_fixed_pod_t uram_res_high = max_pod;
-    LOOP_FOR_57:
-        for (uint32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
+        reduce_word_t first_word = pe_mem_in[0].read();
+        ap_fixed_pod_t uram_res_low = first_word.range(31, 0);
+        ap_fixed_pod_t uram_res_high = first_word.range(63, 32);
+    LOOP_PARTIAL_PE:
+        for (uint32_t pe_idx = 1; pe_idx < 4; pe_idx++) {
 #pragma HLS UNROLL
             reduce_word_t word = pe_mem_in[pe_idx].read();
 
             ap_fixed_pod_t incoming_dist_pod_low = word.range(31, 0);
             ap_fixed_pod_t incoming_dist_pod_high = word.range(63, 32);
-            uram_res_low = (uram_res_low < incoming_dist_pod_low ||
-                            incoming_dist_pod_low == 0x0)
+            uram_res_low = (uram_res_low < incoming_dist_pod_low &&
+                               uram_res_low != 0x0)
                                ? uram_res_low
                                : incoming_dist_pod_low;
-            uram_res_high = (uram_res_high < incoming_dist_pod_high ||
-                             incoming_dist_pod_high == 0x0)
+            uram_res_high = (uram_res_high < incoming_dist_pod_high &&
+                             uram_res_high != 0x0)
                                 ? uram_res_high
                                 : incoming_dist_pod_high;
         }
         reduce_word_t merged_word;
         merged_word.range(31, 0) = uram_res_low;
         merged_word.range(63, 32) = uram_res_high;
+        partial_out_stream.write(merged_word);
+    }
+}
+
+static void
+Reduc_105_finalize_drain(hls::stream<reduce_word_t> &partial_in_first,
+                         hls::stream<reduce_word_t> &partial_in_second,
+                         hls::stream<little_out_pkt_t> &kernel_out_stream,
+                         uint32_t rounded_num_words, ap_fixed_pod_t max_pod) {
+#pragma HLS INLINE off
+    little_out_pkt_t one_write_burst;
+    one_write_burst.last = 0;
+
+LOOP_FINAL_ADDR:
+    for (int32_t i = 0; i < rounded_num_words; i++) {
+#pragma HLS PIPELINE II = 1
+        reduce_word_t first_word = partial_in_first.read();
+        reduce_word_t second_word = partial_in_second.read();
+
+        ap_fixed_pod_t first_low = first_word.range(31, 0);
+        ap_fixed_pod_t first_high = first_word.range(63, 32);
+        ap_fixed_pod_t second_low = second_word.range(31, 0);
+        ap_fixed_pod_t second_high = second_word.range(63, 32);
+
+        first_low = (first_low < second_low && first_low != 0x0)
+                        ? first_low
+                        : second_low;
+        first_high = (first_high < second_high && first_high != 0x0)
+                         ? first_high
+                         : second_high;
+
+        reduce_word_t merged_word;
+        merged_word.range(31, 0) = first_low;
+        merged_word.range(63, 32) = first_high;
         one_write_burst.data = merged_word;
         kernel_out_stream.write(one_write_burst);
     }
@@ -328,32 +405,39 @@ graphyflow_little(const bus_word_t *edge_props, int32_t num_nodes,
     // Existing streams
     hls::stream<edge_descriptor_batch_t> edge_stream;
 #pragma HLS STREAM variable = edge_stream depth = 8
-    hls::stream<update_tuple_t> stream_edge_data;
-#pragma HLS STREAM variable = stream_edge_data depth = 8
-    hls::stream<reduce_word_t> pe_mem_outs[PE_NUM];
-#pragma HLS STREAM variable = pe_mem_outs depth = 8
+    hls::stream<update_tuple_t> stream_edge_data_1;
+#pragma HLS STREAM variable = stream_edge_data_1 depth = 8
+    hls::stream<update_tuple_t> stream_edge_data_2;
+#pragma HLS STREAM variable = stream_edge_data_2 depth = 8
+    hls::stream<reduce_word_t> pe_mem_outs_1[4];
+#pragma HLS STREAM variable = pe_mem_outs_1 depth = 8
+    hls::stream<reduce_word_t> pe_mem_outs_2[4];
+#pragma HLS STREAM variable = pe_mem_outs_2 depth = 8
+    hls::stream<reduce_word_t> pe_mem_out_partial_1;
+#pragma HLS STREAM variable = pe_mem_out_partial_1 depth = 8
+    hls::stream<reduce_word_t> pe_mem_out_partial_2;
+#pragma HLS STREAM variable = pe_mem_out_partial_2 depth = 8
 
     hls::stream<ppb_request_t> ppb_req_stream_internal;
 #pragma HLS STREAM variable = ppb_req_stream_internal depth = 8
     hls::stream<ppb_response_t> ppb_resp_stream_internal;
 #pragma HLS STREAM variable = ppb_resp_stream_internal depth = 8
+#pragma HLS BIND_STORAGE variable = ppb_resp_stream_internal type = FIFO impl = BRAM
 
     // --- Data Loading ---
     // --- Data Loading ---
-    const int edges_per_word =
-        AXI_BUS_WIDTH / (NODE_ID_BITWIDTH + NODE_ID_BITWIDTH);
-    const int num_wide_reads = num_edges / edges_per_word;
+    const uint32_t total_edge_sets = num_edges >> LOG_PE_NUM;
 
     const uint32_t num_words = (dst_num + 1) >> 1;
     const uint32_t rounded_num_words = ((num_words + 7) & ~7);
 
 LOOP_EDL_READ:
-    for (int i = 0; i < num_wide_reads; i++) {
+    for (int i = 0; i < total_edge_sets; i++) {
 #pragma HLS PIPELINE II = 1
         bus_word_t wide_word = edge_props[i];
         edge_descriptor_batch_t edge_batch;
     LOOP_EDL_UNPACK:
-        for (int j = 0; j < edges_per_word; j++) {
+        for (int j = 0; j < PE_NUM; j++) {
 #pragma HLS UNROLL
             ap_uint<64> packed_edge = wide_word.range(63 + (j << 6), (j << 6));
             edge_batch.edges[j].dst_id = packed_edge.range(19, 0);
@@ -365,11 +449,19 @@ LOOP_EDL_READ:
     stream2axistream(ppb_req_stream_internal, ppb_req_stream);
     axistream2stream(ppb_resp_stream, ppb_resp_stream_internal);
     request_manager(edge_stream, ppb_req_stream_internal,
-                    ppb_resp_stream_internal, stream_edge_data, memory_offset,
-                    num_edges);
+                    ppb_resp_stream_internal, stream_edge_data_1, memory_offset,
+                    total_edge_sets);
+    update_data(stream_edge_data_1, stream_edge_data_2, total_edge_sets);
 
     // --- Reduction ---
-    Reduc_105_unit_reduce(stream_edge_data, pe_mem_outs, num_edges,
+    Reduc_105_unit_reduce(stream_edge_data_2, pe_mem_outs_1, pe_mem_outs_2, total_edge_sets,
                           rounded_num_words);
-    Reduc_105_drain_multi_pe(pe_mem_outs, kernel_out_stream, rounded_num_words);
+    distance_t max_val = (distance_t)(16384.0);
+    ap_fixed_pod_t max_pod = *reinterpret_cast<ap_fixed_pod_t *>(&max_val);
+    Reduc_105_partial_drain_impl(0, pe_mem_outs_1, pe_mem_out_partial_1,
+                                 rounded_num_words, max_pod);
+    Reduc_105_partial_drain_impl(1, pe_mem_outs_2, pe_mem_out_partial_2,
+                                 rounded_num_words, max_pod);
+    Reduc_105_finalize_drain(pe_mem_out_partial_1, pe_mem_out_partial_2,
+                             kernel_out_stream, rounded_num_words, max_pod);
 }

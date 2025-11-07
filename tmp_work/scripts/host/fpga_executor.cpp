@@ -74,7 +74,7 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
                 double iteration_time_ns = end - start;
                 current_kernel_time_sec = std::max(current_kernel_time_sec,
                                                    iteration_time_ns * 1.0e-9);
-                double mteps = (double)partition_container.SPs[cnt].num_edges /
+                double mteps = (double)partition_container.SPs[partition_cnt].pipeline_edges[cnt].num_edges /
                                (iteration_time_ns * 1.0e-9) / 1.0e6;
 
                 std::cout << "FPGA Iteration " << iter << ": "
@@ -85,6 +85,7 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
                           << "Throughput = " << mteps << " MTEPS" << std::endl;
             }
             partition_cnt++;
+            cnt = 0;
         }
         cnt = 0;
         partition_cnt = 0;
@@ -96,7 +97,7 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
                 double iteration_time_ns = end - start;
                 current_kernel_time_sec = std::max(current_kernel_time_sec,
                                                    iteration_time_ns * 1.0e-9);
-                double mteps = (double)partition_container.DPs[cnt].num_edges /
+                double mteps = (double)partition_container.DPs[partition_cnt].pipeline_edges[cnt].num_edges /
                                (iteration_time_ns * 1.0e-9) / 1.0e6;
 
                 std::cout << "FPGA Iteration " << iter << ": "
@@ -107,6 +108,7 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
                           << "Throughput = " << mteps << " MTEPS" << std::endl;
             }
             partition_cnt++;
+            cnt = 0;
         }
 
         {

@@ -77,26 +77,24 @@ ap_uint<4> count_end_ones(ap_uint<PE_NUM> valid_mask) {
 }
 
 static void
-dist_req_packer(hls::stream<node_id_burst_t> &src_id_burst_stream,
+dist_req_packer(hls::stream<src_cache_idx_burst_t> &src_id_burst_stream,
                 hls::stream<distance_req_pack_t> &distance_req_pack_stream,
-                int32_t num_nodes) {
+                uint32_t total_edge_sets) {
 
-    const int max_node_burst_idx = (num_nodes + PE_NUM - 1) / PE_NUM;
     ap_uint<26> last_idx_max = 0;
 
 LOOP_DRP_SEND_REQ:
-    for (int32_t node_burst_idx = 0; node_burst_idx < max_node_burst_idx;
-         node_burst_idx += 1) {
+    for (int32_t node_burst_idx = 0; node_burst_idx < total_edge_sets;
+         node_burst_idx++) {
 #pragma HLS PIPELINE II = 1
-        node_id_burst_t node_id_burst = src_id_burst_stream.read();
+        src_cache_idx_burst_t node_id_burst = src_id_burst_stream.read();
 
         ap_uint<26> cache_idx[PE_NUM];
 #pragma HLS ARRAY_PARTITION variable = cache_idx complete dim = 0
 
         for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
-            cache_idx[pe_idx] =
-                node_id_burst.data[pe_idx].range(30, 0) >> LOG_DIST_PER_WORD;
+            cache_idx[pe_idx] = node_id_burst.data[pe_idx];
         }
 
         ap_uint<26> cache_idx_diffs[PE_NUM];
@@ -219,9 +217,9 @@ LOOP_RECEIVE_CACHE_RESP:
 
 static void
 merge_node_props(hls::stream<bus_word_t> (&cacheline_streams)[PE_NUM],
-                 hls::stream<edge_descriptor_batch_t> &edge_stream,
-                 hls::stream<update_tuple_t> &edge_batch_stream,
-                 uint32_t edge_num) {
+                 hls::stream<edge_sep_t> (&edge_streams)[PE_NUM],
+                 hls::stream<update_tuple_noend_t> &edge_batch_stream,
+                 uint32_t total_edge_sets) {
 
     bus_word_t last_cacheline[PE_NUM] = {0};
 #pragma HLS ARRAY_PARTITION variable = last_cacheline complete dim = 0
@@ -233,29 +231,28 @@ LOOP_INIT_CACHELINE:
     for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
         last_cacheline[pe_idx] = cacheline_streams[pe_idx].read();
-        last_cache_idx[pe_idx] = 0x0;
+        // last_cache_idx[pe_idx] = 0x0;
     }
 
-    const uint32_t scatter_size = (edge_num >> LOG_PE_NUM);
-    distance_t real_edge_weight =
-        1.0; // All edge weights are 1.0 in unweighted graph
-    const ap_fixed_pod_t edge_weight =
-        (*reinterpret_cast<ap_fixed_pod_t *>(&real_edge_weight));
+    // const uint32_t scatter_size = (edge_num >> LOG_PE_NUM);
+    // distance_t real_edge_weight =
+    //     1.0; // All edge weights are 1.0 in unweighted graph
+    // const ap_fixed_pod_t edge_weight =
+    //     (*reinterpret_cast<ap_fixed_pod_t *>(&real_edge_weight));
 
 LOOP_SCATTER_EDGES:
-    for (int32_t edge_batch_idx = 0; edge_batch_idx < scatter_size;
+    for (int32_t edge_batch_idx = 0; edge_batch_idx < total_edge_sets;
          edge_batch_idx++) {
 #pragma HLS PIPELINE II = 1
-        edge_descriptor_batch_t edge_batch;
-        edge_batch = edge_stream.read();
-
-        update_tuple_t out_batch;
+        // edge_descriptor_batch_t edge_batch;
+        // edge_batch = edge_stream.read();
+        update_tuple_noend_t out_batch;
 
         for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
-            ap_uint<26> cacheline_idx =
-                edge_batch.edges[pe_idx].src_id.range(29, 4);
-            ap_uint<4> offset = edge_batch.edges[pe_idx].src_id.range(3, 0);
+            edge_sep_t edge_batch = edge_streams[pe_idx].read();
+            ap_uint<26> cacheline_idx = edge_batch.cache_idx;
+            ap_uint<4> offset = edge_batch.offset;
             bus_word_t cacheline;
             if (cacheline_idx == last_cache_idx[pe_idx]) {
                 cacheline = last_cacheline[pe_idx];
@@ -265,11 +262,11 @@ LOOP_SCATTER_EDGES:
 
             ap_fixed_pod_t prop = cacheline.range(
                 31 + ((ap_uint<9>)offset << 5), ((ap_uint<9>)offset << 5));
-            ap_fixed_pod_t update = prop + edge_weight;
+            // ap_fixed_pod_t update = prop + edge_weight;
 
-            out_batch.data[pe_idx].node_id = edge_batch.edges[pe_idx].dst_id;
-            out_batch.data[pe_idx].prop = update;
-            out_batch.data[pe_idx].end_flag = 0;
+            out_batch.data[pe_idx].node_id = edge_batch.dst_id;
+            out_batch.data[pe_idx].prop = prop;
+            // out_batch.data[pe_idx].end_flag = 0;
 
             if (pe_idx == PE_NUM - 1) {
                 last_cacheline[pe_idx] = cacheline;
@@ -286,15 +283,39 @@ LOOP_SCATTER_EDGES:
     }
 }
 
+static void
+update_data(hls::stream<update_tuple_noend_t> &manager_output,
+            hls::stream<update_tuple_t> &reducer_input, uint32_t total_edge_sets) {
+    distance_t real_edge_weight =
+        1.0; // All edge weights are 1.0 in unweighted graph
+    const ap_fixed_pod_t edge_weight =
+        (*reinterpret_cast<ap_fixed_pod_t *>(&real_edge_weight));
+
+    LOOP_UPDATE_DATA:
+    for (int edge_set_idx = 0; edge_set_idx < total_edge_sets; edge_set_idx++) {
+#pragma HLS PIPELINE II = 1
+        update_tuple_noend_t one_update_set;
+        one_update_set = manager_output.read();
+        update_tuple_t updated_update_set;
+    LOOP_FOR_56:
+        for (int u = 0; u < PE_NUM; u++) {
+#pragma HLS UNROLL
+            updated_update_set.data[u].node_id = one_update_set.data[u].node_id;
+            updated_update_set.data[u].prop =
+                one_update_set.data[u].prop + edge_weight;
+            updated_update_set.data[u].end_flag = 0;
+        }
+        reducer_input.write(updated_update_set);
+    }
+}
+
 // --- 2. Utility Network Functions ---
 
 static void demux_1(hls::stream<update_tuple_t> &in_batch_stream,
                     hls::stream<update_t> (&out_streams)[8],
-                    uint32_t edge_num) {
-    const uint32_t scatter_size = edge_num / PE_NUM;
-
+                    uint32_t total_edge_sets) {
 LOOP_WHILE_22:
-    for (uint32_t batch_idx = 0; batch_idx < scatter_size; batch_idx++) {
+    for (uint32_t batch_idx = 0; batch_idx < total_edge_sets; batch_idx++) {
 #pragma HLS PIPELINE II = 1
         update_tuple_t in_batch;
         in_batch = in_batch_stream.read();
@@ -504,30 +525,52 @@ LOOP_AGGREGATE:
 
         reduce_word_t tmp_cur_word = current_word;
 
-        ap_fixed_pod_t msb = tmp_cur_word.range(63, 32);
-        ap_fixed_pod_t lsb = tmp_cur_word.range(31, 0);
+        // ap_fixed_pod_t msb = tmp_cur_word.range(63, 32);
+        // ap_fixed_pod_t lsb = tmp_cur_word.range(31, 0);
 
-        ap_fixed_pod_t msb_out =
-            (msb < incoming_dist_pod && msb != 0x0) ? msb : incoming_dist_pod;
-        ap_fixed_pod_t lsb_out =
-            (lsb < incoming_dist_pod && lsb != 0x0) ? lsb : incoming_dist_pod;
+        // ap_fixed_pod_t msb_out =
+        //     (msb < incoming_dist_pod && msb != 0x0) ? msb : incoming_dist_pod;
+        // ap_fixed_pod_t lsb_out =
+        //     (lsb < incoming_dist_pod && lsb != 0x0) ? lsb : incoming_dist_pod;
 
-        reduce_word_t accumulated_msb;
-        reduce_word_t accumulated_lsb;
+        // reduce_word_t accumulated_msb;
+        // reduce_word_t accumulated_lsb;
 
-        accumulated_msb.range(63, 32) = msb_out;
-        accumulated_msb.range(31, 0) = tmp_cur_word.range(31, 0);
+        // accumulated_msb.range(63, 32) = msb_out;
+        // accumulated_msb.range(31, 0) = tmp_cur_word.range(31, 0);
 
-        accumulated_lsb.range(63, 32) = tmp_cur_word.range(63, 32);
-        accumulated_lsb.range(31, 0) = lsb_out;
+        // accumulated_lsb.range(63, 32) = tmp_cur_word.range(63, 32);
+        // accumulated_lsb.range(31, 0) = lsb_out;
 
-        if (key & 0x01) {
-            prop_mem[word_addr] = accumulated_msb;
-            cache_data_buffer[L] = accumulated_msb;
+        ap_fixed_pod_t cur_data = (key.range(0, 0))
+                                        ? current_word.range(63, 32)
+                                        : current_word.range(31, 0);
+        ap_fixed_pod_t updated_data =
+            (cur_data < incoming_dist_pod && cur_data != 0x0)
+                ? cur_data
+                : incoming_dist_pod;
+        
+        reduce_word_t updated_word;
+        if (key.range(0, 0)) {
+            // Update MSB
+            updated_word.range(63, 32) = updated_data;
+            updated_word.range(31, 0) = tmp_cur_word.range(31, 0);
         } else {
-            prop_mem[word_addr] = accumulated_lsb;
-            cache_data_buffer[L] = accumulated_lsb;
+            // Update LSB
+            updated_word.range(63, 32) = tmp_cur_word.range(63, 32);
+            updated_word.range(31, 0) = updated_data;
         }
+
+        prop_mem[word_addr] = updated_word;
+        cache_data_buffer[L] = updated_word;
+
+        // if (key & 0x01) {
+        //     prop_mem[word_addr] = accumulated_msb;
+        //     cache_data_buffer[L] = accumulated_msb;
+        // } else {
+        //     prop_mem[word_addr] = accumulated_lsb;
+        //     cache_data_buffer[L] = accumulated_lsb;
+        // }
         cache_addr_buffer[L] = word_addr;
     }
 
@@ -582,20 +625,25 @@ graphyflow_big(const bus_word_t *edge_props, int32_t num_nodes,
 #pragma HLS DATAFLOW
 
     // Streams for the new COO-style property loading
-    hls::stream<node_id_burst_t> stream_src_ids;
-#pragma HLS STREAM variable = stream_src_ids depth = 16
+    hls::stream<src_cache_idx_burst_t> stream_src_ids;
+#pragma HLS STREAM variable = stream_src_ids depth = 8
     hls::stream<distance_req_pack_t> stream_dist_req;
-#pragma HLS STREAM variable = stream_dist_req depth = 16
+#pragma HLS STREAM variable = stream_dist_req depth = 8
     hls::stream<bus_word_t> stream_cachelines[PE_NUM];
-#pragma HLS STREAM variable = stream_cachelines depth = 16
-    hls::stream<edge_descriptor_batch_t> edge_stream;
-#pragma HLS STREAM variable = edge_stream depth = 16
-    hls::stream<update_tuple_t> stream_edge_data;
-#pragma HLS STREAM variable = stream_edge_data depth = 16
+#pragma HLS STREAM variable = stream_cachelines depth = 8
+#pragma HLS BIND_STORAGE variable = stream_cachelines type = FIFO impl = BRAM
+    hls::stream<edge_sep_t> edge_streams[PE_NUM];
+#pragma HLS STREAM variable = edge_streams depth = 8
+#pragma HLS BIND_STORAGE variable = edge_streams type = FIFO impl = BRAM
+    hls::stream<update_tuple_noend_t> stream_edge_data;
+#pragma HLS STREAM variable = stream_edge_data depth = 8
+    hls::stream<update_tuple_t> stream_updated_edge_data;
+#pragma HLS STREAM variable = stream_updated_edge_data depth = 8
     hls::stream<cacheline_req_t> cacheline_req;
-#pragma HLS STREAM variable = cacheline_req depth = 32
+#pragma HLS STREAM variable = cacheline_req depth = 16
     hls::stream<cacheline_resp_t> cacheline_resp;
-#pragma HLS STREAM variable = cacheline_resp depth = 32
+#pragma HLS STREAM variable = cacheline_resp depth = 16
+#pragma HLS BIND_STORAGE variable = cacheline_resp type = FIFO impl = BRAM
     hls::stream<update_t> reduce_105_d2o_pair[8];
 #pragma HLS STREAM variable = reduce_105_d2o_pair depth = 8
 #pragma HLS ARRAY_PARTITION variable = reduce_105_d2o_pair complete dim = 0
@@ -611,43 +659,50 @@ graphyflow_big(const bus_word_t *edge_props, int32_t num_nodes,
         AXI_BUS_WIDTH / (NODE_ID_BITWIDTH + NODE_ID_BITWIDTH);
     const int num_wide_reads = num_edges / edges_per_word;
 
+    const uint32_t total_edge_sets = (num_edges >> LOG_PE_NUM);
+
 LOOP_EDL_READ:
     for (int i = 0; i < num_wide_reads; i++) {
 #pragma HLS PIPELINE II = 1
         bus_word_t wide_word = edge_props[i];
-        edge_descriptor_batch_t edge_batch;
+        // edge_descriptor_batch_t edge_batch;
+        src_cache_idx_burst_t src_id_burst;
+        edge_sep_t edges[PE_NUM];
+#pragma HLS ARRAY_PARTITION variable = edges complete dim = 0
 
     LOOP_EDL_UNPACK:
         for (int j = 0; j < edges_per_word; j++) {
 #pragma HLS UNROLL
             ap_uint<64> packed_edge = wide_word.range(63 + (j << 6), (j << 6));
-            edge_t edge;
-            edge.dst_id = packed_edge.range(19, 0);
-            edge.src_id = packed_edge.range(63, 32);
-            edge_batch.edges[j] = edge;
+            edges[j].dst_id = packed_edge.range(19, 0);
+            // edge.src_id = packed_edge.range(63, 32);
+            edges[j].cache_idx = packed_edge.range(61, 36);
+            edges[j].offset = packed_edge.range(35, 32);
+            // edge_batch.edges[j] = edge;
+            edge_streams[j].write(edges[j]);
         }
-        edge_stream.write(edge_batch);
+        // edge_stream.write(edge_batch);
 
-        node_id_burst_t src_id_burst;
         for (int j = 0; j < edges_per_word; j++) {
 #pragma HLS UNROLL
-            node_id_t src_id;
-            src_id = edge_batch.edges[j].src_id;
+            ap_uint<26> src_id;
+            src_id = edges[j].cache_idx;
             src_id_burst.data[j] = src_id;
         }
         stream_src_ids.write(src_id_burst);
     }
 
     // --- New COO-style Source Property Loading Pipeline ---
-    dist_req_packer(stream_src_ids, stream_dist_req, num_edges);
+    dist_req_packer(stream_src_ids, stream_dist_req, total_edge_sets);
     cacheline_req_sender(stream_dist_req, cacheline_req, memory_offset);
     stream2axistream(cacheline_req, cacheline_req_stream);
     axistream2stream(cacheline_resp_stream, cacheline_resp);
     node_prop_resp_receiver(cacheline_resp, stream_cachelines);
-    merge_node_props(stream_cachelines, edge_stream, stream_edge_data,
-                     num_edges);
+    merge_node_props(stream_cachelines, edge_streams, stream_edge_data,
+                     total_edge_sets);
+    update_data(stream_edge_data, stream_updated_edge_data, total_edge_sets);
 
-    demux_1(stream_edge_data, reduce_105_d2o_pair, num_edges);
+    demux_1(stream_updated_edge_data, reduce_105_d2o_pair, total_edge_sets);
 
     hls::stream<update_t> stream_stage_0[8];
 #pragma HLS STREAM variable = stream_stage_0 depth = 2
