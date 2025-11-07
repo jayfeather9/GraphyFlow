@@ -78,8 +78,7 @@ scatterLoop:
         if (ppb_response_stm.read_nb(one_ppb_response)) {
             ap_uint<32> resp_addr = one_ppb_response.addr;
             pp_write_round =
-                (resp_addr << 4 >> LOG_SRC_BUFFER_SIZE) -
-                memory_offset;
+                (resp_addr << 4 >> LOG_SRC_BUFFER_SIZE) - memory_offset;
 
             bool write_buffer = pp_write_round.range(0, 0);
 
@@ -150,15 +149,15 @@ scatterLoop:
     }
 }
 
-static void
-update_data(hls::stream<update_tuple_t> &manager_output,
-            hls::stream<update_tuple_t> &reducer_input, uint32_t total_edge_sets) {
+static void update_data(hls::stream<update_tuple_t> &manager_output,
+                        hls::stream<update_tuple_t> &reducer_input,
+                        uint32_t total_edge_sets) {
     distance_t real_edge_weight =
         1.0; // All edge weights are 1.0 in unweighted graph
     const ap_fixed_pod_t edge_weight =
         (*reinterpret_cast<ap_fixed_pod_t *>(&real_edge_weight));
 
-    LOOP_UPDATE_DATA:
+LOOP_UPDATE_DATA:
     for (int edge_set_idx = 0; edge_set_idx < total_edge_sets; edge_set_idx++) {
 #pragma HLS PIPELINE II = 1
         update_tuple_t one_update_set;
@@ -247,10 +246,12 @@ LOOP_AGGREGATE:
                 // ap_fixed_pod_t msb = current_word.range(63, 32);
                 // ap_fixed_pod_t lsb = current_word.range(31, 0);
 
-                // ap_fixed_pod_t msb_out = (msb < incoming_dist_pod && msb != 0x0)
+                // ap_fixed_pod_t msb_out = (msb < incoming_dist_pod && msb !=
+                // 0x0)
                 //                              ? msb
                 //                              : incoming_dist_pod;
-                // ap_fixed_pod_t lsb_out = (lsb < incoming_dist_pod && lsb != 0x0)
+                // ap_fixed_pod_t lsb_out = (lsb < incoming_dist_pod && lsb !=
+                // 0x0)
                 //                              ? lsb
                 //                              : incoming_dist_pod;
 
@@ -264,13 +265,13 @@ LOOP_AGGREGATE:
                 // accumulate_lsb.range(31, 0) = lsb_out;
 
                 ap_fixed_pod_t cur_data = (key.range(0, 0))
-                                                ? current_word.range(63, 32)
-                                                : current_word.range(31, 0);
+                                              ? current_word.range(63, 32)
+                                              : current_word.range(31, 0);
                 ap_fixed_pod_t updated_data =
                     (cur_data < incoming_dist_pod && cur_data != 0x0)
                         ? cur_data
                         : incoming_dist_pod;
-                
+
                 reduce_word_t updated_word;
                 if (key.range(0, 0)) {
                     // Update MSB
@@ -317,31 +318,29 @@ LOOP_STREAM_OUT:
 }
 
 static void
-Reduc_105_partial_drain_impl(
-    int i,
-    hls::stream<reduce_word_t> (&pe_mem_in)[4],
-    hls::stream<reduce_word_t> &partial_out_stream, uint32_t rounded_num_words,
-    ap_fixed_pod_t max_pod) {
+Reduc_105_partial_drain_impl(int i, hls::stream<reduce_word_t> (&pe_mem_in)[4],
+                             hls::stream<reduce_word_t> &partial_out_stream,
+                             uint32_t rounded_num_words,
+                             ap_fixed_pod_t max_pod) {
 #pragma HLS function_instantiate variable = i
 LOOP_PARTIAL_ADDR:
     for (int32_t i = 0; i < rounded_num_words; i++) {
 #pragma HLS PIPELINE II = 1
-        reduce_word_t first_word = pe_mem_in[0].read();
-        ap_fixed_pod_t uram_res_low = first_word.range(31, 0);
-        ap_fixed_pod_t uram_res_high = first_word.range(63, 32);
+        ap_fixed_pod_t uram_res_low = max_pod;
+        ap_fixed_pod_t uram_res_high = max_pod;
     LOOP_PARTIAL_PE:
-        for (uint32_t pe_idx = 1; pe_idx < 4; pe_idx++) {
+        for (uint32_t pe_idx = 0; pe_idx < 4; pe_idx++) {
 #pragma HLS UNROLL
             reduce_word_t word = pe_mem_in[pe_idx].read();
 
             ap_fixed_pod_t incoming_dist_pod_low = word.range(31, 0);
             ap_fixed_pod_t incoming_dist_pod_high = word.range(63, 32);
-            uram_res_low = (uram_res_low < incoming_dist_pod_low &&
-                               uram_res_low != 0x0)
+            uram_res_low = (uram_res_low < incoming_dist_pod_low ||
+                            incoming_dist_pod_low == 0x0)
                                ? uram_res_low
                                : incoming_dist_pod_low;
-            uram_res_high = (uram_res_high < incoming_dist_pod_high &&
-                             uram_res_high != 0x0)
+            uram_res_high = (uram_res_high < incoming_dist_pod_high ||
+                             incoming_dist_pod_high == 0x0)
                                 ? uram_res_high
                                 : incoming_dist_pod_high;
         }
@@ -357,7 +356,6 @@ Reduc_105_finalize_drain(hls::stream<reduce_word_t> &partial_in_first,
                          hls::stream<reduce_word_t> &partial_in_second,
                          hls::stream<little_out_pkt_t> &kernel_out_stream,
                          uint32_t rounded_num_words, ap_fixed_pod_t max_pod) {
-#pragma HLS INLINE off
     little_out_pkt_t one_write_burst;
     one_write_burst.last = 0;
 
@@ -372,10 +370,9 @@ LOOP_FINAL_ADDR:
         ap_fixed_pod_t second_low = second_word.range(31, 0);
         ap_fixed_pod_t second_high = second_word.range(63, 32);
 
-        first_low = (first_low < second_low && first_low != 0x0)
-                        ? first_low
-                        : second_low;
-        first_high = (first_high < second_high && first_high != 0x0)
+        first_low = (first_low < second_low || second_low == 0x0) ? first_low
+                                                                  : second_low;
+        first_high = (first_high < second_high || second_high == 0x0)
                          ? first_high
                          : second_high;
 
@@ -422,7 +419,8 @@ graphyflow_little(const bus_word_t *edge_props, int32_t num_nodes,
 #pragma HLS STREAM variable = ppb_req_stream_internal depth = 8
     hls::stream<ppb_response_t> ppb_resp_stream_internal;
 #pragma HLS STREAM variable = ppb_resp_stream_internal depth = 8
-#pragma HLS BIND_STORAGE variable = ppb_resp_stream_internal type = FIFO impl = BRAM
+#pragma HLS BIND_STORAGE variable = ppb_resp_stream_internal type =            \
+    FIFO impl = BRAM
 
     // --- Data Loading ---
     // --- Data Loading ---
@@ -454,8 +452,8 @@ LOOP_EDL_READ:
     update_data(stream_edge_data_1, stream_edge_data_2, total_edge_sets);
 
     // --- Reduction ---
-    Reduc_105_unit_reduce(stream_edge_data_2, pe_mem_outs_1, pe_mem_outs_2, total_edge_sets,
-                          rounded_num_words);
+    Reduc_105_unit_reduce(stream_edge_data_2, pe_mem_outs_1, pe_mem_outs_2,
+                          total_edge_sets, rounded_num_words);
     distance_t max_val = (distance_t)(16384.0);
     ap_fixed_pod_t max_pod = *reinterpret_cast<ap_fixed_pod_t *>(&max_val);
     Reduc_105_partial_drain_impl(0, pe_mem_outs_1, pe_mem_out_partial_1,
