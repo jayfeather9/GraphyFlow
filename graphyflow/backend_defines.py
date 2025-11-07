@@ -43,7 +43,8 @@ class HLSBasicType(Enum):
     REDUCE_WORD_T = "reduce_word_t"
     PPB_REQUEST_PKT_T = "ppb_request_pkt_t"
     PPB_RESPONSE_PKT_T = "ppb_response_pkt_t"
-
+    WRITE_BURST_W_DST_PKT_T = "write_burst_w_dst_pkt_t"
+    LITTLE_OUT_PKT_T = "little_out_pkt_t"
 
 
     def __repr__(self) -> str:
@@ -149,8 +150,8 @@ class HLSType:
             if self.name in HLSType._all_names:
                 if struct_name is not None:
                     assert False, f"Struct name collision detected: {self.name}"
-                else:
-                    self.name = f"{self.name}_{self.readable_id}"
+                #else:
+                    #self.name = f"{self.name}_{self.readable_id}"
 
         HLSType._all_names.add(self.name)
         HLSType._full_to_type[self.full_name] = self
