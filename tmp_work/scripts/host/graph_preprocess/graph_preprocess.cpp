@@ -191,29 +191,7 @@ processPartition(const std::vector<Edge> &partition_edges,
     return pd;
 }
 
-/**
- * @brief Partitions a global graph and preprocesses each partition into a local
- * CSR format.
- *
- * This function implements a partitioning strategy based on destination
- * vertices.
- * 1.  It identifies all unique destination vertices in the graph.
- * 2.  It distributes these destination vertices disjointly and as evenly as
- * possible among all available partitions (for both big and little kernels).
- * 3.  It assigns each edge from the global graph to the partition that is
- * responsible for its destination vertex.
- * 4.  For each partition, it collects all unique vertices involved (both
- * sources and destinations).
- * 5.  It performs vertex ID compression for each partition, creating a local ID
- * space. Destination vertices are mapped first to ensure they occupy the lower
- * ID range.
- * 6.  It rewrites the partition's edges using these new local IDs.
- * 7.  Finally, it converts the rewritten edges into a local CSR format.
- *
- * @param graph The input global graph in CSR format.
- * @return A PartitionContainer object containing all processed partitions.
- */
-PartitionContainer partitionGraph(const GraphCSR *graph) {
+static PartitionContainer partitionBasic(const GraphCSR *graph) {
     std::cout << "--- Starting Graph Partitioning and Preprocessing "
                  "(2-Partition Mode) ---"
               << std::endl;
@@ -413,4 +391,30 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
               << container.num_sparse_partitions << " sparse partitions."
               << std::endl;
     return container;
+}
+
+/**
+ * @brief Partitions a global graph and preprocesses each partition into a local
+ * CSR format.
+ *
+ * This function implements a partitioning strategy based on destination
+ * vertices.
+ * 1.  It identifies all unique destination vertices in the graph.
+ * 2.  It distributes these destination vertices disjointly and as evenly as
+ * possible among all available partitions (for both big and little kernels).
+ * 3.  It assigns each edge from the global graph to the partition that is
+ * responsible for its destination vertex.
+ * 4.  For each partition, it collects all unique vertices involved (both
+ * sources and destinations).
+ * 5.  It performs vertex ID compression for each partition, creating a local ID
+ * space. Destination vertices are mapped first to ensure they occupy the lower
+ * ID range.
+ * 6.  It rewrites the partition's edges using these new local IDs.
+ * 7.  Finally, it converts the rewritten edges into a local CSR format.
+ *
+ * @param graph The input global graph in CSR format.
+ * @return A PartitionContainer object containing all processed partitions.
+ */
+PartitionContainer partitionGraph(const GraphCSR *graph) {
+    return partitionBasic(graph);
 }
