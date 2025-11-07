@@ -193,6 +193,10 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
             // sorted by indegree from PHASE 1) ---
             std::vector<int> ordered_dst_vertices(partition_dst_nodes.begin(),
                                                   partition_dst_nodes.end());
+            // random shuffle ordered_dst_vertices
+            std::srand(42);
+            std::random_shuffle(ordered_dst_vertices.begin(),
+                                ordered_dst_vertices.end());
 
             int local_id_counter = 0;
             // First, map destination vertices to guarantee they have
@@ -248,7 +252,8 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
 
                 uint32_t last_src_buffer = 0;
                 uint32_t last_src_id = 0;
-                for (const auto &local_edge : local_edges) {
+                for (int edge_idx = start_idx; edge_idx < end_idx; ++edge_idx) {
+                    auto local_edge = local_edges[edge_idx];
                     uint32_t src_id = local_edge.src;
                     uint32_t dest_id = local_edge.dest;
                     uint32_t weight = local_edge.weight;
