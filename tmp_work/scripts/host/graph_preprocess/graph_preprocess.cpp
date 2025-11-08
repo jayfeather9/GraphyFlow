@@ -51,18 +51,29 @@ processPartition(const std::vector<Edge> &partition_edges,
                                           partition_dst_nodes.end());
     // 原先按照indegree排序，现在进行shuffle
     // random shuffle ordered_dst_vertices
-    std::srand(42);
-    std::random_shuffle(ordered_dst_vertices.begin(),
-                        ordered_dst_vertices.end());
+    // std::srand(42);
+    // std::random_shuffle(ordered_dst_vertices.begin(),
+    //                     ordered_dst_vertices.end());
 
     // 给partition中的每个目标顶点分配局部id：目标顶点是master顶点，需要首先关注
+    // 采用PE交错分配策略：连续8个顶点（按indegree排序）分配到不同的PE
+    // 这样可以：1) 高入度顶点均匀分配到8个PE，实现负载均衡
+    //         2) 提高cache命中率（相邻local ID对应不同PE，减少cache冲突）
+    //         3) 优化word对齐（每2个顶点共享一个word）
     int local_id_counter = 0;
     // First, map destination vertices to guarantee they have
-    // lower-range IDs
-    for (int global_id : ordered_dst_vertices) {
-        pd.vtx_map[global_id] = local_id_counter;
-        pd.vtx_map_rev[local_id_counter] = global_id;
-        local_id_counter++;
+    // lower-range IDs, using PE-interleaved allocation
+    for (size_t round = 0;
+         round < (ordered_dst_vertices.size() + PE_NUM - 1) / PE_NUM; ++round) {
+        for (int pe = 0;
+             pe < PE_NUM && (round * PE_NUM + pe) < ordered_dst_vertices.size();
+             ++pe) {
+            size_t idx = round * PE_NUM + pe;
+            int global_id = ordered_dst_vertices[idx];
+            pd.vtx_map[global_id] = local_id_counter;
+            pd.vtx_map_rev[local_id_counter] = global_id;
+            local_id_counter++;
+        }
     }
     pd.num_dsts = partition_dst_nodes.size();
 
@@ -291,15 +302,50 @@ static PartitionContainer partitionIEC(const GraphCSR *graph) {
 
     size_t vertex_idx = 0;
     // 遍历所有的little：讲顶点按照in degree大小分配给little
+    size_t total_little_size = 0;
+    std::vector<int> little_vertex_ids;
+    for (size_t p = 0; p < little_partition_sizes.size(); ++p) {
+        size_t part_size = little_partition_sizes[p];
+        total_little_size += part_size;
+        for (size_t i = 0; i < part_size; ++i) {
+            int vertex_id = unique_dst_vertices[vertex_idx++];
+            little_vertex_ids.push_back(vertex_id);
+        }
+    }
+
+    // 对于little进行随机shuffle
+    std::srand(42);
+    std::random_shuffle(little_vertex_ids.begin(), little_vertex_ids.end());
+
+    int vertex_index = 0;
     for (size_t p = 0; p < little_partition_sizes.size(); ++p) {
         size_t part_size = little_partition_sizes[p];
         for (size_t i = 0; i < part_size; ++i) {
-            int vertex_id = unique_dst_vertices[vertex_idx++];
+            int vertex_id = little_vertex_ids[vertex_index++];
             little_dst_sets[p].insert(vertex_id);
             // 记录顶点在那个partition中
             dst_vertex_to_partition_map[vertex_id] = p; // Little partition
         }
     }
+
+    // // 拆分为两个点数一样，但是边数和也差不多的partition
+    // size_t total_num = std::accumulate(little_partition_sizes.begin(),
+    // little_partition_sizes.end(), 0); for (size_t i = 0; i < total_num / 2;
+    // ++i) {
+    //     int vertex_id_1 = little_vertex_ids[i];
+    //     int vertex_id_2 = little_vertex_ids[total_num - i - 1];
+    //     if(i % 2 == 0) {
+    //         little_dst_sets[0].insert(vertex_id_1);
+    //         little_dst_sets[0].insert(vertex_id_2);
+    //         dst_vertex_to_partition_map[vertex_id_1] = 0;
+    //         dst_vertex_to_partition_map[vertex_id_2] = 0;
+    //     } else {
+    //         little_dst_sets[1].insert(vertex_id_1);
+    //         little_dst_sets[1].insert(vertex_id_2);
+    //         dst_vertex_to_partition_map[vertex_id_1] = 1;
+    //         dst_vertex_to_partition_map[vertex_id_2] = 1;
+    //     }
+    // }
 
     for (size_t p = 0; p < big_partition_sizes.size(); ++p) {
         size_t part_size = big_partition_sizes[p];
