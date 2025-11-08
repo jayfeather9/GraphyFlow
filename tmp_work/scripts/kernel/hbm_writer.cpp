@@ -1,20 +1,51 @@
 #include "shared_kernel_params.h"
 
+struct little_ppb_resp_t {
+    bus_word_t data;
+    uint32_t dest;
+    bool last;
+};
+
+static void
+little_response_packer(int i, hls::stream<little_ppb_resp_t> &prop_loader_out,
+                       hls::stream<ppb_response_pkt_t> &ppb_response_stm,
+                       uint32_t num_partitions) {
+
+#pragma HLS function_instantiate variable = i
+
+    uint32_t left_partitions = num_partitions;
+LOOP_PACK_RESPONSES:
+    while (true) {
+#pragma HLS PIPELINE II = 1
+        little_ppb_resp_t prop_data = prop_loader_out.read();
+        ppb_response_pkt_t ppb_response;
+        ppb_response.data = prop_data.data;
+        ppb_response.dest = prop_data.dest;
+        ppb_response.last = prop_data.last;
+        ppb_response_stm.write(ppb_response);
+        if (prop_data.last) {
+            left_partitions--;
+        }
+        if (left_partitions == 0) {
+            break;
+        }
+    }
+}
+
 static void little_node_prop_loader(
     int i, const bus_word_t *node_distances_ddr, uint32_t num_partitions,
     hls::stream<ppb_request_pkt_t> &ppb_req_stream,
-    hls::stream<ppb_response_pkt_t> &ppb_resp_stream
+    hls::stream<little_ppb_resp_t> &ppb_resp_stream
     // hls::stream<cacheline_data_pkt_t> &cacheline_data_stream
 ) {
 #pragma HLS function_instantiate variable = i
 
-    ppb_request_pkt_t one_ppb_request_pkg;
-    ppb_response_pkt_t one_ppb_response_pkg;
     uint32_t left_partitions = num_partitions;
 
 littleKernelReadMemory:
     while (true) {
 #pragma HLS PIPELINE
+        ppb_request_pkt_t one_ppb_request_pkg;
         if (ppb_req_stream.read_nb(one_ppb_request_pkg)) {
             uint32_t request_round = one_ppb_request_pkg.data;
             bool end_flag = one_ppb_request_pkg.last;
@@ -22,6 +53,7 @@ littleKernelReadMemory:
             uint32_t base_addr = request_round << LOG_SRC_BUFFER_SIZE >> 4;
 
             if (end_flag) {
+                little_ppb_resp_t one_ppb_response_pkg;
                 one_ppb_response_pkg.last = end_flag;
                 ppb_resp_stream.write(one_ppb_response_pkg);
                 left_partitions--;
@@ -30,8 +62,8 @@ littleKernelReadMemory:
                 }
             } else {
                 for (int i = 0; i < (SRC_BUFFER_SIZE >> 4); i++) {
-                    int addr = base_addr + i;
-
+                    uint32_t addr = base_addr + i;
+                    little_ppb_resp_t one_ppb_response_pkg;
                     one_ppb_response_pkg.data = node_distances_ddr[addr];
                     one_ppb_response_pkg.dest = addr;
                     one_ppb_response_pkg.last = false;
@@ -193,28 +225,106 @@ extern "C" void hbm_writer(
 #pragma HLS INTERFACE s_axilite port = return bundle = control
 #pragma HLS DATAFLOW
 
+    hls::stream<little_ppb_resp_t> little_prop_loader_out_1;
+#pragma HLS STREAM variable = little_prop_loader_out_1 depth = 16
+    // #pragma HLS BIND_STORAGE variable = little_prop_loader_out_1 type = FIFO
+    // impl = BRAM
+    hls::stream<little_ppb_resp_t> little_prop_loader_out_2;
+#pragma HLS STREAM variable = little_prop_loader_out_2 depth = 16
+    // #pragma HLS BIND_STORAGE variable = little_prop_loader_out_2 type = FIFO
+    // impl = BRAM
+    hls::stream<little_ppb_resp_t> little_prop_loader_out_3;
+#pragma HLS STREAM variable = little_prop_loader_out_3 depth = 16
+    // #pragma HLS BIND_STORAGE variable = little_prop_loader_out_3 type = FIFO
+    // impl = BRAM
+    hls::stream<little_ppb_resp_t> little_prop_loader_out_4;
+#pragma HLS STREAM variable = little_prop_loader_out_4 depth = 16
+    // #pragma HLS BIND_STORAGE variable = little_prop_loader_out_4 type = FIFO
+    // impl = BRAM
+    hls::stream<little_ppb_resp_t> little_prop_loader_out_5;
+#pragma HLS STREAM variable = little_prop_loader_out_5 depth = 16
+    // #pragma HLS BIND_STORAGE variable = little_prop_loader_out_5 type = FIFO
+    // impl = BRAM
+    hls::stream<little_ppb_resp_t> little_prop_loader_out_6;
+#pragma HLS STREAM variable = little_prop_loader_out_6 depth = 16
+    // #pragma HLS BIND_STORAGE variable = little_prop_loader_out_6 type = FIFO
+    // impl = BRAM
+    hls::stream<little_ppb_resp_t> little_prop_loader_out_7;
+#pragma HLS STREAM variable = little_prop_loader_out_7 depth = 16
+    // #pragma HLS BIND_STORAGE variable = little_prop_loader_out_7 type = FIFO
+    // impl = BRAM
+    hls::stream<little_ppb_resp_t> little_prop_loader_out_8;
+#pragma HLS STREAM variable = little_prop_loader_out_8 depth = 16
+    // #pragma HLS BIND_STORAGE variable = little_prop_loader_out_8 type = FIFO
+    // impl = BRAM
+    hls::stream<little_ppb_resp_t> little_prop_loader_out_9;
+#pragma HLS STREAM variable = little_prop_loader_out_9 depth = 16
+    // #pragma HLS BIND_STORAGE variable = little_prop_loader_out_9 type = FIFO
+    // impl = BRAM
+    hls::stream<little_ppb_resp_t> little_prop_loader_out_10;
+#pragma HLS STREAM variable = little_prop_loader_out_10 depth = 16
+    // #pragma HLS BIND_STORAGE variable = little_prop_loader_out_10 type = FIFO
+    // impl = BRAM
+    hls::stream<little_ppb_resp_t> little_prop_loader_out_11;
+#pragma HLS STREAM variable = little_prop_loader_out_11 depth = 16
+    // #pragma HLS BIND_STORAGE variable = little_prop_loader_out_11 type = FIFO
+    // impl = BRAM
+
     little_node_prop_loader(0, src_prop_1, num_partitions_little,
-                            ppb_req_stream_1, ppb_resp_stream_1);
+                            ppb_req_stream_1, little_prop_loader_out_1);
+    little_response_packer(0, little_prop_loader_out_1, ppb_resp_stream_1,
+                           num_partitions_little);
+
     little_node_prop_loader(1, src_prop_2, num_partitions_little,
-                            ppb_req_stream_2, ppb_resp_stream_2);
+                            ppb_req_stream_2, little_prop_loader_out_2);
+    little_response_packer(1, little_prop_loader_out_2, ppb_resp_stream_2,
+                           num_partitions_little);
+
     little_node_prop_loader(2, src_prop_3, num_partitions_little,
-                            ppb_req_stream_3, ppb_resp_stream_3);
+                            ppb_req_stream_3, little_prop_loader_out_3);
+    little_response_packer(2, little_prop_loader_out_3, ppb_resp_stream_3,
+                           num_partitions_little);
+
     little_node_prop_loader(3, src_prop_4, num_partitions_little,
-                            ppb_req_stream_4, ppb_resp_stream_4);
+                            ppb_req_stream_4, little_prop_loader_out_4);
+    little_response_packer(3, little_prop_loader_out_4, ppb_resp_stream_4,
+                           num_partitions_little);
+
     little_node_prop_loader(4, src_prop_5, num_partitions_little,
-                            ppb_req_stream_5, ppb_resp_stream_5);
+                            ppb_req_stream_5, little_prop_loader_out_5);
+    little_response_packer(4, little_prop_loader_out_5, ppb_resp_stream_5,
+                           num_partitions_little);
+
     little_node_prop_loader(5, src_prop_6, num_partitions_little,
-                            ppb_req_stream_6, ppb_resp_stream_6);
+                            ppb_req_stream_6, little_prop_loader_out_6);
+    little_response_packer(5, little_prop_loader_out_6, ppb_resp_stream_6,
+                           num_partitions_little);
+
     little_node_prop_loader(6, src_prop_7, num_partitions_little,
-                            ppb_req_stream_7, ppb_resp_stream_7);
+                            ppb_req_stream_7, little_prop_loader_out_7);
+    little_response_packer(6, little_prop_loader_out_7, ppb_resp_stream_7,
+                           num_partitions_little);
+
     little_node_prop_loader(7, src_prop_8, num_partitions_little,
-                            ppb_req_stream_8, ppb_resp_stream_8);
+                            ppb_req_stream_8, little_prop_loader_out_8);
+    little_response_packer(7, little_prop_loader_out_8, ppb_resp_stream_8,
+                           num_partitions_little);
+
     little_node_prop_loader(8, src_prop_9, num_partitions_little,
-                            ppb_req_stream_9, ppb_resp_stream_9);
+                            ppb_req_stream_9, little_prop_loader_out_9);
+    little_response_packer(8, little_prop_loader_out_9, ppb_resp_stream_9,
+                           num_partitions_little);
+
     little_node_prop_loader(9, src_prop_10, num_partitions_little,
-                            ppb_req_stream_10, ppb_resp_stream_10);
+                            ppb_req_stream_10, little_prop_loader_out_10);
+    little_response_packer(9, little_prop_loader_out_10, ppb_resp_stream_10,
+                           num_partitions_little);
+
     little_node_prop_loader(10, src_prop_11, num_partitions_little,
-                            ppb_req_stream_11, ppb_resp_stream_11);
+                            ppb_req_stream_11, little_prop_loader_out_11);
+    little_response_packer(10, little_prop_loader_out_11, ppb_resp_stream_11,
+                           num_partitions_little);
+
     big_node_prop_loader(0, src_prop_12, num_partitions_big,
                          cacheline_req_stream_1, cacheline_resp_stream_1);
     big_node_prop_loader(1, src_prop_13, num_partitions_big,
