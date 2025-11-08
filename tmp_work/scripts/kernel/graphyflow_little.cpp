@@ -54,11 +54,12 @@ void request_manager(hls::stream<edge_descriptor_batch_t> &edge_burst_stm,
 
     ap_uint<22> pp_request_round = 0;
 
-    int32_t edge_set_cnt = 0;
+    uint32_t edge_set_cnt = 0;
 
     bool wait_flag = 0;
 
     edge_descriptor_batch_t an_edge_burst;
+    const uint32_t total_edge_sets_minus_one = total_edge_sets - 1;
 
 scatterLoop:
     while (true) {
@@ -103,7 +104,7 @@ scatterLoop:
         wait_flag = (pp_read_round >= pp_write_round) ? 1 : 0;
 
         bool exit_flag = (wait_flag == 0)
-                             ? (edge_set_cnt + 1 >= total_edge_sets)
+                             ? (edge_set_cnt >= total_edge_sets_minus_one)
                              : (edge_set_cnt >= total_edge_sets);
 
         if (!wait_flag) {
@@ -243,56 +244,54 @@ LOOP_AGGREGATE:
 
                 reduce_word_t tmp_cur_word = current_word;
 
-                // ap_fixed_pod_t msb = current_word.range(63, 32);
-                // ap_fixed_pod_t lsb = current_word.range(31, 0);
+                ap_fixed_pod_t msb = current_word.range(63, 32);
+                ap_fixed_pod_t lsb = current_word.range(31, 0);
 
-                // ap_fixed_pod_t msb_out = (msb < incoming_dist_pod && msb !=
-                // 0x0)
-                //                              ? msb
-                //                              : incoming_dist_pod;
-                // ap_fixed_pod_t lsb_out = (lsb < incoming_dist_pod && lsb !=
-                // 0x0)
-                //                              ? lsb
-                //                              : incoming_dist_pod;
+                ap_fixed_pod_t msb_out = (msb < incoming_dist_pod && msb != 0x0)
+                                             ? msb
+                                             : incoming_dist_pod;
+                ap_fixed_pod_t lsb_out = (lsb < incoming_dist_pod && lsb != 0x0)
+                                             ? lsb
+                                             : incoming_dist_pod;
 
-                // reduce_word_t accumulate_msb;
-                // reduce_word_t accumulate_lsb;
+                reduce_word_t accumulate_msb;
+                reduce_word_t accumulate_lsb;
 
-                // accumulate_msb.range(63, 32) = msb_out;
-                // accumulate_msb.range(31, 0) = tmp_cur_word.range(31, 0);
+                accumulate_msb.range(63, 32) = msb_out;
+                accumulate_msb.range(31, 0) = tmp_cur_word.range(31, 0);
 
-                // accumulate_lsb.range(63, 32) = tmp_cur_word.range(63, 32);
-                // accumulate_lsb.range(31, 0) = lsb_out;
+                accumulate_lsb.range(63, 32) = tmp_cur_word.range(63, 32);
+                accumulate_lsb.range(31, 0) = lsb_out;
 
-                ap_fixed_pod_t cur_data = (key.range(0, 0))
-                                              ? current_word.range(63, 32)
-                                              : current_word.range(31, 0);
-                ap_fixed_pod_t updated_data =
-                    (cur_data < incoming_dist_pod && cur_data != 0x0)
-                        ? cur_data
-                        : incoming_dist_pod;
+                // ap_fixed_pod_t cur_data = (key.range(0, 0))
+                //                               ? current_word.range(63, 32)
+                //                               : current_word.range(31, 0);
+                // ap_fixed_pod_t updated_data =
+                //     (cur_data < incoming_dist_pod && cur_data != 0x0)
+                //         ? cur_data
+                //         : incoming_dist_pod;
 
-                reduce_word_t updated_word;
-                if (key.range(0, 0)) {
-                    // Update MSB
-                    updated_word.range(63, 32) = updated_data;
-                    updated_word.range(31, 0) = tmp_cur_word.range(31, 0);
-                } else {
-                    // Update LSB
-                    updated_word.range(63, 32) = tmp_cur_word.range(63, 32);
-                    updated_word.range(31, 0) = updated_data;
-                }
-
-                prop_mem[pe][word_addr] = updated_word;
-                cache_data_buffer[pe][L] = updated_word;
-
-                // if (key & 0x01) {
-                //     prop_mem[pe][word_addr] = accumulate_msb;
-                //     cache_data_buffer[pe][L] = accumulate_msb;
+                // reduce_word_t updated_word;
+                // if (key.range(0, 0)) {
+                //     // Update MSB
+                //     updated_word.range(63, 32) = updated_data;
+                //     updated_word.range(31, 0) = tmp_cur_word.range(31, 0);
                 // } else {
-                //     prop_mem[pe][word_addr] = accumulate_lsb;
-                //     cache_data_buffer[pe][L] = accumulate_lsb;
+                //     // Update LSB
+                //     updated_word.range(63, 32) = tmp_cur_word.range(63, 32);
+                //     updated_word.range(31, 0) = updated_data;
                 // }
+
+                // prop_mem[pe][word_addr] = updated_word;
+                // cache_data_buffer[pe][L] = updated_word;
+
+                if (key & 0x01) {
+                    prop_mem[pe][word_addr] = accumulate_msb;
+                    cache_data_buffer[pe][L] = accumulate_msb;
+                } else {
+                    prop_mem[pe][word_addr] = accumulate_lsb;
+                    cache_data_buffer[pe][L] = accumulate_lsb;
+                }
                 cache_addr_buffer[pe][L] = word_addr;
             }
         }
@@ -403,13 +402,15 @@ graphyflow_little(const bus_word_t *edge_props, int32_t num_nodes,
     hls::stream<edge_descriptor_batch_t> edge_stream;
 #pragma HLS STREAM variable = edge_stream depth = 8
     hls::stream<update_tuple_t> stream_edge_data_1;
-#pragma HLS STREAM variable = stream_edge_data_1 depth = 8
+#pragma HLS STREAM variable = stream_edge_data_1 depth = 4
     hls::stream<update_tuple_t> stream_edge_data_2;
-#pragma HLS STREAM variable = stream_edge_data_2 depth = 8
+#pragma HLS STREAM variable = stream_edge_data_2 depth = 4
     hls::stream<reduce_word_t> pe_mem_outs_1[4];
-#pragma HLS STREAM variable = pe_mem_outs_1 depth = 8
+#pragma HLS STREAM variable = pe_mem_outs_1 depth = 16
+#pragma HLS BIND_STORAGE variable = pe_mem_outs_1 type = FIFO impl = BRAM
     hls::stream<reduce_word_t> pe_mem_outs_2[4];
-#pragma HLS STREAM variable = pe_mem_outs_2 depth = 8
+#pragma HLS STREAM variable = pe_mem_outs_2 depth = 16
+#pragma HLS BIND_STORAGE variable = pe_mem_outs_2 type = FIFO impl = BRAM
     hls::stream<reduce_word_t> pe_mem_out_partial_1;
 #pragma HLS STREAM variable = pe_mem_out_partial_1 depth = 8
     hls::stream<reduce_word_t> pe_mem_out_partial_2;
