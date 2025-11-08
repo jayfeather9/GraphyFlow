@@ -87,7 +87,6 @@ processPartition(const std::vector<Edge> &partition_edges,
         }
     }
     pd.num_vertices = local_vertices_set.size();
-    printf("[debug] num_vertices: %d\n", pd.num_vertices);
 
     // --- 4.2: Rewrite edges with local, compressed IDs and sort by src
     // ---
@@ -221,20 +220,16 @@ static PartitionContainer partitionIEC(const GraphCSR *graph) {
               << " dsts)" << std::endl;
 
     // --- PHASE 1: Identify and Collect All Unique Destination Vertices ---
-    // 顶点的集合
     std::set<int> unique_dst_vertices_set;
-    // 记录了顶点的in degree
     std::unordered_map<int, int> node_indegrees;
     for (int i = 0; i < graph->num_edges; ++i) {
         int dst = graph->columns[i];
         unique_dst_vertices_set.insert(dst);
-        // 找不到顶点，初始化
         if (node_indegrees.find(dst) == node_indegrees.end()) {
             node_indegrees[dst] = 0;
         }
         node_indegrees[dst]++;
     }
-    // 按照in degree排序的顶点集合
     std::vector<int> unique_dst_vertices(unique_dst_vertices_set.begin(),
                                          unique_dst_vertices_set.end());
 
@@ -255,53 +250,36 @@ static PartitionContainer partitionIEC(const GraphCSR *graph) {
         dst_vertex_to_partition_map; // 0 ~ little_partition_sizes.size()-1 =>
                                      // little
 
-    // 每个partition的size
     std::vector<size_t> little_partition_sizes;
     std::vector<size_t> big_partition_sizes;
 
-    printf("[debug] LITTLE_MAX_DST: %d, BIG_MAX_DST: %d\n", LITTLE_MAX_DST,
-           BIG_MAX_DST);
-    printf("[debug] unique_dst_vertices.size(): %zu\n",
-           unique_dst_vertices.size());
     size_t remaining_dsts = unique_dst_vertices.size();
-    // 每次分配时，先分配LITTLE_MAX_DST个给little，再分配BIG_MAX_DST个给big
     while (remaining_dsts > 0) {
-        // 每次批量分配一定数量给little
         size_t assign_to_little;
         bool break_flag = false;
 
         for (int i = 0; i < little_big_ratio; i++) {
             assign_to_little = std::min((size_t)LITTLE_MAX_DST, remaining_dsts);
-            // 如果剩余的顶点数不足 LITTLE_MAX_DST，那么只分配 80% 给 little
-            // 分区，留 20% 给后续的 big 分区 维持little和big数量上的相同
             if (assign_to_little == remaining_dsts) {
                 assign_to_little = (size_t)(remaining_dsts * 0.8);
                 break_flag = true;
             }
-            // 记录little partition的元素数量
             little_partition_sizes.push_back(assign_to_little);
-            // 创建一个元素：目前用于占位
             little_dst_sets.emplace_back();
             remaining_dsts -= assign_to_little;
-            printf("[debug] assign to little: %d, remaining_dsts: %zu\n",
-                   assign_to_little, remaining_dsts);
 
             if (break_flag) {
                 break;
             }
         }
 
-        // 分配BIG
         size_t assign_to_big = std::min((size_t)BIG_MAX_DST, remaining_dsts);
         big_partition_sizes.push_back(assign_to_big);
         big_dst_sets.emplace_back();
         remaining_dsts -= assign_to_big;
-        printf("[debug] assign to big: %d, remaining_dsts: %zu\n",
-               assign_to_big, remaining_dsts);
     }
 
     size_t vertex_idx = 0;
-    // 遍历所有的little：讲顶点按照in degree大小分配给little
     size_t total_little_size = 0;
     std::vector<int> little_vertex_ids;
     for (size_t p = 0; p < little_partition_sizes.size(); ++p) {
@@ -313,7 +291,6 @@ static PartitionContainer partitionIEC(const GraphCSR *graph) {
         }
     }
 
-    // 对于little进行随机shuffle
     std::srand(42);
     std::random_shuffle(little_vertex_ids.begin(), little_vertex_ids.end());
 
@@ -323,7 +300,6 @@ static PartitionContainer partitionIEC(const GraphCSR *graph) {
         for (size_t i = 0; i < part_size; ++i) {
             int vertex_id = little_vertex_ids[vertex_index++];
             little_dst_sets[p].insert(vertex_id);
-            // 记录顶点在那个partition中
             dst_vertex_to_partition_map[vertex_id] = p; // Little partition
         }
     }
@@ -369,19 +345,12 @@ static PartitionContainer partitionIEC(const GraphCSR *graph) {
               << " partitions." << std::endl;
 
     // --- PHASE 3: Assign Edges to 2 Partitions Based on Destination Vertex ---
-    // 在得到顶点分配后，将相应的边加入partition中
-    // 记录每个partition的edge的列表
     std::vector<std::vector<Edge>> edges_lists;
-    // 确定大小为little和big的partition数目之和
     edges_lists.resize(little_partition_sizes.size() +
                        big_partition_sizes.size());
     size_t little_edge_num = 0, big_edge_num = 0;
-    // 遍历顶点，按照src分配对应的边
     for (int u = 0; u < graph->num_vertices; ++u) {
-        // offsets[u] ～ offsets[u+1]-1：顶点 u 的所有出边在 columns
-        // 数组中的范围
         for (int i = graph->offsets[u]; i < graph->offsets[u + 1]; ++i) {
-            // 出边的顶点id
             int v = graph->columns[i];
             int w = graph->weights[i];
 
@@ -389,7 +358,6 @@ static PartitionContainer partitionIEC(const GraphCSR *graph) {
             auto it = dst_vertex_to_partition_map.find(v);
             if (it != dst_vertex_to_partition_map.end()) {
                 int partition_idx = it->second;
-                // 按照src分配边倒partition
                 edges_lists[partition_idx].push_back({u, v, w});
                 if (partition_idx < little_partition_sizes.size()) {
                     little_edge_num++;
@@ -412,10 +380,7 @@ static PartitionContainer partitionIEC(const GraphCSR *graph) {
     // ---
     std::cout << "[PHASE 4] Processing partitions..." << std::endl;
 
-    // 处理 little 分区
     for (size_t p = 0; p < little_partition_sizes.size(); ++p) {
-        printf("[debug] processing little partition. kernel num: %d\n",
-               LITTLE_KERNEL_NUM);
         PartitionDescriptor little_pd = processPartition(
             edges_lists[p], little_dst_sets[p], true, LITTLE_KERNEL_NUM);
         container.DPs.push_back(little_pd);
@@ -432,10 +397,7 @@ static PartitionContainer partitionIEC(const GraphCSR *graph) {
         }
     }
 
-    // 处理 big 分区
     for (size_t p = 0; p < big_partition_sizes.size(); ++p) {
-        printf("[debug] processing big partition. kernel num: %d\n",
-               BIG_KERNEL_NUM);
         PartitionDescriptor big_pd =
             processPartition(edges_lists[p + little_partition_sizes.size()],
                              big_dst_sets[p], false, BIG_KERNEL_NUM);
