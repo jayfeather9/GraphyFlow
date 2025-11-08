@@ -76,6 +76,7 @@ processPartition(const std::vector<Edge> &partition_edges,
         }
     }
     pd.num_vertices = local_vertices_set.size();
+    printf("[debug] num_vertices: %d\n", pd.num_vertices);
 
     // --- 4.2: Rewrite edges with local, compressed IDs and sort by src
     // ---
@@ -191,10 +192,13 @@ processPartition(const std::vector<Edge> &partition_edges,
     return pd;
 }
 
-static PartitionContainer partitionBasic(const GraphCSR *graph) {
+static PartitionContainer partitionIEC(const GraphCSR *graph) {
     std::cout << "--- Starting Graph Partitioning and Preprocessing "
                  "(2-Partition Mode) ---"
               << std::endl;
+
+    int little_big_ratio = 2;
+
     PartitionContainer container;
     container.num_graph_vertices = graph->num_vertices;
     container.num_graph_edges = graph->num_edges;
@@ -244,28 +248,45 @@ static PartitionContainer partitionBasic(const GraphCSR *graph) {
     std::vector<size_t> little_partition_sizes;
     std::vector<size_t> big_partition_sizes;
 
+    printf("[debug] LITTLE_MAX_DST: %d, BIG_MAX_DST: %d\n", LITTLE_MAX_DST,
+           BIG_MAX_DST);
+    printf("[debug] unique_dst_vertices.size(): %zu\n",
+           unique_dst_vertices.size());
     size_t remaining_dsts = unique_dst_vertices.size();
     // 每次分配时，先分配LITTLE_MAX_DST个给little，再分配BIG_MAX_DST个给big
     while (remaining_dsts > 0) {
         // 每次批量分配一定数量给little
-        size_t assign_to_little =
-            std::min((size_t)LITTLE_MAX_DST, remaining_dsts);
-        // 如果剩余的顶点数不足 LITTLE_MAX_DST，那么只分配 80% 给 little
-        // 分区，留 20% 给后续的 big 分区 维持little和big数量上的相同
-        if (assign_to_little == remaining_dsts) {
-            assign_to_little = (size_t)(remaining_dsts * 0.8);
+        size_t assign_to_little;
+        bool break_flag = false;
+
+        for (int i = 0; i < little_big_ratio; i++) {
+            assign_to_little = std::min((size_t)LITTLE_MAX_DST, remaining_dsts);
+            // 如果剩余的顶点数不足 LITTLE_MAX_DST，那么只分配 80% 给 little
+            // 分区，留 20% 给后续的 big 分区 维持little和big数量上的相同
+            if (assign_to_little == remaining_dsts) {
+                assign_to_little = (size_t)(remaining_dsts * 0.8);
+                break_flag = true;
+            }
+            // 记录little partition的元素数量
+            little_partition_sizes.push_back(assign_to_little);
+            // 创建一个元素：目前用于占位
+            little_dst_sets.emplace_back();
+            remaining_dsts -= assign_to_little;
+            printf("[debug] assign to little: %d, remaining_dsts: %zu\n",
+                   assign_to_little, remaining_dsts);
+
+            if (break_flag) {
+                break;
+            }
         }
-        // 记录little partition的元素数量
-        little_partition_sizes.push_back(assign_to_little);
-        // 创建一个元素：目前用于占位
-        little_dst_sets.emplace_back();
-        remaining_dsts -= assign_to_little;
 
         // 分配BIG
         size_t assign_to_big = std::min((size_t)BIG_MAX_DST, remaining_dsts);
         big_partition_sizes.push_back(assign_to_big);
         big_dst_sets.emplace_back();
         remaining_dsts -= assign_to_big;
+        printf("[debug] assign to big: %d, remaining_dsts: %zu\n",
+               assign_to_big, remaining_dsts);
     }
 
     size_t vertex_idx = 0;
@@ -347,6 +368,8 @@ static PartitionContainer partitionBasic(const GraphCSR *graph) {
 
     // 处理 little 分区
     for (size_t p = 0; p < little_partition_sizes.size(); ++p) {
+        printf("[debug] processing little partition. kernel num: %d\n",
+               LITTLE_KERNEL_NUM);
         PartitionDescriptor little_pd = processPartition(
             edges_lists[p], little_dst_sets[p], true, LITTLE_KERNEL_NUM);
         container.DPs.push_back(little_pd);
@@ -365,6 +388,8 @@ static PartitionContainer partitionBasic(const GraphCSR *graph) {
 
     // 处理 big 分区
     for (size_t p = 0; p < big_partition_sizes.size(); ++p) {
+        printf("[debug] processing big partition. kernel num: %d\n",
+               BIG_KERNEL_NUM);
         PartitionDescriptor big_pd =
             processPartition(edges_lists[p + little_partition_sizes.size()],
                              big_dst_sets[p], false, BIG_KERNEL_NUM);
@@ -393,6 +418,10 @@ static PartitionContainer partitionBasic(const GraphCSR *graph) {
     return container;
 }
 
+static PartitionContainer partitionAdvanced(const GraphCSR *graph) {
+    return partitionIEC(graph);
+}
+
 /**
  * @brief Partitions a global graph and preprocesses each partition into a local
  * CSR format.
@@ -416,5 +445,5 @@ static PartitionContainer partitionBasic(const GraphCSR *graph) {
  * @return A PartitionContainer object containing all processed partitions.
  */
 PartitionContainer partitionGraph(const GraphCSR *graph) {
-    return partitionBasic(graph);
+    return partitionIEC(graph);
 }

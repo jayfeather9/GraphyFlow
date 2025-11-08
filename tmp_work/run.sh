@@ -40,5 +40,7 @@ fi
 
 # 3. 运行 host 程序
 DATASET="/data/feiyang/test/test/datasets/rmat-19-32.txt"
+# DATASET="/data/feiyang/test/test/datasets/rmat-21-32.txt"
+# DATASET="/data/feiyang/test/test/datasets/rmat-24-16.txt"
 # DATASET="./rmat-19-32.txt"
 ./${EXECUTABLE} ${XCLBIN_FILE} $DATASET
