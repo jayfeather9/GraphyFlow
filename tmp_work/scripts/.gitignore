@@ -1,0 +1,55 @@
+# Generated source files
+host/generated_host.cpp
+host/generated_host.h
+
+# Generated kernel files
+kernel/big_merger*.cpp
+kernel/little_merger*.cpp
+kernel/apply_kernel.cpp
+
+# Compiled object files
+*.o
+host/*.o
+host/**/*.o
+kernel/*.o
+kernel/**/*.o
+
+# Executables
+graphyflow_host
+*_host
+
+# Xilinx build artifacts
+xclbin/
+_x/
+.Xil/
+.ipcache/
+.run/
+*.xo
+*.xclbin
+emconfig.json
+
+# Build logs and reports
+*.log
+*.jou
+*.wcfg
+*.wdb
+*.rpt
+*.str
+*.summary
+*.xtxt
+
+# Temporary build files
+sdaccel_*
+TempConfig/
+dltmp*
+xmltmp*
+_xocc_*
+makefile_gen/
+*.ll
+
+# Other generated files
+*.csv
+*.protoinst
+membership.out
+*.zip
+
