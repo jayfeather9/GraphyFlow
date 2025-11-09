@@ -77,6 +77,61 @@ class ConfigGenerator:
                 }
             )
 
+    def _get_kernel_slr(self, kernel_instance: str) -> int:
+        """
+        Get the SLR number for a kernel instance name.
+
+        Args:
+            kernel_instance: Kernel instance name (e.g., 'graphyflow_little_1', 'little_merger_0_1', 'hbm_writer_1')
+
+        Returns:
+            SLR number (0, 1, or 2)
+        """
+        # Handle graphyflow_little_N and graphyflow_big_N
+        if kernel_instance.startswith("graphyflow_little_"):
+            kernel_num = int(kernel_instance.split("_")[-1])
+            # Find which merger this kernel belongs to and get its SLR
+            little_kernel_idx = 0
+            for merger in self.merger_info:
+                if merger["kernel_type"] == "little":
+                    pipeline_slr = merger["pipeline_slr"]
+                    pipeline_num = merger["pipeline_num"]
+                    # Check if this kernel belongs to this merger
+                    if little_kernel_idx < kernel_num <= little_kernel_idx + pipeline_num:
+                        # Get the position within this merger's pipeline
+                        pos_in_merger = kernel_num - little_kernel_idx - 1
+                        return pipeline_slr[pos_in_merger]
+                    little_kernel_idx += pipeline_num
+        elif kernel_instance.startswith("graphyflow_big_"):
+            kernel_num = int(kernel_instance.split("_")[-1])
+            # Find which merger this kernel belongs to and get its SLR
+            big_kernel_idx = 0
+            for merger in self.merger_info:
+                if merger["kernel_type"] == "big":
+                    pipeline_slr = merger["pipeline_slr"]
+                    pipeline_num = merger["pipeline_num"]
+                    # Check if this kernel belongs to this merger
+                    if big_kernel_idx < kernel_num <= big_kernel_idx + pipeline_num:
+                        # Get the position within this merger's pipeline
+                        pos_in_merger = kernel_num - big_kernel_idx - 1
+                        return pipeline_slr[pos_in_merger]
+                    big_kernel_idx += pipeline_num
+        # Handle merger instances (little_merger_N_1 or big_merger_N_1)
+        elif kernel_instance.startswith("little_merger_") or kernel_instance.startswith("big_merger_"):
+            parts = kernel_instance.split("_")
+            merger_id = int(parts[2])
+            for merger in self.merger_info:
+                if merger["merger_id"] == merger_id:
+                    return merger["merger_slr"]
+        # Handle fixed kernels
+        elif kernel_instance.startswith("hbm_writer_"):
+            return 0  # Default SLR0
+        elif kernel_instance.startswith("apply_kernel_"):
+            return 1  # Default SLR1
+
+        # Default fallback
+        return 0
+
     def copy_template_files(self):
         """Copy all required template files to output directory."""
         import shutil
@@ -86,7 +141,6 @@ class ConfigGenerator:
             "graphyflow_big.h",
             "graphyflow_little.cpp",
             "graphyflow_little.h",
-            "hbm_writer.cpp",
         ]
 
         for template_file in kernel_templates:
@@ -116,6 +170,7 @@ class ConfigGenerator:
         # Generate kernel files
         self.generate_merger_kernels()
         self.generate_apply_kernel()
+        self.generate_hbm_writer()
         self.generate_shared_params()
 
         # Generate system.cfg
@@ -458,6 +513,133 @@ class ConfigGenerator:
 
         print(f"Generated: {output_path}")
 
+    def generate_hbm_writer(self):
+        """Generate hbm_writer.cpp from template based on kernel counts."""
+        template_path = self.templates_dir / "kernel" / "hbm_writer.cpp.template"
+        output_path = self.scripts_dir / "kernel" / "hbm_writer.cpp"
+
+        with open(template_path, "r") as f:
+            content = f.read()
+
+        total_kernels = self.little_kernel_count + self.big_kernel_count
+
+        # Generate src_prop parameters
+        # Always add comma because output parameter comes after
+        src_prop_params = []
+        for i in range(1, total_kernels + 1):
+            src_prop_params.append(f"    bus_word_t *src_prop_{i},")
+
+        # Generate src_prop m_axi pragmas
+        src_prop_m_axi_pragmas = []
+        for i in range(1, total_kernels + 1):
+            bundle_idx = (i - 1) % 14  # Cycle through gmem0-gmem13
+            src_prop_m_axi_pragmas.append(
+                f"#pragma HLS INTERFACE m_axi port = src_prop_{i} offset = slave bundle = gmem{bundle_idx}"
+            )
+
+        # Generate src_prop s_axilite pragmas
+        src_prop_s_axilite_pragmas = []
+        for i in range(1, total_kernels + 1):
+            src_prop_s_axilite_pragmas.append(
+                f"#pragma HLS INTERFACE s_axilite port = src_prop_{i} bundle = control"
+            )
+
+        # Generate PPB stream parameters
+        # Add comma to last param only if there are big kernels (cacheline streams come after)
+        ppb_stream_params = []
+        for i in range(1, self.little_kernel_count + 1):
+            ppb_stream_params.append(f"    hls::stream<ppb_request_pkt_t> &ppb_req_stream_{i},")
+            ppb_stream_params.append(f"    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_{i},")
+        # Remove comma from last param only if there are no big kernels (write_burst_stream comes after)
+        if ppb_stream_params and self.big_kernel_count == 0:
+            ppb_stream_params[-1] = ppb_stream_params[-1].rstrip(",")
+
+        # Generate cacheline stream parameters
+        # Always keep comma because write_burst_stream comes after
+        cacheline_stream_params = []
+        for i in range(1, self.big_kernel_count + 1):
+            cacheline_stream_params.append(
+                f"    hls::stream<cacheline_request_pkt_t> &cacheline_req_stream_{i},"
+            )
+            cacheline_stream_params.append(
+                f"    hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream_{i},"
+            )
+
+        # Generate little_prop_loader_out stream declarations
+        little_prop_loader_out_streams = []
+        for i in range(1, self.little_kernel_count + 1):
+            little_prop_loader_out_streams.append(
+                f"    hls::stream<little_ppb_resp_t> little_prop_loader_out_{i};"
+            )
+            little_prop_loader_out_streams.append(
+                f"#pragma HLS STREAM variable = little_prop_loader_out_{i} depth = 16"
+            )
+            little_prop_loader_out_streams.append(
+                "    // #pragma HLS BIND_STORAGE variable = little_prop_loader_out_" + str(i) + " type = FIFO"
+            )
+            little_prop_loader_out_streams.append("    // impl = BRAM")
+            if i < self.little_kernel_count:
+                little_prop_loader_out_streams.append("")
+
+        # Generate little_node_prop_loader and little_response_packer calls
+        little_node_prop_loader_calls = []
+        for i in range(self.little_kernel_count):
+            idx = i + 1
+            little_node_prop_loader_calls.append(
+                f"    little_node_prop_loader({i}, src_prop_{idx}, num_partitions_little,"
+            )
+            little_node_prop_loader_calls.append(
+                f"                            ppb_req_stream_{idx}, little_prop_loader_out_{idx});"
+            )
+            little_node_prop_loader_calls.append(
+                f"    little_response_packer({i}, little_prop_loader_out_{idx}, ppb_resp_stream_{idx},"
+            )
+            little_node_prop_loader_calls.append("                           num_partitions_little);")
+            if i < self.little_kernel_count - 1:
+                little_node_prop_loader_calls.append("")
+
+        # Generate big_node_prop_loader calls
+        big_node_prop_loader_calls = []
+        for i in range(self.big_kernel_count):
+            idx = self.little_kernel_count + i + 1
+            big_node_prop_loader_calls.append(
+                f"    big_node_prop_loader({i}, src_prop_{idx}, num_partitions_big,"
+            )
+            big_node_prop_loader_calls.append(
+                f"                         cacheline_req_stream_{i+1}, cacheline_resp_stream_{i+1});"
+            )
+            if i < self.big_kernel_count - 1:
+                big_node_prop_loader_calls.append("")
+
+        # Replace placeholders
+        content = content.replace("{{SRC_PROP_PARAMS}}", "\n".join(src_prop_params))
+        content = content.replace("{{SRC_PROP_M_AXI_PRAGMAS}}", "\n".join(src_prop_m_axi_pragmas))
+        content = content.replace("{{SRC_PROP_S_AXILITE_PRAGMAS}}", "\n".join(src_prop_s_axilite_pragmas))
+        content = content.replace(
+            "{{PPB_STREAM_PARAMS}}", "\n".join(ppb_stream_params) if ppb_stream_params else ""
+        )
+        content = content.replace(
+            "{{CACHELINE_STREAM_PARAMS}}",
+            "\n".join(cacheline_stream_params) if cacheline_stream_params else "",
+        )
+        content = content.replace(
+            "{{LITTLE_PROP_LOADER_OUT_STREAMS}}",
+            "\n".join(little_prop_loader_out_streams) if little_prop_loader_out_streams else "",
+        )
+        content = content.replace(
+            "{{LITTLE_NODE_PROP_LOADER_CALLS}}",
+            "\n".join(little_node_prop_loader_calls) if little_node_prop_loader_calls else "",
+        )
+        content = content.replace(
+            "{{BIG_NODE_PROP_LOADER_CALLS}}",
+            "\n".join(big_node_prop_loader_calls) if big_node_prop_loader_calls else "",
+        )
+
+        with open(output_path, "w") as f:
+            f.write(content)
+
+        print(f"Generated: {output_path}")
+
     def generate_shared_params(self):
         """Generate shared_kernel_params.h with all merger declarations."""
         template_path = self.templates_dir / "kernel" / "shared_kernel_params.h.template"
@@ -577,15 +759,62 @@ class ConfigGenerator:
 
         apply_decl = "\n".join(apply_param_lines)
 
-        # Insert merger declarations and apply_kernel declaration before hbm_writer
+        # Generate hbm_writer declaration to match the implementation
+        total_kernels = self.little_kernel_count + self.big_kernel_count
+
+        # Generate src_prop parameters for declaration (all with commas)
+        hbm_src_prop_params = []
+        for i in range(1, total_kernels + 1):
+            hbm_src_prop_params.append(f"    bus_word_t *src_prop_{i},")
+
+        # Generate PPB stream parameters
+        hbm_ppb_stream_params = []
+        for i in range(1, self.little_kernel_count + 1):
+            hbm_ppb_stream_params.append(f"    hls::stream<ppb_request_pkt_t> &ppb_req_stream_{i},")
+            hbm_ppb_stream_params.append(f"    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_{i},")
+        # Remove comma from last param only if there are no big kernels
+        if hbm_ppb_stream_params and self.big_kernel_count == 0:
+            hbm_ppb_stream_params[-1] = hbm_ppb_stream_params[-1].rstrip(",")
+
+        # Generate cacheline stream parameters
+        hbm_cacheline_stream_params = []
+        for i in range(1, self.big_kernel_count + 1):
+            hbm_cacheline_stream_params.append(
+                f"    hls::stream<cacheline_request_pkt_t> &cacheline_req_stream_{i},"
+            )
+            hbm_cacheline_stream_params.append(
+                f"    hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream_{i},"
+            )
+
+        # Build hbm_writer declaration
+        hbm_writer_param_lines = ['extern "C" void hbm_writer(']
+        hbm_writer_param_lines.extend(hbm_src_prop_params)
+        hbm_writer_param_lines.append("    bus_word_t *output,")
+        hbm_writer_param_lines.append("    uint32_t num_partitions_little, uint32_t num_partitions_big,")
+        hbm_writer_param_lines.extend(hbm_ppb_stream_params)
+        hbm_writer_param_lines.extend(hbm_cacheline_stream_params)
+        hbm_writer_param_lines.append("    hls::stream<write_burst_w_dst_pkt_t> &write_burst_stream);")
+
+        hbm_writer_decl = "\n".join(hbm_writer_param_lines)
+
+        # Find position of old hbm_writer declaration before removing it
         hbm_writer_pos = content.find('extern "C" void hbm_writer')
+
+        # Remove old hbm_writer declaration (multi-line)
+        old_hbm_writer_pattern = r'extern "C" void\s+hbm_writer\([^;]+\);'
+        content = re.sub(old_hbm_writer_pattern, "", content, flags=re.DOTALL)
+
+        # Insert merger declarations, apply_kernel declaration, and hbm_writer declaration
         if hbm_writer_pos > 0:
+            # Insert at the position where old declaration was
             content = (
                 content[:hbm_writer_pos]
                 + "\n".join(merger_decls)
                 + "\n\n"
                 + apply_decl
                 + "\n\n"
+                + hbm_writer_decl
+                + "\n"
                 + content[hbm_writer_pos:]
             )
         else:
@@ -598,6 +827,8 @@ class ConfigGenerator:
                     + "\n\n"
                     + apply_decl
                     + "\n\n"
+                    + hbm_writer_decl
+                    + "\n"
                     + content[endif_pos:]
                 )
 
@@ -676,17 +907,23 @@ class ConfigGenerator:
 
                     # PPB streams to hbm_writer
                     lines.append(f"# -- Stream connections for graphyflow_little_{kernel_num} --")
+                    # Check if same SLR
+                    src_slr = self._get_kernel_slr(f"graphyflow_little_{kernel_num}")
+                    dst_slr = self._get_kernel_slr("hbm_writer_1")
+                    depth_suffix = ":16" if src_slr != dst_slr else ""
                     lines.append(
-                        f"stream_connect=graphyflow_little_{kernel_num}.ppb_req_stream:hbm_writer_1.ppb_req_stream_{kernel_num}"
+                        f"stream_connect=graphyflow_little_{kernel_num}.ppb_req_stream:hbm_writer_1.ppb_req_stream_{kernel_num}{depth_suffix}"
                     )
                     lines.append(
-                        f"stream_connect=hbm_writer_1.ppb_resp_stream_{kernel_num}:graphyflow_little_{kernel_num}.ppb_resp_stream"
+                        f"stream_connect=hbm_writer_1.ppb_resp_stream_{kernel_num}:graphyflow_little_{kernel_num}.ppb_resp_stream{depth_suffix}"
                     )
 
                     # Kernel output to merger
                     # Note: Since mergers are instantiated with :1, they get _1 suffix in compute unit names
+                    dst_slr = self._get_kernel_slr(f"{kernel_type}_merger_{merger_id}_1")
+                    depth_suffix = ":16" if src_slr != dst_slr else ""
                     lines.append(
-                        f"stream_connect=graphyflow_little_{kernel_num}.kernel_out_stream:{kernel_type}_merger_{merger_id}_1.little_kernel_{i+1}_out_stream:16"
+                        f"stream_connect=graphyflow_little_{kernel_num}.kernel_out_stream:{kernel_type}_merger_{merger_id}_1.little_kernel_{i+1}_out_stream{depth_suffix}"
                     )
                 else:
                     kernel_num = big_kernel_idx + 1
@@ -694,17 +931,23 @@ class ConfigGenerator:
 
                     # Cacheline streams to hbm_writer
                     lines.append(f"# -- Stream connections for graphyflow_big_{kernel_num} --")
+                    # Check if same SLR
+                    src_slr = self._get_kernel_slr(f"graphyflow_big_{kernel_num}")
+                    dst_slr = self._get_kernel_slr("hbm_writer_1")
+                    depth_suffix = ":16" if src_slr != dst_slr else ""
                     lines.append(
-                        f"stream_connect=graphyflow_big_{kernel_num}.cacheline_req_stream:hbm_writer_1.cacheline_req_stream_{kernel_num}:16"
+                        f"stream_connect=graphyflow_big_{kernel_num}.cacheline_req_stream:hbm_writer_1.cacheline_req_stream_{kernel_num}{depth_suffix}"
                     )
                     lines.append(
-                        f"stream_connect=hbm_writer_1.cacheline_resp_stream_{kernel_num}:graphyflow_big_{kernel_num}.cacheline_resp_stream:16"
+                        f"stream_connect=hbm_writer_1.cacheline_resp_stream_{kernel_num}:graphyflow_big_{kernel_num}.cacheline_resp_stream{depth_suffix}"
                     )
 
                     # Kernel output to merger
                     # Note: Since mergers are instantiated with :1, they get _1 suffix in compute unit names
+                    dst_slr = self._get_kernel_slr(f"{kernel_type}_merger_{merger_id}_1")
+                    depth_suffix = ":16" if src_slr != dst_slr else ""
                     lines.append(
-                        f"stream_connect=graphyflow_big_{kernel_num}.kernel_out_stream:{kernel_type}_merger_{merger_id}_1.big_kernel_{i+1}_out_stream:16"
+                        f"stream_connect=graphyflow_big_{kernel_num}.kernel_out_stream:{kernel_type}_merger_{merger_id}_1.big_kernel_{i+1}_out_stream{depth_suffix}"
                     )
 
         # Stream connections for mergers -> apply_kernel
@@ -716,20 +959,31 @@ class ConfigGenerator:
             if kernel_type == "little":
                 lines.append(f"# -- Stream connections for little_merger_{merger_id} --")
                 # Note: Since mergers are instantiated with :1, they get _1 suffix in compute unit names
+                src_slr = self._get_kernel_slr(f"little_merger_{merger_id}_1")
+                dst_slr = self._get_kernel_slr("apply_kernel_1")
+                depth_suffix = ":16" if src_slr != dst_slr else ""
                 lines.append(
-                    f"stream_connect=little_merger_{merger_id}_1.kernel_out_stream:apply_kernel_1.little_merger_{merger_id}_out_stream"
+                    f"stream_connect=little_merger_{merger_id}_1.kernel_out_stream:apply_kernel_1.little_merger_{merger_id}_out_stream{depth_suffix}"
                 )
             else:
                 lines.append(f"# -- Stream connections for big_merger_{merger_id} --")
                 # Note: Since mergers are instantiated with :1, they get _1 suffix in compute unit names
+                src_slr = self._get_kernel_slr(f"big_merger_{merger_id}_1")
+                dst_slr = self._get_kernel_slr("apply_kernel_1")
+                depth_suffix = ":16" if src_slr != dst_slr else ""
                 lines.append(
-                    f"stream_connect=big_merger_{merger_id}_1.kernel_out_stream:apply_kernel_1.big_merger_{merger_id}_out_stream"
+                    f"stream_connect=big_merger_{merger_id}_1.kernel_out_stream:apply_kernel_1.big_merger_{merger_id}_out_stream{depth_suffix}"
                 )
 
         # Stream connection for apply_kernel -> hbm_writer
         lines.append("")
         lines.append("# -- Stream connections for apply_kernel_1 --")
-        lines.append("stream_connect=apply_kernel_1.kernel_out_stream:hbm_writer_1.write_burst_stream:16")
+        src_slr = self._get_kernel_slr("apply_kernel_1")
+        dst_slr = self._get_kernel_slr("hbm_writer_1")
+        depth_suffix = ":16" if src_slr != dst_slr else ""
+        lines.append(
+            f"stream_connect=apply_kernel_1.kernel_out_stream:hbm_writer_1.write_burst_stream{depth_suffix}"
+        )
 
         # SLR assignments
         lines.append("")
