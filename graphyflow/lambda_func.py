@@ -109,6 +109,12 @@ class Tracer:
     def __ne__(self, other):
         return self._bin_op(other, "!=")
 
+    def __or__(self, other):
+        return self._bin_op(other, "|")
+
+    def __ror__(self, other):
+        return self._bin_op(other, "|", reverse=True)
+    
     def to_dict(self):
         return {
             k: v
@@ -262,6 +268,7 @@ def lambda_to_dfir(
             "!=",
             "min",
             "max",
+            "|" # bitor
         ]
         assert (
             len(pre_o_types) == 2 and pre_o_types[0] == pre_o_types[1]
@@ -279,6 +286,7 @@ def lambda_to_dfir(
             "!=": dfir.BinOp.NE,
             "min": dfir.BinOp.MIN,
             "max": dfir.BinOp.MAX,
+            "|":dfir.BinOp.BITOR
         }
         return dfir.BinOpComponent(op_dfir_dict[node["operator"]], pre_o_types[0])
 

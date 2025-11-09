@@ -54,6 +54,10 @@ class BackendManager:
         # State for code generation
 
         self.defines: Dict[str,str]={}
+        self.big_kernel_num = 0
+        self.little_kernel_num = 0
+
+        self.init_value = 16384
         # big_kernel
         self.big_scatter_funcs: List[HLSFunction] = []
         self.big_gather_funcs: List[HLSFunction] = []
@@ -61,7 +65,7 @@ class BackendManager:
         self.big_top_func = None
         self.big_top_dataflow_funcs =  []
         self.big_apply_top_func = None
-
+        self.big_merger_inline_codes = []
         
 
         # little_kernel
@@ -71,7 +75,11 @@ class BackendManager:
         self.little_top_func = None
         self.little_top_dataflow_funcs =  []
         self.little_apply_top_func = None
+        self.little_merger_inline_codes = []
 
+        self.big_struct_definitions: Dict[str, Tuple[HLSType, List[str]]] = {}
+        self.little_struct_definitions: Dict[str, Tuple[HLSType, List[str]]] = {}
+        self.shared_struct_definitions: Dict[str, Tuple[HLSType, List[str]]] = {}
         self.struct_definitions: Dict[str, Tuple[HLSType, List[str]]] = {}
         # other funcs:
         self.apply_funcs : List[HLSFunction] = []
@@ -208,7 +216,14 @@ axistream2stream:
         self.mem_manager: Optional[MemoryAndGraphManager] = None
         self.dataflow_core_func: Optional[HLSFunction] = None
 
-        
+    def _generate_merger(self):
+        little_merger_inline_codes = ""
+        big_merger_inline_codes = ""
+
+        little_merger_inline_codes +="".join([line.gen_code(1) for line in self.little_merger_inline_codes])
+        big_merger_inline_codes +="".join([line.gen_code(1) for line in self.big_merger_inline_codes])
+
+        return little_merger_inline_codes,big_merger_inline_codes
     def _generate_apply(self):
         code = ""
         def write_func_body(func: HLSFunction,is_top):
@@ -523,8 +538,8 @@ axistream2stream:
         code += f"// --- New Memory Word and Bus Definitions ---\n"
         code += f"#define AXI_BUS_WIDTH {512}\n"
         code += f"\n"
-        code += f"#define BIG_MERGER_LENGTH {3}\n"
-        code += f"#define LITTLE_MERGER_LENGTH {11}\n"
+        code += f"#define BIG_MERGER_LENGTH {self.big_kernel_num}\n"
+        code += f"#define LITTLE_MERGER_LENGTH {self.little_kernel_num}\n"
         code += f"\n"
         code += f"#define REDUCE_MEM_WIDTH {64}\n"
         code += f"typedef ap_uint<AXI_BUS_WIDTH> bus_word_t;\n"
@@ -556,16 +571,17 @@ axistream2stream:
         shared_kernel_params += code
 
         big_header += "// --- Struct Type Definitions ---\n"
-        sorted_defs = self._topologically_sort_structs(self.struct_definitions)
+        sorted_defs = self._topologically_sort_structs(self.big_struct_definitions)
         for hls_type, members in sorted_defs:
             big_header += hls_type.gen_decl(members) + "\n"
-            #little_header += hls_type.gen_decl(members) + "\n"
-            shared_kernel_params += hls_type.gen_decl(members) + "\n"
-
-        sorted_defs = self._topologically_sort_structs(self.struct_definitions)
+        little_header += "// --- Struct Type Definitions ---\n"
+        sorted_defs = self._topologically_sort_structs(self.little_struct_definitions)
         for hls_type, members in sorted_defs:
-            #big_header += hls_type.gen_decl(members) + "\n"
             little_header += hls_type.gen_decl(members) + "\n"
+        shared_kernel_params += "// --- Struct Type Definitions ---\n"
+        sorted_defs = self._topologically_sort_structs(self.shared_struct_definitions)
+        for hls_type, members in sorted_defs:
+            shared_kernel_params += hls_type.gen_decl(members) + "\n"
 
         big_header += "// --- Top-Level Function Prototypes ---\n"
         
@@ -619,8 +635,8 @@ axistream2stream:
                                        struct_name="node_id_burst_t",
                                        struct_prop_names=["data"],
                                        sub_types=[node_id_array_type])
-        if node_id_burst_t_type.name not in self.struct_definitions:
-            self.struct_definitions[node_id_burst_t_type.name] = (node_id_burst_t_type, node_id_burst_t_type.struct_prop_names)
+        if node_id_burst_t_type.name not in self.big_struct_definitions:
+            self.big_struct_definitions[node_id_burst_t_type.name] = (node_id_burst_t_type, node_id_burst_t_type.struct_prop_names)
 
         # struct distance_req_pack_t
         ap_uint26_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[ap_uint26_type], array_dims=["PE_NUM"])
@@ -628,16 +644,16 @@ axistream2stream:
                                            struct_name="distance_req_pack_t",
                                            struct_prop_names=["idx", "offset", "end_flag"],
                                            sub_types=[ap_uint26_array_type, ap_uint4_type, bool_type])
-        if distance_req_pack_t_type.name not in self.struct_definitions:
-            self.struct_definitions[distance_req_pack_t_type.name] = (distance_req_pack_t_type, distance_req_pack_t_type.struct_prop_names)
+        if distance_req_pack_t_type.name not in self.big_struct_definitions:
+            self.big_struct_definitions[distance_req_pack_t_type.name] = (distance_req_pack_t_type, distance_req_pack_t_type.struct_prop_names)
 
         # struct edge_t
         edge_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
                               struct_name="edge_t",
                               struct_prop_names=["src_id", "dst_id"],
                               sub_types=[node_id_type, ap_uint20_type])
-        if edge_t_type.name not in self.struct_definitions:
-            self.struct_definitions[edge_t_type.name] = (edge_t_type, edge_t_type.struct_prop_names)
+        if edge_t_type.name not in self.big_struct_definitions:
+            self.big_struct_definitions[edge_t_type.name] = (edge_t_type, edge_t_type.struct_prop_names)
 
         # struct edge_descriptor_batch_t
         edge_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[edge_t_type], array_dims=["PE_NUM"])
@@ -645,16 +661,16 @@ axistream2stream:
                                                struct_name="edge_descriptor_batch_t",
                                                struct_prop_names=["edges"],
                                                sub_types=[edge_array_type])
-        if edge_descriptor_batch_t_type.name not in self.struct_definitions:
-            self.struct_definitions[edge_descriptor_batch_t_type.name] = (edge_descriptor_batch_t_type, edge_descriptor_batch_t_type.struct_prop_names)
+        if edge_descriptor_batch_t_type.name not in self.big_struct_definitions:
+            self.big_struct_definitions[edge_descriptor_batch_t_type.name] = (edge_descriptor_batch_t_type, edge_descriptor_batch_t_type.struct_prop_names)
 
         # struct update_t (使用 .h 中带 end_flag 的版本)
         update_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
                                 struct_name="update_t_big",
                                 struct_prop_names=["node_id", "prop", "end_flag"],
                                 sub_types=[ap_uint20_type, ap_fixed_pod_t_type, bool_type])
-        if update_t_type.name not in self.struct_definitions:
-            self.struct_definitions[update_t_type.name] = (update_t_type, update_t_type.struct_prop_names)
+        if update_t_type.name not in self.big_struct_definitions:
+            self.big_struct_definitions[update_t_type.name] = (update_t_type, update_t_type.struct_prop_names)
 
         # struct update_tuple_t
         update_t_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[update_t_type], array_dims=["PE_NUM"])
@@ -662,24 +678,24 @@ axistream2stream:
                                       struct_name="update_tuple_t_big",
                                       struct_prop_names=["data"],
                                       sub_types=[update_t_array_type])
-        if update_tuple_t_type.name not in self.struct_definitions:
-            self.struct_definitions[update_tuple_t_type.name] = (update_tuple_t_type, update_tuple_t_type.struct_prop_names)
+        if update_tuple_t_type.name not in self.big_struct_definitions:
+            self.big_struct_definitions[update_tuple_t_type.name] = (update_tuple_t_type, update_tuple_t_type.struct_prop_names)
 
         # struct cacheline_req_t
         cacheline_req_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
                                        struct_name="cacheline_req_t",
                                        struct_prop_names=["idx", "dst", "end_flag"],
                                        sub_types=[ap_uint26_type, ap_uint8_type, bool_type])
-        if cacheline_req_t_type.name not in self.struct_definitions:
-            self.struct_definitions[cacheline_req_t_type.name] = (cacheline_req_t_type, cacheline_req_t_type.struct_prop_names)
+        if cacheline_req_t_type.name not in self.big_struct_definitions:
+            self.big_struct_definitions[cacheline_req_t_type.name] = (cacheline_req_t_type, cacheline_req_t_type.struct_prop_names)
 
         # struct cacheline_resp_t
         cacheline_resp_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
                                         struct_name="cacheline_resp_t",
                                         struct_prop_names=["data", "dst", "end_flag"],
                                         sub_types=[bus_word_t_type, ap_uint8_type, bool_type])
-        if cacheline_resp_t_type.name not in self.struct_definitions:
-            self.struct_definitions[cacheline_resp_t_type.name] = (cacheline_resp_t_type, cacheline_resp_t_type.struct_prop_names)
+        if cacheline_resp_t_type.name not in self.big_struct_definitions:
+            self.big_struct_definitions[cacheline_resp_t_type.name] = (cacheline_resp_t_type, cacheline_resp_t_type.struct_prop_names)
 
 
         # --- Stream 类型 (本地) ---
@@ -893,7 +909,7 @@ axistream2stream:
         # node_prop_resp_receiver(cacheline_resp, stream_cachelines);
         call_params_5 = [cacheline_resp_var, stream_cachelines_var]
         # code_lines.append(CodeCall(func=node_prop_resp_receiver_func, params=call_params_5))
-        #code_lines.append(CodeCall(func=self.big_top_dataflow_funcs[2], params=call_params_5))
+        code_lines.append(CodeCall(func=self.big_top_dataflow_funcs[2], params=call_params_5))
 
         # merge_node_props(stream_cachelines, edge_stream, stream_edge_data, num_edges);
         call_params_6 = [stream_cachelines_var, edge_stream_var, stream_edge_data_var, num_edges_var]
@@ -989,7 +1005,7 @@ axistream2stream:
 
         # little part:
     
-        graphyflow_little_func = HLSFunction(name="graphyflow_little", comp=None) 
+        graphyflow_little_func = HLSFunction(name="graphyflow_little", comp=None) # 假设 comp 存在
         params = []
 
         # --- 1. 定义类型和参数 (根据 graphyflow_little.h) ---
@@ -1000,9 +1016,10 @@ axistream2stream:
         bus_word_t_type = HLSType(HLSBasicType.BUS_WORD_T)
         node_id_type = HLSType(HLSBasicType.NODE_ID)
         ap_fixed_pod_t_type = HLSType(HLSBasicType.AP_FIXED_POD)
-        bool_type = HLSType(HLSBasicType.BOOL)
+        distance_t_type = HLSType(HLSBasicType.DISTANCE_T)
         # (根据你的澄清，使用 HLSBasicType.REDUCE_WORD_T)
         reduce_word_t_type = HLSType(HLSBasicType.REDUCE_WORD_T) 
+        bool_type = HLSType(HLSBasicType.BOOL)
 
         # .h 和 C++ 中使用的特定 ap_uint 类型
         ap_uint64_type = HLSType(basic_type=HLSBasicType.AP_UINT, width=64)
@@ -1020,8 +1037,8 @@ axistream2stream:
                               struct_name="edge_t",
                               struct_prop_names=["src_id", "dst_id"],
                               sub_types=[node_id_type, ap_uint20_type])
-        if edge_t_type.name not in self.struct_definitions:
-            self.struct_definitions[edge_t_type.name] = (edge_t_type, edge_t_type.struct_prop_names)
+        if edge_t_type.name not in self.little_struct_definitions:
+            self.little_struct_definitions[edge_t_type.name] = (edge_t_type, edge_t_type.struct_prop_names)
 
         # struct edge_descriptor_batch_t
         edge_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[edge_t_type], array_dims=["PE_NUM"])
@@ -1029,33 +1046,34 @@ axistream2stream:
                                                struct_name="edge_descriptor_batch_t",
                                                struct_prop_names=["edges"],
                                                sub_types=[edge_array_type])
-        if edge_descriptor_batch_t_type.name not in self.struct_definitions:
-            self.struct_definitions[edge_descriptor_batch_t_type.name] = (edge_descriptor_batch_t_type, edge_descriptor_batch_t_type.struct_prop_names)
+        if edge_descriptor_batch_t_type.name not in self.little_struct_definitions:
+            self.little_struct_definitions[edge_descriptor_batch_t_type.name] = (edge_descriptor_batch_t_type, edge_descriptor_batch_t_type.struct_prop_names)
 
-
+        # struct update_t (来自 graphyflow_little.h, 没有 end_flag)
         update_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
-                                struct_name="update_t_little",
+                                struct_name="update_t",
                                 struct_prop_names=["node_id", "prop"],
                                 sub_types=[ap_uint20_type, ap_fixed_pod_t_type]) 
-        if update_t_type.name not in self.struct_definitions:
-            self.struct_definitions[update_t_type.name] = (update_t_type, update_t_type.struct_prop_names)
+        if update_t_type.name not in self.little_struct_definitions:
+            self.little_struct_definitions[update_t_type.name] = (update_t_type, update_t_type.struct_prop_names)
 
         # struct update_tuple_t
         update_t_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[update_t_type], array_dims=["PE_NUM"])
         update_tuple_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
-                                      struct_name="update_tuple_t_little",
+                                      struct_name="update_tuple_t",
                                       struct_prop_names=["data"],
                                       sub_types=[update_t_array_type])
-        if update_tuple_t_type.name not in self.struct_definitions:
-            self.struct_definitions[update_tuple_t_type.name] = (update_tuple_t_type, update_tuple_t_type.struct_prop_names)
+        if update_tuple_t_type.name not in self.little_struct_definitions:
+            self.little_struct_definitions[update_tuple_t_type.name] = (update_tuple_t_type, update_tuple_t_type.struct_prop_names)
 
         # struct ppb_request_t
         ppb_request_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
                                      struct_name="ppb_request_t",
                                      struct_prop_names=["request_round", "end_flag"],
-                                     sub_types=[HLSType(HLSBasicType.AP_UINT,width=32), bool_type])
-        if ppb_request_t_type.name not in self.struct_definitions:
-            self.struct_definitions[ppb_request_t_type.name] = (ppb_request_t_type, ppb_request_t_type.struct_prop_names)
+                                     sub_types=[HLSType(HLSBasicType.AP_UINT,width=32), bool_type]) # .h: ap_uint<32>, bool
+        if ppb_request_t_type.name not in self.little_struct_definitions:
+            self.little_struct_definitions[ppb_request_t_type.name] = (ppb_request_t_type, ppb_request_t_type.struct_prop_names)
+
 
         # struct ppb_response_t
         ppb_response_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
@@ -1064,7 +1082,6 @@ axistream2stream:
                                       sub_types=[bus_word_t_type, HLSType(HLSBasicType.AP_UINT,width=32), bool_type])
         if ppb_response_t_type.name not in self.struct_definitions:
             self.struct_definitions[ppb_response_t_type.name] = (ppb_response_t_type, ppb_response_t_type.struct_prop_names)
-
 
         # --- Stream 类型 (本地和参数) ---
         stream_edge_desc_batch_type = HLSType(HLSBasicType.STREAM, sub_types=[edge_descriptor_batch_t_type])
@@ -1078,7 +1095,8 @@ axistream2stream:
         stream_little_out_pkt_type = HLSType(HLSBasicType.STREAM, sub_types=[little_out_pkt_t_type])
 
         # --- Stream 数组类型 (本地) ---
-        pe_mem_outs_type = HLSType(HLSBasicType.ARRAY, sub_types=[stream_reduce_word_t_type], array_dims=["PE_NUM"])
+        pe_mem_outs_1_type = HLSType(HLSBasicType.ARRAY, sub_types=[stream_reduce_word_t_type], array_dims=[4])
+        pe_mem_outs_2_type = HLSType(HLSBasicType.ARRAY, sub_types=[stream_reduce_word_t_type], array_dims=[4])
 
         # --- 参数变量 ---
         ptr_bus_word_t_type = HLSType(HLSBasicType.POINTER, sub_types=[bus_word_t_type], is_const_ptr=True)
@@ -1120,10 +1138,27 @@ axistream2stream:
         code_lines.append(CodePragma(content="STREAM variable = stream_edge_data depth = 8"))
         stream_edge_data_var = HLSVar(var_name="stream_edge_data", var_type=stream_update_tuple_type)
 
-        # hls::stream<reduce_word_t> pe_mem_outs[PE_NUM];
-        code_lines.append(CodeVarDecl(var_name="pe_mem_outs", var_type=pe_mem_outs_type))
-        code_lines.append(CodePragma(content="STREAM variable = pe_mem_outs depth = 8"))
-        pe_mem_outs_var = HLSVar(var_name="pe_mem_outs", var_type=pe_mem_outs_type)
+        # hls::stream<reduce_word_t> pe_mem_outs_1[4];
+        code_lines.append(CodeVarDecl(var_name="pe_mem_outs_1", var_type=pe_mem_outs_1_type))
+        code_lines.append(CodePragma(content="STREAM variable = pe_mem_outs_1 depth = 8"))
+        code_lines.append(CodeComment(text="#pragma HLS BIND_STORAGE variable = pe_mem_outs_1 type = FIFO impl = BRAM"))
+        pe_mem_outs_1_var = HLSVar(var_name="pe_mem_outs_1", var_type=pe_mem_outs_1_type)
+
+        # hls::stream<reduce_word_t> pe_mem_outs_2[4];
+        code_lines.append(CodeVarDecl(var_name="pe_mem_outs_2", var_type=pe_mem_outs_2_type))
+        code_lines.append(CodePragma(content="STREAM variable = pe_mem_outs_2 depth = 8"))
+        code_lines.append(CodeComment(text="#pragma HLS BIND_STORAGE variable = pe_mem_outs_2 type = FIFO impl = BRAM"))
+        pe_mem_outs_2_var = HLSVar(var_name="pe_mem_outs_2", var_type=pe_mem_outs_2_type)
+
+        # hls::stream<reduce_word_t> pe_mem_out_partial_1;
+        code_lines.append(CodeVarDecl(var_name="pe_mem_out_partial_1", var_type=stream_reduce_word_t_type))
+        code_lines.append(CodePragma(content="STREAM variable = pe_mem_out_partial_1 depth = 8"))
+        pe_mem_out_partial_1_var = HLSVar(var_name="pe_mem_out_partial_1", var_type=stream_reduce_word_t_type)
+
+        # hls::stream<reduce_word_t> pe_mem_out_partial_2;
+        code_lines.append(CodeVarDecl(var_name="pe_mem_out_partial_2", var_type=stream_reduce_word_t_type))
+        code_lines.append(CodePragma(content="STREAM variable = pe_mem_out_partial_2 depth = 8"))
+        pe_mem_out_partial_2_var = HLSVar(var_name="pe_mem_out_partial_2", var_type=stream_reduce_word_t_type)
         code_lines.append(CodeOther(text=""))
 
         # hls::stream<ppb_request_t> ppb_req_stream_internal;
@@ -1140,6 +1175,9 @@ axistream2stream:
         # --- Data Loading ---
         code_lines.append(CodeComment(text="--- Data Loading ---"))
         code_lines.append(CodeComment(text="--- Data Loading ---"))
+        # const uint32_t total_edge_sets = num_edges >> LOG_PE_NUM;
+        code_lines.append(CodeVarDecl(var_name="total_edge_sets", var_type=uint_type, init_val="(num_edges >> LOG_PE_NUM)", const=True))
+        total_edge_sets_var = HLSVar(var_name="total_edge_sets", var_type=uint_type)
         # const int edges_per_word = ...
         code_lines.append(CodeVarDecl(var_name="edges_per_word", var_type=int_type, init_val="(AXI_BUS_WIDTH / (NODE_ID_BITWIDTH + NODE_ID_BITWIDTH))", const=True))
         edges_per_word_var = HLSVar(var_name="edges_per_word", var_type=int_type)
@@ -1192,31 +1230,42 @@ axistream2stream:
         code_lines.append(CodeOther(text=""))
 
         # --- 函数调用 ---
-        # stream2axistream(ppb_req_stream_internal, ppb_req_stream);
-        call_params_1 = [ppb_req_stream_internal_var, ppb_req_stream_var]
-        # code_lines.append(CodeCall(func=stream2axistream_func, params=call_params_1))
         code_lines.append(CodeOther(text="stream2axistream(ppb_req_stream_internal, ppb_req_stream);"))
-
-        # axistream2stream(ppb_resp_stream, ppb_resp_stream_internal);
-        call_params_2 = [ppb_resp_stream_var, ppb_resp_stream_internal_var]
-        # code_lines.append(CodeCall(func=axistream2stream_func, params=call_params_2))
         code_lines.append(CodeOther(text="axistream2stream(ppb_resp_stream, ppb_resp_stream_internal);"))
 
         # request_manager(...)
         call_params_3 = [edge_stream_var, ppb_req_stream_internal_var, ppb_resp_stream_internal_var, 
-                         stream_edge_data_var, memory_offset_var, num_edges_var]
+                         stream_edge_data_var, memory_offset_var, total_edge_sets_var] # 使用 total_edge_sets
         code_lines.append(CodeCall(func=self.little_top_dataflow_funcs[0], params=call_params_3))
         code_lines.append(CodeOther(text=""))
 
         # --- Reduction ---
         code_lines.append(CodeComment(text="--- Reduction ---"))
         # Reduc_105_unit_reduce(...)
-        call_params_4 = [stream_edge_data_var, pe_mem_outs_var, num_edges_var, rounded_num_words_var]
+        call_params_4 = [stream_edge_data_var, pe_mem_outs_1_var, pe_mem_outs_2_var, 
+                         total_edge_sets_var, rounded_num_words_var] # 使用 total_edge_sets
         code_lines.append(CodeCall(func=self.little_top_dataflow_funcs[1], params=call_params_4))
 
-        # Reduc_105_drain_multi_pe(...)
-        call_params_5 = [pe_mem_outs_var, kernel_out_stream_var, rounded_num_words_var]
-        code_lines.append(CodeCall(func=self.little_top_dataflow_funcs[2], params=call_params_5))
+        # distance_t max_val = (distance_t)(16384.0);
+        code_lines.append(CodeVarDecl(var_name="max_val", var_type=distance_t_type, init_val=f"(distance_t)({self.init_value})"))
+        # ap_fixed_pod_t max_pod = *reinterpret_cast<ap_fixed_pod_t *>(&max_val);
+        code_lines.append(CodeVarDecl(var_name="max_pod", var_type=ap_fixed_pod_t_type, init_val="*reinterpret_cast<ap_fixed_pod_t *>(&max_val)"))
+        max_pod_var = HLSVar(var_name="max_pod", var_type=ap_fixed_pod_t_type)
+
+        # Reduc_105_partial_drain_impl(0, ...)
+        call_params_drain_1 = [HLSExpr(HLSExprT.CONST, 0), pe_mem_outs_1_var, pe_mem_out_partial_1_var, 
+                               rounded_num_words_var, max_pod_var]
+        code_lines.append(CodeCall(func=self.little_top_dataflow_funcs[2], params=call_params_drain_1)) 
+
+        # Reduc_105_partial_drain_impl(1, ...)
+        call_params_drain_2 = [HLSExpr(HLSExprT.CONST, 1), pe_mem_outs_2_var, pe_mem_out_partial_2_var, 
+                               rounded_num_words_var, max_pod_var]
+        code_lines.append(CodeCall(func=self.little_top_dataflow_funcs[2], params=call_params_drain_2))
+
+        # Reduc_105_finalize_drain(...)
+        call_params_drain_3 = [pe_mem_out_partial_1_var, pe_mem_out_partial_2_var, kernel_out_stream_var, 
+                               rounded_num_words_var, max_pod_var]
+        code_lines.append(CodeCall(func=self.little_top_dataflow_funcs[3], params=call_params_drain_3))
 
         # --- 3. Finalize ---
         graphyflow_little_func.codes = code_lines
@@ -1319,8 +1368,8 @@ axistream2stream:
                                        struct_name="node_id_burst_t",
                                        struct_prop_names=["data"],
                                        sub_types=[node_id_array_pe_type])
-        if node_id_burst_t_type.name not in self.struct_definitions:
-            self.struct_definitions[node_id_burst_t_type.name] = (node_id_burst_t_type, node_id_burst_t_type.struct_prop_names)
+        if node_id_burst_t_type.name not in self.big_struct_definitions:
+            self.big_struct_definitions[node_id_burst_t_type.name] = (node_id_burst_t_type, node_id_burst_t_type.struct_prop_names)
 
         src_id_burst_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[node_id_burst_t_type])
         src_id_burst_stream = HLSVar(var_name="src_id_burst_stream", var_type=src_id_burst_stream_type)
@@ -1333,8 +1382,8 @@ axistream2stream:
                                            struct_prop_names=["idx", "offset", "end_flag"],
                                            sub_types=[distance_idx_array_type, offset_type, bool_type])
         
-        if distance_req_pack_t_type.name not in self.struct_definitions:
-            self.struct_definitions[distance_req_pack_t_type.name] = (distance_req_pack_t_type, distance_req_pack_t_type.struct_prop_names)
+        if distance_req_pack_t_type.name not in self.big_struct_definitions:
+            self.big_struct_definitions[distance_req_pack_t_type.name] = (distance_req_pack_t_type, distance_req_pack_t_type.struct_prop_names)
 
         distance_req_pack_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[distance_req_pack_t_type])
         distance_req_pack_stream = HLSVar(var_name="distance_req_pack_stream", var_type=distance_req_pack_stream_type)
@@ -1451,7 +1500,7 @@ axistream2stream:
         else_2_codes: List[HLSCodeLine] = []
         if_expr_2 = HLSExpr(HLSExprT.CONST, "cache_idx_diffs[pe_idx] == 0")
         # Build IF_2 Contents
-        valid_mask_pe_idx_var = HLSVar(var_name="valid_mask[pe_idx].range(pe_idx, pe_idx)", var_type=HLSType(HLSBasicType.AP_UINT, width=1)) # Single bit assignment
+        valid_mask_pe_idx_var = HLSVar(var_name="valid_mask.range(pe_idx, pe_idx)", var_type=HLSType(HLSBasicType.AP_UINT, width=1)) # Single bit assignment
         
         assign_expr_3 = HLSExpr(HLSExprT.CONST, 1)
         if_2_codes.append(CodeAssign(var=valid_mask_pe_idx_var, expr=assign_expr_3))
@@ -1584,8 +1633,8 @@ axistream2stream:
                                            struct_name="distance_req_pack_t",
                                            struct_prop_names=["idx", "offset", "end_flag"],
                                            sub_types=[ap_uint26_array_type, ap_uint4_type, bool_type])
-        if distance_req_pack_t_type.name not in self.struct_definitions:
-            self.struct_definitions[distance_req_pack_t_type.name] = (distance_req_pack_t_type, distance_req_pack_t_type.struct_prop_names)
+        if distance_req_pack_t_type.name not in self.big_struct_definitions:
+            self.big_struct_definitions[distance_req_pack_t_type.name] = (distance_req_pack_t_type, distance_req_pack_t_type.struct_prop_names)
 
         # struct cacheline_req_t
         cacheline_req_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
@@ -1743,10 +1792,15 @@ axistream2stream:
         dest_type = HLSType(basic_type=HLSBasicType.AP_UINT, width=8)
         bool_type = HLSType(basic_type=HLSBasicType.BOOL)
 
-        # Define cacheline_response_pkt_t
 
+        cacheline_resp_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
+                                        struct_name="cacheline_resp_t",
+                                        struct_prop_names=["data", "dst", "end_flag"],
+                                        sub_types=[bus_word_t_type, HLSType(HLSBasicType.AP_UINT,width=8),HLSType(HLSBasicType.BOOL)])
+        if cacheline_resp_t_type.name not in self.big_struct_definitions:
+            self.big_struct_definitions[cacheline_resp_t_type.name] = (cacheline_resp_t_type, cacheline_resp_t_type.struct_prop_names)
         # Param 1: cacheline_resp_stream
-        cacheline_resp_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[HLSType(basic_type=HLSBasicType.CACHELINE_RESPONSE_PKT_T)])
+        cacheline_resp_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[cacheline_resp_t_type])
         cacheline_resp_stream = HLSVar(var_name="cacheline_resp_stream", var_type=cacheline_resp_stream_type)
 
         # Param 2: cacheline_streams
@@ -1761,7 +1815,7 @@ axistream2stream:
         code_lines: List[HLSCodeLine] = []
 
         # cacheline_response_pkt_t cache_resp = cacheline_resp_stream.read();
-        code_lines.append(CodeVarDecl(var_name="cache_resp", var_type=HLSType(basic_type=HLSBasicType.CACHELINE_RESPONSE_PKT_T), init_val="cacheline_resp_stream.read()"))
+        code_lines.append(CodeVarDecl(var_name="cache_resp", var_type=cacheline_resp_t_type, init_val="cacheline_resp_stream.read()"))
         cache_resp_var = HLSVar(var_name="cache_resp", var_type=HLSType(basic_type=HLSBasicType.CACHELINE_RESPONSE_PKT_T))
 
         # bus_word_t first_line = cache_resp.data;
@@ -1813,7 +1867,7 @@ axistream2stream:
         # --- Inside if(read_nb) ---
         # if (cache_resp.last) {
         if_2_codes: List[HLSCodeLine] = []
-        if_expr_2 = HLSExpr(HLSExprT.CONST, "cache_resp.last")
+        if_expr_2 = HLSExpr(HLSExprT.CONST, "cache_resp.end_flag")
         if_2 = CodeIf(expr=if_expr_2, if_codes=if_2_codes)
         if_1_codes.append(if_2)
 
@@ -1827,7 +1881,7 @@ axistream2stream:
         resp_line_var = HLSVar(var_name="resp_line", var_type=bus_word_t_type)
 
         # ap_uint<8> target_pe = cache_resp.dest;
-        if_1_codes.append(CodeVarDecl(var_name="target_pe", var_type=dest_type, init_val="cache_resp.dest"))
+        if_1_codes.append(CodeVarDecl(var_name="target_pe", var_type=dest_type, init_val="cache_resp.dst"))
         target_pe_var = HLSVar(var_name="target_pe", var_type=dest_type)
 
         # cacheline_streams[target_pe].write(resp_line);
@@ -1864,8 +1918,8 @@ axistream2stream:
                                 struct_name="update_t_big",
                                 struct_prop_names=["node_id", "prop", "end_flag"],
                                 sub_types=[ap_uint20_type, ap_fixed_pod_t_type, bool_type])
-        if update_t_type.name not in self.struct_definitions:
-            self.struct_definitions[update_t_type.name] = (update_t_type, update_t_type.struct_prop_names)
+        if update_t_type.name not in self.big_struct_definitions:
+            self.big_struct_definitions[update_t_type.name] = (update_t_type, update_t_type.struct_prop_names)
 
         # struct update_tuple_t { update_t data[PE_NUM]; }
         update_t_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[update_t_type], array_dims=["PE_NUM"])
@@ -1873,8 +1927,8 @@ axistream2stream:
                                       struct_name="update_tuple_t_big",
                                       struct_prop_names=["data"],
                                       sub_types=[update_t_array_type])
-        if update_tuple_t_type.name not in self.struct_definitions:
-            self.struct_definitions[update_tuple_t_type.name] = (update_tuple_t_type, update_tuple_t_type.struct_prop_names)
+        if update_tuple_t_type.name not in self.big_struct_definitions:
+            self.big_struct_definitions[update_tuple_t_type.name] = (update_tuple_t_type, update_tuple_t_type.struct_prop_names)
 
         # --- Stream 类型 ---
         in_batch_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[update_tuple_t_type])
@@ -1980,8 +2034,8 @@ axistream2stream:
                                 struct_name="update_t_big",
                                 struct_prop_names=["node_id", "prop", "end_flag"],
                                 sub_types=[ap_uint20_type, ap_fixed_pod_t_type, bool_type])
-        if update_t_type.name not in self.struct_definitions:
-            self.struct_definitions[update_t_type.name] = (update_t_type, update_t_type.struct_prop_names)
+        if update_t_type.name not in self.big_struct_definitions:
+            self.big_struct_definitions[update_t_type.name] = (update_t_type, update_t_type.struct_prop_names)
 
         # --- Stream 类型 ---
         stream_type = HLSType(HLSBasicType.STREAM, sub_types=[update_t_type])
@@ -2018,8 +2072,6 @@ axistream2stream:
         # bool in2_end_flag = false;
         code_lines.append(CodeVarDecl(var_name="in2_end_flag", var_type=bool_type, init_val="false"))
 
-        # LOOP_WHILE_23:
-        code_lines.append(CodeOther(text="LOOP_WHILE_23:"))
 
         # while (true) { ... }
         while_codes: List[HLSCodeLine] = []
@@ -2205,8 +2257,8 @@ axistream2stream:
                                 struct_name="update_t_big",
                                 struct_prop_names=["node_id", "prop", "end_flag"],
                                 sub_types=[ap_uint20_type, ap_fixed_pod_t_type, bool_type])
-        if update_t_type.name not in self.struct_definitions:
-            self.struct_definitions[update_t_type.name] = (update_t_type, update_t_type.struct_prop_names)
+        if update_t_type.name not in self.big_struct_definitions:
+            self.big_struct_definitions[update_t_type.name] = (update_t_type, update_t_type.struct_prop_names)
 
         # --- Stream 类型 ---
         stream_type = HLSType(HLSBasicType.STREAM, sub_types=[update_t_type])
@@ -2391,8 +2443,8 @@ axistream2stream:
                                 struct_name="update_t_big",
                                 struct_prop_names=["node_id", "prop", "end_flag"],
                                 sub_types=[ap_uint20_type, ap_fixed_pod_t_type, bool_type])
-        if update_t_type.name not in self.struct_definitions:
-            self.struct_definitions[update_t_type.name] = (update_t_type, update_t_type.struct_prop_names)
+        if update_t_type.name not in self.big_struct_definitions:
+            self.big_struct_definitions[update_t_type.name] = (update_t_type, update_t_type.struct_prop_names)
         
         # --- Stream 类型 ---
         stream_type = HLSType(HLSBasicType.STREAM, sub_types=[update_t_type])
@@ -2483,8 +2535,8 @@ axistream2stream:
                                 struct_name="update_t_big",
                                 struct_prop_names=["node_id", "prop", "end_flag"],
                                 sub_types=[ap_uint20_type, ap_fixed_pod_t_type, bool_type])
-        if update_t_type.name not in self.struct_definitions:
-            self.struct_definitions[update_t_type.name] = (update_t_type, update_t_type.struct_prop_names)
+        if update_t_type.name not in self.big_struct_definitions:
+            self.big_struct_definitions[update_t_type.name] = (update_t_type, update_t_type.struct_prop_names)
 
         # --- Stream 类型 ---
         stream_update_t_type = HLSType(HLSBasicType.STREAM, sub_types=[update_t_type])
@@ -2524,7 +2576,7 @@ axistream2stream:
         code_lines.append(CodeComment(text="Latency-hiding cache for recently accessed URAM words"))
 
         # reduce_word_t cache_data_buffer[L + 1];
-        cache_data_type = HLSType(HLSBasicType.ARRAY, sub_types=[reduce_word_t_type], array_dims=["(L + 1)"])
+        cache_data_type = HLSType(HLSBasicType.ARRAY, sub_types=[reduce_word_t_type], array_dims=["(L+1 )"])
         code_lines.append(CodeVarDecl(var_name="cache_data_buffer", var_type=cache_data_type))
         cache_data_buffer_var = HLSVar(var_name="cache_data_buffer", var_type=cache_data_type)
 
@@ -2532,7 +2584,7 @@ axistream2stream:
         code_lines.append(CodePragma(content="ARRAY_PARTITION variable = cache_data_buffer complete dim = 0"))
 
         # ap_uint<20> cache_addr_buffer[L + 1];
-        cache_addr_type = HLSType(HLSBasicType.ARRAY, sub_types=[ap_uint20_type], array_dims=["(L + 1)"])
+        cache_addr_type = HLSType(HLSBasicType.ARRAY, sub_types=[ap_uint20_type], array_dims=["(L+1)"])
         code_lines.append(CodeVarDecl(var_name="cache_addr_buffer", var_type=cache_addr_type))
         cache_addr_buffer_var = HLSVar(var_name="cache_addr_buffer", var_type=cache_addr_type)
 
@@ -2650,19 +2702,64 @@ axistream2stream:
         while_1_codes.append(CodeOther(text=""))
 
         # ap_fixed_pod_t msb = tmp_cur_word.range(63, 32);
+        msb_var = HLSVar(var_name="msb", var_type=ap_fixed_pod_t_type)
         while_1_codes.append(CodeVarDecl(var_name="msb", var_type=ap_fixed_pod_t_type, init_val="tmp_cur_word.range(63, 32)"))
         # ap_fixed_pod_t lsb = tmp_cur_word.range(31, 0);
+        lsb_var = HLSVar(var_name="lsb",var_type=ap_fixed_pod_t_type)
         while_1_codes.append(CodeVarDecl(var_name="lsb", var_type=ap_fixed_pod_t_type, init_val="tmp_cur_word.range(31, 0)"))
         while_1_codes.append(CodeOther(text=""))
 
         # ap_fixed_pod_t msb_out = ...
+        
         msb_out_init = "(msb < incoming_dist_pod && msb != 0x0) ? msb : incoming_dist_pod"
-        while_1_codes.append(CodeVarDecl(var_name="msb_out", var_type=ap_fixed_pod_t_type, init_val=msb_out_init))
+        msb_out_var = HLSVar(var_name="msb_out", var_type=ap_fixed_pod_t_type)
+        while_1_codes.append(CodeVarDecl(var_name="msb_out", var_type=ap_fixed_pod_t_type))
         # ap_fixed_pod_t lsb_out = ...
         lsb_out_init = "(lsb < incoming_dist_pod && lsb != 0x0) ? lsb : incoming_dist_pod"
-        while_1_codes.append(CodeVarDecl(var_name="lsb_out", var_type=ap_fixed_pod_t_type, init_val=lsb_out_init))
+        lsb_out_var = HLSVar(var_name="lsb_out", var_type=ap_fixed_pod_t_type)
+        while_1_codes.append(CodeVarDecl(var_name="lsb_out", var_type=ap_fixed_pod_t_type))
         while_1_codes.append(CodeOther(text=""))
 
+
+        # ================  begin inline reduce logic =====================
+
+        while_1_codes.append(CodeComment(text="=======  begin inline reduce logic ===="))
+        port_to_var = {}
+        A_key = HLSVar(var_name="A_key",var_type=HLSType(basic_type=HLSBasicType.AP_UINT,width=20))
+        B_key = HLSVar(var_name="B_key",var_type=HLSType(basic_type=HLSBasicType.AP_UINT,width=20))
+        
+        A_t = HLSVar(var_name="A_t",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD))
+        B_t = HLSVar(var_name="A_t",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD))
+        top_vars = {
+            "IN_VAR_A_key":A_key,
+            "IN_VAR_B_key":B_key,
+            "IN_VAR_A_t":incoming_dist_pod_var,
+            "IN_VAR_B_t":msb_var,
+
+            "OUT_VAR" : msb_out_var
+        }
+        port_property = {}
+        target_codes = []
+        
+        port_property,target_codes = self._analyse_unit_reduce(comp ,group="unit",port_property=port_property,port_to_var=port_to_var,top_vars=top_vars,target_codes=target_codes)
+
+        while_1_codes.extend(target_codes)
+
+        top_vars = {
+            "IN_VAR_A_key":A_key,
+            "IN_VAR_B_key":B_key,
+            "IN_VAR_A_t":incoming_dist_pod_var,
+            "IN_VAR_B_t":lsb_var,
+
+            "OUT_VAR" : lsb_out_var
+        }
+        port_property = {}
+        target_codes = []
+        
+        port_property,target_codes = self._analyse_unit_reduce(comp ,group="unit",port_property=port_property,port_to_var=port_to_var,top_vars=top_vars,target_codes=target_codes)
+        while_1_codes.extend(target_codes)
+        while_1_codes.append(CodeComment(text="=======  end inline reduce logic ===="))
+        # ================ end inline reduce logic ========================
         # reduce_word_t accumulated_msb;
         while_1_codes.append(CodeVarDecl(var_name="accumulated_msb", var_type=reduce_word_t_type))
         accumulated_msb_var = HLSVar(var_name="accumulated_msb", var_type=reduce_word_t_type)
@@ -2753,16 +2850,7 @@ axistream2stream:
         # (来自 .h: #define DISTANCE_BITWIDTH 32)
         ap_fixed_pod_t_type = HLSType(HLSBasicType.AP_FIXED_POD) 
 
-        # --- 结构体定义 (基于 C++ 用法推断) ---
-
-        # C++ 中 write_burst_pkt_t 被当作 ap_axiu<512,...> 使用
-        # 它有一个 .data 成员，类型为 ap_uint<512> (即 bus_word_t)
-        write_burst_pkt_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
-                                         struct_name="write_burst_pkt_t",
-                                         struct_prop_names=["data"],
-                                         sub_types=[bus_word_t_type])
-        if write_burst_pkt_t_type.name not in self.struct_definitions:
-            self.struct_definitions[write_burst_pkt_t_type.name] = (write_burst_pkt_t_type, write_burst_pkt_t_type.struct_prop_names)
+        write_burst_pkt_t_type = HLSType(HLSBasicType.WRITE_BURST_PKT_T)
 
         # --- Stream 类型 ---
         pe_mem_in_elem_type = HLSType(HLSBasicType.STREAM, sub_types=[reduce_word_t_type])
@@ -2832,113 +2920,119 @@ axistream2stream:
         self.big_gather_funcs.append(Reduc_105_drain_multi_pe_func_b)
         self.big_top_dataflow_funcs.append(Reduc_105_drain_multi_pe_func_b)
 
+
         Reduc_105_unit_reduce_func = HLSFunction(name="Reduc_105_unit_reduce", comp=comp) # 假设 comp 存在
         params = []
-        
+
         # --- 1. 定义类型和参数 (根据 .h 文件) ---
-        
+
         # 基础类型
-        int_type = HLSType(HLSBasicType.INT)       # int32_t / int
+        int_type = HLSType(HLSBasicType.INT)       # int / int32_t
         uint_type = HLSType(HLSBasicType.UINT)      # uint32_t
         ap_fixed_pod_t_type = HLSType(HLSBasicType.AP_FIXED_POD)
         # (根据你的澄清，使用 HLSBasicType.REDUCE_WORD_T)
-        reduce_word_t_type = HLSType(HLSBasicType.REDUCE_WORD_T)
-        
+        reduce_word_t_type = HLSType(HLSBasicType.REDUCE_WORD_T) 
+
         # .h 和 C++ 中使用的特定 ap_uint 类型
         # (来自 C++: ap_uint<20> key / cache_addr_buffer)
         ap_uint20_type = HLSType(basic_type=HLSBasicType.AP_UINT, width=20)
         # (来自 C++: ap_uint<15> word_addr)
         ap_uint15_type = HLSType(basic_type=HLSBasicType.AP_UINT, width=15)
-        
+
         # --- 结构体定义 (来自 graphyflow_little.h, 因为此函数不使用 end_flag) ---
-        
+
         # struct update_t
         update_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
-                                struct_name="update_t_little",
+                                struct_name="update_t",
                                 struct_prop_names=["node_id", "prop"], # .h: ap_uint<20>, ap_fixed_pod_t
                                 sub_types=[ap_uint20_type, ap_fixed_pod_t_type]) 
         if update_t_type.name not in self.struct_definitions:
             self.struct_definitions[update_t_type.name] = (update_t_type, update_t_type.struct_prop_names)
-        
+
         # struct update_tuple_t
         update_t_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[update_t_type], array_dims=["PE_NUM"])
         update_tuple_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
-                                      struct_name="update_tuple_t_little",
+                                      struct_name="update_tuple_t",
                                       struct_prop_names=["data"], # .h: update_t data[PE_NUM]
                                       sub_types=[update_t_array_type])
         if update_tuple_t_type.name not in self.struct_definitions:
             self.struct_definitions[update_tuple_t_type.name] = (update_tuple_t_type, update_tuple_t_type.struct_prop_names)
-        
+
         # --- Stream 类型 ---
         update_set_stm_type = HLSType(HLSBasicType.STREAM, sub_types=[update_tuple_t_type])
         pe_mem_outs_elem_type = HLSType(HLSBasicType.STREAM, sub_types=[reduce_word_t_type])
-        
+
         # --- 参数变量 ---
         # Param 1: hls::stream<update_tuple_t> &update_set_stm
         update_set_stm_var = HLSVar(var_name="update_set_stm", var_type=update_set_stm_type)
-        
-        # Param 2: hls::stream<reduce_word_t> (&pe_mem_outs)[PE_NUM]
-        pe_mem_outs_type = HLSType(HLSBasicType.ARRAY, sub_types=[pe_mem_outs_elem_type], array_dims=["PE_NUM"])
-        pe_mem_outs_var = HLSVar(var_name="pe_mem_outs", var_type=pe_mem_outs_type)
-        
-        # Param 3: int32_t edge_num
-        edge_num_var = HLSVar(var_name="edge_num", var_type=int_type)
-        
-        # Param 4: uint32_t rounded_num_words
+
+        # Param 2: hls::stream<reduce_word_t> (&pe_mem_outs_1)[4]
+        pe_mem_outs_1_type = HLSType(HLSBasicType.ARRAY, sub_types=[pe_mem_outs_elem_type], array_dims=[4])
+        pe_mem_outs_1_var = HLSVar(var_name="pe_mem_outs_1", var_type=pe_mem_outs_1_type)
+
+        # Param 3: hls::stream<reduce_word_t> (&pe_mem_outs_2)[4]
+        pe_mem_outs_2_type = HLSType(HLSBasicType.ARRAY, sub_types=[pe_mem_outs_elem_type], array_dims=[4])
+        pe_mem_outs_2_var = HLSVar(var_name="pe_mem_outs_2", var_type=pe_mem_outs_2_type)
+
+        # Param 4: uint32_t total_edge_sets
+        total_edge_sets_var = HLSVar(var_name="total_edge_sets", var_type=uint_type)
+
+        # Param 5: uint32_t rounded_num_words
         rounded_num_words_var = HLSVar(var_name="rounded_num_words", var_type=uint_type)
-        
-        params.extend([update_set_stm_var, pe_mem_outs_var, edge_num_var, rounded_num_words_var])
+
+        params.extend([update_set_stm_var, pe_mem_outs_1_var, pe_mem_outs_2_var, 
+                        total_edge_sets_var, rounded_num_words_var])
         Reduc_105_unit_reduce_func.params = params
-        
+
         # --- 2. 函数体 ---
         code_lines: List[HLSCodeLine] = []
-        
+
         # // --- Phase 1: Memory Declaration ---
         code_lines.append(CodeComment(text="--- Phase 1: Memory Declaration ---"))
-        
+
         # const int MEM_SIZE = MAX_NUM / DISTANCES_PER_REDUCE_WORD;
         code_lines.append(CodeVarDecl(var_name="MEM_SIZE", var_type=int_type, init_val="(MAX_NUM / DISTANCES_PER_REDUCE_WORD)", const=True))
-        
+
         # reduce_word_t prop_mem[PE_NUM][MEM_SIZE];
         prop_mem_elem_type = HLSType(HLSBasicType.ARRAY, sub_types=[reduce_word_t_type], array_dims=["MEM_SIZE"])
         prop_mem_type = HLSType(HLSBasicType.ARRAY, sub_types=[prop_mem_elem_type], array_dims=["PE_NUM"])
         code_lines.append(CodeVarDecl(var_name="prop_mem", var_type=prop_mem_type))
         prop_mem_var = HLSVar(var_name="prop_mem", var_type=prop_mem_type)
-        
+
         # #pragma HLS ARRAY_PARTITION ...
         code_lines.append(CodePragma(content="ARRAY_PARTITION variable = prop_mem complete dim = 1"))
         code_lines.append(CodePragma(content="BIND_STORAGE variable = prop_mem type = RAM_S2P impl = URAM"))
         code_lines.append(CodePragma(content="dependence variable = prop_mem inter false"))
         code_lines.append(CodeOther(text=""))
-        
+
         # // Latency-hiding cache for recently accessed URAM words
         code_lines.append(CodeComment(text="Latency-hiding cache for recently accessed URAM words"))
-        
+
         # reduce_word_t cache_data_buffer[PE_NUM][L + 1];
         cache_data_elem_type = HLSType(HLSBasicType.ARRAY, sub_types=[reduce_word_t_type], array_dims=["(L + 1)"])
         cache_data_type = HLSType(HLSBasicType.ARRAY, sub_types=[cache_data_elem_type], array_dims=["PE_NUM"])
         code_lines.append(CodeVarDecl(var_name="cache_data_buffer", var_type=cache_data_type))
         cache_data_buffer_var = HLSVar(var_name="cache_data_buffer", var_type=cache_data_type)
-        
+
         # #pragma HLS ARRAY_PARTITION ...
         code_lines.append(CodePragma(content="ARRAY_PARTITION variable = cache_data_buffer complete dim = 0"))
-        
+
         # ap_uint<20> cache_addr_buffer[PE_NUM][L + 1];
         cache_addr_elem_type = HLSType(HLSBasicType.ARRAY, sub_types=[ap_uint20_type], array_dims=["(L + 1)"])
         cache_addr_type = HLSType(HLSBasicType.ARRAY, sub_types=[cache_addr_elem_type], array_dims=["PE_NUM"])
         code_lines.append(CodeVarDecl(var_name="cache_addr_buffer", var_type=cache_addr_type))
         cache_addr_buffer_var = HLSVar(var_name="cache_addr_buffer", var_type=cache_addr_type)
-        
+
         # #pragma HLS ARRAY_PARTITION ...
         code_lines.append(CodePragma(content="ARRAY_PARTITION variable = cache_addr_buffer complete dim = 0"))
         code_lines.append(CodeOther(text=""))
-        
+
         #ifdef EMULATION
         code_lines.append(CodeOther(text="#ifdef EMULATION"))
         code_lines.append(CodeOther(text="    memset(prop_mem, 0, sizeof(reduce_word_t) * PE_NUM * MEM_SIZE);"))
         code_lines.append(CodeOther(text="#endif"))
         code_lines.append(CodeOther(text=""))
-        
+
         # LOOP_INIT_CACHE_ADDR:
         code_lines.append(CodeOther(text="LOOP_INIT_CACHE_ADDR:"))
         # for (int i = 0; i < L + 1; i++)
@@ -2959,18 +3053,14 @@ axistream2stream:
         # (构建 for_1)
         code_lines.append(CodeFor(codes=for_1_codes, iter_limit="(L + 1)", iter_name="i", iter_val_type=int_type))
         code_lines.append(CodeOther(text=""))
-        
-        # const uint32_t total_updates = ...
-        code_lines.append(CodeVarDecl(var_name="total_updates", var_type=uint_type, init_val="(edge_num >> LOG_PE_NUM)", const=True))
-        total_updates_var = HLSVar(var_name="total_updates", var_type=uint_type)
-        # // Assuming one update per node
-        code_lines.append(CodeComment(text="Assuming one update per node"))
-        # // --- Phase 3: Aggregation Loop ---
+
+        # (删除: const uint32_t total_updates = ...)
+        # (改为: // --- Phase 3: Aggregation Loop ---)
         code_lines.append(CodeComment(text="--- Phase 3: Aggregation Loop ---"))
-        
+
         # LOOP_AGGREGATE:
         code_lines.append(CodeOther(text="LOOP_AGGREGATE:"))
-        # for (int update_idx = 0; update_idx < total_updates; update_idx++)
+        # for (int update_idx = 0; update_idx < total_edge_sets; update_idx++)
         for_3_codes: List[HLSCodeLine] = []
         for_3_codes.append(CodePragma(content="PIPELINE II = 1"))
         # update_tuple_t one_update;
@@ -2980,14 +3070,14 @@ axistream2stream:
         read_expr = HLSExpr(HLSExprT.STREAM_READ, None, operands=[HLSExpr(HLSExprT.VAR, update_set_stm_var)])
         for_3_codes.append(CodeAssign(var=one_update_var, expr=read_expr))
         for_3_codes.append(CodeOther(text=""))
-        
+
         # for (int pe = 0; pe < PE_NUM; pe++)
         for_4_codes: List[HLSCodeLine] = []
         for_4_codes.append(CodePragma(content="UNROLL"))
         # if ((one_update.data[pe].node_id.range(19, 19) == 0))
         if_1_codes: List[HLSCodeLine] = []
         if_1_expr = HLSExpr(HLSExprT.CONST, "(one_update.data[pe].node_id.range(19, 19) == 0)")
-        
+
         # ap_uint<20> key = one_update.data[pe].node_id;
         if_1_codes.append(CodeVarDecl(var_name="key", var_type=ap_uint20_type, init_val="one_update.data[pe].node_id"))
         key_var = HLSVar(var_name="key", var_type=ap_uint20_type)
@@ -2995,17 +3085,17 @@ axistream2stream:
         if_1_codes.append(CodeVarDecl(var_name="incoming_dist_pod", var_type=ap_fixed_pod_t_type, init_val="one_update.data[pe].prop"))
         incoming_dist_pod_var = HLSVar(var_name="incoming_dist_pod", var_type=ap_fixed_pod_t_type)
         if_1_codes.append(CodeOther(text=""))
-        
+
         # ap_uint<15> word_addr = key.range(15, 1);
         if_1_codes.append(CodeVarDecl(var_name="word_addr", var_type=ap_uint15_type, init_val="key.range(15, 1)"))
         word_addr_var = HLSVar(var_name="word_addr", var_type=ap_uint15_type)
         if_1_codes.append(CodeOther(text=""))
-        
+
         # reduce_word_t current_word = prop_mem[pe][word_addr];
         if_1_codes.append(CodeVarDecl(var_name="current_word", var_type=reduce_word_t_type, init_val="prop_mem[pe][word_addr]"))
         current_word_var = HLSVar(var_name="current_word", var_type=reduce_word_t_type)
         if_1_codes.append(CodeOther(text=""))
-        
+
         # // Check cache first
         if_1_codes.append(CodeComment(text="Check cache first"))
         # for (int i = L; i >= 0; --i)
@@ -3023,7 +3113,7 @@ axistream2stream:
         # (构建 for_5)
         if_1_codes.append(CodeFor(codes=for_5_codes, iter_limit="-1", iter_cmp=">=", iter_name="i", iter_start="L", iter_step="--i", iter_val_type=int_type))
         if_1_codes.append(CodeOther(text=""))
-        
+
         # // Shift cache
         if_1_codes.append(CodeComment(text="Shift cache"))
         # for (int i = 0; i < L; i++)
@@ -3040,26 +3130,78 @@ axistream2stream:
         # (构建 for_6)
         if_1_codes.append(CodeFor(codes=for_6_codes, iter_limit="L", iter_name="i", iter_val_type=int_type))
         if_1_codes.append(CodeOther(text=""))
-        
+
         # reduce_word_t tmp_cur_word = current_word;
         if_1_codes.append(CodeVarDecl(var_name="tmp_cur_word", var_type=reduce_word_t_type, init_val="current_word"))
         tmp_cur_word_var = HLSVar(var_name="tmp_cur_word", var_type=reduce_word_t_type)
         if_1_codes.append(CodeOther(text=""))
-        
+
         # ap_fixed_pod_t msb = current_word.range(63, 32);
         if_1_codes.append(CodeVarDecl(var_name="msb", var_type=ap_fixed_pod_t_type, init_val="current_word.range(63, 32)"))
+        msb_var = HLSVar(var_name="msb", var_type=ap_fixed_pod_t_type)
+
         # ap_fixed_pod_t lsb = current_word.range(31, 0);
         if_1_codes.append(CodeVarDecl(var_name="lsb", var_type=ap_fixed_pod_t_type, init_val="current_word.range(31, 0)"))
+        lsb_var = HLSVar(var_name="lsb", var_type=ap_fixed_pod_t_type)
+
         if_1_codes.append(CodeOther(text=""))
-        
+
         # ap_fixed_pod_t msb_out = ...
-        msb_out_init = "(msb < incoming_dist_pod && msb != 0x0) ? msb : incoming_dist_pod"
-        if_1_codes.append(CodeVarDecl(var_name="msb_out", var_type=ap_fixed_pod_t_type, init_val=msb_out_init))
+        # msb_out_init = "(msb < incoming_dist_pod && msb != 0x0) ? msb : incoming_dist_pod"
+        # if_1_codes.append(CodeVarDecl(var_name="msb_out", var_type=ap_fixed_pod_t_type, init_val=msb_out_init))
+        msb_out_var = HLSVar(var_name="msb_out", var_type=ap_fixed_pod_t_type)
+        lsb_out_var = HLSVar(var_name="lsb_out", var_type=ap_fixed_pod_t_type)
+
+        if_1_codes.append(CodeVarDecl(var_name="msb_out", var_type=ap_fixed_pod_t_type))
+        if_1_codes.append(CodeVarDecl(var_name="lsb_out", var_type=ap_fixed_pod_t_type))
         # ap_fixed_pod_t lsb_out = ...
-        lsb_out_init = "(lsb < incoming_dist_pod && lsb != 0x0) ? lsb : incoming_dist_pod"
-        if_1_codes.append(CodeVarDecl(var_name="lsb_out", var_type=ap_fixed_pod_t_type, init_val=lsb_out_init))
-        if_1_codes.append(CodeOther(text=""))
+        # lsb_out_init = "(lsb < incoming_dist_pod && lsb != 0x0) ? lsb : incoming_dist_pod"
+        # if_1_codes.append(CodeVarDecl(var_name="lsb_out", var_type=ap_fixed_pod_t_type, init_val=lsb_out_init))
+        # if_1_codes.append(CodeOther(text=""))
+
+
+        # ================  begin inline reduce logic =====================
+
+        if_1_codes.append(CodeComment(text="=======  begin inline reduce logic ===="))
+        port_to_var = {}
+        A_key = HLSVar(var_name="A_key",var_type=HLSType(basic_type=HLSBasicType.AP_UINT,width=20))
+        B_key = HLSVar(var_name="B_key",var_type=HLSType(basic_type=HLSBasicType.AP_UINT,width=20))
         
+        A_t = HLSVar(var_name="A_t",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD))
+        B_t = HLSVar(var_name="A_t",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD))
+        top_vars = {
+            "IN_VAR_A_key":A_key,
+            "IN_VAR_B_key":B_key,
+            "IN_VAR_A_t":incoming_dist_pod_var,
+            "IN_VAR_B_t":msb_var,
+
+            "OUT_VAR" : msb_out_var
+        }
+        port_property = {}
+        target_codes = []
+        
+        port_property,target_codes = self._analyse_unit_reduce(comp ,group="unit",port_property=port_property,port_to_var=port_to_var,top_vars=top_vars,target_codes=target_codes)
+
+        if_1_codes.extend(target_codes)
+
+        top_vars = {
+            "IN_VAR_A_key":A_key,
+            "IN_VAR_B_key":B_key,
+            "IN_VAR_A_t":incoming_dist_pod_var,
+            "IN_VAR_B_t":lsb_var,
+
+            "OUT_VAR" : lsb_out_var
+        }
+        port_property = {}
+        target_codes = []
+        
+        port_property,target_codes = self._analyse_unit_reduce(comp ,group="unit",port_property=port_property,port_to_var=port_to_var,top_vars=top_vars,target_codes=target_codes)
+        if_1_codes.extend(target_codes)
+        if_1_codes.append(CodeComment(text="=======  end inline reduce logic ===="))
+        # ================ end inline reduce logic ========================
+
+
+
         # reduce_word_t accumulate_msb;
         if_1_codes.append(CodeVarDecl(var_name="accumulate_msb", var_type=reduce_word_t_type))
         accumulate_msb_var = HLSVar(var_name="accumulate_msb", var_type=reduce_word_t_type)
@@ -3067,7 +3209,7 @@ axistream2stream:
         if_1_codes.append(CodeVarDecl(var_name="accumulate_lsb", var_type=reduce_word_t_type))
         accumulate_lsb_var = HLSVar(var_name="accumulate_lsb", var_type=reduce_word_t_type)
         if_1_codes.append(CodeOther(text=""))
-        
+
         # accumulate_msb.range(63, 32) = msb_out;
         acc_msb_hi_var = HLSVar(var_name="accumulate_msb.range(63, 32)", var_type=ap_fixed_pod_t_type)
         if_1_codes.append(CodeAssign(var=acc_msb_hi_var, expr=HLSExpr(HLSExprT.CONST, "msb_out")))
@@ -3075,7 +3217,7 @@ axistream2stream:
         acc_msb_lo_var = HLSVar(var_name="accumulate_msb.range(31, 0)", var_type=ap_fixed_pod_t_type)
         if_1_codes.append(CodeAssign(var=acc_msb_lo_var, expr=HLSExpr(HLSExprT.CONST, "tmp_cur_word.range(31, 0)")))
         if_1_codes.append(CodeOther(text=""))
-        
+
         # accumulate_lsb.range(63, 32) = tmp_cur_word.range(63, 32);
         acc_lsb_hi_var = HLSVar(var_name="accumulate_lsb.range(63, 32)", var_type=ap_fixed_pod_t_type)
         if_1_codes.append(CodeAssign(var=acc_lsb_hi_var, expr=HLSExpr(HLSExprT.CONST, "tmp_cur_word.range(63, 32)")))
@@ -3083,7 +3225,7 @@ axistream2stream:
         acc_lsb_lo_var = HLSVar(var_name="accumulate_lsb.range(31, 0)", var_type=ap_fixed_pod_t_type)
         if_1_codes.append(CodeAssign(var=acc_lsb_lo_var, expr=HLSExpr(HLSExprT.CONST, "lsb_out")))
         if_1_codes.append(CodeOther(text=""))
-        
+
         # if (key & 0x01)
         if_3_codes: List[HLSCodeLine] = []
         else_3_codes: List[HLSCodeLine] = []
@@ -3100,19 +3242,19 @@ axistream2stream:
         else_3_codes.append(CodeAssign(var=cache_data_pe_L_var, expr=accumulate_lsb_var))
         # (构建 if_3)
         if_1_codes.append(CodeIf(expr=if_3_expr, if_codes=if_3_codes, else_codes=else_3_codes))
-        
+
         # cache_addr_buffer[pe][L] = word_addr;
         cache_addr_pe_L_var = HLSVar(var_name="cache_addr_buffer[pe][L]", var_type=ap_uint20_type)
         if_1_codes.append(CodeAssign(var=cache_addr_pe_L_var, expr=HLSExpr(HLSExprT.VAR, word_addr_var)))
-        
+
         # (构建 if_1)
         for_4_codes.append(CodeIf(expr=if_1_expr, if_codes=if_1_codes))
         # (构建 for_4)
         for_3_codes.append(CodeFor(codes=for_4_codes, iter_limit="PE_NUM", iter_name="pe", iter_val_type=int_type))
         # (构建 for_3)
-        code_lines.append(CodeFor(codes=for_3_codes, iter_limit=total_updates_var, iter_name="update_idx", iter_val_type=int_type))
+        code_lines.append(CodeFor(codes=for_3_codes, iter_limit=total_edge_sets_var, iter_name="update_idx", iter_val_type=int_type))
         code_lines.append(CodeOther(text=""))
-        
+
         # // --- Phase 4: Stream out aggregated memory ---
         code_lines.append(CodeComment(text="--- Phase 4: Stream out aggregated memory ---"))
         # LOOP_STREAM_OUT:
@@ -3120,94 +3262,95 @@ axistream2stream:
         # for (int i = 0; i < rounded_num_words; i++)
         for_7_codes: List[HLSCodeLine] = []
         for_7_codes.append(CodePragma(content="PIPELINE"))
-        # for (int pe = 0; pe < PE_NUM; pe++)
+
+        # for (int pe = 0; pe < 4; pe++)
         for_8_codes: List[HLSCodeLine] = []
         for_8_codes.append(CodePragma(content="UNROLL"))
         # reduce_word_t word = prop_mem[pe][i];
         for_8_codes.append(CodeVarDecl(var_name="word", var_type=reduce_word_t_type, init_val="prop_mem[pe][i]"))
-        word_var = HLSVar(var_name="word", var_type=reduce_word_t_type)
+        word_var_1 = HLSVar(var_name="word", var_type=reduce_word_t_type)
         # prop_mem[pe][i] = 0;
-        prop_mem_pe_i_var = HLSVar(var_name="prop_mem[pe][i]", var_type=reduce_word_t_type)
-        for_8_codes.append(CodeAssign(var=prop_mem_pe_i_var, expr=HLSExpr(HLSExprT.CONST, 0)))
-        # pe_mem_outs[pe].write(word);
-        pe_mem_out_var = HLSVar(var_name="pe_mem_outs[pe]", var_type=pe_mem_outs_elem_type)
-        for_8_codes.append(CodeWriteStream(stream_var=pe_mem_out_var, in_expr=word_var))
+        prop_mem_pe_i_var_1 = HLSVar(var_name="prop_mem[pe][i]", var_type=reduce_word_t_type)
+        for_8_codes.append(CodeAssign(var=prop_mem_pe_i_var_1, expr=HLSExpr(HLSExprT.CONST, 0)))
+        # pe_mem_outs_1[pe].write(word);
+        pe_mem_out_1_var = HLSVar(var_name="pe_mem_outs_1[pe]", var_type=pe_mem_outs_elem_type)
+        for_8_codes.append(CodeWriteStream(stream_var=pe_mem_out_1_var, in_expr=word_var_1))
         # (构建 for_8)
-        for_7_codes.append(CodeFor(codes=for_8_codes, iter_limit="PE_NUM", iter_name="pe", iter_val_type=int_type))
+        for_7_codes.append(CodeFor(codes=for_8_codes, iter_limit="4", iter_name="pe", iter_val_type=int_type))
+
+        # for (int pe = 0; pe < 4; pe++)
+        for_9_codes: List[HLSCodeLine] = []
+        for_9_codes.append(CodePragma(content="UNROLL"))
+        # reduce_word_t word = prop_mem[pe + 4][i];
+        for_9_codes.append(CodeVarDecl(var_name="word", var_type=reduce_word_t_type, init_val="prop_mem[pe + 4][i]"))
+        word_var_2 = HLSVar(var_name="word", var_type=reduce_word_t_type)
+        # prop_mem[pe + 4][i] = 0;
+        prop_mem_pe_i_var_2 = HLSVar(var_name="prop_mem[pe + 4][i]", var_type=reduce_word_t_type)
+        for_9_codes.append(CodeAssign(var=prop_mem_pe_i_var_2, expr=HLSExpr(HLSExprT.CONST, 0)))
+        # pe_mem_outs_2[pe].write(word);
+        pe_mem_out_2_var = HLSVar(var_name="pe_mem_outs_2[pe]", var_type=pe_mem_outs_elem_type)
+        for_9_codes.append(CodeWriteStream(stream_var=pe_mem_out_2_var, in_expr=word_var_2))
+        # (构建 for_9)
+        for_7_codes.append(CodeFor(codes=for_9_codes, iter_limit="4", iter_name="pe", iter_val_type=int_type))
         # (构建 for_7)
         code_lines.append(CodeFor(codes=for_7_codes, iter_limit=rounded_num_words_var, iter_name="i", iter_val_type=int_type))
-        
+
         # --- 3. Finalize ---
         Reduc_105_unit_reduce_func.codes = code_lines
+       
+        
         self.little_gather_funcs.append(Reduc_105_unit_reduce_func)
         self.little_top_dataflow_funcs.append(Reduc_105_unit_reduce_func)
 
-        Reduc_105_drain_multi_pe_func = HLSFunction(name="Reduc_105_drain_multi_pe", comp=comp) # 假设 comp 存在
+        
+        Reduc_105_partial_drain_impl_func = HLSFunction(name="Reduc_105_partial_drain_impl", comp=comp) # 假设 comp 存在
         params = []
 
         # --- 1. 定义类型和参数 (根据 .h 文件) ---
 
         # 基础类型
-        int_type = HLSType(HLSBasicType.INT)       # int32_t
+        int_type = HLSType(HLSBasicType.INT)       # int / int32_t
         uint_type = HLSType(HLSBasicType.UINT)      # uint32_t
-        bool_type = HLSType(HLSBasicType.BOOL)
-        # (根据你的澄清，使用 HLSBasicType.REDUCE_WORD_T)
-        reduce_word_t_type = HLSType(HLSBasicType.REDUCE_WORD_T)
-        distance_t_type = HLSType(HLSBasicType.DISTANCE_T)
         ap_fixed_pod_t_type = HLSType(HLSBasicType.AP_FIXED_POD)
-
-        # --- 结构体定义 (来自 graphyflow_little.h) ---
-
-        # struct little_out_pkt_t (ap_axiu<64, 0, 0, 0>)
-        # (根据 C++ 代码用法推断: .data (64-bit), .last (bool))
-        little_out_pkt_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
-                                        struct_name="little_out_pkt_t",
-                                        struct_prop_names=["data", "last"],
-                                        sub_types=[reduce_word_t_type, bool_type])
-        if little_out_pkt_t_type.name not in self.struct_definitions:
-            self.struct_definitions[little_out_pkt_t_type.name] = (little_out_pkt_t_type, little_out_pkt_t_type.struct_prop_names)
-
+        # (根据你的澄清，使用 HLSBasicType.REDUCE_WORD_T)
+        reduce_word_t_type = HLSType(HLSBasicType.REDUCE_WORD_T) 
 
         # --- Stream 类型 ---
-        pe_mem_in_elem_type = HLSType(HLSBasicType.STREAM, sub_types=[reduce_word_t_type])
-        kernel_out_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[little_out_pkt_t_type])
+        stream_reduce_word_t_type = HLSType(HLSBasicType.STREAM, sub_types=[reduce_word_t_type])
 
         # --- 参数变量 ---
-        # Param 1: hls::stream<reduce_word_t> (&pe_mem_in)[PE_NUM]
-        pe_mem_in_type = HLSType(HLSBasicType.ARRAY, sub_types=[pe_mem_in_elem_type], array_dims=["PE_NUM"])
+        # Param 1: int i
+        i_var = HLSVar(var_name="i", var_type=int_type)
+
+        # Param 2: hls::stream<reduce_word_t> (&pe_mem_in)[4]
+        pe_mem_in_type = HLSType(HLSBasicType.ARRAY, sub_types=[stream_reduce_word_t_type], array_dims=[4])
         pe_mem_in_var = HLSVar(var_name="pe_mem_in", var_type=pe_mem_in_type)
 
-        # Param 2: hls::stream<little_out_pkt_t> &kernel_out_stream
-        kernel_out_stream_var = HLSVar(var_name="kernel_out_stream", var_type=kernel_out_stream_type)
+        # Param 3: hls::stream<reduce_word_t> &partial_out_stream
+        partial_out_stream_var = HLSVar(var_name="partial_out_stream", var_type=stream_reduce_word_t_type)
 
-        # Param 3: uint32_t rounded_num_words
+        # Param 4: uint32_t rounded_num_words
         rounded_num_words_var = HLSVar(var_name="rounded_num_words", var_type=uint_type)
 
-        params.extend([pe_mem_in_var, kernel_out_stream_var, rounded_num_words_var])
-        Reduc_105_drain_multi_pe_func.params = params
+        # Param 5: ap_fixed_pod_t max_pod
+        max_pod_var = HLSVar(var_name="max_pod", var_type=ap_fixed_pod_t_type)
+
+        params.extend([i_var, pe_mem_in_var, partial_out_stream_var, rounded_num_words_var, max_pod_var])
+        Reduc_105_partial_drain_impl_func.params = params
 
         # --- 2. 函数体 ---
         code_lines: List[HLSCodeLine] = []
 
-        # // --- Phase 2: High-Performance Drain Loop ---
-        code_lines.append(CodeComment(text="--- Phase 2: High-Performance Drain Loop ---"))
-        # little_out_pkt_t one_write_burst;
-        code_lines.append(CodeVarDecl(var_name="one_write_burst", var_type=little_out_pkt_t_type))
-        one_write_burst_var = HLSVar(var_name="one_write_burst", var_type=little_out_pkt_t_type)
-        # one_write_burst.last = 0;
-        one_write_burst_last_var = HLSVar(var_name="one_write_burst.last", var_type=bool_type)
-        code_lines.append(CodeAssign(var=one_write_burst_last_var, expr=HLSExpr(HLSExprT.CONST, 0)))
-        # distance_t max_val = (distance_t)(16384.0);
-        code_lines.append(CodeVarDecl(var_name="max_val", var_type=distance_t_type, init_val="(distance_t)(16384.0)"))
-        # ap_fixed_pod_t max_pod = *reinterpret_cast<ap_fixed_pod_t *>(&max_val);
-        code_lines.append(CodeVarDecl(var_name="max_pod", var_type=ap_fixed_pod_t_type, init_val="*reinterpret_cast<ap_fixed_pod_t *>(&max_val)"))
-        max_pod_var = HLSVar(var_name="max_pod", var_type=ap_fixed_pod_t_type)
-        code_lines.append(CodeOther(text=""))
+        # #pragma HLS function_instantiate variable = i
+        code_lines.append(CodePragma(content="function_instantiate variable = i"))
 
-        # LOOP_DRAIN_ADDR:
-        code_lines.append(CodeOther(text="LOOP_DRAIN_ADDR:"))
+        # LOOP_PARTIAL_ADDR:
+        code_lines.append(CodeOther(text="LOOP_PARTIAL_ADDR:"))
         # for (int32_t i = 0; i < rounded_num_words; i++)
+        # (注意: 这里的 'i' 是一个新的 HLSVar, 它遮蔽了参数 'i')
         for_1_codes: List[HLSCodeLine] = []
+        i_loop_var = HLSVar(var_name="i", var_type=int_type)
+
         # #pragma HLS PIPELINE II = 1
         for_1_codes.append(CodePragma(content="PIPELINE II = 1"))
         # ap_fixed_pod_t uram_res_low = max_pod;
@@ -3217,7 +3360,9 @@ axistream2stream:
         for_1_codes.append(CodeVarDecl(var_name="uram_res_high", var_type=ap_fixed_pod_t_type, init_val="max_pod"))
         uram_res_high_var = HLSVar(var_name="uram_res_high", var_type=ap_fixed_pod_t_type)
 
-        # for (uint32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++)
+        # LOOP_PARTIAL_PE:
+        for_1_codes.append(CodeOther(text="LOOP_PARTIAL_PE:"))
+        # for (uint32_t pe_idx = 0; pe_idx < 4; pe_idx++)
         for_2_codes: List[HLSCodeLine] = []
         # #pragma HLS UNROLL
         for_2_codes.append(CodePragma(content="UNROLL"))
@@ -3236,13 +3381,57 @@ axistream2stream:
         incoming_dist_pod_high_var = HLSVar(var_name="incoming_dist_pod_high", var_type=ap_fixed_pod_t_type)
 
         # uram_res_low = (uram_res_low < incoming_dist_pod_low || ...
-        min_low_expr = HLSExpr(HLSExprT.CONST, "(uram_res_low < incoming_dist_pod_low || incoming_dist_pod_low == 0x0) ? uram_res_low : incoming_dist_pod_low")
-        for_2_codes.append(CodeAssign(var=uram_res_low_var, expr=min_low_expr))
+        # min_low_expr = HLSExpr(HLSExprT.CONST, "(uram_res_low < incoming_dist_pod_low || incoming_dist_pod_low == 0x0) ? uram_res_low : incoming_dist_pod_low")
+        # for_2_codes.append(CodeAssign(var=uram_res_low_var, expr=min_low_expr))
+        
         # uram_res_high = (uram_res_high < incoming_dist_pod_high || ...
-        min_high_expr = HLSExpr(HLSExprT.CONST, "(uram_res_high < incoming_dist_pod_high || incoming_dist_pod_high == 0x0) ? uram_res_high : incoming_dist_pod_high")
-        for_2_codes.append(CodeAssign(var=uram_res_high_var, expr=min_high_expr))
+        # min_high_expr = HLSExpr(HLSExprT.CONST, "(uram_res_high < incoming_dist_pod_high || incoming_dist_pod_high == 0x0) ? uram_res_high : incoming_dist_pod_high")
+        # for_2_codes.append(CodeAssign(var=uram_res_high_var, expr=min_high_expr))
+
+
+        # =========== begin inline reduce logic =============
+
+        reduce_codes = []
+        reduce_codes.append(CodeComment(text="=======  begin inline reduce logic ===="))
+        port_to_var = {}
+        A_key = HLSVar(var_name="A_key",var_type=HLSType(basic_type=HLSBasicType.AP_UINT,width=20))
+        B_key = HLSVar(var_name="B_key",var_type=HLSType(basic_type=HLSBasicType.AP_UINT,width=20))
+        
+        
+        top_vars = {
+            "IN_VAR_A_key":A_key,
+            "IN_VAR_B_key":B_key,
+            "IN_VAR_A_t": uram_res_low_var,
+            "IN_VAR_B_t":incoming_dist_pod_low_var,
+            "OUT_VAR" : uram_res_low_var,
+        }
+        port_property = {}
+        target_codes = []
+        port_property,target_codes = self._analyse_unit_reduce(comp ,group="unit",port_property=port_property,port_to_var=port_to_var,top_vars=top_vars,target_codes=target_codes)
+        reduce_codes.extend(target_codes)
+
+        top_vars = {
+            "IN_VAR_A_key":A_key,
+            "IN_VAR_B_key":B_key,
+            "IN_VAR_A_t":uram_res_high_var,
+            "IN_VAR_B_t":incoming_dist_pod_high_var,
+
+            "OUT_VAR" : uram_res_high_var
+        }
+        port_property = {}
+        target_codes = []
+        port_property,target_codes = self._analyse_unit_reduce(comp ,group="unit",port_property=port_property,port_to_var=port_to_var,top_vars=top_vars,target_codes=target_codes)
+        reduce_codes.extend(target_codes)
+
+
+        reduce_codes.append(CodeComment(text="=======  end inline reduce logic ===="))
+        
+        for_2_codes.extend(reduce_codes)
+
+        # =========== end inline reduce logic ===============
+
         # (构建 for_2)
-        for_1_codes.append(CodeFor(codes=for_2_codes, iter_limit="PE_NUM", iter_name="pe_idx", iter_val_type=uint_type))
+        for_1_codes.append(CodeFor(codes=for_2_codes, iter_limit="4", iter_name="pe_idx", iter_val_type=uint_type))
 
         # reduce_word_t merged_word;
         for_1_codes.append(CodeVarDecl(var_name="merged_word", var_type=reduce_word_t_type))
@@ -3253,6 +3442,165 @@ axistream2stream:
         # merged_word.range(63, 32) = uram_res_high;
         merged_word_hi_var = HLSVar(var_name="merged_word.range(63, 32)", var_type=ap_fixed_pod_t_type)
         for_1_codes.append(CodeAssign(var=merged_word_hi_var, expr=uram_res_high_var))
+        # partial_out_stream.write(merged_word);
+        for_1_codes.append(CodeWriteStream(stream_var=partial_out_stream_var, in_expr=merged_word_var))
+
+        # (构建 for_1)
+        code_lines.append(CodeFor(codes=for_1_codes, iter_limit=rounded_num_words_var, iter_name="i", iter_val_type=int_type))
+
+        # --- 3. Finalize ---
+        Reduc_105_partial_drain_impl_func.codes = code_lines
+
+        
+        self.little_gather_funcs.append(Reduc_105_partial_drain_impl_func)
+        self.little_top_dataflow_funcs.append(Reduc_105_partial_drain_impl_func)
+
+        Reduc_105_finalize_drain_func = HLSFunction(name="Reduc_105_finalize_drain", comp=comp) # 假设 comp 存在
+        params = []
+
+        # --- 1. 定义类型和参数 (根据 .h 文件) ---
+
+        # 基础类型
+        int_type = HLSType(HLSBasicType.INT)       # int32_t
+        uint_type = HLSType(HLSBasicType.UINT)      # uint32_t
+        ap_fixed_pod_t_type = HLSType(HLSBasicType.AP_FIXED_POD)
+        # (根据你的澄清，使用 HLSBasicType.REDUCE_WORD_T)
+        reduce_word_t_type = HLSType(HLSBasicType.REDUCE_WORD_T) 
+        bool_type = HLSType(HLSBasicType.BOOL)
+
+        # --- 结构体定义 (来自 graphyflow_little.h) ---
+
+        # struct little_out_pkt_t (ap_axiu<64, 0, 0, 0>)
+        # (根据 C++ 代码用法推断: .data (64-bit), .last (bool))
+        little_out_pkt_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
+                                        struct_name="little_out_pkt_t",
+                                        struct_prop_names=["data", "last"],
+                                        sub_types=[reduce_word_t_type, bool_type])
+        if little_out_pkt_t_type.name not in self.struct_definitions:
+            self.struct_definitions[little_out_pkt_t_type.name] = (little_out_pkt_t_type, little_out_pkt_t_type.struct_prop_names)
+
+        # --- Stream 类型 ---
+        stream_reduce_word_t_type = HLSType(HLSBasicType.STREAM, sub_types=[reduce_word_t_type])
+        stream_little_out_pkt_type = HLSType(HLSBasicType.STREAM, sub_types=[little_out_pkt_t_type])
+
+        # --- 参数变量 ---
+        # Param 1: hls::stream<reduce_word_t> &partial_in_first
+        partial_in_first_var = HLSVar(var_name="partial_in_first", var_type=stream_reduce_word_t_type)
+        # Param 2: hls::stream<reduce_word_t> &partial_in_second
+        partial_in_second_var = HLSVar(var_name="partial_in_second", var_type=stream_reduce_word_t_type)
+        # Param 3: hls::stream<little_out_pkt_t> &kernel_out_stream
+        kernel_out_stream_var = HLSVar(var_name="kernel_out_stream", var_type=stream_little_out_pkt_type)
+        # Param 4: uint32_t rounded_num_words
+        rounded_num_words_var = HLSVar(var_name="rounded_num_words", var_type=uint_type)
+        # Param 5: ap_fixed_pod_t max_pod
+        max_pod_var = HLSVar(var_name="max_pod", var_type=ap_fixed_pod_t_type)
+
+        params.extend([partial_in_first_var, partial_in_second_var, kernel_out_stream_var, 
+                        rounded_num_words_var, max_pod_var])
+        Reduc_105_finalize_drain_func.params = params
+
+        # --- 2. 函数体 ---
+        code_lines: List[HLSCodeLine] = []
+
+        # little_out_pkt_t one_write_burst;
+        code_lines.append(CodeVarDecl(var_name="one_write_burst", var_type=little_out_pkt_t_type))
+        one_write_burst_var = HLSVar(var_name="one_write_burst", var_type=little_out_pkt_t_type)
+        # one_write_burst.last = 0;
+        one_write_burst_last_var = HLSVar(var_name="one_write_burst.last", var_type=bool_type)
+        code_lines.append(CodeAssign(var=one_write_burst_last_var, expr=HLSExpr(HLSExprT.CONST, 0)))
+        code_lines.append(CodeOther(text=""))
+
+        # LOOP_FINAL_ADDR:
+        code_lines.append(CodeOther(text="LOOP_FINAL_ADDR:"))
+        # for (int32_t i = 0; i < rounded_num_words; i++)
+        for_1_codes: List[HLSCodeLine] = []
+        i_loop_var = HLSVar(var_name="i", var_type=int_type)
+
+        # #pragma HLS PIPELINE II = 1
+        for_1_codes.append(CodePragma(content="PIPELINE II = 1"))
+        # reduce_word_t first_word = partial_in_first.read();
+        read_expr_1 = HLSExpr(HLSExprT.STREAM_READ, None, operands=[HLSExpr(HLSExprT.VAR, partial_in_first_var)])
+        for_1_codes.append(CodeVarDecl(var_name="first_word", var_type=reduce_word_t_type, init_val=read_expr_1.code))
+        first_word_var = HLSVar(var_name="first_word", var_type=reduce_word_t_type)
+        # reduce_word_t second_word = partial_in_second.read();
+        read_expr_2 = HLSExpr(HLSExprT.STREAM_READ, None, operands=[HLSExpr(HLSExprT.VAR, partial_in_second_var)])
+        for_1_codes.append(CodeVarDecl(var_name="second_word", var_type=reduce_word_t_type, init_val=read_expr_2.code))
+        second_word_var = HLSVar(var_name="second_word", var_type=reduce_word_t_type)
+        for_1_codes.append(CodeOther(text=""))
+
+        # ap_fixed_pod_t first_low = first_word.range(31, 0);
+        for_1_codes.append(CodeVarDecl(var_name="first_low", var_type=ap_fixed_pod_t_type, init_val="first_word.range(31, 0)"))
+        first_low_var = HLSVar(var_name="first_low", var_type=ap_fixed_pod_t_type)
+        # ap_fixed_pod_t first_high = first_word.range(63, 32);
+        for_1_codes.append(CodeVarDecl(var_name="first_high", var_type=ap_fixed_pod_t_type, init_val="first_word.range(63, 32)"))
+        first_high_var = HLSVar(var_name="first_high", var_type=ap_fixed_pod_t_type)
+        # ap_fixed_pod_t second_low = second_word.range(31, 0);
+        for_1_codes.append(CodeVarDecl(var_name="second_low", var_type=ap_fixed_pod_t_type, init_val="second_word.range(31, 0)"))
+        second_low_var = HLSVar(var_name="second_low", var_type=ap_fixed_pod_t_type)
+        # ap_fixed_pod_t second_high = second_word.range(63, 32);
+        for_1_codes.append(CodeVarDecl(var_name="second_high", var_type=ap_fixed_pod_t_type, init_val="second_word.range(63, 32)"))
+        second_high_var = HLSVar(var_name="second_high", var_type=ap_fixed_pod_t_type)
+        for_1_codes.append(CodeOther(text=""))
+
+        # first_low = (first_low < second_low || second_low == 0x0) ? first_low : second_low;
+        # min_low_expr = HLSExpr(HLSExprT.CONST, "(first_low < second_low || second_low == 0x0) ? first_low : second_low")
+        # for_1_codes.append(CodeAssign(var=first_low_var, expr=min_low_expr))
+        # first_high = (first_high < second_high || second_high == 0x0) ? first_high : second_high;
+        # min_high_expr = HLSExpr(HLSExprT.CONST, "(first_high < second_high || second_high == 0x0) ? first_high : second_high")
+        # for_1_codes.append(CodeAssign(var=first_high_var, expr=min_high_expr))
+        
+
+        # =========== begin inline reduce logic =============
+
+        reduce_codes = []
+        reduce_codes.append(CodeComment(text="=======  begin inline reduce logic ===="))
+        port_to_var = {}
+        A_key = HLSVar(var_name="A_key",var_type=HLSType(basic_type=HLSBasicType.AP_UINT,width=20))
+        B_key = HLSVar(var_name="B_key",var_type=HLSType(basic_type=HLSBasicType.AP_UINT,width=20))
+        
+        
+        top_vars = {
+            "IN_VAR_A_key":A_key,
+            "IN_VAR_B_key":B_key,
+            "IN_VAR_A_t": first_low_var,
+            "IN_VAR_B_t":second_low_var,
+            "OUT_VAR" : first_low_var,
+        }
+        port_property = {}
+        target_codes = []
+        port_property,target_codes = self._analyse_unit_reduce(comp ,group="unit",port_property=port_property,port_to_var=port_to_var,top_vars=top_vars,target_codes=target_codes)
+        reduce_codes.extend(target_codes)
+
+        top_vars = {
+            "IN_VAR_A_key":A_key,
+            "IN_VAR_B_key":B_key,
+            "IN_VAR_A_t":first_high_var,
+            "IN_VAR_B_t":second_high_var,
+
+            "OUT_VAR" : first_high_var
+        }
+        port_property = {}
+        target_codes = []
+        port_property,target_codes = self._analyse_unit_reduce(comp ,group="unit",port_property=port_property,port_to_var=port_to_var,top_vars=top_vars,target_codes=target_codes)
+        reduce_codes.extend(target_codes)
+
+
+        reduce_codes.append(CodeComment(text="=======  end inline reduce logic ===="))
+        
+        for_1_codes.extend(reduce_codes)
+
+        # =========== end inline reduce logic ===============
+        for_1_codes.append(CodeOther(text=""))
+        
+        # reduce_word_t merged_word;
+        for_1_codes.append(CodeVarDecl(var_name="merged_word", var_type=reduce_word_t_type))
+        merged_word_var = HLSVar(var_name="merged_word", var_type=reduce_word_t_type)
+        # merged_word.range(31, 0) = first_low;
+        merged_word_lo_var = HLSVar(var_name="merged_word.range(31, 0)", var_type=ap_fixed_pod_t_type)
+        for_1_codes.append(CodeAssign(var=merged_word_lo_var, expr=first_low_var))
+        # merged_word.range(63, 32) = first_high;
+        merged_word_hi_var = HLSVar(var_name="merged_word.range(63, 32)", var_type=ap_fixed_pod_t_type)
+        for_1_codes.append(CodeAssign(var=merged_word_hi_var, expr=first_high_var))
         # one_write_burst.data = merged_word;
         one_write_burst_data_var = HLSVar(var_name="one_write_burst.data", var_type=reduce_word_t_type)
         for_1_codes.append(CodeAssign(var=one_write_burst_data_var, expr=merged_word_var))
@@ -3263,10 +3611,72 @@ axistream2stream:
         code_lines.append(CodeFor(codes=for_1_codes, iter_limit=rounded_num_words_var, iter_name="i", iter_val_type=int_type))
 
         # --- 3. Finalize ---
-        Reduc_105_drain_multi_pe_func.codes = code_lines
-        self.little_gather_funcs.append(Reduc_105_drain_multi_pe_func)
-        self.little_top_dataflow_funcs.append(Reduc_105_drain_multi_pe_func)
+        Reduc_105_finalize_drain_func.codes = code_lines
+        self.little_gather_funcs.append(Reduc_105_finalize_drain_func)
+        self.little_top_dataflow_funcs.append(Reduc_105_finalize_drain_func)
 
+
+
+
+    def _analyse_unit_reduce(self,comp,group:str,port_property:Dict[dfir.Port,Any],port_to_var,top_vars,target_codes):
+        port_already_analysed = []
+        q = []
+        visited_ids = set()
+
+
+        for port in comp._port_groups["unit"]:
+            if port.name == "o_reduce_unit_start_0":
+                port_to_var[port] = [top_vars["IN_VAR_A_t"],top_vars["IN_VAR_A_key"]]
+                port_already_analysed.append(port)
+                port_property[port] = ["key","transform"]
+                q.append(port.connection.parent)
+            elif port.name == "o_reduce_unit_start_1":
+                port_already_analysed.append(port)
+                port_to_var[port] = [top_vars["IN_VAR_B_t"],top_vars["IN_VAR_B_key"]]
+                port_property[port] = ["key","transform"]
+                q.append(port.connection.parent)
+
+        head = 0
+        while head < len(q):
+            cur = q[head]
+            head+=1
+            inputs_ready = all(p.connection in port_already_analysed for p in cur.in_ports)
+            if not inputs_ready:
+                q.append(cur)
+                if head > len(q) * 2:
+                    raise RuntimeError(f"Deadlock in sub-graph topological sort at component {cur.name}")
+                continue
+            else:
+                port_property ,target_codes = self._gather_analyze(cur,port_property,port_to_var,top_vars,target_codes)
+            
+            end = False
+            for p in cur.out_ports:
+                port_already_analysed.append(p)
+                if p.connected and not isinstance(
+                    p.connection.parent,
+                    (dfir.ReduceComponent, dfir.UnusedEndMarkerComponent),
+                ):
+                    successor_comp = p.connection.parent
+                    if successor_comp.readable_id not in visited_ids:
+                        q.append(successor_comp)
+                        visited_ids.add(successor_comp.readable_id)
+                else:# cur是最后一个组件
+                    end = True
+            if end:
+                for p in cur.out_ports:
+                    if p.port_type == dfir.PortType.OUT:
+                        for prop in port_property[p]:
+                            if prop[0] == "edge":
+                                if prop[1][0] == "weight":
+                                    target_codes.append(CodeAssign(top_vars["FINAL_PROP_VAR"], port_to_var[p][0]))
+                                elif prop[1][0] == "dst":
+                                    target_codes.append(CodeAssign(top_vars["FINAL_DST_ID_VAR"], port_to_var[p][1]))
+                                else:
+                                    assert 0
+                            
+        
+        return port_property,target_codes
+        
     def _analyse_reduce(self,comp,group:str,port_property:Dict[dfir.Port,Any],port_to_var,top_vars,target_codes):
         port_already_analysed = []
         q = []
@@ -3330,6 +3740,8 @@ axistream2stream:
                                     target_codes.append(CodeAssign(top_vars["FINAL_PROP_VAR"], port_to_var[p][0]))
                                 elif prop[1][0] == "dst":
                                     target_codes.append(CodeAssign(top_vars["FINAL_DST_ID_VAR"], port_to_var[p][1]))
+                                elif prop[1][0] == "src":
+                                    target_codes.append(CodeAssign(top_vars["FINAL_PROP_VAR"], port_to_var[p][0]))
                                 else:
                                     assert 0
                             
@@ -3453,6 +3865,151 @@ axistream2stream:
 
                     port_property[port] = inproperty
                     port_to_var[port] = result_var
+            
+
+        elif isinstance(comp,dfir.UnaryOpComponent):
+            for port in comp.ports:
+                if port in port_property:
+                    if port_property[port] is not None:
+                        inproperty = port_property[port]
+                    continue
+                if port.port_type == dfir.PortType.IN:
+                    conn = port.connection
+                    port_property[port] = port_property[conn]
+                    if port_property[conn] is not None:
+                        inproperty = port_property[conn]
+                elif port.port_type == dfir.PortType.OUT:
+                    port_property[port] = inproperty
+        elif isinstance(comp,dfir.CopyComponent):
+            
+            for port in comp.ports:
+                if port.port_type == dfir.PortType.IN:
+                    conn = port.connection
+                    port_property[port] = port_property[conn]
+                    in_property = port_property[port]
+                    in_var = port_to_var[conn]
+                elif port.port_type == dfir.PortType.OUT:
+                    port_property[port] = in_property
+                    port_to_var[port] = in_var
+        elif isinstance(comp,dfir.ReduceComponent):
+
+            for port in comp._port_groups["global"]:
+                if port.port_type == dfir.PortType.IN:
+                    conn = port.connection
+                    port_property[port] = port_property[conn]       
+                    port_to_var[port] = port_to_var[conn]
+            port_property,target_codes = self._analyse_reduce(comp,group="transform",port_property=port_property,port_to_var=port_to_var,top_vars=top_vars,target_codes=target_codes)
+            # 约定reduce的key一定是 dst 的nodeIid
+                
+        else:
+            pass
+
+        return port_property, target_codes
+    
+    def _gather_analyze(self,comp,port_property,port_to_var,top_vars,target_codes):
+
+        if isinstance(comp, dfir.FusedOpComponent):
+            for port in comp.ports:
+                if port.port_type == dfir.PortType.IN:
+                    conn = port.connection
+                    parent = conn.parent
+                    port_property[port] = port_property[conn]
+                    port_to_var[port] = port_to_var[conn]
+
+            sub_graph_components = comp.sub_graph.topo_sort()
+            for port in comp.sub_graph.inputs:
+                if port.port_type == dfir.PortType.IN:
+                    parent_port = comp.port_mapping[port.readable_id]
+                    port_property[port] = port_property[parent_port]
+                    port.connection = parent_port
+                    port_to_var[port] = port_to_var[parent_port]
+
+            for sub_c in sub_graph_components:
+                port_property,target_codes = self._gather_analyze(sub_c,port_property,port_to_var,top_vars,target_codes)
+                
+            for port in comp.sub_graph.outputs:
+                if port.port_type == dfir.PortType.OUT:
+                    child_port = comp.port_mapping[port.readable_id]
+                    port_property[child_port] = port_property[port]
+                    port_to_var[child_port] = port_to_var[port]
+                
+        elif isinstance(comp,dfir.ScatterComponent):
+            idx = 0
+            for port in comp.ports:
+                if port.port_type == dfir.PortType.IN:
+                    conn = port.connection
+                    port_property[port] = port_property[conn]
+                    in_properties = port_property[port]
+                    in_vars = port_to_var[conn]
+                elif port.port_type == dfir.PortType.OUT:
+                    port_property[port] = in_properties[idx]
+                    port_to_var[port] = in_vars[idx]
+                    idx += 1
+        elif isinstance(comp,dfir.GatherComponent):
+            gather_out_property = []
+            gather_out_vars = []
+            for port in comp.ports:
+                if port.port_type == dfir.PortType.IN:
+                    if port in port_property:
+                        if port_property[port] is not None:
+                            gather_out_property.append(port_property[port])
+                            gather_out_vars.append(port_to_var[port])
+                    else:
+                        conn = port.connection
+                        port_property[port] = port_property[conn]
+                        gather_out_property.append(port_property[port])
+                        gather_out_vars.append(port_to_var[conn])
+                elif port.port_type == dfir.PortType.OUT:
+                    port_property[port] = gather_out_property
+                    port_to_var[port] = gather_out_vars
+        elif isinstance(comp,dfir.ConstantComponent):
+            tmp_var = HLSVar(var_name=f"constant_{comp.readable_id}", var_type=HLSType(HLSBasicType.AP_FIXED_POD))
+            target_codes.append(CodeVarDecl(var_name=f"constant_{comp.readable_id}", var_type=HLSType(HLSBasicType.AP_FIXED_POD), init_val=str(comp.value)))
+            for port in comp.ports:
+                if port.port_type == dfir.PortType.OUT:
+                    port_property[port] = None
+                    port_to_var[port] = tmp_var
+            
+            
+        elif isinstance(comp,dfir.BinOpComponent):
+            # lhs_var = HLSVar(var_name=f"BinOp_{comp.readable_id}_lhs", var_type=HLSType(HLSBasicType.AP_FIXED_POD))
+            # rhs_var = HLSVar(var_name=f"BinOp_{comp.readable_id}_rhs", var_type=HLSType(HLSBasicType.AP_FIXED_POD))
+            
+            is_op1 = True
+            for port in comp.ports:
+                if port.port_type == dfir.PortType.IN:
+                    conn = port.connection
+
+                    if port in port_property:
+                        if port_property[port] is not None:
+                            inproperty = port_property[port]
+                            
+                    else:
+                        port_property[port] = port_property[conn]
+                        if port_property[conn] is not None:
+                            inproperty = port_property[conn]
+
+                    if is_op1:
+                        is_op1 = False
+                        op1_var = port_to_var[conn]
+                        op1_expr = HLSExpr(HLSExprT.VAR, op1_var)
+                    else:
+                        op2_var = port_to_var[conn]
+                        op2_expr = HLSExpr(HLSExprT.VAR, op2_var)
+                elif port.port_type == dfir.PortType.OUT:
+                    
+                    # result_var = HLSVar(var_name=f"BinOp_{comp.readable_id}_res", var_type=HLSType(HLSBasicType.AP_FIXED_POD)) 
+                    # target_codes.append(CodeVarDecl(var_name=f"BinOp_{comp.readable_id}_res", var_type=HLSType(HLSBasicType.AP_FIXED_POD)))
+                    
+                    out_var = top_vars["OUT_VAR"]
+                   
+                    tmp_expr = HLSExpr(HLSExprT.BINOP, comp.op, [op1_expr, op2_expr])
+                    tmp_expr_out = CodeOther(text=f"{out_var.name} = ({op1_var.name} != 0x0) ? {tmp_expr.code} : {op2_var.name};")
+                    target_codes.append(tmp_expr_out)
+
+                    port_to_var[port] = out_var
+                    port_property[port] = inproperty
+
             
 
         elif isinstance(comp,dfir.UnaryOpComponent):
@@ -3696,8 +4253,8 @@ axistream2stream:
                                 struct_name="edge_t",
                                 struct_prop_names=["src_id", "dst_id"],
                                 sub_types=[node_id_type, ap_uint20_type]) # .h: dst_id 是 ap_uint<20>
-            if edge_t_type.name not in self.struct_definitions:
-                self.struct_definitions[edge_t_type.name] = (edge_t_type, edge_t_type.struct_prop_names)
+            if edge_t_type.name not in self.big_struct_definitions:
+                self.big_struct_definitions[edge_t_type.name] = (edge_t_type, edge_t_type.struct_prop_names)
 
             # struct edge_descriptor_batch_t
             edge_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[edge_t_type], array_dims=["PE_NUM"])
@@ -3706,16 +4263,16 @@ axistream2stream:
                                                 struct_prop_names=["edges"], # .h: 只有 'edges'
                                                 sub_types=[edge_array_type])
             
-            if edge_descriptor_batch_t_type.name not in self.struct_definitions:
-                self.struct_definitions[edge_descriptor_batch_t_type.name] = (edge_descriptor_batch_t_type, edge_descriptor_batch_t_type.struct_prop_names)
+            if edge_descriptor_batch_t_type.name not in self.big_struct_definitions:
+                self.big_struct_definitions[edge_descriptor_batch_t_type.name] = (edge_descriptor_batch_t_type, edge_descriptor_batch_t_type.struct_prop_names)
 
             # struct update_t
             update_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
                                     struct_name="update_t_big",
                                     struct_prop_names=["node_id", "prop", "end_flag"],
                                     sub_types=[ap_uint20_type, ap_fixed_pod_t_type, bool_type]) # .h: node_id 是 ap_uint<20>
-            if update_t_type.name not in self.struct_definitions:
-                self.struct_definitions[update_t_type.name] = (update_t_type, update_t_type.struct_prop_names)
+            if update_t_type.name not in self.big_struct_definitions:
+                self.big_struct_definitions[update_t_type.name] = (update_t_type, update_t_type.struct_prop_names)
 
             # struct update_tuple_t
             update_t_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[update_t_type], array_dims=["PE_NUM"])
@@ -3723,8 +4280,8 @@ axistream2stream:
                                         struct_name="update_tuple_t_big",
                                         struct_prop_names=["data"], # .h: 只有 'data'
                                         sub_types=[update_t_array_type])
-            if update_tuple_t_type.name not in self.struct_definitions:
-                self.struct_definitions[update_tuple_t_type.name] = (update_tuple_t_type, update_tuple_t_type.struct_prop_names)
+            if update_tuple_t_type.name not in self.big_struct_definitions:
+                self.big_struct_definitions[update_tuple_t_type.name] = (update_tuple_t_type, update_tuple_t_type.struct_prop_names)
 
             # --- 参数定义 ---
 
@@ -3877,13 +4434,14 @@ axistream2stream:
             update_init_expr = HLSExpr(HLSExprT.BINOP, dfir.BinOp.ADD,
                                     operands=[HLSExpr(HLSExprT.VAR, prop_var),
                                                 HLSExpr(HLSExprT.VAR, edge_weight_var)])
-            for_loop_3_codes.append(CodeVarDecl(var_name="update", var_type=ap_fixed_pod_t_type, init_val=update_init_expr.code))
-            update_var = HLSVar(var_name="update", var_type=ap_fixed_pod_t_type)
+            # for_loop_3_codes.append(CodeVarDecl(var_name="update", var_type=ap_fixed_pod_t_type, init_val=update_init_expr.code))
+            # update_var = HLSVar(var_name="update", var_type=ap_fixed_pod_t_type)
             for_loop_3_codes.append(CodeOther(text="")) # 空行
 
             # out_batch.data[pe_idx].node_id = edge_batch.edges[pe_idx].dst_id;
             # (注意 HLSVar 的 name 属性现在匹配 .h 结构, 类型是 ap_uint20_type)
             out_batch_node_id_var = HLSVar(var_name="out_batch.data[pe_idx].node_id", var_type=ap_uint20_type)
+            DST_ID_VAR = HLSVar(var_name="edge_batch.edges[pe_idx].dst_id", var_type=HLSType(HLSBasicType.AP_UINT,width=20))
             #assign_expr_8 = HLSExpr(HLSExprT.CONST, "edge_batch.edges[pe_idx].dst_id")
             #for_loop_3_codes.append(CodeAssign(var=out_batch_node_id_var, expr=assign_expr_8))
 
@@ -3902,7 +4460,7 @@ axistream2stream:
             # SRC_PROP_VAR = src_prop_var
             # EDGE_WEIGHT_VAR = edge_weight_var
             top_vars = {
-                "DST_ID_VAR": out_batch_node_id_var,
+                "DST_ID_VAR": DST_ID_VAR,
                 "SRC_PROP_VAR": prop_var,
                 "EDGE_WEIGHT_VAR": edge_weight_var
             }
@@ -4023,8 +4581,8 @@ axistream2stream:
                                   struct_name="edge_t",
                                   struct_prop_names=["src_id", "dst_id"],
                                   sub_types=[node_id_type, ap_uint20_type])
-            if edge_t_type.name not in self.struct_definitions:
-                self.struct_definitions[edge_t_type.name] = (edge_t_type, edge_t_type.struct_prop_names)
+            if edge_t_type.name not in self.little_struct_definitions:
+                self.little_struct_definitions[edge_t_type.name] = (edge_t_type, edge_t_type.struct_prop_names)
 
             # struct edge_descriptor_batch_t
             edge_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[edge_t_type], array_dims=["PE_NUM"])
@@ -4032,16 +4590,16 @@ axistream2stream:
                                                    struct_name="edge_descriptor_batch_t",
                                                    struct_prop_names=["edges"],
                                                    sub_types=[edge_array_type])
-            if edge_descriptor_batch_t_type.name not in self.struct_definitions:
-                self.struct_definitions[edge_descriptor_batch_t_type.name] = (edge_descriptor_batch_t_type, edge_descriptor_batch_t_type.struct_prop_names)
+            if edge_descriptor_batch_t_type.name not in self.little_struct_definitions:
+                self.little_struct_definitions[edge_descriptor_batch_t_type.name] = (edge_descriptor_batch_t_type, edge_descriptor_batch_t_type.struct_prop_names)
 
             # struct update_t
             update_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
                                     struct_name="update_t_little",
                                     struct_prop_names=["node_id", "prop"],
                                     sub_types=[HLSType(HLSBasicType.AP_UINT,width=20), HLSType(HLSBasicType.AP_FIXED_POD)]) # .h: node_id 是 ap_uint<20>
-            if update_t_type.name not in self.struct_definitions:
-                self.struct_definitions[update_t_type.name] = (update_t_type, update_t_type.struct_prop_names)
+            if update_t_type.name not in self.little_struct_definitions:
+                self.little_struct_definitions[update_t_type.name] = (update_t_type, update_t_type.struct_prop_names)
 
             # struct update_tuple_t
             update_t_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[update_t_type], array_dims=["PE_NUM"])
@@ -4049,24 +4607,24 @@ axistream2stream:
                                           struct_name="update_tuple_t_little",
                                           struct_prop_names=["data"],
                                           sub_types=[update_t_array_type])
-            if update_tuple_t_type.name not in self.struct_definitions:
-                self.struct_definitions[update_tuple_t_type.name] = (update_tuple_t_type, update_tuple_t_type.struct_prop_names)
+            if update_tuple_t_type.name not in self.little_struct_definitions:
+                self.little_struct_definitions[update_tuple_t_type.name] = (update_tuple_t_type, update_tuple_t_type.struct_prop_names)
 
             # struct ppb_request_t
             ppb_request_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
                                          struct_name="ppb_request_t",
                                          struct_prop_names=["request_round", "end_flag"],
                                          sub_types=[HLSType(HLSBasicType.AP_UINT,width=32), bool_type]) # .h: ap_uint<32>, bool
-            if ppb_request_t_type.name not in self.struct_definitions:
-                self.struct_definitions[ppb_request_t_type.name] = (ppb_request_t_type, ppb_request_t_type.struct_prop_names)
+            if ppb_request_t_type.name not in self.little_struct_definitions:
+                self.little_struct_definitions[ppb_request_t_type.name] = (ppb_request_t_type, ppb_request_t_type.struct_prop_names)
 
             # struct ppb_response_t
             ppb_response_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
                                           struct_name="ppb_response_t",
                                           struct_prop_names=["data", "addr", "end_flag"],
                                           sub_types=[bus_word_t_type, HLSType(HLSBasicType.AP_UINT,width=32), bool_type]) # .h: bus_word_t, ap_uint<32>, bool
-            if ppb_response_t_type.name not in self.struct_definitions:
-                self.struct_definitions[ppb_response_t_type.name] = (ppb_response_t_type, ppb_response_t_type.struct_prop_names)
+            if ppb_response_t_type.name not in self.little_struct_definitions:
+                self.little_struct_definitions[ppb_response_t_type.name] = (ppb_response_t_type, ppb_response_t_type.struct_prop_names)
 
             # --- Stream 类型 ---
             edge_burst_stm_type = HLSType(HLSBasicType.STREAM, sub_types=[edge_descriptor_batch_t_type])
@@ -4080,10 +4638,10 @@ axistream2stream:
             ppb_response_stm_var = HLSVar(var_name="ppb_response_stm", var_type=ppb_response_stm_type)
             update_set_stm_var = HLSVar(var_name="update_set_stm", var_type=update_set_stm_type)
             memory_offset_var = HLSVar(var_name="memory_offset", var_type=uint_type)
-            part_edge_num_var = HLSVar(var_name="part_edge_num", var_type=uint_type)
+            total_edge_sets_var = HLSVar(var_name="total_edge_sets", var_type=uint_type)
 
             params.extend([edge_burst_stm_var, ppb_request_stm_var, ppb_response_stm_var, 
-                            update_set_stm_var, memory_offset_var, part_edge_num_var])
+                            update_set_stm_var, memory_offset_var, total_edge_sets_var])
             request_manager_func.params = params
 
             # --- 2. 函数体 ---
@@ -4095,9 +4653,9 @@ axistream2stream:
 
             # bus_word_t src_prop_buffer[PE_NUM][2][SRC_BUFFER_SIZE >> 4];
             # (SRC_BUFFER_SIZE >> 4) == (4096 >> 4) == 256
-            src_buffer_elem_type = HLSType(HLSBasicType.ARRAY, sub_types=[bus_word_t_type], array_dims=["(SRC_BUFFER_SIZE >> 4)"])
+            src_buffer_elem_type = HLSType(HLSBasicType.ARRAY, sub_types=[bus_word_t_type], array_dims=["PE_NUM"])
             src_buffer_mid_type = HLSType(HLSBasicType.ARRAY, sub_types=[src_buffer_elem_type], array_dims=[2])
-            src_prop_buffer_type = HLSType(HLSBasicType.ARRAY, sub_types=[src_buffer_mid_type], array_dims=["PE_NUM"])
+            src_prop_buffer_type = HLSType(HLSBasicType.ARRAY, sub_types=[src_buffer_mid_type], array_dims=["(SRC_BUFFER_SIZE >> 4)"])
             code_lines.append(CodeVarDecl(var_name="src_prop_buffer", var_type=src_prop_buffer_type))
             src_prop_buffer_var = HLSVar(var_name="src_prop_buffer", var_type=src_prop_buffer_type)
 
@@ -4121,9 +4679,8 @@ axistream2stream:
             # int32_t edge_set_cnt = 0;
             code_lines.append(CodeVarDecl(var_name="edge_set_cnt", var_type=int_type, init_val="0"))
             edge_set_cnt_var = HLSVar(var_name="edge_set_cnt", var_type=int_type)
-            # const int32_t total_edge_sets = part_edge_num >> LOG_PE_NUM;
-            code_lines.append(CodeVarDecl(var_name="total_edge_sets", var_type=int_type, init_val="(part_edge_num >> LOG_PE_NUM)", const=True))
-            total_edge_sets_var = HLSVar(var_name="total_edge_sets", var_type=int_type)
+
+            
             code_lines.append(CodeOther(text=""))
             # bool wait_flag = 0;
             code_lines.append(CodeVarDecl(var_name="wait_flag", var_type=bool_type, init_val="0"))
@@ -4307,7 +4864,7 @@ axistream2stream:
             port_to_var = {}
             for_2_codes.append(CodeOther(text="// Begin inline logic"))
             
-            for_2_codes.append(CodeVarDecl(var_name="DST_ID_VAR", var_type=node_id_type, init_val="an_edge_burst.edges[u].dst_id"))
+            # for_2_codes.append(CodeVarDecl(var_name="DST_ID_VAR", var_type=node_id_type, init_val="an_edge_burst.edges[u].dst_id"))
 
             top_vars = {
                 "DST_ID_VAR": dst_id_var,
@@ -4382,484 +4939,76 @@ axistream2stream:
 
             self.little_scatter_funcs.append(request_manager_func)
             self.little_top_dataflow_funcs.append(request_manager_func)
-#             ## Little part:
-# 
-# 
-#             request_manager_func = HLSFunction(name="request_manager", comp=comp)
-#             params_req: List[HLSVar] = []
-# 
-#             # --- 1. 定义类型和参数 ---
-# 
-#             # 基本类型
-#             int_type = HLSType(HLSBasicType.INT)
-#             uint_type = HLSType(HLSBasicType.UINT)
-#             uint8_type = HLSType(HLSBasicType.UINT8)
-#             bool_type = HLSType(HLSBasicType.BOOL)
-# 
-#             # Typedefs (来自 HLSBasicType)
-#             bus_word_t_type = HLSType(HLSBasicType.BUS_WORD_T)
-#             distance_t_type = HLSType(HLSBasicType.DISTANCE_T)
-#             ap_fixed_pod_t_type = HLSType(HLSBasicType.AP_FIXED_POD)
-#             ppb_request_pkt_t_type = HLSType(HLSBasicType.PPB_REQUEST_PKT_T)
-#             ppb_response_pkt_t_type = HLSType(HLSBasicType.PPB_RESPONSE_PKT_T)
-#             node_id_t_type = HLSType(HLSBasicType.NODE_ID)
-# 
-#             # --- 详细的 Struct 定义 (基于 graphyflow_little.h) ---
-# 
-#             # 依赖: struct edge_t
-#             edge_t_sub_types = [node_id_t_type, node_id_t_type]
-#             edge_t_prop_names = ["src_id", "dst_id"]
-#             edge_t_type = HLSType(HLSBasicType.STRUCT, 
-#                                   sub_types=edge_t_sub_types, 
-#                                   struct_name="edge_t", 
-#                                   struct_prop_names=edge_t_prop_names)
-#             if edge_t_type.name not in self.struct_definitions:
-#                 self.struct_definitions[edge_t_type.name] = (
-#                     edge_t_type,
-#                     edge_t_type.struct_prop_names,
-#                 )
-#             # 1. struct edge_descriptor_batch_t
-#             edge_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[edge_t_type], array_dims=["PE_NUM"])
-#             edge_descriptor_batch_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
-#                                                 struct_name="edge_descriptor_batch_t",
-#                                                 struct_prop_names=["edges"], # .h: 只有 'edges'
-#                                                 sub_types=[edge_array_type])
-#             if edge_descriptor_batch_t_type.name not in self.struct_definitions:
-#                 self.struct_definitions[edge_descriptor_batch_t_type.name] = (
-#                     edge_descriptor_batch_t_type,
-#                     edge_descriptor_batch_t_type.struct_prop_names,
-#                 )
-# 
-#             # 2. struct update_tuple_t
-#             node_id_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[node_id_t_type], array_dims=["PE_NUM"])
-#             prop_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[ap_fixed_pod_t_type], array_dims=["PE_NUM"])
-#             update_tuple_sub_types = [node_id_array_type, prop_array_type, bool_type, uint8_type]
-#             update_tuple_prop_names = ["node_id", "prop", "end_flag", "end_pos"]
-#             update_tuple_t_type = HLSType(HLSBasicType.STRUCT, 
-#                                           sub_types=update_tuple_sub_types, 
-#                                           struct_name="update_tuple_t", 
-#                                           struct_prop_names=update_tuple_prop_names)
-#             if update_tuple_t_type.name not in self.struct_definitions:
-#                 self.struct_definitions[update_tuple_t_type.name] = (
-#                     update_tuple_t_type,
-#                     update_tuple_t_type.struct_prop_names,
-#                 )
-#             # --- 结束 Struct 定义 ---
-# 
-# 
-#             # Param 1: hls::stream<edge_descriptor_batch_t> &edge_burst_stm
-#             edge_burst_stm_type = HLSType(HLSBasicType.STREAM, sub_types=[edge_descriptor_batch_t_type])
-#             param_edge_burst_stm = HLSVar(var_name="edge_burst_stm", var_type=edge_burst_stm_type)
-# 
-#             # Param 2: hls::stream<ppb_request_pkt_t> &ppb_request_stm
-#             ppb_request_stm_type = HLSType(HLSBasicType.STREAM, sub_types=[ppb_request_pkt_t_type])
-#             param_ppb_request_stm = HLSVar(var_name="ppb_request_stm", var_type=ppb_request_stm_type)
-# 
-#             # Param 3: hls::stream<ppb_response_pkt_t> &ppb_response_stm
-#             ppb_response_stm_type = HLSType(HLSBasicType.STREAM, sub_types=[ppb_response_pkt_t_type])
-#             param_ppb_response_stm = HLSVar(var_name="ppb_response_stm", var_type=ppb_response_stm_type)
-# 
-#             # Param 4: hls::stream<update_tuple_t> &update_set_stm
-#             update_set_stm_type = HLSType(HLSBasicType.STREAM, sub_types=[update_tuple_t_type])
-#             param_update_set_stm = HLSVar(var_name="update_set_stm", var_type=update_set_stm_type)
-# 
-#             # Param 5: int32_t part_edge_num
-#             param_part_edge_num = HLSVar(var_name="part_edge_num", var_type=int_type)
-# 
-#             params_req.extend([param_edge_burst_stm, param_ppb_request_stm, param_ppb_response_stm, param_update_set_stm, param_part_edge_num])
-#             request_manager_func.params = params_req
-# 
-#             # --- 2. 函数体 (构建本地列表) ---
-#             code_lines_req: List[HLSCodeLine] = []
-# 
-#             # bus_word_t src_prop_buffer[PE_NUM][2][SRC_BUFFER_SIZE >> 4];
-#             src_buffer_dims = ["PE_NUM", "2", "(SRC_BUFFER_SIZE >> 4)"] # 宏/表达式作为字符串
-#             src_prop_buffer_type = HLSType(HLSBasicType.ARRAY, sub_types=[bus_word_t_type], array_dims=src_buffer_dims)
-#             code_lines_req.append(CodeVarDecl(var_name="src_prop_buffer", var_type=src_prop_buffer_type))
-# 
-#             # Pragmas for src_prop_buffer
-#             code_lines_req.append(CodePragma(content="ARRAY_PARTITION variable = src_prop_buffer dim = 1 complete"))
-#             code_lines_req.append(CodePragma(content="BIND_STORAGE variable = src_prop_buffer type = RAM_S2P impl = BRAM"))
-#             code_lines_req.append(CodePragma(content="dependence variable = src_prop_buffer inter false"))
-# 
-#             # int32_t pp_read_idx = 0;
-#             code_lines_req.append(CodeVarDecl(var_name="pp_read_idx", var_type=int_type, init_val="0"))
-#             pp_read_idx_var = HLSVar(var_name="pp_read_idx", var_type=int_type)
-# 
-#             # int32_t pp_write_idx = 0;
-#             code_lines_req.append(CodeVarDecl(var_name="pp_write_idx", var_type=int_type, init_val="0"))
-#             pp_write_idx_var = HLSVar(var_name="pp_write_idx", var_type=int_type)
-# 
-#             # int32_t pp_reponse_idx = 0;
-#             code_lines_req.append(CodeVarDecl(var_name="pp_reponse_idx", var_type=int_type, init_val="0"))
-#             pp_reponse_idx_var = HLSVar(var_name="pp_reponse_idx", var_type=int_type)
-# 
-#             # int32_t pp_read_round = 0;
-#             code_lines_req.append(CodeVarDecl(var_name="pp_read_round", var_type=int_type, init_val="0"))
-#             pp_read_round_var = HLSVar(var_name="pp_read_round", var_type=int_type)
-# 
-#             # int32_t pp_write_round = 0;
-#             code_lines_req.append(CodeVarDecl(var_name="pp_write_round", var_type=int_type, init_val="0"))
-#             pp_write_round_var = HLSVar(var_name="pp_write_round", var_type=int_type)
-# 
-#             # int32_t pp_request_round = 0;
-#             code_lines_req.append(CodeVarDecl(var_name="pp_request_round", var_type=int_type, init_val="0"))
-#             pp_request_round_var = HLSVar(var_name="pp_request_round", var_type=int_type)
-# 
-#             # int32_t edge_set_cnt = 0;
-#             code_lines_req.append(CodeVarDecl(var_name="edge_set_cnt", var_type=int_type, init_val="0"))
-#             edge_set_cnt_var = HLSVar(var_name="edge_set_cnt", var_type=int_type)
-# 
-#             # const int32_t total_edge_sets = (part_edge_num + PE_NUM - 1) / PE_NUM;
-#             code_lines_req.append(CodeVarDecl(var_name="total_edge_sets", var_type=int_type, init_val="(part_edge_num + PE_NUM - 1) / PE_NUM", const=True))
-#             total_edge_sets_var = HLSVar(var_name="total_edge_sets", var_type=int_type)
-# 
-#             # bool wait_flag = 0;
-#             code_lines_req.append(CodeVarDecl(var_name="wait_flag", var_type=bool_type, init_val="0"))
-#             wait_flag_var = HLSVar(var_name="wait_flag", var_type=bool_type)
-# 
-#             # edge_descriptor_batch_t an_edge_burst;
-#             code_lines_req.append(CodeVarDecl(var_name="an_edge_burst", var_type=edge_descriptor_batch_t_type))
-#             an_edge_burst_var = HLSVar(var_name="an_edge_burst", var_type=edge_descriptor_batch_t_type)
-# 
-#             #pragma HLS ARRAY_PARTITION variable = an_edge_burst.edges complete dim = 0
-#             code_lines_req.append(CodePragma(content="ARRAY_PARTITION variable = an_edge_burst.edges complete dim = 0"))
-# 
-#             # ppb_request_pkt_t one_ppb_request;
-#             code_lines_req.append(CodeVarDecl(var_name="one_ppb_request", var_type=ppb_request_pkt_t_type))
-#             one_ppb_request_var = HLSVar(var_name="one_ppb_request", var_type=ppb_request_pkt_t_type)
-# 
-#             # ppb_response_pkt_t one_ppb_response;
-#             code_lines_req.append(CodeVarDecl(var_name="one_ppb_response", var_type=ppb_response_pkt_t_type))
-#             one_ppb_response_var = HLSVar(var_name="one_ppb_response", var_type=ppb_response_pkt_t_type)
-# 
-#             # distance_t real_edge_weight = 1.0;
-#             code_lines_req.append(CodeVarDecl(var_name="real_edge_weight", var_type=distance_t_type, init_val="1.0"))
-#             real_edge_weight_var = HLSVar(var_name="real_edge_weight", var_type=distance_t_type)
-# 
-#             # const ap_fixed_pod_t edge_weight = (*reinterpret_cast<ap_fixed_pod_t *>(&real_edge_weight));
-#             code_lines_req.append(CodeVarDecl(var_name="edge_weight", var_type=ap_fixed_pod_t_type, init_val="(*reinterpret_cast<ap_fixed_pod_t *>(&real_edge_weight))", const=True))
-#             edge_weight_var = HLSVar(var_name="edge_weight", var_type=ap_fixed_pod_t_type)
-# 
-#             # const uint32_t total_rounds = (part_edge_num + SRC_BUFFER_SIZE - 1) / SRC_BUFFER_SIZE;
-#             code_lines_req.append(CodeVarDecl(var_name="total_rounds", var_type=uint_type, init_val="(part_edge_num + SRC_BUFFER_SIZE - 1) / SRC_BUFFER_SIZE", const=True))
-#             total_rounds_var = HLSVar(var_name="total_rounds", var_type=uint_type)
-# 
-# 
-#             # while (true)
-#             while_1_codes: List[HLSCodeLine] = []
-#             while_1_expr = HLSExpr(HLSExprT.CONST, True) # 使用 Python bool
-#             while_1 = CodeWhile(codes=while_1_codes, iter_expr=while_1_expr)
-#             code_lines_req.append(while_1)
-# 
-#             # --- 在 while(true) 循环内部 ---
-#             # #pragma HLS PIPELINE II = 1
-#             while_1_codes.append(CodePragma(content="PIPELINE II = 1"))
-# 
-#             # if ((pp_request_round - pp_read_round) <= 1) { ... }
-#             if_1_codes: List[HLSCodeLine] = []
-#             # HLSExpr(HLSExprT.CONST, "...") 用于 CodeIf 的表达式
-#             if_1_expr = HLSExpr(HLSExprT.CONST, "((pp_request_round - pp_read_round) <= 1)")
-#             if_1 = CodeIf(expr=if_1_expr, if_codes=if_1_codes)
-#             while_1_codes.append(if_1)
-# 
-#             # --- 在 if( (pp_request_round - pp_read_round) <= 1 ) 内部 ---
-#             # if (pp_request_round < pp_read_round)
-#             if_2_codes: List[HLSCodeLine] = []
-#             if_2_expr = HLSExpr(HLSExprT.CONST, "(pp_request_round < pp_read_round)")
-#             if_2 = CodeIf(expr=if_2_expr, if_codes=if_2_codes)
-#             if_1_codes.append(if_2)
-#             # pp_request_round = pp_read_round;
-#             if_2_codes.append(CodeAssign(var=pp_request_round_var, expr=HLSExpr(HLSExprT.VAR, pp_read_round_var)))
-# 
-#             # one_ppb_request.data = pp_request_round;
-#             one_ppb_request_data_var = HLSVar(var_name="one_ppb_request.data", var_type=int_type) # 假设 data 匹配 round 类型
-#             if_1_codes.append(CodeAssign(var=one_ppb_request_data_var, expr=HLSExpr(HLSExprT.VAR, pp_request_round_var)))
-# 
-#             # one_ppb_request.last = 0;
-#             one_ppb_request_last_var = HLSVar(var_name="one_ppb_request.last", var_type=bool_type) # 假设
-#             if_1_codes.append(CodeAssign(var=one_ppb_request_last_var, expr=HLSExpr(HLSExprT.CONST, 0))) # 使用 Python int
-# 
-#             # ppb_request_stm.write(one_ppb_request);
-#             if_1_codes.append(CodeWriteStream(stream_var=param_ppb_request_stm, in_expr=one_ppb_request_var))
-# 
-#             # pp_request_round++;
-#             if_1_codes.append(CodeOther(text="pp_request_round++;"))
-# 
-# 
-#             # if (ppb_response_stm.read_nb(one_ppb_response)) { ... }
-#             # (修正：直接在 CodeIf 中使用 read_nb 表达式字符串)
-#             if_3_codes: List[HLSCodeLine] = []
-#             if_3_expr = HLSExpr(HLSExprT.CONST, "ppb_response_stm.read_nb(one_ppb_response)")
-#             if_3 = CodeIf(expr=if_3_expr, if_codes=if_3_codes)
-#             while_1_codes.append(if_3)
-# 
-#             # --- 在 if( read_nb ) 内部 ---
-#             # pp_write_round = one_ppb_response.dest << 4 >> LOG_SRC_BUFFER_SIZE;
-#             # (修正：CodeAssign 和 HLSExprT.CONST 字符串)
-#             if_3_codes.append(CodeAssign(var=pp_write_round_var, expr=HLSExpr(HLSExprT.CONST, "one_ppb_response.dest << 4 >> LOG_SRC_BUFFER_SIZE")))
-# 
-#             # bool write_buffer = pp_write_round & 0x1;
-#             if_3_codes.append(CodeVarDecl(var_name="write_buffer", var_type=bool_type, init_val="(pp_write_round & 0x1)"))
-#             write_buffer_var = HLSVar(var_name="write_buffer", var_type=bool_type)
-# 
-#             # int32_t write_idx = one_ppb_response.dest & ((SRC_BUFFER_SIZE >> 4) - 1);
-#             if_3_codes.append(CodeVarDecl(var_name="write_idx", var_type=int_type, init_val="one_ppb_response.dest & ((SRC_BUFFER_SIZE >> 4) - 1)"))
-#             write_idx_var = HLSVar(var_name="write_idx", var_type=int_type)
-# 
-#             # bus_word_t one_read_burst = one_ppb_response.data;
-#             if_3_codes.append(CodeVarDecl(var_name="one_read_burst", var_type=bus_word_t_type, init_val="one_ppb_response.data"))
-#             one_read_burst_var = HLSVar(var_name="one_read_burst", var_type=bus_word_t_type)
-# 
-#             # for (int u = 0; u < PE_NUM; u++) { ... }
-#             for_1_codes: List[HLSCodeLine] = []
-#             for_1 = CodeFor(codes=for_1_codes, iter_limit="PE_NUM", iter_cmp="<", iter_name="u", iter_start="0", iter_step="u++", iter_val_type=int_type)
-#             if_3_codes.append(for_1)
-#             # #pragma HLS UNROLL
-#             for_1_codes.append(CodePragma(content="UNROLL"))
-#             # src_prop_buffer[u][write_buffer][write_idx] = one_read_burst;
-#             for_1_codes.append(CodeOther(text="src_prop_buffer[u][write_buffer][write_idx] = one_read_burst;"))
-# 
-#             # --- 结束 if( read_nb ) ---
-# 
-#             # if (!wait_flag)
-#             if_4_codes: List[HLSCodeLine] = []
-#             if_4_expr = HLSExpr(HLSExprT.UOP, dfir.UnaryOp.NOT, operands=[HLSExpr(HLSExprT.VAR, wait_flag_var)])
-#             if_4 = CodeIf(expr=if_4_expr, if_codes=if_4_codes)
-#             while_1_codes.append(if_4)
-#             # an_edge_burst = edge_burst_stm.read();
-#             # (修正：添加 expr_val=None)
-#             if_4_codes.append(CodeAssign(var=an_edge_burst_var, expr=HLSExpr(HLSExprT.STREAM_READ, expr_val=None, operands=[HLSExpr(HLSExprT.VAR, param_edge_burst_stm)])))
-# 
-#             # pp_read_round = (an_edge_burst.edges[0].src_id / SRC_BUFFER_SIZE);
-#             while_1_codes.append(CodeOther(text="pp_read_round = (an_edge_burst.edges[0].src_id / SRC_BUFFER_SIZE);"))
-# 
-#             # wait_flag = (pp_read_round >= pp_write_round) ? 1 : 0;
-#             # (CodeAssign 和 HLSExprT.CONST 字符串)
-#             while_1_codes.append(CodeAssign(var=wait_flag_var, expr=HLSExpr(HLSExprT.CONST, "(pp_read_round >= pp_write_round) ? 1 : 0")))
-# 
-#             # bool exit_flag = (wait_flag == 0) ? (edge_set_cnt + 1 >= total_edge_sets) : (edge_set_cnt >= total_edge_sets);
-#             while_1_codes.append(CodeVarDecl(var_name="exit_flag", var_type=bool_type, init_val="(wait_flag == 0) ? (edge_set_cnt + 1 >= total_edge_sets) : (edge_set_cnt >= total_edge_sets)"))
-#             exit_flag_var = HLSVar(var_name="exit_flag", var_type=bool_type)
-# 
-#             # if (!wait_flag) { ... }
-#             if_5_codes: List[HLSCodeLine] = []
-#             if_5_expr = HLSExpr(HLSExprT.UOP, dfir.UnaryOp.NOT, operands=[HLSExpr(HLSExprT.VAR, wait_flag_var)])
-#             if_5 = CodeIf(expr=if_5_expr, if_codes=if_5_codes)
-#             while_1_codes.append(if_5)
-# 
-#             # --- 在 if( !wait_flag ) 内部 ---
-#             # bool read_buffer = pp_read_round & 0x1;
-#             if_5_codes.append(CodeVarDecl(var_name="read_buffer", var_type=bool_type, init_val="(pp_read_round & 0x1)"))
-#             read_buffer_var = HLSVar(var_name="read_buffer", var_type=bool_type)
-# 
-#             # update_tuple_t an_update_set;
-#             if_5_codes.append(CodeVarDecl(var_name="an_update_set", var_type=update_tuple_t_type))
-#             an_update_set_var = HLSVar(var_name="an_update_set", var_type=update_tuple_t_type)
-# 
-#             # Pragmas for an_update_set
-#             if_5_codes.append(CodePragma(content="ARRAY_PARTITION variable = an_update_set.prop complete dim = 0"))
-#             if_5_codes.append(CodePragma(content="ARRAY_PARTITION variable = an_update_set.node_id complete dim = 0"))
-# 
-#             # for (int u = 0; u < PE_NUM; u++) { ... }
-#             for_2_codes: List[HLSCodeLine] = []
-#             for_2 = CodeFor(codes=for_2_codes, iter_limit="PE_NUM", iter_cmp="<", iter_name="u", iter_start="0", iter_step="u++", iter_val_type=int_type)
-#             if_5_codes.append(for_2)
-# 
-#             # --- 在 for(u) 内部 ---
-#             # #pragma HLS UNROLL
-#             for_2_codes.append(CodePragma(content="UNROLL"))
-# 
-#             # ap_uint<31> idx = (an_edge_burst.edges[u].src_id % SRC_BUFFER_SIZE);
-#             ap_uint_31_type = HLSType(basic_type=HLSBasicType.AP_UINT, width=31)
-#             for_2_codes.append(CodeVarDecl(var_name="idx", var_type=ap_uint_31_type, init_val="(an_edge_burst.edges[u].src_id % SRC_BUFFER_SIZE)"))
-#             idx_var = HLSVar(var_name="idx", var_type=ap_uint_31_type)
-# 
-#             # ap_uint<30> uram_row_idx = idx >> 4;
-#             ap_uint_30_type = HLSType(basic_type=HLSBasicType.AP_UINT, width=30)
-#             for_2_codes.append(CodeVarDecl(var_name="uram_row_idx", var_type=ap_uint_30_type, init_val="(idx >> 4)"))
-#             uram_row_idx_var = HLSVar(var_name="uram_row_idx", var_type=ap_uint_30_type)
-# 
-#             # ap_uint<30> uram_row_offset = (idx & 0xf);
-#             for_2_codes.append(CodeVarDecl(var_name="uram_row_offset", var_type=ap_uint_30_type, init_val="(idx & 0xf)"))
-#             uram_row_offset_var = HLSVar(var_name="uram_row_offset", var_type=ap_uint_30_type)
-# 
-#             # bus_word_t uram_row = src_prop_buffer[u][read_buffer][uram_row_idx];
-#             for_2_codes.append(CodeOther(text="bus_word_t uram_row = src_prop_buffer[u][read_buffer][uram_row_idx];"))
-# 
-#             # ap_fixed_pod_t src_prop = get_val_from_bus(uram_row, uram_row_offset);
-#             for_2_codes.append(CodeVarDecl(var_name="src_prop", var_type=ap_fixed_pod_t_type, init_val="get_val_from_bus(uram_row, uram_row_offset)"))
-#             src_prop_var = HLSVar(var_name="src_prop", var_type=ap_fixed_pod_t_type)
-# 
-# 
-#             #============= begin inline logic ===============
-#             port_to_var = {}
-#             for_2_codes.append(CodeOther(text="// Begin inline logic"))
-#             DST_ID_VAR = HLSVar(var_name="DST_ID_VAR", var_type=node_id_type)
-#             for_2_codes.append(CodeVarDecl(var_name="DST_ID_VAR", var_type=node_id_type, init_val="an_edge_burst.edges[u].dst_id"))
-#             SRC_PROP_VAR = src_prop_var
-#             EDGE_WEIGHT_VAR = edge_weight_var
-#             top_vars = {
-#                 "DST_ID_VAR": DST_ID_VAR,
-#                 "SRC_PROP_VAR": SRC_PROP_VAR,
-#                 "EDGE_WEIGHT_VAR": EDGE_WEIGHT_VAR
-#             }
-#             # an_update_set.prop[u] = (src_prop + edge_weight);
-#             #for_2_codes.append(CodeOther(text="an_update_set.prop[u] = (src_prop + edge_weight);"))
-# 
-#             # an_update_set.node_id[u] = an_edge_burst.edges[u].dst_id;
-#             #for_2_codes.append(CodeOther(text="an_update_set.node_id[u] = an_edge_burst.edges[u].dst_id;"))
-#             an_update_set_prop_var = HLSVar(var_name="an_update_set.prop[u]", var_type=ap_fixed_pod_t_type)
-#             an_update_set_node_id_var = HLSVar(var_name="an_update_set.node_id[u]", var_type=node_id_type)
-#             top_vars["FINAL_PROP_VAR"] = an_update_set_prop_var
-#             top_vars["FINAL_DST_ID_VAR"] = an_update_set_node_id_var
-#             port_property = {} # 只能是src , dst, edge_prop这三项或组合
-#             inlinecodes = []
-#             for comp in scatter_stage_comps:
-#                 port_property,inlinecodes = self._scatter_analyze(comp,port_property,port_to_var,top_vars,target_codes=inlinecodes)
-#             for_2_codes.extend(inlinecodes)
-#             for_2_codes.append(CodeOther(text="// End inline logic"))
-#             # =========== end inline logic ==============
-#             # --- 结束 for(u) ---
-# 
-#             # update_set_stm.write(an_update_set);
-#             if_5_codes.append(CodeWriteStream(stream_var=param_update_set_stm, in_expr=an_update_set_var))
-# 
-#             # edge_set_cnt++;
-#             if_5_codes.append(CodeOther(text="edge_set_cnt++;"))
-# 
-#             # --- 结束 if( !wait_flag ) ---
-# 
-#             # if (exit_flag) { ... }
-#             if_6_codes: List[HLSCodeLine] = []
-#             if_6_expr = HLSExpr(HLSExprT.VAR, exit_flag_var)
-#             if_6 = CodeIf(expr=if_6_expr, if_codes=if_6_codes)
-#             while_1_codes.append(if_6)
-# 
-#             # --- 在 if( exit_flag ) 内部 ---
-#             # one_ppb_request.last = 1;
-#             if_6_codes.append(CodeAssign(var=one_ppb_request_last_var, expr=HLSExpr(HLSExprT.CONST, 1))) # 使用 Python int
-# 
-#             # ppb_request_stm.write(one_ppb_request);
-#             if_6_codes.append(CodeWriteStream(stream_var=param_ppb_request_stm, in_expr=one_ppb_request_var))
-# 
-#             # while (true) { ... } (内部退出循环)
-#             while_2_codes: List[HLSCodeLine] = []
-#             while_2_expr = HLSExpr(HLSExprT.CONST, True) # 使用 Python bool
-#             while_2 = CodeWhile(codes=while_2_codes, iter_expr=while_2_expr)
-#             if_6_codes.append(while_2)
-# 
-#             # --- 在内部 while(true) 循环 ---
-#             # ppb_response_stm.read(one_ppb_response);
-#             while_2_codes.append(CodeOther(text="ppb_response_stm.read(one_ppb_response);"))
-# 
-#             # if (one_ppb_response.last)
-#             if_7_codes: List[HLSCodeLine] = []
-#             if_7_expr = HLSExpr(HLSExprT.CONST, "one_ppb_response.last") # 使用 C++ 表达式字符串
-#             if_7 = CodeIf(expr=if_7_expr, if_codes=if_7_codes)
-#             while_2_codes.append(if_7)
-#             # break;
-#             if_7_codes.append(CodeBreak())
-# 
-#             # --- 结束内部 while(true) ---
-# 
-#             # break; (退出外部 while 循环)
-#             if_6_codes.append(CodeBreak())
-# 
-#             # --- 结束 if( exit_flag ) ---
-#             # --- 结束 while(true) ---
-# 
-# 
-#             # --- 3. 显式地将所有代码行赋值给函数 ---
-#             request_manager_func.codes = code_lines_req
-# 
-#             self.little_scatter_funcs.append(request_manager_func)
-#             self.little_top_dataflow_funcs.append(request_manager_func)
-# 
-# 
-#             set_word_in_bus_func = HLSFunction(name="set_word_in_bus", comp=comp)
-#             params_swib: List[HLSVar] = []
-# 
-#             # --- 1. 定义类型和参数 ---
-# 
-#             # 基本类型
-#             int_type = HLSType(HLSBasicType.INT)
-#             bus_word_t_type = HLSType(HLSBasicType.BUS_WORD_T)
-#             ap_fixed_pod_t_type = HLSType(HLSBasicType.AP_FIXED_POD)
-# 
-#             # Param 1: bus_word_t &bus_word
-#             # (HLSType 不需要 &，gen_code 会处理引用)
-#             param_bus_word = HLSVar(var_name="bus_word", var_type=bus_word_t_type)
-# 
-#             # Param 2: int idx
-#             param_idx = HLSVar(var_name="idx", var_type=int_type)
-# 
-#             # Param 3: ap_fixed_pod_t pod_low
-#             param_pod_low = HLSVar(var_name="pod_low", var_type=ap_fixed_pod_t_type)
-# 
-#             # Param 4: ap_fixed_pod_t pod_high
-#             param_pod_high = HLSVar(var_name="pod_high", var_type=ap_fixed_pod_t_type)
-# 
-#             params_swib.extend([param_bus_word, param_idx, param_pod_low, param_pod_high])
-#             set_word_in_bus_func.params = params_swib
-# 
-#             # --- 2. 函数体 (构建本地列表) ---
-#             code_lines_swib: List[HLSCodeLine] = []
-# 
-#             # #pragma HLS INLINE
-#             code_lines_swib.append(CodePragma(content="INLINE"))
-# 
-#             # --- switch (idx) ---
-#             # (按照要求，使用 CodeOther 实现整个 switch 块)
-#             switch_block_text = """switch (idx) {
-#                 case 0:
-#                     bus_word.range(31, 0) = pod_low;
-#                     bus_word.range(63, 32) = pod_high;
-#                     break;
-#                 case 1:
-#                     bus_word.range(95, 64) = pod_low;
-#                     bus_word.range(127, 96) = pod_high;
-#                     ;
-#                     break;
-#                 case 2:
-#                     bus_word.range(159, 128) = pod_low;
-#                     bus_word.range(191, 160) = pod_high;
-#                     break;
-#                 case 3:
-#                     bus_word.range(223, 192) = pod_low;
-#                     bus_word.range(255, 224) = pod_high;
-#                     break;
-#                 case 4:
-#                     bus_word.range(287, 256) = pod_low;
-#                     bus_word.range(319, 288) = pod_high;
-#                     break;
-#                 case 5:
-#                     bus_word.range(351, 320) = pod_low;
-#                     bus_word.range(383, 352) = pod_high;
-#                     break;
-#                 case 6:
-#                     bus_word.range(415, 384) = pod_low;
-#                     bus_word.range(447, 416) = pod_high;
-#                     break;
-#                 case 7:
-#                     bus_word.range(479, 448) = pod_low;
-#                     bus_word.range(511, 480) = pod_high;
-#                     break;
-#                 default:
-#                     break;
-#                 }"""
-#             code_lines_swib.append(CodeOther(text=switch_block_text))
-# 
-# 
-#             # --- 3. 显式地将所有代码行赋值给函数 ---
-#             set_word_in_bus_func.codes = code_lines_swib
-#             self.little_scatter_funcs.append(set_word_in_bus_func)
-# 
-        
+
     def process_gather(self,gather_stage_comps : List[dfir.Component]):
         assert len(gather_stage_comps) == 1
+        
         reduce_comp = gather_stage_comps[0]
         self._translate_reduce_op(reduce_comp)
+
+        # process little and big merger
+        ## little:
+        # ================  begin inline reduce logic =====================
+        reduce_codes = []
+        reduce_codes.append(CodeComment(text="=======  begin inline reduce logic ===="))
+        port_to_var = {}
+        A_key = HLSVar(var_name="A_key",var_type=HLSType(basic_type=HLSBasicType.AP_UINT,width=20))
+        B_key = HLSVar(var_name="B_key",var_type=HLSType(basic_type=HLSBasicType.AP_UINT,width=20))
+        
+        
+        top_vars = {
+            "IN_VAR_A_key":A_key,
+            "IN_VAR_B_key":B_key,
+            "IN_VAR_A_t":HLSVar(var_name="uram_low",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
+            "IN_VAR_B_t":HLSVar(var_name="update_low",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
+
+            "OUT_VAR" : HLSVar(var_name="uram_low",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
+        }
+        port_property = {}
+        target_codes = []
+        port_property,target_codes = self._analyse_unit_reduce(reduce_comp ,group="unit",port_property=port_property,port_to_var=port_to_var,top_vars=top_vars,target_codes=target_codes)
+        reduce_codes.extend(target_codes)
+
+        top_vars = {
+            "IN_VAR_A_key":A_key,
+            "IN_VAR_B_key":B_key,
+            "IN_VAR_A_t":HLSVar(var_name="uram_high",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
+            "IN_VAR_B_t":HLSVar(var_name="update_high",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
+
+            "OUT_VAR" : HLSVar(var_name="uram_high",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
+        }
+        port_property = {}
+        target_codes = []
+        port_property,target_codes = self._analyse_unit_reduce(reduce_comp ,group="unit",port_property=port_property,port_to_var=port_to_var,top_vars=top_vars,target_codes=target_codes)
+        reduce_codes.extend(target_codes)
+
+
+        reduce_codes.append(CodeComment(text="=======  end inline reduce logic ===="))
+        
+        self.little_merger_inline_codes = reduce_codes
+        ## big:
+        reduce_codes = []
+        reduce_codes.append(CodeComment(text="=======  begin inline reduce logic ===="))
+        port_to_var = {}
+        A_key = HLSVar(var_name="A_key",var_type=HLSType(basic_type=HLSBasicType.AP_UINT,width=20))
+        B_key = HLSVar(var_name="B_key",var_type=HLSType(basic_type=HLSBasicType.AP_UINT,width=20))
+        
+        
+        top_vars = {
+            "IN_VAR_A_key":A_key,
+            "IN_VAR_B_key":B_key,
+            "IN_VAR_A_t":HLSVar(var_name="tmp_prop_arrary[j]",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
+            "IN_VAR_B_t":HLSVar(var_name="update",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
+
+            "OUT_VAR" : HLSVar(var_name="tmp_prop_arrary[j]",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
+        }
+        port_property = {}
+        target_codes = []
+        port_property,target_codes = self._analyse_unit_reduce(reduce_comp ,group="unit",port_property=port_property,port_to_var=port_to_var,top_vars=top_vars,target_codes=target_codes)
+        reduce_codes.extend(target_codes)
+        reduce_codes.append(CodeComment(text=" =======  end inline reduce logic ===="))
+        self.big_merger_inline_codes = reduce_codes
+        # ================ end inline reduce logic ========================
             
     def process_apply(self,apply_stage_comps : List[dfir.Component]):
 
@@ -4876,8 +5025,8 @@ axistream2stream:
                                                   struct_name="in_write_burst_w_dst_pkt_t",
                                                   struct_prop_names=["data", "dest_addr", "end_flag"],
                                                   sub_types=[bus_word_t_type, uint32_type, bool_type])
-        if in_write_burst_w_dst_pkt_t_type.name not in self.struct_definitions:
-            self.struct_definitions[in_write_burst_w_dst_pkt_t_type.name] = (
+        if in_write_burst_w_dst_pkt_t_type.name not in self.shared_struct_definitions:
+            self.shared_struct_definitions[in_write_burst_w_dst_pkt_t_type.name] = (
                 in_write_burst_w_dst_pkt_t_type,
                 in_write_burst_w_dst_pkt_t_type.struct_prop_names,
             )
@@ -4978,7 +5127,7 @@ axistream2stream:
 
         # ap_fixed_pod_t new_prop = (old < update) ? old : update;
         new_prop_var = HLSVar(var_name="new_prop", var_type=ap_fixed_pod_t_type)
-
+        for_codes.append(CodeVarDecl(var_name="new_prop", var_type=ap_fixed_pod_t_type))
         # ================ begin inline fused op =============================
         for_codes.append(CodeOther(text="// Begin inline fused op"))
         inline_codes = []
@@ -5099,9 +5248,11 @@ axistream2stream:
         big_source_code , little_source_code = self._generate_source_file()
 
         big_header_code , little_header_code, shared_kernel_params= self._generate_header_file()
+        
+        little_merger_inline_codes,big_merger_inline_codes = self._generate_merger()
         apply_kernel = self._generate_apply()
         
 
-        return big_header_code, little_header_code, shared_kernel_params, big_source_code, little_source_code , apply_kernel
+        return big_header_code, little_header_code, shared_kernel_params, big_source_code, little_source_code , apply_kernel,little_merger_inline_codes,big_merger_inline_codes
         
     

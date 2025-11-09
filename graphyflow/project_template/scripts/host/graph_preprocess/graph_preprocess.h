@@ -10,22 +10,41 @@
 #include <vector>
 
 /**
+ * @struct PipelineEdges
+ * @brief Holds edge data for a single pipeline instance.
+ */
+typedef struct PipelineEdges {
+    unsigned int pipeline_id;
+    unsigned int num_edges;
+    std::vector<int> offsets; // Per-vertex offsets for this pipeline's edges
+    std::vector<int> columns; // Destination IDs
+    std::vector<int> weights; // Edge weights
+} PipelineEdges;
+
+/**
  * @struct PartitionDescriptor
- * @brief Describes a single graph partition for one kernel.
+ * @brief Describes a single graph partition (either big or little).
  * * This structure holds a self-contained CSR representation of a graph
  * partition, including the mapping between its local, compressed vertex IDs and
- * the original global vertex IDs.
+ * the original global vertex IDs. Edges are distributed among multiple
+ * pipelines.
  */
 typedef struct PartitionDescriptor {
     // Metadata about the partition
-    unsigned int num_edges;
+    unsigned int num_edges;    // Total edges across all pipelines
     unsigned int num_vertices; // Number of vertices *within this partition*
+    unsigned int num_dsts;     // Number of destination vertices
     bool is_dense;             // True for little kernel, false for big kernel
-    unsigned int kernel_id; // The kernel instance this partition is assigned to
+    unsigned int
+        num_pipelines; // Number of pipeline instances for this partition
 
-    // The core graph data for this partition in CSR format
-    // It includes the compressed graph topology and vertex ID mappings.
-    GraphCSR partitioned_graph;
+    // The core graph data for this partition
+    // Vertex mappings are shared across all pipelines
+    std::unordered_map<int, int> vtx_map;     // Global ID -> Local ID
+    std::unordered_map<int, int> vtx_map_rev; // Local ID -> Global ID
+
+    // Edge data distributed across pipelines
+    std::vector<PipelineEdges> pipeline_edges; // One entry per pipeline
 
 } PartitionDescriptor;
 

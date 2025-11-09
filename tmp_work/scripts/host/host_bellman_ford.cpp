@@ -10,6 +10,9 @@ bool host_bellman_ford_iteration(const GraphCSR &graph,
         if (distances[u] != INFINITY_DIST) {
             for (int i = graph.offsets[u]; i < graph.offsets[u + 1]; ++i) {
                 int v = graph.columns[i];
+                if ((v & 0x40000000) != 0) {
+                    continue; // Skip dummy edges
+                }
                 int weight = graph.weights[i];
 
                 // Relaxation step

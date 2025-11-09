@@ -10,7 +10,10 @@ from .newbackend_manager import BackendManager
 
 
 # --- CONFIGURATION SECTION ---
+INIT_VALUE = "16384.0"
 # You can change the number of kernels and their HBM mapping here.
+
+# 
 NUM_BIG_KERNELS = 3
 NUM_LITTLE_KERNELS = 11
 
@@ -31,7 +34,31 @@ big_merger_slr = ["SLR1"]
 
 apply_kernel_slr = ["SLR1"]
 hbm_writer_slr = ["SLR0"]
+# 
+# 
+# 
 
+# NUM_BIG_KERNELS = 1
+# NUM_LITTLE_KERNELS = 1
+# 
+# # HBM channel IDs for Big Kernels. The list length must match NUM_BIG_KERNELS.
+# big_kernel_hbm_edge_id = [22]
+# big_kernel_hbm_node_id = [23] # for hbm writer
+# 
+# little_kernel_hbm_edge_id = [0]
+# little_kernel_hbm_node_id = [1] # for hbm writer
+# 
+# apply_kernel_hbm_node_id = [30]
+# hbm_writer_output_id = [1]
+# big_kernel_slr = ["SLR2"]
+# little_kernel_slr = ["SLR0"]
+# 
+# little_merger_slr = ["SLR1"]
+# big_merger_slr = ["SLR1"]
+# 
+# apply_kernel_slr = ["SLR1"]
+# hbm_writer_slr = ["SLR0"]
+# 
 
 # --- END CONFIGURATION SECTION ---
 
@@ -94,8 +121,10 @@ def _create_cfg(dest: Path, kernel_name: str):
 
     content.append(f"nk=hbm_writer:1")
     content.append(f"nk=apply_kernel:1")
-    content.append(f"nk=little_merger:1")
-    content.append(f"nk=big_merger:1")
+    if NUM_BIG_KERNELS >0 :
+        content.append(f"nk=little_merger:1")
+    if NUM_LITTLE_KERNELS > 0:
+        content.append(f"nk=big_merger:1")
 
     # --- 2. HBM Port Mapping (sp) ---
     content.append("\n# --- 2. HBM Port Mapping (sp) ---")
@@ -225,7 +254,11 @@ def _create_cfg(dest: Path, kernel_name: str):
 def _generate_hbm_writer():
     code = "extern \"C\" void hbm_writer(\n"
     for i in range(NUM_LITTLE_KERNELS+NUM_BIG_KERNELS):
-        code += f"    bus_word_t *src_props_{i+1},\n"
+        code += f"    bus_word_t *src_prop_{i+1},\n"
+
+    code += "    bus_word_t *output,\n"
+    code += "    uint32_t num_partitions_little,\n"
+    code += "    uint32_t num_partitions_big,\n"
 
     for i in range(NUM_LITTLE_KERNELS):
         code += f"    hls::stream<ppb_request_pkt_t> &ppb_req_stream_{i+1},\n"
@@ -234,9 +267,7 @@ def _generate_hbm_writer():
         code += f"    hls::stream<cacheline_request_pkt_t> &cacheline_req_stream_{i+1},\n"
         code += f"    hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream_{i+1},\n"
 
-    code += "    bus_word_t *output,\n"
-    code += "    uint32_t num_partitions_little,\n"
-    code += "    uint32_t num_partitions_big,\n"
+   
     code += "hls::stream<write_burst_w_dst_pkt_t> &write_burst_stream) {\n"
 
     for i in range(NUM_LITTLE_KERNELS+NUM_BIG_KERNELS):
@@ -246,14 +277,20 @@ def _generate_hbm_writer():
         code += f"#pragma HLS INTERFACE s_axilite port = src_prop_{i+1} bundle = control\n"
     
 
-    code += "#pragma HLS INTERFACE s_axilite port = output  put bundle = control\n "
+    code += "#pragma HLS INTERFACE s_axilite port = output bundle = control\n "
     code += "#pragma HLS INTERFACE s_axilite port = num_partitions_little bundle = control\n"
     code += "#pragma HLS INTERFACE s_axilite port = num_partitions_big bundle = control\n"
     code += "#pragma HLS INTERFACE s_axilite port = return bundle = control\n"
     code += "#pragma HLS DATAFLOW\n"
 
     for i in range(NUM_LITTLE_KERNELS):
-        code += f"    little_node_prop_loader({i}, src_prop_{i+1}, num_partitions_little,ppb_req_stream_{i+1}, ppb_resp_stream_{i+1});\n"
+        code += f"hls::stream<little_ppb_resp_t> little_prop_loader_out_{i+1};\n"
+        code += f"#pragma HLS STREAM variable = little_prop_loader_out_{i} depth = 16\n"
+    
+    for i in range(NUM_LITTLE_KERNELS):
+        code += f"    little_node_prop_loader({i}, src_prop_{i+1}, num_partitions_little,ppb_req_stream_{i+1}, little_prop_loader_out_{i+1});\n"
+        code += f"    little_response_packer({i}, little_prop_loader_out_{i+1}, ppb_resp_stream_{i+1},num_partitions_little);\n"
+
     for i in range(NUM_BIG_KERNELS):
         code += f"    big_node_prop_loader({i}, src_prop_{i+NUM_LITTLE_KERNELS+1}, num_partitions_big,cacheline_req_stream_{i+1}, cacheline_resp_stream_{i+1});\n"
 
@@ -261,7 +298,7 @@ def _generate_hbm_writer():
     code += "}\n"
 
     return code
-def _generate_little_merger():
+def _generate_little_merger(little_merger_inline_codes):
 
     code = "#include \"shared_kernel_params.h\"\n\n"
     code += "void merge_little_kernels(\n"
@@ -270,17 +307,17 @@ def _generate_little_merger():
         code += f"    hls::stream<little_out_pkt_t> &little_kernel_{i+1}_out_stream,\n"
     code += "hls::stream<write_burst_pkt_t> &kernel_out_stream){\n"
 
-    code +="""
+    code +=f"""
     little_out_pkt_t tmp_prop_pkt[LITTLE_MERGER_LENGTH];
 #pragma HLS ARRAY_PARTITION variable = tmp_prop_pkt dim = 0 complete
 
     bool process_flag[LITTLE_MERGER_LENGTH];
 #pragma HLS ARRAY_PARTITION variable = process_flag dim = 0 complete
 
-    for (int i = 0; i < LITTLE_MERGER_LENGTH; i++) {
+    for (int i = 0; i < LITTLE_MERGER_LENGTH; i++) {{
 #pragma HLS unroll
         process_flag[i] = 0;
-    }
+    }}
 
     reduce_word_t merged_write_burst;
 
@@ -288,11 +325,14 @@ def _generate_little_merger():
 
     uint32_t inner_idx = 0;
 
-    distance_t max_val = (distance_t)(16384.0);
+    distance_t max_val = (distance_t)({INIT_VALUE});
     ap_fixed_pod_t max_pod = *reinterpret_cast<ap_fixed_pod_t *>(&max_val);
 
+    //distance_t cc_ini = (distance_t)(0.0);
+    //ap_fixed_pod_t cc_ini_pod = *reinterpret_cast<ap_fixed_pod_t *>(&cc_ini);
+
 merge_tmp_prop_big_krnls:
-    while (true) {
+    while (true) {{
 #pragma HLS pipeline style = flp
 """
     for i in range(NUM_LITTLE_KERNELS):
@@ -308,22 +348,21 @@ merge_tmp_prop_big_krnls:
     
     code += "        1;\n"
 
-    code += """
-if (merge_flag) {
+    code += f"""
+if (merge_flag) {{
             ap_fixed_pod_t uram_high = max_pod;;
             ap_fixed_pod_t uram_low = max_pod;
 
-            for (int i = 0; i < LITTLE_MERGER_LENGTH; i++) {
+            //ap_fixed_pod_t uram_high = cc_ini_pod;//max_pod;;
+            //ap_fixed_pod_t uram_low = cc_ini_pod;//max_pod;
+
+            for (int i = 0; i < LITTLE_MERGER_LENGTH; i++) {{
 #pragma HLS UNROLL
                 ap_fixed_pod_t update_low = tmp_prop_pkt[i].data.range(31, 0);
                 ap_fixed_pod_t update_high = tmp_prop_pkt[i].data.range(63, 32);
-                uram_low = (uram_low < update_low || update_low == 0x0)
-                               ? uram_low
-                               : update_low;
-                uram_high = (uram_high < update_high || update_high == 0x0)
-                                ? uram_high
-                                : update_high;
-            }
+
+                {little_merger_inline_codes}
+            }}
 
             merged_write_burst.range(31, 0) = uram_low;
             merged_write_burst.range(63, 32) = uram_high;
@@ -332,22 +371,22 @@ if (merge_flag) {
                 merged_write_burst;
             inner_idx++;
 
-            if (inner_idx == 8) {
+            if (inner_idx == 8) {{
                 write_burst_pkt_t out_pkt;
                 out_pkt.data = one_write_burst;
                 out_pkt.last = 0;
                 kernel_out_stream.write(out_pkt);
                 inner_idx = 0;
                 one_write_burst = 0;
-            }
+            }}
 
-            for (int i = 0; i < LITTLE_MERGER_LENGTH; i++) {
+            for (int i = 0; i < LITTLE_MERGER_LENGTH; i++) {{
 #pragma HLS unroll
                 process_flag[i] = 0;
-            }
-        }
-    }
-}
+            }}
+        }}
+    }}
+}}
 """
     code +="\n\n"
 
@@ -370,7 +409,7 @@ if (merge_flag) {
 
     return code
 
-def _generate_big_merger():
+def _generate_big_merger(big_merger_inline_codes):
     code = "#include \"shared_kernel_params.h\"\n\n"
 
     code += "void merge_big_kernels("
@@ -380,17 +419,17 @@ def _generate_big_merger():
     
     code += "hls::stream<write_burst_pkt_t> &kernel_out_stream) {\n"
 
-    code += """
+    code += f"""
  write_burst_pkt_t tmp_prop_pkt[BIG_MERGER_LENGTH];
 #pragma HLS ARRAY_PARTITION variable = tmp_prop_pkt dim = 0 complete
 
     bool process_flag[BIG_MERGER_LENGTH];
 #pragma HLS ARRAY_PARTITION variable = process_flag dim = 0 complete
 
-    for (int i = 0; i < BIG_MERGER_LENGTH; i++) {
+    for (int i = 0; i < BIG_MERGER_LENGTH; i++) {{
 #pragma HLS unroll
         process_flag[i] = 0;
-    }
+    }}
 
     bus_word_t merged_write_burst;
 
@@ -401,11 +440,15 @@ def _generate_big_merger():
     ap_fixed_pod_t tmp_prop_arrary[16];
 #pragma HLS ARRAY_PARTITION variable = tmp_prop_arrary dim = 0 complete
 
-    distance_t max_val = (distance_t)(16384.0);
+    distance_t max_val = (distance_t)({INIT_VALUE});
     ap_fixed_pod_t max_pod = *reinterpret_cast<ap_fixed_pod_t *>(&max_val);
 
+
+    // distance_t cc_ini = (distance_t)(0.0);
+    // ap_fixed_pod_t cc_ini_pod = *reinterpret_cast<ap_fixed_pod_t *>(&cc_ini);
+
 merge_tmp_prop_big_krnls:
-    while (true) {
+    while (true) {{
 #pragma HLS pipeline style = flp
 """
     for i in range(NUM_BIG_KERNELS):
@@ -417,42 +460,40 @@ merge_tmp_prop_big_krnls:
         code += f"        process_flag[{i}] & \n"
     code += "                        1;\n"
 
-    code += """
-if (merge_flag) {
-            for (int i = 0; i < 16; i++) {
+    code += f"""
+if (merge_flag) {{
+            for (int i = 0; i < 16; i++) {{
 #pragma HLS UNROLL
                 tmp_prop_arrary[i] = max_pod;
-            }
+                
+            }}
 
-            for (int i = 0; i < BIG_MERGER_LENGTH; i++) {
+            for (int i = 0; i < BIG_MERGER_LENGTH; i++) {{
 #pragma HLS UNROLL
-                for (int j = 0; j < 16; j++) {
+                for (int j = 0; j < 16; j++) {{
 #pragma HLS UNROLL
                     ap_fixed_pod_t update =
                         tmp_prop_pkt[i].data.range(31 + (j << 5), (j << 5));
-                    tmp_prop_arrary[j] =
-                        (tmp_prop_arrary[j] < update || update == 0x0)
-                            ? tmp_prop_arrary[j]
-                            : update;
-                }
-            }
+                    {big_merger_inline_codes}
+                }}
+            }}
 
-            for (int i = 0; i < 16; i++) {
+            for (int i = 0; i < 16; i++) {{
 #pragma HLS UNROLL
                 merged_write_burst.range(31 + (i << 5), (i << 5)) =
                     tmp_prop_arrary[i];
-            }
+            }}
 
             one_write_burst.data = merged_write_burst;
             kernel_out_stream.write(one_write_burst);
 
-            for (int i = 0; i < BIG_MERGER_LENGTH; i++) {
+            for (int i = 0; i < BIG_MERGER_LENGTH; i++) {{
 #pragma HLS unroll
                 process_flag[i] = 0;
-            }
-        }
-    }
-}
+            }}
+        }}
+    }}
+}}
 """
     code +="\n\n"
     code +="extern \"C\" void\n"
@@ -496,15 +537,17 @@ apply_kernel(bus_word_t *node_props, uint32_t little_kernel_length,
     code += "hbm_writer(\n"
     for i in range(NUM_LITTLE_KERNELS+NUM_BIG_KERNELS):
         code += f"    bus_word_t *src_props_{i+1},\n"
+
+    code += "    bus_word_t *output,\n"
+    code += "    uint32_t num_partitions_little,\n"
+    code += "    uint32_t num_partitions_big,\n"
     for i in range(NUM_LITTLE_KERNELS):
         code += f"    hls::stream<ppb_request_pkt_t> &ppb_req_stream_{i+1},\n"
         code += f"    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_{i+1},\n"
     for i in range(NUM_BIG_KERNELS):
         code += f"    hls::stream<cacheline_request_pkt_t> &cacheline_req_stream_{i+1},\n"
         code += f"    hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream_{i+1},\n"
-    code += "    bus_word_t *output,\n"
-    code += "    uint32_t num_partitions_little,\n"
-    code += "    uint32_t num_partitions_big,\n"
+    
     code += "    hls::stream<write_burst_w_dst_pkt_t> &write_burst_stream);\n\n"
 
     code += "#endif // SHARED_KERNEL_PARAMS_H\n"
@@ -521,13 +564,13 @@ def fill_host_config(file_to_modify: Path):
             return
 
         replacements = {
-            "{{BIG_KERNEL_NUM}}": NUM_BIG_KERNELS,
-            "{{LITTLE_KERNEL_NUM}}": NUM_LITTLE_KERNELS,
-            "{{BIG_KERNEL_HBM_EDGE_ID}}": big_kernel_hbm_edge_id,
-            "{{BIG_KERNEL_HBM_NODE_ID}}": big_kernel_hbm_node_id,
+            "%BIG_KERNEL_NUM%": NUM_BIG_KERNELS,
+            "%LITTLE_KERNEL_NUM%": NUM_LITTLE_KERNELS,
+            "%BIG_KERNEL_HBM_EDGE_ID%": big_kernel_hbm_edge_id,
+            "%BIG_KERNEL_HBM_NODE_ID%": big_kernel_hbm_node_id,
 
-            "{{LITTLE_KERNEL_HBM_EDGE_ID}}": little_kernel_hbm_edge_id,
-            "{{LITTLE_KERNEL_HBM_NODE_ID}}": little_kernel_hbm_node_id,
+            "%LITTLE_KERNEL_HBM_EDGE_ID%": little_kernel_hbm_edge_id,
+            "%LITTLE_KERNEL_HBM_NODE_ID%": little_kernel_hbm_node_id,
         }
 
         original_content = file_to_modify.read_text(encoding="utf-8")
@@ -608,12 +651,16 @@ def generate_project(
     print("[3/6] Generating Dynamic Source Code via BackendManager...")
     bkd_mng = BackendManager()
 
+    bkd_mng.big_kernel_num = NUM_BIG_KERNELS
+    bkd_mng.little_kernel_num = NUM_LITTLE_KERNELS
+    bkd_mng.init_value = INIT_VALUE
+
     # Perform type analysis once
     # bkd_mng.analyze_graph_types(comp_col, global_graph)
 
     # Generate Big Kernel
     bkd_mng.REDUCE_MODE = "big_pipeline"
-    kernel_h_big, kernel_h_little, shared_kernel_params,kernel_cpp_big,kernel_cpp_little,apply_func = bkd_mng.generate_backend(
+    kernel_h_big, kernel_h_little, shared_kernel_params,kernel_cpp_big,kernel_cpp_little,apply_func,little_merger_inline_codes,big_merger_inline_codes = bkd_mng.generate_backend(
         copy.deepcopy(comp_col), global_graph, f"{kernel_name}_big"
     )
 
@@ -623,8 +670,8 @@ def generate_project(
     _copy_and_template(template_dir / "scripts"/"kernel"/"apply_kernel.cpp", output_dir / "scripts" / "kernel" /"apply_kernel.cpp", replacements)
 
     hbm_writer = _generate_hbm_writer()
-    little_merger = _generate_little_merger()
-    big_merger = _generate_big_merger()
+    little_merger = _generate_little_merger(little_merger_inline_codes)
+    big_merger = _generate_big_merger(big_merger_inline_codes)
     # 5. Deploy all dynamically generated files
     print(f"[4/6] Deploying Generated Kernel Files to '{kernel_script_dir}'")
     (kernel_script_dir / f"{kernel_name}_big.h").write_text(kernel_h_big)

@@ -389,6 +389,7 @@ class BinOp(Enum):
     SR = ">>"
     MIN = "min"
     MAX = "max"
+    BITOR = "|"
 
     def __repr__(self) -> str:
         return self.value
@@ -421,6 +422,7 @@ class BinOp(Enum):
             BinOp.MAX,
             BinOp.SL,
             BinOp.SR,
+            BinOp.BITOR
         ]:
             return input_type
         elif self in [BinOp.EQ, BinOp.NE, BinOp.LT, BinOp.GT, BinOp.LE, BinOp.GE]:

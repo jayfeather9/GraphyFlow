@@ -31,6 +31,10 @@ CXXFLAGS += -I$(XILINX_XRT)/include
 CXXFLAGS += -I$(XILINX_VITIS)/include
 CXXFLAGS += -I$(XILINX_HLS)/include
 
+ifeq ($(TARGET),$(filter $(TARGET), sw_emu hw_emu))
+CXXFLAGS += -DEMULATION
+endif
+
 # Compiler flags
 CXXFLAGS += -std=c++17 -O3 -Wall -g # Added -g for easier debugging
 

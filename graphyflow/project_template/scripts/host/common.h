@@ -27,6 +27,14 @@
 #define OUT_END_MARKER_BITWIDTH 4
 #define SRC_BUFFER_SIZE 4096
 
+#ifdef EMULATION
+const int LITTLE_MAX_DST = 512;
+const int BIG_MAX_DST = 512;
+#else
+const int LITTLE_MAX_DST = 65536;
+const int BIG_MAX_DST = 524288;
+#endif
+
 // --- Host-side definition for the AXI bus word ---
 #define AXI_BUS_WIDTH 512
 typedef ap_uint<AXI_BUS_WIDTH> bus_word_t;
