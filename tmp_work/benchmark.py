@@ -11,6 +11,19 @@ DATASETS = [
     "/data/feiyang/test/test/datasets/rmat-19-32.txt",
     "/data/feiyang/test/test/datasets/rmat-21-32.txt",
     "/data/feiyang/test/test/datasets/rmat-24-16.txt",
+    "/data/zhuohang/dataset/ReGraph_dataset/amazon-2008.mtx",
+    "/data/zhuohang/dataset/ReGraph_dataset/dbpedia-link.mtx",
+    "/data/zhuohang/dataset/ReGraph_dataset/soc-flickr-und.mtx",
+    "/data/zhuohang/dataset/ReGraph_dataset/soc-orkut-dir.mtx",
+    "/data/zhuohang/dataset/ReGraph_dataset/web-Google.mtx",
+    "/data/zhuohang/dataset/ReGraph_dataset/wiki-topcats-categories.txt",
+    "/data/zhuohang/dataset/ReGraph_dataset/wiki-topcats.txt",
+    "/data/zhuohang/dataset/ReGraph_dataset/ca-hollywood-2009.mtx",
+    "/data/zhuohang/dataset/ReGraph_dataset/graph500-scale23-ef16_adj.mtx",
+    "/data/zhuohang/dataset/ReGraph_dataset/soc-LiveJournal1.txt",
+    "/data/zhuohang/dataset/ReGraph_dataset/web-baidu-baike.mtx",
+    "/data/zhuohang/dataset/ReGraph_dataset/web-hudong.mtx",
+    "/data/zhuohang/dataset/ReGraph_dataset/wiki-topcats-page-names.txt",
 ]
 
 # 测试目标（hw, hw_emu, sw_emu）
@@ -46,8 +59,12 @@ def benchmark():
     results = []
     for dataset in DATASETS:
         cmd = get_cmd(dataset)
-        os.system(cmd)
-        print(cmd)
+        try:
+            print(cmd)
+            os.system(cmd)
+        except Exception as e:
+            print(f"Error: {e}")
+            continue
 
         log_name = dataset.split("/")[-1].replace(".txt", "").replace(" ", "_")
         log_file = f"{LOG_DIR}/{log_name}.log"
