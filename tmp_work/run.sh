@@ -3,6 +3,7 @@
 
 # --- *** 关键修正：使其能够处理不同的目标 *** ---
 TARGET=$1
+DATASET=$2
 EXECUTABLE="graphyflow_host"
 XCLBIN_NAME="graphyflow_kernels"
 
@@ -39,7 +40,7 @@ if [ ! -f "$XCLBIN_FILE" ]; then
 fi
 
 # 3. 运行 host 程序
-DATASET="/data/feiyang/test/test/datasets/rmat-19-32.txt"
+# DATASET="/data/feiyang/test/test/datasets/rmat-19-32.txt"
 # DATASET="/data/feiyang/test/test/datasets/rmat-21-32.txt"
 # DATASET="/data/feiyang/test/test/datasets/rmat-24-16.txt"
 # DATASET="./rmat-19-32.txt"
