@@ -1,16 +1,14 @@
 #include "shared_kernel_params.h"
 
-void merge_big_kernels(hls::stream<write_burst_pkt_t> &big_kernel_1_out_stream,
-                       hls::stream<write_burst_pkt_t> &big_kernel_2_out_stream,
-                       hls::stream<write_burst_pkt_t> &big_kernel_3_out_stream,
+void merge_big_kernels_{{MERGER_ID}}({{BIG_MERGER_STREAM_PARAMS}}
                        hls::stream<write_burst_pkt_t> &kernel_out_stream) {
-    write_burst_pkt_t tmp_prop_pkt[BIG_MERGER_LENGTH];
+    write_burst_pkt_t tmp_prop_pkt[{{BIG_MERGER_LENGTH}}];
 #pragma HLS ARRAY_PARTITION variable = tmp_prop_pkt dim = 0 complete
 
-    bool process_flag[BIG_MERGER_LENGTH];
+    bool process_flag[{{BIG_MERGER_LENGTH}}];
 #pragma HLS ARRAY_PARTITION variable = process_flag dim = 0 complete
 
-    for (int i = 0; i < BIG_MERGER_LENGTH; i++) {
+    for (int i = 0; i < {{BIG_MERGER_LENGTH}}; i++) {
 #pragma HLS unroll
         process_flag[i] = 0;
     }
@@ -31,15 +29,10 @@ merge_tmp_prop_big_krnls:
     while (true) {
 #pragma HLS pipeline style = flp
 
-        if (!process_flag[0])
-            process_flag[0] = big_kernel_1_out_stream.read_nb(tmp_prop_pkt[0]);
-        if (!process_flag[1])
-            process_flag[1] = big_kernel_2_out_stream.read_nb(tmp_prop_pkt[1]);
-        if (!process_flag[2])
-            process_flag[2] = big_kernel_3_out_stream.read_nb(tmp_prop_pkt[2]);
+{{STREAM_READS}}
 
         bool merge_flag =
-            process_flag[0] & process_flag[1] & process_flag[2] & 1;
+            {{MERGE_FLAG_TERMS}} & 1;
 
         if (merge_flag) {
             for (int i = 0; i < 16; i++) {
@@ -47,7 +40,7 @@ merge_tmp_prop_big_krnls:
                 tmp_prop_arrary[i] = max_pod;
             }
 
-            for (int i = 0; i < BIG_MERGER_LENGTH; i++) {
+            for (int i = 0; i < {{BIG_MERGER_LENGTH}}; i++) {
 #pragma HLS UNROLL
                 for (int j = 0; j < 16; j++) {
 #pragma HLS UNROLL
@@ -69,7 +62,7 @@ merge_tmp_prop_big_krnls:
             one_write_burst.data = merged_write_burst;
             kernel_out_stream.write(one_write_burst);
 
-            for (int i = 0; i < BIG_MERGER_LENGTH; i++) {
+            for (int i = 0; i < {{BIG_MERGER_LENGTH}}; i++) {
 #pragma HLS unroll
                 process_flag[i] = 0;
             }
@@ -78,15 +71,12 @@ merge_tmp_prop_big_krnls:
 }
 
 extern "C" void
-big_merger(hls::stream<write_burst_pkt_t> &big_kernel_1_out_stream,
-           hls::stream<write_burst_pkt_t> &big_kernel_2_out_stream,
-           hls::stream<write_burst_pkt_t> &big_kernel_3_out_stream,
+{{BIG_MERGER_FUNCTION_NAME}}({{BIG_MERGER_EXTERN_PARAMS}}
            hls::stream<write_burst_pkt_t> &kernel_out_stream) {
 
 #pragma HLS interface ap_ctrl_none port = return
 
 #pragma HLS DATAFLOW
 
-    merge_big_kernels(big_kernel_1_out_stream, big_kernel_2_out_stream,
-                      big_kernel_3_out_stream, kernel_out_stream);
+    {{MERGE_FUNCTION_CALL}}
 }

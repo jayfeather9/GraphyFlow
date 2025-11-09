@@ -175,76 +175,23 @@ class ConfigGenerator:
         # Generate merge flag terms
         merge_flag_terms = [f"process_flag[{i}]" for i in range(pipeline_num)]
 
-        # Replace LITTLE_MERGER_LENGTH
-        content = content.replace("LITTLE_MERGER_LENGTH", str(pipeline_num))
-
-        # Replace merge function parameters
-        old_merge_params = """void merge_little_kernels(
-    hls::stream<little_out_pkt_t> &little_kernel_1_out_stream,
-    hls::stream<little_out_pkt_t> &little_kernel_2_out_stream,
-    hls::stream<little_out_pkt_t> &little_kernel_3_out_stream,
-    hls::stream<little_out_pkt_t> &little_kernel_4_out_stream,
-    hls::stream<little_out_pkt_t> &little_kernel_5_out_stream,
-    hls::stream<little_out_pkt_t> &little_kernel_6_out_stream,
-    hls::stream<little_out_pkt_t> &little_kernel_7_out_stream,
-    hls::stream<little_out_pkt_t> &little_kernel_8_out_stream,
-    hls::stream<little_out_pkt_t> &little_kernel_9_out_stream,
-    hls::stream<little_out_pkt_t> &little_kernel_10_out_stream,
-    hls::stream<little_out_pkt_t> &little_kernel_11_out_stream,"""
-        new_merge_params = "void merge_little_kernels(\n" + ",\n".join(merge_stream_params) + ","
-        content = content.replace(old_merge_params, new_merge_params)
-
-        # Replace stream reads block
-        import re
-
-        # Find the block from first if to last if
-        pattern = r"(        if \(!process_flag\[0\]\).*?little_kernel_11_out_stream\.read_nb\(tmp_prop_pkt\[10\]\);)"
-        replacement = "\n".join(stream_reads)
-        content = re.sub(pattern, replacement, content, flags=re.DOTALL)
-
-        # Replace merge_flag
-        old_merge_flag = """        bool merge_flag = process_flag[0] & process_flag[1] & process_flag[2] &
-                          process_flag[3] & process_flag[4] & process_flag[5] &
-                          process_flag[6] & process_flag[7] & process_flag[8] &
-                          process_flag[9] & process_flag[10] & 1;"""
-        new_merge_flag = f"        bool merge_flag = {' & '.join(merge_flag_terms)} & 1;"
-        content = content.replace(old_merge_flag, new_merge_flag)
-
-        # Replace extern function parameters
-        old_extern_params = """extern "C" void
-little_merger(hls::stream<little_out_pkt_t> &little_kernel_1_out_stream,
-              hls::stream<little_out_pkt_t> &little_kernel_2_out_stream,
-              hls::stream<little_out_pkt_t> &little_kernel_3_out_stream,
-              hls::stream<little_out_pkt_t> &little_kernel_4_out_stream,
-              hls::stream<little_out_pkt_t> &little_kernel_5_out_stream,
-              hls::stream<little_out_pkt_t> &little_kernel_6_out_stream,
-              hls::stream<little_out_pkt_t> &little_kernel_7_out_stream,
-              hls::stream<little_out_pkt_t> &little_kernel_8_out_stream,
-              hls::stream<little_out_pkt_t> &little_kernel_9_out_stream,
-              hls::stream<little_out_pkt_t> &little_kernel_10_out_stream,
-              hls::stream<little_out_pkt_t> &little_kernel_11_out_stream,"""
-        new_extern_params = (
-            f'extern "C" void\nlittle_merger_{merger_id}(' + ",\n".join(extern_stream_params) + ","
-        )
-        content = content.replace(old_extern_params, new_extern_params)
-
-        # Replace function call in extern function
-        old_call = """    merge_little_kernels(little_kernel_1_out_stream, little_kernel_2_out_stream,
-                         little_kernel_3_out_stream, little_kernel_4_out_stream,
-                         little_kernel_5_out_stream, little_kernel_6_out_stream,
-                         little_kernel_7_out_stream, little_kernel_8_out_stream,
-                         little_kernel_9_out_stream,
-                         little_kernel_10_out_stream,
-                         little_kernel_11_out_stream, kernel_out_stream);"""
+        # Generate function call parameters
         call_params = [f"little_kernel_{i+1}_out_stream" for i in range(pipeline_num)]
-        new_call = f"    merge_little_kernels_{merger_id}(" + ", ".join(call_params) + ", kernel_out_stream);"
-        content = content.replace(old_call, new_call)
 
-        # Replace function name in merge function
-        content = content.replace("void merge_little_kernels(", f"void merge_little_kernels_{merger_id}(")
-
-        # Replace loop bounds (all occurrences)
-        content = content.replace("LITTLE_MERGER_LENGTH", str(pipeline_num))
+        # Replace placeholders
+        content = content.replace("{{LITTLE_MERGER_LENGTH}}", str(pipeline_num))
+        content = content.replace("{{LITTLE_MERGER_STREAM_PARAMS}}", ",\n".join(merge_stream_params) + ",")
+        content = content.replace("{{STREAM_READS}}", "\n".join(stream_reads))
+        content = content.replace("{{MERGE_FLAG_TERMS}}", " & ".join(merge_flag_terms))
+        content = content.replace(
+            "{{LITTLE_MERGER_MERGE_FUNCTION_NAME}}", f"merge_little_kernels_{merger_id}"
+        )
+        content = content.replace("{{LITTLE_MERGER_FUNCTION_NAME}}", f"little_merger_{merger_id}")
+        content = content.replace("{{LITTLE_MERGER_EXTERN_PARAMS}}", ",\n".join(extern_stream_params) + ",")
+        content = content.replace(
+            "{{MERGE_FUNCTION_CALL}}",
+            f"merge_little_kernels_{merger_id}(" + ", ".join(call_params) + ", kernel_out_stream);",
+        )
 
         with open(output_path, "w") as f:
             f.write(content)
@@ -282,52 +229,21 @@ little_merger(hls::stream<little_out_pkt_t> &little_kernel_1_out_stream,
         # Generate merge flag terms
         merge_flag_terms = [f"process_flag[{i}]" for i in range(pipeline_num)]
 
-        # Replace BIG_MERGER_LENGTH
-        content = content.replace("BIG_MERGER_LENGTH", str(pipeline_num))
-
-        # Replace merge function parameters
-        old_merge_params = """void merge_big_kernels(hls::stream<write_burst_pkt_t> &big_kernel_1_out_stream,
-                       hls::stream<write_burst_pkt_t> &big_kernel_2_out_stream,
-                       hls::stream<write_burst_pkt_t> &big_kernel_3_out_stream,"""
-        new_merge_params = (
-            "void merge_big_kernels_" + str(merger_id) + "(\n" + ",\n".join(merge_stream_params) + ","
-        )
-        content = content.replace(old_merge_params, new_merge_params)
-
-        # Replace stream reads block
-        import re
-
-        pattern = (
-            r"(        if \(!process_flag\[0\]\).*?big_kernel_3_out_stream\.read_nb\(tmp_prop_pkt\[2\]\);)"
-        )
-        replacement = "\n".join(stream_reads)
-        content = re.sub(pattern, replacement, content, flags=re.DOTALL)
-
-        # Replace merge_flag
-        old_merge_flag = """        bool merge_flag =
-            process_flag[0] & process_flag[1] & process_flag[2] & 1;"""
-        new_merge_flag = f"        bool merge_flag =\n            {' & '.join(merge_flag_terms)} & 1;"
-        content = content.replace(old_merge_flag, new_merge_flag)
-
-        # Replace extern function parameters
-        old_extern_params = """extern "C" void
-big_merger(hls::stream<write_burst_pkt_t> &big_kernel_1_out_stream,
-           hls::stream<write_burst_pkt_t> &big_kernel_2_out_stream,
-           hls::stream<write_burst_pkt_t> &big_kernel_3_out_stream,"""
-        new_extern_params = (
-            f'extern "C" void\nbig_merger_{merger_id}(' + ",\n".join(extern_stream_params) + ","
-        )
-        content = content.replace(old_extern_params, new_extern_params)
-
-        # Replace function call in extern function
-        old_call = """    merge_big_kernels(big_kernel_1_out_stream, big_kernel_2_out_stream,
-                      big_kernel_3_out_stream, kernel_out_stream);"""
+        # Generate function call parameters
         call_params = [f"big_kernel_{i+1}_out_stream" for i in range(pipeline_num)]
-        new_call = f"    merge_big_kernels_{merger_id}(" + ", ".join(call_params) + ", kernel_out_stream);"
-        content = content.replace(old_call, new_call)
 
-        # Replace loop bounds (all occurrences)
-        content = content.replace("BIG_MERGER_LENGTH", str(pipeline_num))
+        # Replace placeholders
+        content = content.replace("{{MERGER_ID}}", str(merger_id))
+        content = content.replace("{{BIG_MERGER_LENGTH}}", str(pipeline_num))
+        content = content.replace("{{BIG_MERGER_STREAM_PARAMS}}", ",\n".join(merge_stream_params) + ",")
+        content = content.replace("{{STREAM_READS}}", "\n".join(stream_reads))
+        content = content.replace("{{MERGE_FLAG_TERMS}}", " & ".join(merge_flag_terms))
+        content = content.replace("{{BIG_MERGER_FUNCTION_NAME}}", f"big_merger_{merger_id}")
+        content = content.replace("{{BIG_MERGER_EXTERN_PARAMS}}", ",\n".join(extern_stream_params) + ",")
+        content = content.replace(
+            "{{MERGE_FUNCTION_CALL}}",
+            f"merge_big_kernels_{merger_id}(" + ", ".join(call_params) + ", kernel_out_stream);",
+        )
 
         with open(output_path, "w") as f:
             f.write(content)
@@ -351,228 +267,116 @@ big_merger(hls::stream<write_burst_pkt_t> &big_kernel_1_out_stream,
         for merger in sorted(little_mergers, key=lambda x: x["merger_id"]):
             merger_id = merger["merger_id"]
             little_stream_params.append(
-                f"hls::stream<write_burst_pkt_t> &little_merger_{merger_id}_out_stream"
+                f"    hls::stream<write_burst_pkt_t> &little_merger_{merger_id}_out_stream"
             )
 
         # Generate stream parameters for big mergers (ordered by merger_id)
         big_stream_params = []
         for merger in sorted(big_mergers, key=lambda x: x["merger_id"]):
             merger_id = merger["merger_id"]
-            big_stream_params.append(f"hls::stream<write_burst_pkt_t> &big_merger_{merger_id}_out_stream")
+            big_stream_params.append(f"    hls::stream<write_burst_pkt_t> &big_merger_{merger_id}_out_stream")
 
-        # Replace merge_big_little_writes function with multi-stream version
-        old_merge_func = """void merge_big_little_writes(
-    hls::stream<write_burst_pkt_t> &little_kernel_out_stream,
-    hls::stream<write_burst_pkt_t> &big_kernel_out_stream,
-    hls::stream<in_write_burst_w_dst_pkt_t> &kernel_out_stream,
-    uint32_t little_kernel_length, uint32_t big_kernel_length,
-    uint32_t little_kernel_st_offset, uint32_t big_kernel_st_offset) {
-    write_burst_pkt_t big_tmp_prop_pkt;
-    write_burst_pkt_t little_tmp_prop_pkt;
-
-    uint32_t little_idx = little_kernel_st_offset;
-    uint32_t big_idx = big_kernel_st_offset;
-    uint32_t total_length = little_kernel_length + big_kernel_length;
-
-LOOP_MERGE_WRITES:
-    while (true) {
-        if (total_length == 0) {
-            in_write_burst_w_dst_pkt_t end_pkt;
-            end_pkt.end_flag = true;
-            kernel_out_stream.write(end_pkt);
-            break;
-        }
-
-        if (little_kernel_out_stream.read_nb(little_tmp_prop_pkt)) {
-            in_write_burst_w_dst_pkt_t little_write_burst;
-            little_write_burst.data = little_tmp_prop_pkt.data;
-            little_write_burst.dest_addr = little_idx;
-            little_write_burst.end_flag = false;
-            kernel_out_stream.write(little_write_burst);
-            little_idx++;
-            total_length--;
-        } else if (big_kernel_out_stream.read_nb(big_tmp_prop_pkt)) {
-            in_write_burst_w_dst_pkt_t big_write_burst;
-            big_write_burst.data = big_tmp_prop_pkt.data;
-            big_write_burst.dest_addr = big_idx;
-            big_write_burst.end_flag = false;
-            kernel_out_stream.write(big_write_burst);
-            big_idx++;
-            total_length--;
-        }
-    }
-}"""
-
-        # Generate new multi-stream merge function
-        new_merge_func_lines = ["void merge_multi_merger_writes("]
-        # Add stream parameters
-        for i, param in enumerate(little_stream_params):
-            new_merge_func_lines.append(f"    {param},")
-        for i, param in enumerate(big_stream_params):
-            new_merge_func_lines.append(f"    {param},")
-        new_merge_func_lines.append("    hls::stream<in_write_burst_w_dst_pkt_t> &kernel_out_stream,")
-        # Add length and offset arrays
-        new_merge_func_lines.append(f"    uint32_t num_little_mergers,")
-        new_merge_func_lines.append(f"    uint32_t num_big_mergers,")
+        # Generate length parameters
+        little_length_params = []
         for merger in sorted(little_mergers, key=lambda x: x["merger_id"]):
             merger_id = merger["merger_id"]
-            new_merge_func_lines.append(f"    uint32_t little_merger_{merger_id}_length,")
+            little_length_params.append(f"    uint32_t little_merger_{merger_id}_length,")
+
+        big_length_params = []
         for merger in sorted(big_mergers, key=lambda x: x["merger_id"]):
             merger_id = merger["merger_id"]
-            new_merge_func_lines.append(f"    uint32_t big_merger_{merger_id}_length,")
-        for merger in sorted(little_mergers, key=lambda x: x["merger_id"]):
-            merger_id = merger["merger_id"]
-            new_merge_func_lines.append(f"    uint32_t little_merger_{merger_id}_st_offset,")
-        for merger in sorted(big_mergers, key=lambda x: x["merger_id"]):
-            merger_id = merger["merger_id"]
-            new_merge_func_lines.append(f"    uint32_t big_merger_{merger_id}_st_offset) {{")
+            big_length_params.append(f"    uint32_t big_merger_{merger_id}_length,")
 
-        # Generate function body
-        new_merge_func_lines.append("    write_burst_pkt_t tmp_prop_pkt;")
-        new_merge_func_lines.append("    uint32_t total_length = 0;")
-        # Calculate total length
+        # Generate offset parameters
+        little_offset_params = []
         for merger in sorted(little_mergers, key=lambda x: x["merger_id"]):
             merger_id = merger["merger_id"]
-            new_merge_func_lines.append(f"    total_length += little_merger_{merger_id}_length;")
+            little_offset_params.append(f"    uint32_t little_merger_{merger_id}_st_offset,")
+
+        big_offset_params = []
         for merger in sorted(big_mergers, key=lambda x: x["merger_id"]):
             merger_id = merger["merger_id"]
-            new_merge_func_lines.append(f"    total_length += big_merger_{merger_id}_length;")
-        new_merge_func_lines.append("")
-        new_merge_func_lines.append("    // Track current indices for each merger")
+            big_offset_params.append(f"    uint32_t big_merger_{merger_id}_st_offset,")
+
+        # Generate total length calculation
+        total_length_lines = []
         for merger in sorted(little_mergers, key=lambda x: x["merger_id"]):
             merger_id = merger["merger_id"]
-            new_merge_func_lines.append(
+            total_length_lines.append(f"    total_length += little_merger_{merger_id}_length;")
+        for merger in sorted(big_mergers, key=lambda x: x["merger_id"]):
+            merger_id = merger["merger_id"]
+            total_length_lines.append(f"    total_length += big_merger_{merger_id}_length;")
+
+        # Generate index declarations (no remaining variables)
+        index_declarations = []
+        for merger in sorted(little_mergers, key=lambda x: x["merger_id"]):
+            merger_id = merger["merger_id"]
+            index_declarations.append(
                 f"    uint32_t little_merger_{merger_id}_idx = little_merger_{merger_id}_st_offset;"
             )
-            new_merge_func_lines.append(
-                f"    uint32_t little_merger_{merger_id}_remaining = little_merger_{merger_id}_length;"
-            )
         for merger in sorted(big_mergers, key=lambda x: x["merger_id"]):
             merger_id = merger["merger_id"]
-            new_merge_func_lines.append(
+            index_declarations.append(
                 f"    uint32_t big_merger_{merger_id}_idx = big_merger_{merger_id}_st_offset;"
             )
-            new_merge_func_lines.append(
-                f"    uint32_t big_merger_{merger_id}_remaining = big_merger_{merger_id}_length;"
-            )
-        new_merge_func_lines.append("")
-        new_merge_func_lines.append("LOOP_MERGE_WRITES:")
-        new_merge_func_lines.append("    while (true) {")
-        new_merge_func_lines.append("        if (total_length == 0) {")
-        new_merge_func_lines.append("            in_write_burst_w_dst_pkt_t end_pkt;")
-        new_merge_func_lines.append("            end_pkt.end_flag = true;")
-        new_merge_func_lines.append("            kernel_out_stream.write(end_pkt);")
-        new_merge_func_lines.append("            break;")
-        new_merge_func_lines.append("        }")
-        new_merge_func_lines.append("")
-        # Try reading from all streams in round-robin fashion
-        # First try all little mergers
+
+        # Generate read blocks (only check read_nb, no remaining check)
+        read_blocks = []
         sorted_little = sorted(little_mergers, key=lambda x: x["merger_id"])
         for i, merger in enumerate(sorted_little):
             merger_id = merger["merger_id"]
             if i == 0:
-                new_merge_func_lines.append(
-                    f"        if (little_merger_{merger_id}_remaining > 0 && little_merger_{merger_id}_out_stream.read_nb(tmp_prop_pkt)) {{"
+                read_blocks.append(
+                    f"        if (little_merger_{merger_id}_out_stream.read_nb(tmp_prop_pkt)) {{"
                 )
             else:
-                new_merge_func_lines.append(
-                    f"        else if (little_merger_{merger_id}_remaining > 0 && little_merger_{merger_id}_out_stream.read_nb(tmp_prop_pkt)) {{"
+                read_blocks.append(
+                    f"        else if (little_merger_{merger_id}_out_stream.read_nb(tmp_prop_pkt)) {{"
                 )
-            new_merge_func_lines.append(f"            in_write_burst_w_dst_pkt_t write_burst;")
-            new_merge_func_lines.append(f"            write_burst.data = tmp_prop_pkt.data;")
-            new_merge_func_lines.append(f"            write_burst.dest_addr = little_merger_{merger_id}_idx;")
-            new_merge_func_lines.append(f"            write_burst.end_flag = false;")
-            new_merge_func_lines.append(f"            kernel_out_stream.write(write_burst);")
-            new_merge_func_lines.append(f"            little_merger_{merger_id}_idx++;")
-            new_merge_func_lines.append(f"            little_merger_{merger_id}_remaining--;")
-            new_merge_func_lines.append(f"            total_length--;")
-            new_merge_func_lines.append(f"        }}")
-        # Then try all big mergers
+            read_blocks.append(f"            in_write_burst_w_dst_pkt_t write_burst;")
+            read_blocks.append(f"            write_burst.data = tmp_prop_pkt.data;")
+            read_blocks.append(f"            write_burst.dest_addr = little_merger_{merger_id}_idx;")
+            read_blocks.append(f"            write_burst.end_flag = false;")
+            read_blocks.append(f"            kernel_out_stream.write(write_burst);")
+            read_blocks.append(f"            little_merger_{merger_id}_idx++;")
+            read_blocks.append(f"            total_length--;")
+            read_blocks.append(f"        }}")
+
         sorted_big = sorted(big_mergers, key=lambda x: x["merger_id"])
         for i, merger in enumerate(sorted_big):
             merger_id = merger["merger_id"]
             if len(little_mergers) == 0 and i == 0:
-                new_merge_func_lines.append(
-                    f"        if (big_merger_{merger_id}_remaining > 0 && big_merger_{merger_id}_out_stream.read_nb(tmp_prop_pkt)) {{"
-                )
+                read_blocks.append(f"        if (big_merger_{merger_id}_out_stream.read_nb(tmp_prop_pkt)) {{")
             else:
-                new_merge_func_lines.append(
-                    f"        else if (big_merger_{merger_id}_remaining > 0 && big_merger_{merger_id}_out_stream.read_nb(tmp_prop_pkt)) {{"
+                read_blocks.append(
+                    f"        else if (big_merger_{merger_id}_out_stream.read_nb(tmp_prop_pkt)) {{"
                 )
-            new_merge_func_lines.append(f"            in_write_burst_w_dst_pkt_t write_burst;")
-            new_merge_func_lines.append(f"            write_burst.data = tmp_prop_pkt.data;")
-            new_merge_func_lines.append(f"            write_burst.dest_addr = big_merger_{merger_id}_idx;")
-            new_merge_func_lines.append(f"            write_burst.end_flag = false;")
-            new_merge_func_lines.append(f"            kernel_out_stream.write(write_burst);")
-            new_merge_func_lines.append(f"            big_merger_{merger_id}_idx++;")
-            new_merge_func_lines.append(f"            big_merger_{merger_id}_remaining--;")
-            new_merge_func_lines.append(f"            total_length--;")
-            new_merge_func_lines.append(f"        }}")
-        new_merge_func_lines.append("    }")
-        new_merge_func_lines.append("}")
+            read_blocks.append(f"            in_write_burst_w_dst_pkt_t write_burst;")
+            read_blocks.append(f"            write_burst.data = tmp_prop_pkt.data;")
+            read_blocks.append(f"            write_burst.dest_addr = big_merger_{merger_id}_idx;")
+            read_blocks.append(f"            write_burst.end_flag = false;")
+            read_blocks.append(f"            kernel_out_stream.write(write_burst);")
+            read_blocks.append(f"            big_merger_{merger_id}_idx++;")
+            read_blocks.append(f"            total_length--;")
+            read_blocks.append(f"        }}")
 
-        new_merge_func = "\n".join(new_merge_func_lines)
-        content = content.replace(old_merge_func, new_merge_func)
-
-        # Replace function signature
-        old_sig = """extern "C" void
-apply_kernel(bus_word_t *node_props, uint32_t little_kernel_length,
-             uint32_t big_kernel_length, uint32_t little_kernel_st_offset,
-             uint32_t big_kernel_st_offset,
-             hls::stream<write_burst_pkt_t> &little_kernel_out_stream,
-             hls::stream<write_burst_pkt_t> &big_kernel_out_stream,
-             hls::stream<write_burst_w_dst_pkt_t> &kernel_out_stream)"""
-
-        # Generate new parameters
-        param_lines = [
-            'extern "C" void',
-            "apply_kernel(bus_word_t *node_props,",
-            f"             uint32_t num_little_mergers,",
-            f"             uint32_t num_big_mergers,",
-        ]
-
-        # Add length and offset parameters (using merger_id)
-        for merger in sorted(little_mergers, key=lambda x: x["merger_id"]):
-            merger_id = merger["merger_id"]
-            param_lines.append(f"             uint32_t little_merger_{merger_id}_length,")
-        for merger in sorted(big_mergers, key=lambda x: x["merger_id"]):
-            merger_id = merger["merger_id"]
-            param_lines.append(f"             uint32_t big_merger_{merger_id}_length,")
-        for merger in sorted(little_mergers, key=lambda x: x["merger_id"]):
-            merger_id = merger["merger_id"]
-            param_lines.append(f"             uint32_t little_merger_{merger_id}_st_offset,")
-        for merger in sorted(big_mergers, key=lambda x: x["merger_id"]):
-            merger_id = merger["merger_id"]
-            param_lines.append(f"             uint32_t big_merger_{merger_id}_st_offset,")
-
-        # Add stream parameters
+        # Generate apply_kernel parameters
+        apply_params = []
+        apply_params.append("             uint32_t num_little_mergers,")
+        apply_params.append("             uint32_t num_big_mergers,")
+        apply_params.extend([f"             {p.rstrip(',')}," for p in little_length_params])
+        apply_params.extend([f"             {p.rstrip(',')}," for p in big_length_params])
+        apply_params.extend([f"             {p.rstrip(',')}," for p in little_offset_params])
+        apply_params.extend([f"             {p.rstrip(',')}," for p in big_offset_params])
         for i, param in enumerate(little_stream_params):
-            if i < len(little_stream_params) - 1 or len(big_stream_params) > 0:
-                param_lines.append(f"             {param},")
-            else:
-                param_lines.append(f"             {param},")
+            # Always add comma since either big stream params or kernel_out_stream follows
+            apply_params.append(f"             {param.rstrip(',')},")
         for i, param in enumerate(big_stream_params):
-            if i < len(big_stream_params) - 1:
-                param_lines.append(f"             {param},")
-            else:
-                param_lines.append(f"             {param},")
-        param_lines.append("             hls::stream<write_burst_w_dst_pkt_t> &kernel_out_stream)")
+            # Always add comma since kernel_out_stream follows
+            apply_params.append(f"             {param.rstrip(',')},")
+        apply_params.append("             hls::stream<write_burst_w_dst_pkt_t> &kernel_out_stream")
 
-        new_sig = "\n".join(param_lines)
-        content = content.replace(old_sig, new_sig)
-
-        # Update interface pragmas
-        import re
-
-        # Remove old interface pragmas
-        content = re.sub(r"#pragma HLS INTERFACE s_axilite port = little_kernel_length[^\n]*\n", "", content)
-        content = re.sub(r"#pragma HLS INTERFACE s_axilite port = big_kernel_length[^\n]*\n", "", content)
-        content = re.sub(
-            r"#pragma HLS INTERFACE s_axilite port = little_kernel_st_offset[^\n]*\n", "", content
-        )
-        content = re.sub(r"#pragma HLS INTERFACE s_axilite port = big_kernel_st_offset[^\n]*\n", "", content)
-
-        # Add new interface pragmas
+        # Generate interface pragmas
         interface_pragmas = []
         interface_pragmas.append("#pragma HLS INTERFACE s_axilite port = num_little_mergers bundle = control")
         interface_pragmas.append("#pragma HLS INTERFACE s_axilite port = num_big_mergers bundle = control")
@@ -597,46 +401,57 @@ apply_kernel(bus_word_t *node_props, uint32_t little_kernel_length,
                 f"#pragma HLS INTERFACE s_axilite port = big_merger_{merger_id}_st_offset bundle = control"
             )
 
-        # Insert after existing interface pragmas
-        old_interface = "#pragma HLS INTERFACE s_axilite port = return bundle = control"
-        new_interface = "\n".join(interface_pragmas) + "\n" + old_interface
-        content = content.replace(old_interface, new_interface)
-
-        # Update function call
-        old_call = """    merge_big_little_writes(little_kernel_out_stream, big_kernel_out_stream,
-                            write_burst_stream, little_kernel_length,
-                            big_kernel_length, little_kernel_st_offset,
-                            big_kernel_st_offset);"""
-
+        # Generate merge function call parameters
         call_params = []
-        call_params.extend(
-            [
-                f"little_merger_{m['merger_id']}_out_stream"
-                for m in sorted(little_mergers, key=lambda x: x["merger_id"])
-            ]
-        )
-        call_params.extend(
-            [
-                f"big_merger_{m['merger_id']}_out_stream"
-                for m in sorted(big_mergers, key=lambda x: x["merger_id"])
-            ]
-        )
+        call_params.extend([f"little_merger_{m['merger_id']}_out_stream" for m in sorted_little])
+        call_params.extend([f"big_merger_{m['merger_id']}_out_stream" for m in sorted_big])
         call_params.append("write_burst_stream")
-        call_params.append(f"num_little_mergers")
-        call_params.append(f"num_big_mergers")
-        for merger in sorted(little_mergers, key=lambda x: x["merger_id"]):
-            call_params.append(f"little_merger_{merger['merger_id']}_length")
-        for merger in sorted(big_mergers, key=lambda x: x["merger_id"]):
-            call_params.append(f"big_merger_{merger['merger_id']}_length")
-        for merger in sorted(little_mergers, key=lambda x: x["merger_id"]):
-            call_params.append(f"little_merger_{merger['merger_id']}_st_offset")
-        for merger in sorted(big_mergers, key=lambda x: x["merger_id"]):
-            call_params.append(f"big_merger_{merger['merger_id']}_st_offset")
+        call_params.append("num_little_mergers")
+        call_params.append("num_big_mergers")
+        call_params.extend([f"little_merger_{m['merger_id']}_length" for m in sorted_little])
+        call_params.extend([f"big_merger_{m['merger_id']}_length" for m in sorted_big])
+        call_params.extend([f"little_merger_{m['merger_id']}_st_offset" for m in sorted_little])
+        call_params.extend([f"big_merger_{m['merger_id']}_st_offset" for m in sorted_big])
 
-        new_call = (
-            f"    merge_multi_merger_writes(" + ",\n                            ".join(call_params) + ");"
+        # Replace placeholders
+        content = content.replace(
+            "{{LITTLE_MERGER_STREAM_PARAMS}}",
+            ",\n".join(little_stream_params) + "," if little_stream_params else "",
         )
-        content = content.replace(old_call, new_call)
+        content = content.replace(
+            "{{BIG_MERGER_STREAM_PARAMS}}", ",\n".join(big_stream_params) + "," if big_stream_params else ""
+        )
+        content = content.replace(
+            "{{LITTLE_MERGER_LENGTH_PARAMS}}", "\n".join(little_length_params) if little_length_params else ""
+        )
+        content = content.replace(
+            "{{BIG_MERGER_LENGTH_PARAMS}}", "\n".join(big_length_params) if big_length_params else ""
+        )
+        # Remove trailing comma from last offset param
+        # If both little and big offset params exist, keep comma on last little param
+        # but remove comma from last big param (it's the last param before closing paren)
+        if little_offset_params and big_offset_params:
+            # Keep comma on last little param since big params follow
+            # Remove comma from last big param since it's the last param
+            big_offset_params[-1] = big_offset_params[-1].rstrip(",")
+        elif little_offset_params:
+            little_offset_params[-1] = little_offset_params[-1].rstrip(",")
+        elif big_offset_params:
+            big_offset_params[-1] = big_offset_params[-1].rstrip(",")
+        content = content.replace(
+            "{{LITTLE_MERGER_OFFSET_PARAMS}}", "\n".join(little_offset_params) if little_offset_params else ""
+        )
+        content = content.replace(
+            "{{BIG_MERGER_OFFSET_PARAMS}}", "\n".join(big_offset_params) if big_offset_params else ""
+        )
+        content = content.replace("{{TOTAL_LENGTH_CALCULATION}}", "\n".join(total_length_lines))
+        content = content.replace("{{MERGER_INDEX_DECLARATIONS}}", "\n".join(index_declarations))
+        content = content.replace("{{MERGER_READ_BLOCKS}}", "\n".join(read_blocks))
+        content = content.replace("{{APPLY_KERNEL_PARAMS}}", "\n".join(apply_params))
+        content = content.replace("{{INTERFACE_PRAGMAS}}", "\n".join(interface_pragmas))
+        content = content.replace(
+            "{{MERGE_FUNCTION_CALL_PARAMS}}", ",\n                            ".join(call_params)
+        )
 
         with open(output_path, "w") as f:
             f.write(content)
@@ -681,6 +496,10 @@ apply_kernel(bus_word_t *node_props, uint32_t little_kernel_length,
         content = re.sub(r'extern "C" void\s+big_merger\([^)]+\);', "", content)
         content = re.sub(r'extern "C" void\s+little_merger\([^)]+\);', "", content)
 
+        # Count little and big mergers
+        little_mergers = [m for m in self.merger_info if m["kernel_type"] == "little"]
+        big_mergers = [m for m in self.merger_info if m["kernel_type"] == "big"]
+
         # Add new extern declarations for all mergers
         merger_decls = []
         for merger in self.merger_info:
@@ -709,10 +528,78 @@ apply_kernel(bus_word_t *node_props, uint32_t little_kernel_length,
                     f'extern "C" void\nbig_merger_{merger_id}({params},\n           hls::stream<write_burst_pkt_t> &kernel_out_stream);'
                 )
 
-        # Insert before apply_kernel declaration
-        apply_pos = content.find('extern "C" void\napply_kernel')
-        if apply_pos > 0:
-            content = content[:apply_pos] + "\n".join(merger_decls) + "\n\n" + content[apply_pos:]
+        # Generate stream parameters for little mergers (ordered by merger_id)
+        little_stream_params = []
+        for merger in sorted(little_mergers, key=lambda x: x["merger_id"]):
+            merger_id = merger["merger_id"]
+            little_stream_params.append(
+                f"hls::stream<write_burst_pkt_t> &little_merger_{merger_id}_out_stream"
+            )
+
+        # Generate stream parameters for big mergers (ordered by merger_id)
+        big_stream_params = []
+        for merger in sorted(big_mergers, key=lambda x: x["merger_id"]):
+            merger_id = merger["merger_id"]
+            big_stream_params.append(f"hls::stream<write_burst_pkt_t> &big_merger_{merger_id}_out_stream")
+
+        # Remove old apply_kernel declaration (multi-line)
+        old_apply_pattern = r'extern "C" void\s+apply_kernel\([^;]+\);'
+        content = re.sub(old_apply_pattern, "", content, flags=re.DOTALL)
+
+        # Generate new apply_kernel declaration
+        apply_param_lines = [
+            'extern "C" void',
+            "apply_kernel(bus_word_t *node_props,",
+            f"             uint32_t num_little_mergers,",
+            f"             uint32_t num_big_mergers,",
+        ]
+
+        # Add length and offset parameters (using merger_id)
+        for merger in sorted(little_mergers, key=lambda x: x["merger_id"]):
+            merger_id = merger["merger_id"]
+            apply_param_lines.append(f"             uint32_t little_merger_{merger_id}_length,")
+        for merger in sorted(big_mergers, key=lambda x: x["merger_id"]):
+            merger_id = merger["merger_id"]
+            apply_param_lines.append(f"             uint32_t big_merger_{merger_id}_length,")
+        for merger in sorted(little_mergers, key=lambda x: x["merger_id"]):
+            merger_id = merger["merger_id"]
+            apply_param_lines.append(f"             uint32_t little_merger_{merger_id}_st_offset,")
+        for merger in sorted(big_mergers, key=lambda x: x["merger_id"]):
+            merger_id = merger["merger_id"]
+            apply_param_lines.append(f"             uint32_t big_merger_{merger_id}_st_offset,")
+
+        # Add stream parameters
+        for i, param in enumerate(little_stream_params):
+            apply_param_lines.append(f"             {param},")
+        for i, param in enumerate(big_stream_params):
+            apply_param_lines.append(f"             {param},")
+        apply_param_lines.append("             hls::stream<write_burst_w_dst_pkt_t> &kernel_out_stream);")
+
+        apply_decl = "\n".join(apply_param_lines)
+
+        # Insert merger declarations and apply_kernel declaration before hbm_writer
+        hbm_writer_pos = content.find('extern "C" void hbm_writer')
+        if hbm_writer_pos > 0:
+            content = (
+                content[:hbm_writer_pos]
+                + "\n".join(merger_decls)
+                + "\n\n"
+                + apply_decl
+                + "\n\n"
+                + content[hbm_writer_pos:]
+            )
+        else:
+            # Fallback: insert at end before #endif
+            endif_pos = content.rfind("#endif")
+            if endif_pos > 0:
+                content = (
+                    content[:endif_pos]
+                    + "\n".join(merger_decls)
+                    + "\n\n"
+                    + apply_decl
+                    + "\n\n"
+                    + content[endif_pos:]
+                )
 
         with open(output_path, "w") as f:
             f.write(content)
@@ -797,8 +684,9 @@ apply_kernel(bus_word_t *node_props, uint32_t little_kernel_length,
                     )
 
                     # Kernel output to merger
+                    # Note: Since mergers are instantiated with :1, they get _1 suffix in compute unit names
                     lines.append(
-                        f"stream_connect=graphyflow_little_{kernel_num}.kernel_out_stream:{kernel_type}_merger_{merger_id}.little_kernel_{i+1}_out_stream:16"
+                        f"stream_connect=graphyflow_little_{kernel_num}.kernel_out_stream:{kernel_type}_merger_{merger_id}_1.little_kernel_{i+1}_out_stream:16"
                     )
                 else:
                     kernel_num = big_kernel_idx + 1
@@ -814,8 +702,9 @@ apply_kernel(bus_word_t *node_props, uint32_t little_kernel_length,
                     )
 
                     # Kernel output to merger
+                    # Note: Since mergers are instantiated with :1, they get _1 suffix in compute unit names
                     lines.append(
-                        f"stream_connect=graphyflow_big_{kernel_num}.kernel_out_stream:{kernel_type}_merger_{merger_id}.big_kernel_{i+1}_out_stream:16"
+                        f"stream_connect=graphyflow_big_{kernel_num}.kernel_out_stream:{kernel_type}_merger_{merger_id}_1.big_kernel_{i+1}_out_stream:16"
                     )
 
         # Stream connections for mergers -> apply_kernel
@@ -826,13 +715,15 @@ apply_kernel(bus_word_t *node_props, uint32_t little_kernel_length,
 
             if kernel_type == "little":
                 lines.append(f"# -- Stream connections for little_merger_{merger_id} --")
+                # Note: Since mergers are instantiated with :1, they get _1 suffix in compute unit names
                 lines.append(
-                    f"stream_connect=little_merger_{merger_id}.kernel_out_stream:apply_kernel_1.little_merger_{merger_id}_out_stream"
+                    f"stream_connect=little_merger_{merger_id}_1.kernel_out_stream:apply_kernel_1.little_merger_{merger_id}_out_stream"
                 )
             else:
                 lines.append(f"# -- Stream connections for big_merger_{merger_id} --")
+                # Note: Since mergers are instantiated with :1, they get _1 suffix in compute unit names
                 lines.append(
-                    f"stream_connect=big_merger_{merger_id}.kernel_out_stream:apply_kernel_1.big_merger_{merger_id}_out_stream"
+                    f"stream_connect=big_merger_{merger_id}_1.kernel_out_stream:apply_kernel_1.big_merger_{merger_id}_out_stream"
                 )
 
         # Stream connection for apply_kernel -> hbm_writer
@@ -863,11 +754,12 @@ apply_kernel(bus_word_t *node_props, uint32_t little_kernel_length,
                     lines.append(f"slr=graphyflow_big_{kernel_num}:SLR{slr}")
 
         # Assign SLRs to mergers
+        # Note: Since all mergers are instantiated with :1, they get _1 suffix in compute unit names
         for merger in self.merger_info:
             merger_id = merger["merger_id"]
             kernel_type = merger["kernel_type"]
             merger_slr = merger["merger_slr"]
-            lines.append(f"slr={kernel_type}_merger_{merger_id}:SLR{merger_slr}")
+            lines.append(f"slr={kernel_type}_merger_{merger_id}_1:SLR{merger_slr}")
 
         # Assign SLRs to other kernels (defaults)
         lines.append("slr=hbm_writer_1:SLR0")

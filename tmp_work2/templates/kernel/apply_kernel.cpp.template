@@ -1,17 +1,21 @@
 #include "shared_kernel_params.h"
 
-void merge_big_little_writes(
-    hls::stream<write_burst_pkt_t> &little_kernel_out_stream,
-    hls::stream<write_burst_pkt_t> &big_kernel_out_stream,
+void merge_multi_merger_writes(
+{{LITTLE_MERGER_STREAM_PARAMS}}
+{{BIG_MERGER_STREAM_PARAMS}}
     hls::stream<in_write_burst_w_dst_pkt_t> &kernel_out_stream,
-    uint32_t little_kernel_length, uint32_t big_kernel_length,
-    uint32_t little_kernel_st_offset, uint32_t big_kernel_st_offset) {
-    write_burst_pkt_t big_tmp_prop_pkt;
-    write_burst_pkt_t little_tmp_prop_pkt;
+    uint32_t num_little_mergers,
+    uint32_t num_big_mergers,
+{{LITTLE_MERGER_LENGTH_PARAMS}}
+{{BIG_MERGER_LENGTH_PARAMS}}
+{{LITTLE_MERGER_OFFSET_PARAMS}}
+{{BIG_MERGER_OFFSET_PARAMS}}) {
+    write_burst_pkt_t tmp_prop_pkt;
+    uint32_t total_length = 0;
+{{TOTAL_LENGTH_CALCULATION}}
 
-    uint32_t little_idx = little_kernel_st_offset;
-    uint32_t big_idx = big_kernel_st_offset;
-    uint32_t total_length = little_kernel_length + big_kernel_length;
+    // Track current indices for each merger
+{{MERGER_INDEX_DECLARATIONS}}
 
 LOOP_MERGE_WRITES:
     while (true) {
@@ -22,23 +26,7 @@ LOOP_MERGE_WRITES:
             break;
         }
 
-        if (little_kernel_out_stream.read_nb(little_tmp_prop_pkt)) {
-            in_write_burst_w_dst_pkt_t little_write_burst;
-            little_write_burst.data = little_tmp_prop_pkt.data;
-            little_write_burst.dest_addr = little_idx;
-            little_write_burst.end_flag = false;
-            kernel_out_stream.write(little_write_burst);
-            little_idx++;
-            total_length--;
-        } else if (big_kernel_out_stream.read_nb(big_tmp_prop_pkt)) {
-            in_write_burst_w_dst_pkt_t big_write_burst;
-            big_write_burst.data = big_tmp_prop_pkt.data;
-            big_write_burst.dest_addr = big_idx;
-            big_write_burst.end_flag = false;
-            kernel_out_stream.write(big_write_burst);
-            big_idx++;
-            total_length--;
-        }
+{{MERGER_READ_BLOCKS}}
     }
 }
 
@@ -78,27 +66,17 @@ APPLY_LOOP:
 }
 
 extern "C" void
-apply_kernel(bus_word_t *node_props, uint32_t little_kernel_length,
-             uint32_t big_kernel_length, uint32_t little_kernel_st_offset,
-             uint32_t big_kernel_st_offset,
-             hls::stream<write_burst_pkt_t> &little_kernel_out_stream,
-             hls::stream<write_burst_pkt_t> &big_kernel_out_stream,
-             hls::stream<write_burst_w_dst_pkt_t> &kernel_out_stream) {
+apply_kernel(bus_word_t *node_props,
+{{APPLY_KERNEL_PARAMS}}) {
 #pragma HLS INTERFACE m_axi port = node_props offset = slave bundle = gmem0
 #pragma HLS INTERFACE s_axilite port = node_props bundle = control
-#pragma HLS INTERFACE s_axilite port = little_kernel_length bundle = control
-#pragma HLS INTERFACE s_axilite port = big_kernel_length bundle = control
-#pragma HLS INTERFACE s_axilite port = little_kernel_st_offset bundle = control
-#pragma HLS INTERFACE s_axilite port = big_kernel_st_offset bundle = control
+{{INTERFACE_PRAGMAS}}
 #pragma HLS INTERFACE s_axilite port = return bundle = control
 #pragma HLS DATAFLOW
 
     hls::stream<in_write_burst_w_dst_pkt_t> write_burst_stream;
 #pragma HLS STREAM variable = write_burst_stream depth = 16
 
-    merge_big_little_writes(little_kernel_out_stream, big_kernel_out_stream,
-                            write_burst_stream, little_kernel_length,
-                            big_kernel_length, little_kernel_st_offset,
-                            big_kernel_st_offset);
+    merge_multi_merger_writes({{MERGE_FUNCTION_CALL_PARAMS}});
     apply_func(node_props, write_burst_stream, kernel_out_stream);
 }

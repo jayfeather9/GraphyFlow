@@ -1,25 +1,15 @@
 #include "shared_kernel_params.h"
 
-void merge_little_kernels(
-    hls::stream<little_out_pkt_t> &little_kernel_1_out_stream,
-    hls::stream<little_out_pkt_t> &little_kernel_2_out_stream,
-    hls::stream<little_out_pkt_t> &little_kernel_3_out_stream,
-    hls::stream<little_out_pkt_t> &little_kernel_4_out_stream,
-    hls::stream<little_out_pkt_t> &little_kernel_5_out_stream,
-    hls::stream<little_out_pkt_t> &little_kernel_6_out_stream,
-    hls::stream<little_out_pkt_t> &little_kernel_7_out_stream,
-    hls::stream<little_out_pkt_t> &little_kernel_8_out_stream,
-    hls::stream<little_out_pkt_t> &little_kernel_9_out_stream,
-    hls::stream<little_out_pkt_t> &little_kernel_10_out_stream,
-    hls::stream<little_out_pkt_t> &little_kernel_11_out_stream,
+void {{LITTLE_MERGER_MERGE_FUNCTION_NAME}}(
+{{LITTLE_MERGER_STREAM_PARAMS}}
     hls::stream<write_burst_pkt_t> &kernel_out_stream) {
-    little_out_pkt_t tmp_prop_pkt[LITTLE_MERGER_LENGTH];
+    little_out_pkt_t tmp_prop_pkt[{{LITTLE_MERGER_LENGTH}}];
 #pragma HLS ARRAY_PARTITION variable = tmp_prop_pkt dim = 0 complete
 
-    bool process_flag[LITTLE_MERGER_LENGTH];
+    bool process_flag[{{LITTLE_MERGER_LENGTH}}];
 #pragma HLS ARRAY_PARTITION variable = process_flag dim = 0 complete
 
-    for (int i = 0; i < LITTLE_MERGER_LENGTH; i++) {
+    for (int i = 0; i < {{LITTLE_MERGER_LENGTH}}; i++) {
 #pragma HLS unroll
         process_flag[i] = 0;
     }
@@ -37,50 +27,15 @@ merge_tmp_prop_big_krnls:
     while (true) {
 #pragma HLS pipeline style = flp
 
-        if (!process_flag[0])
-            process_flag[0] =
-                little_kernel_1_out_stream.read_nb(tmp_prop_pkt[0]);
-        if (!process_flag[1])
-            process_flag[1] =
-                little_kernel_2_out_stream.read_nb(tmp_prop_pkt[1]);
-        if (!process_flag[2])
-            process_flag[2] =
-                little_kernel_3_out_stream.read_nb(tmp_prop_pkt[2]);
-        if (!process_flag[3])
-            process_flag[3] =
-                little_kernel_4_out_stream.read_nb(tmp_prop_pkt[3]);
-        if (!process_flag[4])
-            process_flag[4] =
-                little_kernel_5_out_stream.read_nb(tmp_prop_pkt[4]);
-        if (!process_flag[5])
-            process_flag[5] =
-                little_kernel_6_out_stream.read_nb(tmp_prop_pkt[5]);
-        if (!process_flag[6])
-            process_flag[6] =
-                little_kernel_7_out_stream.read_nb(tmp_prop_pkt[6]);
-        if (!process_flag[7])
-            process_flag[7] =
-                little_kernel_8_out_stream.read_nb(tmp_prop_pkt[7]);
-        if (!process_flag[8])
-            process_flag[8] =
-                little_kernel_9_out_stream.read_nb(tmp_prop_pkt[8]);
-        if (!process_flag[9])
-            process_flag[9] =
-                little_kernel_10_out_stream.read_nb(tmp_prop_pkt[9]);
-        if (!process_flag[10])
-            process_flag[10] =
-                little_kernel_11_out_stream.read_nb(tmp_prop_pkt[10]);
+{{STREAM_READS}}
 
-        bool merge_flag = process_flag[0] & process_flag[1] & process_flag[2] &
-                          process_flag[3] & process_flag[4] & process_flag[5] &
-                          process_flag[6] & process_flag[7] & process_flag[8] &
-                          process_flag[9] & process_flag[10] & 1;
+        bool merge_flag = {{MERGE_FLAG_TERMS}} & 1;
 
         if (merge_flag) {
             ap_fixed_pod_t uram_high = max_pod;;
             ap_fixed_pod_t uram_low = max_pod;
 
-            for (int i = 0; i < LITTLE_MERGER_LENGTH; i++) {
+            for (int i = 0; i < {{LITTLE_MERGER_LENGTH}}; i++) {
 #pragma HLS UNROLL
                 ap_fixed_pod_t update_low = tmp_prop_pkt[i].data.range(31, 0);
                 ap_fixed_pod_t update_high = tmp_prop_pkt[i].data.range(63, 32);
@@ -108,7 +63,7 @@ merge_tmp_prop_big_krnls:
                 one_write_burst = 0;
             }
 
-            for (int i = 0; i < LITTLE_MERGER_LENGTH; i++) {
+            for (int i = 0; i < {{LITTLE_MERGER_LENGTH}}; i++) {
 #pragma HLS unroll
                 process_flag[i] = 0;
             }
@@ -117,28 +72,12 @@ merge_tmp_prop_big_krnls:
 }
 
 extern "C" void
-little_merger(hls::stream<little_out_pkt_t> &little_kernel_1_out_stream,
-              hls::stream<little_out_pkt_t> &little_kernel_2_out_stream,
-              hls::stream<little_out_pkt_t> &little_kernel_3_out_stream,
-              hls::stream<little_out_pkt_t> &little_kernel_4_out_stream,
-              hls::stream<little_out_pkt_t> &little_kernel_5_out_stream,
-              hls::stream<little_out_pkt_t> &little_kernel_6_out_stream,
-              hls::stream<little_out_pkt_t> &little_kernel_7_out_stream,
-              hls::stream<little_out_pkt_t> &little_kernel_8_out_stream,
-              hls::stream<little_out_pkt_t> &little_kernel_9_out_stream,
-              hls::stream<little_out_pkt_t> &little_kernel_10_out_stream,
-              hls::stream<little_out_pkt_t> &little_kernel_11_out_stream,
+{{LITTLE_MERGER_FUNCTION_NAME}}({{LITTLE_MERGER_EXTERN_PARAMS}}
               hls::stream<write_burst_pkt_t> &kernel_out_stream) {
 
 #pragma HLS interface ap_ctrl_none port = return
 
 #pragma HLS DATAFLOW
 
-    merge_little_kernels(little_kernel_1_out_stream, little_kernel_2_out_stream,
-                         little_kernel_3_out_stream, little_kernel_4_out_stream,
-                         little_kernel_5_out_stream, little_kernel_6_out_stream,
-                         little_kernel_7_out_stream, little_kernel_8_out_stream,
-                         little_kernel_9_out_stream,
-                         little_kernel_10_out_stream,
-                         little_kernel_11_out_stream, kernel_out_stream);
+    {{MERGE_FUNCTION_CALL}}
 }

@@ -6,6 +6,7 @@ host/generated_host.h
 kernel/big_merger*.cpp
 kernel/little_merger*.cpp
 kernel/apply_kernel.cpp
+kernel/shared_kernel_params.h
 
 # Compiled object files
 *.o
