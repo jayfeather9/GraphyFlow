@@ -159,8 +159,8 @@ extern "C" void hbm_writer(
     bus_word_t *src_prop_4, bus_word_t *src_prop_5, bus_word_t *src_prop_6,
     bus_word_t *src_prop_7, bus_word_t *src_prop_8, bus_word_t *src_prop_9,
     bus_word_t *src_prop_10, bus_word_t *src_prop_11, bus_word_t *src_prop_12,
-    bus_word_t *src_prop_13, bus_word_t *src_prop_14, bus_word_t *output,
-    uint32_t num_partitions_little, uint32_t num_partitions_big,
+    bus_word_t *src_prop_13, bus_word_t *output, uint32_t num_partitions_little,
+    uint32_t num_partitions_big,
     hls::stream<ppb_request_pkt_t> &ppb_req_stream_1,
     hls::stream<ppb_response_pkt_t> &ppb_resp_stream_1,
     hls::stream<ppb_request_pkt_t> &ppb_req_stream_2,
@@ -181,8 +181,6 @@ extern "C" void hbm_writer(
     hls::stream<ppb_response_pkt_t> &ppb_resp_stream_9,
     hls::stream<ppb_request_pkt_t> &ppb_req_stream_10,
     hls::stream<ppb_response_pkt_t> &ppb_resp_stream_10,
-    hls::stream<ppb_request_pkt_t> &ppb_req_stream_11,
-    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_11,
     hls::stream<cacheline_request_pkt_t> &cacheline_req_stream_1,
     hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream_1,
     hls::stream<cacheline_request_pkt_t> &cacheline_req_stream_2,
@@ -203,7 +201,6 @@ extern "C" void hbm_writer(
 #pragma HLS INTERFACE m_axi port = src_prop_11 offset = slave bundle = gmem10
 #pragma HLS INTERFACE m_axi port = src_prop_12 offset = slave bundle = gmem11
 #pragma HLS INTERFACE m_axi port = src_prop_13 offset = slave bundle = gmem12
-#pragma HLS INTERFACE m_axi port = src_prop_14 offset = slave bundle = gmem13
 #pragma HLS INTERFACE m_axi port = output offset = slave bundle = gmem1
 #pragma HLS INTERFACE s_axilite port = src_prop_1 bundle = control
 #pragma HLS INTERFACE s_axilite port = src_prop_2 bundle = control
@@ -218,7 +215,6 @@ extern "C" void hbm_writer(
 #pragma HLS INTERFACE s_axilite port = src_prop_11 bundle = control
 #pragma HLS INTERFACE s_axilite port = src_prop_12 bundle = control
 #pragma HLS INTERFACE s_axilite port = src_prop_13 bundle = control
-#pragma HLS INTERFACE s_axilite port = src_prop_14 bundle = control
 #pragma HLS INTERFACE s_axilite port = output bundle = control
 #pragma HLS INTERFACE s_axilite port = num_partitions_little bundle = control
 #pragma HLS INTERFACE s_axilite port = num_partitions_big bundle = control
@@ -229,45 +225,50 @@ extern "C" void hbm_writer(
 #pragma HLS STREAM variable = little_prop_loader_out_1 depth = 16
     // #pragma HLS BIND_STORAGE variable = little_prop_loader_out_1 type = FIFO
     // impl = BRAM
+
     hls::stream<little_ppb_resp_t> little_prop_loader_out_2;
 #pragma HLS STREAM variable = little_prop_loader_out_2 depth = 16
     // #pragma HLS BIND_STORAGE variable = little_prop_loader_out_2 type = FIFO
     // impl = BRAM
+
     hls::stream<little_ppb_resp_t> little_prop_loader_out_3;
 #pragma HLS STREAM variable = little_prop_loader_out_3 depth = 16
     // #pragma HLS BIND_STORAGE variable = little_prop_loader_out_3 type = FIFO
     // impl = BRAM
+
     hls::stream<little_ppb_resp_t> little_prop_loader_out_4;
 #pragma HLS STREAM variable = little_prop_loader_out_4 depth = 16
     // #pragma HLS BIND_STORAGE variable = little_prop_loader_out_4 type = FIFO
     // impl = BRAM
+
     hls::stream<little_ppb_resp_t> little_prop_loader_out_5;
 #pragma HLS STREAM variable = little_prop_loader_out_5 depth = 16
     // #pragma HLS BIND_STORAGE variable = little_prop_loader_out_5 type = FIFO
     // impl = BRAM
+
     hls::stream<little_ppb_resp_t> little_prop_loader_out_6;
 #pragma HLS STREAM variable = little_prop_loader_out_6 depth = 16
     // #pragma HLS BIND_STORAGE variable = little_prop_loader_out_6 type = FIFO
     // impl = BRAM
+
     hls::stream<little_ppb_resp_t> little_prop_loader_out_7;
 #pragma HLS STREAM variable = little_prop_loader_out_7 depth = 16
     // #pragma HLS BIND_STORAGE variable = little_prop_loader_out_7 type = FIFO
     // impl = BRAM
+
     hls::stream<little_ppb_resp_t> little_prop_loader_out_8;
 #pragma HLS STREAM variable = little_prop_loader_out_8 depth = 16
     // #pragma HLS BIND_STORAGE variable = little_prop_loader_out_8 type = FIFO
     // impl = BRAM
+
     hls::stream<little_ppb_resp_t> little_prop_loader_out_9;
 #pragma HLS STREAM variable = little_prop_loader_out_9 depth = 16
     // #pragma HLS BIND_STORAGE variable = little_prop_loader_out_9 type = FIFO
     // impl = BRAM
+
     hls::stream<little_ppb_resp_t> little_prop_loader_out_10;
 #pragma HLS STREAM variable = little_prop_loader_out_10 depth = 16
     // #pragma HLS BIND_STORAGE variable = little_prop_loader_out_10 type = FIFO
-    // impl = BRAM
-    hls::stream<little_ppb_resp_t> little_prop_loader_out_11;
-#pragma HLS STREAM variable = little_prop_loader_out_11 depth = 16
-    // #pragma HLS BIND_STORAGE variable = little_prop_loader_out_11 type = FIFO
     // impl = BRAM
 
     little_node_prop_loader(0, src_prop_1, num_partitions_little,
@@ -320,16 +321,13 @@ extern "C" void hbm_writer(
     little_response_packer(9, little_prop_loader_out_10, ppb_resp_stream_10,
                            num_partitions_little);
 
-    little_node_prop_loader(10, src_prop_11, num_partitions_little,
-                            ppb_req_stream_11, little_prop_loader_out_11);
-    little_response_packer(10, little_prop_loader_out_11, ppb_resp_stream_11,
-                           num_partitions_little);
-
-    big_node_prop_loader(0, src_prop_12, num_partitions_big,
+    big_node_prop_loader(0, src_prop_11, num_partitions_big,
                          cacheline_req_stream_1, cacheline_resp_stream_1);
-    big_node_prop_loader(1, src_prop_13, num_partitions_big,
+
+    big_node_prop_loader(1, src_prop_12, num_partitions_big,
                          cacheline_req_stream_2, cacheline_resp_stream_2);
-    big_node_prop_loader(2, src_prop_14, num_partitions_big,
+
+    big_node_prop_loader(2, src_prop_13, num_partitions_big,
                          cacheline_req_stream_3, cacheline_resp_stream_3);
 
     write_out(output, write_burst_stream);

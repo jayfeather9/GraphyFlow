@@ -20,7 +20,7 @@ from typing import List, Dict, Any
 CONFIG_EXAMPLE = [
     {"kernel_type": "big", "pipeline_num": 3, "merger_slr": 1, "pipeline_slr": [2, 1, 2]},
     {"kernel_type": "little", "pipeline_num": 5, "merger_slr": 1, "pipeline_slr": [0, 1, 2, 0, 1]},
-    {"kernel_type": "little", "pipeline_num": 6, "merger_slr": 1, "pipeline_slr": [0, 1, 2, 0, 1, 2]},
+    {"kernel_type": "little", "pipeline_num": 5, "merger_slr": 1, "pipeline_slr": [0, 1, 2, 0, 2]},
 ]
 
 
