@@ -10,54 +10,54 @@ from .newbackend_manager import BackendManager
 
 
 # --- CONFIGURATION SECTION ---
-INIT_VALUE = "0.0"
+INIT_VALUE = "16384.0"
 # You can change the number of kernels and their HBM mapping here.
 
 # 
-# NUM_BIG_KERNELS = 3
-# NUM_LITTLE_KERNELS = 11
-# 
-# # HBM channel IDs for Big Kernels. The list length must match NUM_BIG_KERNELS.
-# big_kernel_hbm_edge_id = [22,24,26]
-# big_kernel_hbm_node_id = [23,25,27] # for hbm writer
-# 
-# little_kernel_hbm_edge_id = [0,2,4,6,8,10,12,14,16,18,20]
-# little_kernel_hbm_node_id = [1,3,5,7,9,11,13,15,17,19,21] # for hbm writer
-# 
-# apply_kernel_hbm_node_id = [30]
-# hbm_writer_output_id = [1]
-# big_kernel_slr = ["SLR2","SLR1", "SLR2"]
-# little_kernel_slr = ["SLR0","SLR1", "SLR2","SLR0","SLR1", "SLR2","SLR0","SLR1", "SLR2","SLR0","SLR1"]
-# 
-# little_merger_slr = ["SLR1"]
-# big_merger_slr = ["SLR1"]
-# 
-# apply_kernel_slr = ["SLR1"]
-# hbm_writer_slr = ["SLR0"]
-# 
-# 
-# 
-
-NUM_BIG_KERNELS = 1
-NUM_LITTLE_KERNELS = 1
+NUM_BIG_KERNELS = 3
+NUM_LITTLE_KERNELS = 11
 
 # HBM channel IDs for Big Kernels. The list length must match NUM_BIG_KERNELS.
-big_kernel_hbm_edge_id = [22]
-big_kernel_hbm_node_id = [23] # for hbm writer
+big_kernel_hbm_edge_id = [22,24,26]
+big_kernel_hbm_node_id = [23,25,27] # for hbm writer
 
-little_kernel_hbm_edge_id = [0]
-little_kernel_hbm_node_id = [1] # for hbm writer
+little_kernel_hbm_edge_id = [0,2,4,6,8,10,12,14,16,18,20]
+little_kernel_hbm_node_id = [1,3,5,7,9,11,13,15,17,19,21] # for hbm writer
 
 apply_kernel_hbm_node_id = [30]
 hbm_writer_output_id = [1]
-big_kernel_slr = ["SLR2"]
-little_kernel_slr = ["SLR0"]
+big_kernel_slr = ["SLR2","SLR1", "SLR2"]
+little_kernel_slr = ["SLR0","SLR1", "SLR2","SLR0","SLR1", "SLR2","SLR0","SLR1", "SLR2","SLR0","SLR1"]
 
 little_merger_slr = ["SLR1"]
 big_merger_slr = ["SLR1"]
 
 apply_kernel_slr = ["SLR1"]
 hbm_writer_slr = ["SLR0"]
+# 
+# 
+# 
+
+# NUM_BIG_KERNELS = 1
+# NUM_LITTLE_KERNELS = 1
+# 
+# # HBM channel IDs for Big Kernels. The list length must match NUM_BIG_KERNELS.
+# big_kernel_hbm_edge_id = [22]
+# big_kernel_hbm_node_id = [23] # for hbm writer
+# 
+# little_kernel_hbm_edge_id = [0]
+# little_kernel_hbm_node_id = [1] # for hbm writer
+# 
+# apply_kernel_hbm_node_id = [30]
+# hbm_writer_output_id = [1]
+# big_kernel_slr = ["SLR2"]
+# little_kernel_slr = ["SLR0"]
+# 
+# little_merger_slr = ["SLR1"]
+# big_merger_slr = ["SLR1"]
+# 
+# apply_kernel_slr = ["SLR1"]
+# hbm_writer_slr = ["SLR0"]
 # 
 
 # --- END CONFIGURATION SECTION ---

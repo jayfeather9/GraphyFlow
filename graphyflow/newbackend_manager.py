@@ -2731,8 +2731,8 @@ axistream2stream:
         top_vars = {
             "IN_VAR_A_key":A_key,
             "IN_VAR_B_key":B_key,
-            "IN_VAR_A_t":  msb_var, # incoming_dist_pod_var,
-            "IN_VAR_B_t":  incoming_dist_pod_var, # msb_var,
+            "IN_VAR_A_t":  incoming_dist_pod_var,# msb_var, # 
+            "IN_VAR_B_t":  msb_var, # incoming_dist_pod_var, # 
 
             "OUT_VAR" : msb_out_var
         }
@@ -2741,13 +2741,18 @@ axistream2stream:
         
         port_property,target_codes = self._analyse_unit_reduce(comp ,group="unit",port_property=port_property,port_to_var=port_to_var,top_vars=top_vars,target_codes=target_codes)
 
-        while_1_codes.extend(target_codes)
+        assert len(target_codes) == 1
+        target_codes = target_codes[0]
+
+        tmp_expr = CodeOther(text=f"{msb_out_var.name} = ({msb_var.name} !=0x0) ? {target_codes.code} : {incoming_dist_pod_var.name};")
+        while_1_codes.append(tmp_expr)
+    
 
         top_vars = {
             "IN_VAR_A_key":A_key,
             "IN_VAR_B_key":B_key,
-            "IN_VAR_A_t":   lsb_var, # incoming_dist_pod_var,
-            "IN_VAR_B_t":    incoming_dist_pod_var, # lsb_var,
+            "IN_VAR_A_t":   incoming_dist_pod_var, # lsb_var, # 
+            "IN_VAR_B_t":   lsb_var, #  incoming_dist_pod_var, # 
 
             "OUT_VAR" : lsb_out_var
         }
@@ -2755,7 +2760,13 @@ axistream2stream:
         target_codes = []
         
         port_property,target_codes = self._analyse_unit_reduce(comp ,group="unit",port_property=port_property,port_to_var=port_to_var,top_vars=top_vars,target_codes=target_codes)
-        while_1_codes.extend(target_codes)
+        
+        assert len(target_codes) == 1
+        target_codes = target_codes[0]
+
+        tmp_expr = CodeOther(text=f"{lsb_out_var.name} = ({lsb_var.name} !=0x0) ? {target_codes.code} : {incoming_dist_pod_var.name};")
+        while_1_codes.append(tmp_expr)
+
         while_1_codes.append(CodeComment(text="=======  end inline reduce logic ===="))
         # ================ end inline reduce logic ========================
         # reduce_word_t accumulated_msb;
@@ -3170,8 +3181,8 @@ axistream2stream:
         top_vars = {
             "IN_VAR_A_key":A_key,
             "IN_VAR_B_key":B_key,
-            "IN_VAR_A_t":   msb_var,# incoming_dist_pod_var,
-            "IN_VAR_B_t":   incoming_dist_pod_var,# msb_var,
+            "IN_VAR_A_t":   incoming_dist_pod_var,# msb_var,# 
+            "IN_VAR_B_t":   msb_var, # incoming_dist_pod_var,# 
 
             "OUT_VAR" : msb_out_var
         }
@@ -3179,14 +3190,17 @@ axistream2stream:
         target_codes = []
         
         port_property,target_codes = self._analyse_unit_reduce(comp ,group="unit",port_property=port_property,port_to_var=port_to_var,top_vars=top_vars,target_codes=target_codes)
+        assert len(target_codes) == 1
+        target_codes = target_codes[0]
 
-        if_1_codes.extend(target_codes)
+        tmp_expr = CodeOther(text=f"{msb_out_var.name} = ({msb_var.name} !=0x0) ? {target_codes.code} : {incoming_dist_pod_var.name};")
+        if_1_codes.append(tmp_expr)
 
         top_vars = {
             "IN_VAR_A_key":A_key,
             "IN_VAR_B_key":B_key,
-            "IN_VAR_A_t":  lsb_var, # incoming_dist_pod_var,
-            "IN_VAR_B_t":  incoming_dist_pod_var,# lsb_var,
+            "IN_VAR_A_t":  incoming_dist_pod_var, # lsb_var, # 
+            "IN_VAR_B_t":  lsb_var, # incoming_dist_pod_var,# 
 
             "OUT_VAR" : lsb_out_var
         }
@@ -3194,7 +3208,12 @@ axistream2stream:
         target_codes = []
         
         port_property,target_codes = self._analyse_unit_reduce(comp ,group="unit",port_property=port_property,port_to_var=port_to_var,top_vars=top_vars,target_codes=target_codes)
-        if_1_codes.extend(target_codes)
+        
+        assert len(target_codes) == 1
+        target_codes = target_codes[0]
+
+        tmp_expr = CodeOther(text=f"{lsb_out_var.name} = ({lsb_var.name} !=0x0) ? {target_codes.code} : {incoming_dist_pod_var.name};")
+        if_1_codes.append(tmp_expr)
         if_1_codes.append(CodeComment(text="=======  end inline reduce logic ===="))
         # ================ end inline reduce logic ========================
 
@@ -3399,27 +3418,38 @@ axistream2stream:
         top_vars = {
             "IN_VAR_A_key":A_key,
             "IN_VAR_B_key":B_key,
-            "IN_VAR_A_t": incoming_dist_pod_low_var,# uram_res_low_var,
-            "IN_VAR_B_t": uram_res_low_var,# incoming_dist_pod_low_var,
+            "IN_VAR_A_t": uram_res_low_var,# incoming_dist_pod_low_var,# 
+            "IN_VAR_B_t": incoming_dist_pod_low_var,# uram_res_low_var,# 
             "OUT_VAR" : uram_res_low_var,
         }
         port_property = {}
         target_codes = []
         port_property,target_codes = self._analyse_unit_reduce(comp ,group="unit",port_property=port_property,port_to_var=port_to_var,top_vars=top_vars,target_codes=target_codes)
-        reduce_codes.extend(target_codes)
+        
+        
+        assert len(target_codes) == 1
+        target_codes = target_codes[0]
+
+        tmp_expr = CodeOther(text=f"{uram_res_low_var.name} = ({incoming_dist_pod_low_var.name} !=0x0) ? {target_codes.code} : {uram_res_low_var.name};")
+        reduce_codes.append(tmp_expr)
 
         top_vars = {
             "IN_VAR_A_key":A_key,
             "IN_VAR_B_key":B_key,
-            "IN_VAR_A_t": incoming_dist_pod_high_var, # uram_res_high_var,
-            "IN_VAR_B_t":  uram_res_high_var, # incoming_dist_pod_high_var,
+            "IN_VAR_A_t":  uram_res_high_var, # incoming_dist_pod_high_var, # 
+            "IN_VAR_B_t":  incoming_dist_pod_high_var,# uram_res_high_var, # 
 
             "OUT_VAR" : uram_res_high_var
         }
         port_property = {}
         target_codes = []
         port_property,target_codes = self._analyse_unit_reduce(comp ,group="unit",port_property=port_property,port_to_var=port_to_var,top_vars=top_vars,target_codes=target_codes)
-        reduce_codes.extend(target_codes)
+        
+        assert len(target_codes) == 1
+        target_codes = target_codes[0]
+
+        tmp_expr = CodeOther(text=f"{uram_res_high_var.name} = ({incoming_dist_pod_high_var.name} !=0x0) ? {target_codes.code} : {uram_res_high_var.name};")
+        reduce_codes.append(tmp_expr)
 
 
         reduce_codes.append(CodeComment(text="=======  end inline reduce logic ===="))
@@ -3560,27 +3590,36 @@ axistream2stream:
         top_vars = {
             "IN_VAR_A_key":A_key,
             "IN_VAR_B_key":B_key,
-            "IN_VAR_A_t": second_low_var,# first_low_var,
-            "IN_VAR_B_t": first_low_var, # second_low_var,
+            "IN_VAR_A_t": first_low_var,# second_low_var,# 
+            "IN_VAR_B_t": second_low_var,# first_low_var, # 
             "OUT_VAR" : first_low_var,
         }
         port_property = {}
         target_codes = []
         port_property,target_codes = self._analyse_unit_reduce(comp ,group="unit",port_property=port_property,port_to_var=port_to_var,top_vars=top_vars,target_codes=target_codes)
-        reduce_codes.extend(target_codes)
+        
+        assert len(target_codes) == 1
+        target_codes = target_codes[0]
+
+        tmp_expr = CodeOther(text=f"{first_low_var.name} = ({second_low_var.name} !=0x0) ? {target_codes.code} : {first_low_var.name};")
+        reduce_codes.append(tmp_expr)
 
         top_vars = {
             "IN_VAR_A_key":A_key,
             "IN_VAR_B_key":B_key,
-            "IN_VAR_A_t": second_high_var,# first_high_var,
-            "IN_VAR_B_t": first_high_var,# second_high_var,
+            "IN_VAR_A_t": first_high_var,# second_high_var,# 
+            "IN_VAR_B_t": second_high_var,# first_high_var,# 
 
             "OUT_VAR" : first_high_var
         }
         port_property = {}
         target_codes = []
         port_property,target_codes = self._analyse_unit_reduce(comp ,group="unit",port_property=port_property,port_to_var=port_to_var,top_vars=top_vars,target_codes=target_codes)
-        reduce_codes.extend(target_codes)
+        assert len(target_codes) == 1
+        target_codes = target_codes[0]
+        
+        tmp_expr = CodeOther(text=f"{first_high_var.name} = ({second_high_var.name} !=0x0) ? {target_codes.code} : {first_high_var.name};")
+        reduce_codes.append(tmp_expr)
 
 
         reduce_codes.append(CodeComment(text="=======  end inline reduce logic ===="))
@@ -3626,12 +3665,12 @@ axistream2stream:
             if port.name == "o_reduce_unit_start_0":
                 port_to_var[port] = [top_vars["IN_VAR_A_t"],top_vars["IN_VAR_A_key"]]
                 port_already_analysed.append(port)
-                port_property[port] = ["key","transform"]
+                port_property[port] = ["transform","key"]
                 q.append(port.connection.parent)
             elif port.name == "o_reduce_unit_start_1":
                 port_already_analysed.append(port)
                 port_to_var[port] = [top_vars["IN_VAR_B_t"],top_vars["IN_VAR_B_key"]]
-                port_property[port] = ["key","transform"]
+                port_property[port] = ["transform","key"]
                 q.append(port.connection.parent)
 
         head = 0
@@ -3647,7 +3686,7 @@ axistream2stream:
             else:
                 port_property ,target_codes = self._gather_analyze(cur,port_property,port_to_var,top_vars,target_codes)
             
-            end = False
+            end = True
             for p in cur.out_ports:
                 port_already_analysed.append(p)
                 if p.connected and not isinstance(
@@ -3655,22 +3694,10 @@ axistream2stream:
                     (dfir.ReduceComponent, dfir.UnusedEndMarkerComponent),
                 ):
                     successor_comp = p.connection.parent
-                    if successor_comp.readable_id not in visited_ids:
+                    if successor_comp.readable_id not in visited_ids and successor_comp not in q:
                         q.append(successor_comp)
                         visited_ids.add(successor_comp.readable_id)
-                else:# cur是最后一个组件
-                    end = True
-            if end:
-                for p in cur.out_ports:
-                    if p.port_type == dfir.PortType.OUT:
-                        for prop in port_property[p]:
-                            if prop[0] == "edge":
-                                if prop[1][0] == "weight":
-                                    target_codes.append(CodeAssign(top_vars["FINAL_PROP_VAR"], port_to_var[p][0]))
-                                elif prop[1][0] == "dst":
-                                    target_codes.append(CodeAssign(top_vars["FINAL_DST_ID_VAR"], port_to_var[p][1]))
-                                else:
-                                    assert 0
+                        end = False
                             
         
         return port_property,target_codes
@@ -4002,8 +4029,8 @@ axistream2stream:
                     out_var = top_vars["OUT_VAR"]
                    
                     tmp_expr = HLSExpr(HLSExprT.BINOP, comp.op, [op1_expr, op2_expr])
-                    tmp_expr_out = CodeOther(text=f"{out_var.name} = ({op1_var.name} != 0x0) ? {tmp_expr.code} : {op2_var.name};")
-                    target_codes.append(tmp_expr_out)
+                    # tmp_expr_out = CodeOther(text=f"{out_var.name} = ({op1_var.name} != 0x0) ? {tmp_expr.code} : {op2_var.name};")
+                    target_codes.append(tmp_expr)
 
                     port_to_var[port] = out_var
                     port_property[port] = inproperty
@@ -4953,33 +4980,47 @@ axistream2stream:
         A_key = HLSVar(var_name="A_key",var_type=HLSType(basic_type=HLSBasicType.AP_UINT,width=20))
         B_key = HLSVar(var_name="B_key",var_type=HLSType(basic_type=HLSBasicType.AP_UINT,width=20))
         
+        uramlowvar = HLSVar(var_name="uram_low",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD))
+        update_low_var = HLSVar(var_name="update_low",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD))# HLSVar(var_name="update_low",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
+
+        top_vars = {
+            "IN_VAR_A_key":A_key,
+            "IN_VAR_B_key":B_key,
+            "IN_VAR_A_t":  uramlowvar,
+            "IN_VAR_B_t":  update_low_var,
+            "OUT_VAR" : uramlowvar
+        }
+        port_property = {}
+        target_codes = []
+        port_property,target_codes = self._analyse_unit_reduce(reduce_comp ,group="unit",port_property=port_property,port_to_var=port_to_var,top_vars=top_vars,target_codes=target_codes)
         
+        assert len(target_codes) == 1
+        target_codes = target_codes[0]
+
+        tmp_expr = CodeOther(text=f"{uramlowvar.name} = ({update_low_var.name} !=0x0) ? {target_codes.code} : {uramlowvar.name};")
+        reduce_codes.append(tmp_expr)
+
+        uramhighvar = HLSVar(var_name="uram_high",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD))# HLSVar(var_name="uram_high",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
+        update_high_var = HLSVar(var_name="update_high",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD))  # HLSVar(var_name="update_high",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
+
         top_vars = {
+
             "IN_VAR_A_key":A_key,
             "IN_VAR_B_key":B_key,
-            "IN_VAR_A_t":  HLSVar(var_name="update_low",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),# HLSVar(var_name="uram_low",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
-            "IN_VAR_B_t":  HLSVar(var_name="uram_low",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),# HLSVar(var_name="update_low",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
+            "IN_VAR_A_t":  uramhighvar,
+            "IN_VAR_B_t":  update_high_var,
 
-            "OUT_VAR" : HLSVar(var_name="uram_low",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
+            "OUT_VAR" : update_high_var
         }
         port_property = {}
         target_codes = []
         port_property,target_codes = self._analyse_unit_reduce(reduce_comp ,group="unit",port_property=port_property,port_to_var=port_to_var,top_vars=top_vars,target_codes=target_codes)
-        reduce_codes.extend(target_codes)
+        
+        assert len(target_codes) == 1
+        target_codes = target_codes[0]
 
-        top_vars = {
-            "IN_VAR_A_key":A_key,
-            "IN_VAR_B_key":B_key,
-            "IN_VAR_A_t":  HLSVar(var_name="update_high",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),# HLSVar(var_name="uram_high",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
-            "IN_VAR_B_t":  HLSVar(var_name="uram_high",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),  # HLSVar(var_name="update_high",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
-
-            "OUT_VAR" : HLSVar(var_name="uram_high",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
-        }
-        port_property = {}
-        target_codes = []
-        port_property,target_codes = self._analyse_unit_reduce(reduce_comp ,group="unit",port_property=port_property,port_to_var=port_to_var,top_vars=top_vars,target_codes=target_codes)
-        reduce_codes.extend(target_codes)
-
+        tmp_expr = CodeOther(text=f"{uramhighvar.name} = ({update_high_var.name} !=0x0) ? {target_codes.code} : {uramhighvar.name};")
+        reduce_codes.append(tmp_expr)
 
         reduce_codes.append(CodeComment(text="=======  end inline reduce logic ===="))
         
@@ -4992,18 +5033,26 @@ axistream2stream:
         B_key = HLSVar(var_name="B_key",var_type=HLSType(basic_type=HLSBasicType.AP_UINT,width=20))
         
         
+        tmp_jvar = HLSVar(var_name="tmp_prop_arrary[j]",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD))# HLSVar(var_name="1tmp_prop_arrary[j]",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)), #
+        update_var = HLSVar(var_name="update",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD))# HLSVar(var_name="update",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),  #
+
         top_vars = {
             "IN_VAR_A_key":A_key,
             "IN_VAR_B_key":B_key,
-            "IN_VAR_A_t": HLSVar(var_name="update",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),# HLSVar(var_name="1tmp_prop_arrary[j]",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
-            "IN_VAR_B_t": HLSVar(var_name="tmp_prop_arrary[j]",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),# HLSVar(var_name="update",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
+            "IN_VAR_A_t": tmp_jvar,
+            "IN_VAR_B_t": update_var,
 
-            "OUT_VAR" : HLSVar(var_name="tmp_prop_arrary[j]",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
+            "OUT_VAR" : tmp_jvar
         }
         port_property = {}
         target_codes = []
         port_property,target_codes = self._analyse_unit_reduce(reduce_comp ,group="unit",port_property=port_property,port_to_var=port_to_var,top_vars=top_vars,target_codes=target_codes)
-        reduce_codes.extend(target_codes)
+        
+        assert len(target_codes) == 1
+        target_codes = target_codes[0]
+
+        tmp_expr = CodeOther(text=f"{tmp_jvar.name} = ({update_var.name} !=0x0) ? {target_codes.code} : {tmp_jvar.name};")
+        reduce_codes.append(tmp_expr)
         reduce_codes.append(CodeComment(text=" =======  end inline reduce logic ===="))
         self.big_merger_inline_codes = reduce_codes
         # ================ end inline reduce logic ========================
