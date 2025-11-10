@@ -9,6 +9,7 @@
 bool host_bellman_ford_iteration(const GraphCSR &graph,
                                  std::vector<int> &distances);
 bool host_cc_iteration(const GraphCSR &graph,
-                           std::vector<unsigned int> &bitmasks);
+                           const std::vector<unsigned int> &bitmasks_in,
+                           std::vector<unsigned int> &bitmasks_out);
                            
 #endif // __HOST_BELLMAN_FORD_H__

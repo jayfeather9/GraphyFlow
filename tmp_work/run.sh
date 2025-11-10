@@ -16,7 +16,7 @@ echo "--- Running for target: $TARGET ---"
 export XRT_INI_PATH="./xrt.ini"
 
 # 1. 设置环境变量
-source /home/feiyang/set_env.sh
+source env.sh
 
 if [ "$TARGET" = "sw_emu" ] || [ "$TARGET" = "hw_emu" ]; then
     export XCL_EMULATION_MODE=$TARGET
@@ -39,6 +39,6 @@ if [ ! -f "$XCLBIN_FILE" ]; then
 fi
 
 # 3. 运行 host 程序
-DATASET="./graph.txt"
+DATASET="/data/feiyang/test/test/datasets/rmat-19-32.txt"
 # DATASET="./rmat-19-32.txt"
 ./${EXECUTABLE} ${XCLBIN_FILE} $DATASET

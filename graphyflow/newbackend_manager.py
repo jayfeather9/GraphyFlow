@@ -229,7 +229,7 @@ axistream2stream:
         def write_func_body(func: HLSFunction,is_top):
             nonlocal code
             params_str = ",\n ".join(
-                [p.type.get_upper_param(p.name, p.type.type != HLSBasicType.INT and p.type.type!= HLSBasicType.UINT) for p in func.params]
+                [p.type.get_upper_param(p.name, p.type.type != HLSBasicType.INT and p.type.type!= HLSBasicType.UINT and p.type.type != HLSBasicType.AP_FIXED_POD) for p in func.params]
             )
             if is_top:
                 code += f"extern \"C\" void\n {func.name}({params_str}) " + "{\n"
@@ -373,7 +373,7 @@ axistream2stream:
 
         def write_func_sig(func: HLSFunction,header_file):
             params_str = ",\n ".join(
-                [p.type.get_upper_param(p.name, p.type.type != HLSBasicType.INT and p.type.type != HLSBasicType.UINT) for p in func.params]
+                [p.type.get_upper_param(p.name, p.type.type != HLSBasicType.INT and p.type.type != HLSBasicType.UINT and p.type.type != HLSBasicType.AP_FIXED_POD) for p in func.params]
             )
             
             header_file += f"extern \"C\" void\n {func.name}({params_str} \n);\n\n"
@@ -1049,22 +1049,22 @@ axistream2stream:
         if edge_descriptor_batch_t_type.name not in self.little_struct_definitions:
             self.little_struct_definitions[edge_descriptor_batch_t_type.name] = (edge_descriptor_batch_t_type, edge_descriptor_batch_t_type.struct_prop_names)
 
-        # struct update_t (来自 graphyflow_little.h, 没有 end_flag)
+        # struct update_t
         update_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
-                                struct_name="update_t",
+                                struct_name="update_t_little",
                                 struct_prop_names=["node_id", "prop"],
-                                sub_types=[ap_uint20_type, ap_fixed_pod_t_type]) 
+                                sub_types=[HLSType(HLSBasicType.AP_UINT,width=20), HLSType(HLSBasicType.AP_FIXED_POD)]) # .h: node_id 是 ap_uint<20>
         if update_t_type.name not in self.little_struct_definitions:
             self.little_struct_definitions[update_t_type.name] = (update_t_type, update_t_type.struct_prop_names)
-
         # struct update_tuple_t
         update_t_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[update_t_type], array_dims=["PE_NUM"])
+        update_t_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[update_t_type], array_dims=["PE_NUM"])
         update_tuple_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
-                                      struct_name="update_tuple_t",
-                                      struct_prop_names=["data"],
-                                      sub_types=[update_t_array_type])
+                                          struct_name="update_tuple_t_little",
+                                          struct_prop_names=["data"],
+                                          sub_types=[update_t_array_type])
         if update_tuple_t_type.name not in self.little_struct_definitions:
-            self.little_struct_definitions[update_tuple_t_type.name] = (update_tuple_t_type, update_tuple_t_type.struct_prop_names)
+                self.little_struct_definitions[update_tuple_t_type.name] = (update_tuple_t_type, update_tuple_t_type.struct_prop_names)
 
         # struct ppb_request_t
         ppb_request_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
@@ -1290,7 +1290,7 @@ axistream2stream:
             if func is None:
                 return code + "\nNot Implemented\n\n"
             params_str = ",\n ".join(
-                [p.type.get_upper_param(p.name, p.type.type != HLSBasicType.INT and p.type.type != HLSBasicType.UINT) for p in func.params]
+                [p.type.get_upper_param(p.name, p.type.type != HLSBasicType.INT and p.type.type != HLSBasicType.UINT and p.type.type != HLSBasicType.AP_FIXED_POD) for p in func.params]
             )
             if len(func.codes) != 0:
                 if is_top:
@@ -2733,8 +2733,8 @@ axistream2stream:
         top_vars = {
             "IN_VAR_A_key":A_key,
             "IN_VAR_B_key":B_key,
-            "IN_VAR_A_t":incoming_dist_pod_var,
-            "IN_VAR_B_t":msb_var,
+            "IN_VAR_A_t":  msb_var, # incoming_dist_pod_var,
+            "IN_VAR_B_t":  incoming_dist_pod_var, # msb_var,
 
             "OUT_VAR" : msb_out_var
         }
@@ -2748,8 +2748,8 @@ axistream2stream:
         top_vars = {
             "IN_VAR_A_key":A_key,
             "IN_VAR_B_key":B_key,
-            "IN_VAR_A_t":incoming_dist_pod_var,
-            "IN_VAR_B_t":lsb_var,
+            "IN_VAR_A_t":   lsb_var, # incoming_dist_pod_var,
+            "IN_VAR_B_t":    incoming_dist_pod_var, # lsb_var,
 
             "OUT_VAR" : lsb_out_var
         }
@@ -2943,7 +2943,7 @@ axistream2stream:
 
         # struct update_t
         update_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
-                                struct_name="update_t",
+                                struct_name="update_t_little",
                                 struct_prop_names=["node_id", "prop"], # .h: ap_uint<20>, ap_fixed_pod_t
                                 sub_types=[ap_uint20_type, ap_fixed_pod_t_type]) 
         if update_t_type.name not in self.struct_definitions:
@@ -2952,7 +2952,7 @@ axistream2stream:
         # struct update_tuple_t
         update_t_array_type = HLSType(HLSBasicType.ARRAY, sub_types=[update_t_type], array_dims=["PE_NUM"])
         update_tuple_t_type = HLSType(basic_type=HLSBasicType.STRUCT,
-                                      struct_name="update_tuple_t",
+                                      struct_name="update_tuple_t_little",
                                       struct_prop_names=["data"], # .h: update_t data[PE_NUM]
                                       sub_types=[update_t_array_type])
         if update_tuple_t_type.name not in self.struct_definitions:
@@ -2994,8 +2994,8 @@ axistream2stream:
         code_lines.append(CodeVarDecl(var_name="MEM_SIZE", var_type=int_type, init_val="(MAX_NUM / DISTANCES_PER_REDUCE_WORD)", const=True))
 
         # reduce_word_t prop_mem[PE_NUM][MEM_SIZE];
-        prop_mem_elem_type = HLSType(HLSBasicType.ARRAY, sub_types=[reduce_word_t_type], array_dims=["MEM_SIZE"])
-        prop_mem_type = HLSType(HLSBasicType.ARRAY, sub_types=[prop_mem_elem_type], array_dims=["PE_NUM"])
+        prop_mem_elem_type = HLSType(HLSBasicType.ARRAY, sub_types=[reduce_word_t_type], array_dims=["PE_NUM"])
+        prop_mem_type = HLSType(HLSBasicType.ARRAY, sub_types=[prop_mem_elem_type], array_dims=["MEM_SIZE"])
         code_lines.append(CodeVarDecl(var_name="prop_mem", var_type=prop_mem_type))
         prop_mem_var = HLSVar(var_name="prop_mem", var_type=prop_mem_type)
 
@@ -3009,8 +3009,8 @@ axistream2stream:
         code_lines.append(CodeComment(text="Latency-hiding cache for recently accessed URAM words"))
 
         # reduce_word_t cache_data_buffer[PE_NUM][L + 1];
-        cache_data_elem_type = HLSType(HLSBasicType.ARRAY, sub_types=[reduce_word_t_type], array_dims=["(L + 1)"])
-        cache_data_type = HLSType(HLSBasicType.ARRAY, sub_types=[cache_data_elem_type], array_dims=["PE_NUM"])
+        cache_data_elem_type = HLSType(HLSBasicType.ARRAY, sub_types=[reduce_word_t_type], array_dims=["PE_NUM"])
+        cache_data_type = HLSType(HLSBasicType.ARRAY, sub_types=[cache_data_elem_type], array_dims=["(L + 1)"])
         code_lines.append(CodeVarDecl(var_name="cache_data_buffer", var_type=cache_data_type))
         cache_data_buffer_var = HLSVar(var_name="cache_data_buffer", var_type=cache_data_type)
 
@@ -3018,8 +3018,8 @@ axistream2stream:
         code_lines.append(CodePragma(content="ARRAY_PARTITION variable = cache_data_buffer complete dim = 0"))
 
         # ap_uint<20> cache_addr_buffer[PE_NUM][L + 1];
-        cache_addr_elem_type = HLSType(HLSBasicType.ARRAY, sub_types=[ap_uint20_type], array_dims=["(L + 1)"])
-        cache_addr_type = HLSType(HLSBasicType.ARRAY, sub_types=[cache_addr_elem_type], array_dims=["PE_NUM"])
+        cache_addr_elem_type = HLSType(HLSBasicType.ARRAY, sub_types=[ap_uint20_type], array_dims=["PE_NUM"])
+        cache_addr_type = HLSType(HLSBasicType.ARRAY, sub_types=[cache_addr_elem_type], array_dims=["(L + 1)"])
         code_lines.append(CodeVarDecl(var_name="cache_addr_buffer", var_type=cache_addr_type))
         cache_addr_buffer_var = HLSVar(var_name="cache_addr_buffer", var_type=cache_addr_type)
 
@@ -3111,7 +3111,7 @@ axistream2stream:
         # (构建 if_2)
         for_5_codes.append(CodeIf(expr=if_2_expr, if_codes=if_2_codes))
         # (构建 for_5)
-        if_1_codes.append(CodeFor(codes=for_5_codes, iter_limit="-1", iter_cmp=">=", iter_name="i", iter_start="L", iter_step="--i", iter_val_type=int_type))
+        if_1_codes.append(CodeFor(codes=for_5_codes, iter_limit="0", iter_cmp=">=", iter_name="i", iter_start="L", iter_step="--i", iter_val_type=int_type))
         if_1_codes.append(CodeOther(text=""))
 
         # // Shift cache
@@ -3172,8 +3172,8 @@ axistream2stream:
         top_vars = {
             "IN_VAR_A_key":A_key,
             "IN_VAR_B_key":B_key,
-            "IN_VAR_A_t":incoming_dist_pod_var,
-            "IN_VAR_B_t":msb_var,
+            "IN_VAR_A_t":   msb_var,# incoming_dist_pod_var,
+            "IN_VAR_B_t":   incoming_dist_pod_var,# msb_var,
 
             "OUT_VAR" : msb_out_var
         }
@@ -3187,8 +3187,8 @@ axistream2stream:
         top_vars = {
             "IN_VAR_A_key":A_key,
             "IN_VAR_B_key":B_key,
-            "IN_VAR_A_t":incoming_dist_pod_var,
-            "IN_VAR_B_t":lsb_var,
+            "IN_VAR_A_t":  lsb_var, # incoming_dist_pod_var,
+            "IN_VAR_B_t":  incoming_dist_pod_var,# lsb_var,
 
             "OUT_VAR" : lsb_out_var
         }
@@ -3401,8 +3401,8 @@ axistream2stream:
         top_vars = {
             "IN_VAR_A_key":A_key,
             "IN_VAR_B_key":B_key,
-            "IN_VAR_A_t": uram_res_low_var,
-            "IN_VAR_B_t":incoming_dist_pod_low_var,
+            "IN_VAR_A_t": incoming_dist_pod_low_var,# uram_res_low_var,
+            "IN_VAR_B_t": uram_res_low_var,# incoming_dist_pod_low_var,
             "OUT_VAR" : uram_res_low_var,
         }
         port_property = {}
@@ -3413,8 +3413,8 @@ axistream2stream:
         top_vars = {
             "IN_VAR_A_key":A_key,
             "IN_VAR_B_key":B_key,
-            "IN_VAR_A_t":uram_res_high_var,
-            "IN_VAR_B_t":incoming_dist_pod_high_var,
+            "IN_VAR_A_t": incoming_dist_pod_high_var, # uram_res_high_var,
+            "IN_VAR_B_t":  uram_res_high_var, # incoming_dist_pod_high_var,
 
             "OUT_VAR" : uram_res_high_var
         }
@@ -3562,8 +3562,8 @@ axistream2stream:
         top_vars = {
             "IN_VAR_A_key":A_key,
             "IN_VAR_B_key":B_key,
-            "IN_VAR_A_t": first_low_var,
-            "IN_VAR_B_t":second_low_var,
+            "IN_VAR_A_t": second_low_var,# first_low_var,
+            "IN_VAR_B_t": first_low_var, # second_low_var,
             "OUT_VAR" : first_low_var,
         }
         port_property = {}
@@ -3574,8 +3574,8 @@ axistream2stream:
         top_vars = {
             "IN_VAR_A_key":A_key,
             "IN_VAR_B_key":B_key,
-            "IN_VAR_A_t":first_high_var,
-            "IN_VAR_B_t":second_high_var,
+            "IN_VAR_A_t": second_high_var,# first_high_var,
+            "IN_VAR_B_t": first_high_var,# second_high_var,
 
             "OUT_VAR" : first_high_var
         }
@@ -4641,7 +4641,7 @@ axistream2stream:
             total_edge_sets_var = HLSVar(var_name="total_edge_sets", var_type=uint_type)
 
             params.extend([edge_burst_stm_var, ppb_request_stm_var, ppb_response_stm_var, 
-                            update_set_stm_var, memory_offset_var, total_edge_sets_var])
+                            update_set_stm_var,  memory_offset_var,total_edge_sets_var])
             request_manager_func.params = params
 
             # --- 2. 函数体 ---
