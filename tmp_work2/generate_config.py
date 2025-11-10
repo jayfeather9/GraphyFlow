@@ -1055,60 +1055,132 @@ class ConfigGenerator:
     def generate_host_config(self):
         """Generate host_config.h with kernel counts."""
         output_path = self.scripts_dir / "host" / "host_config.h"
+        template_path = self.templates_dir / "host" / "host_config.h.template"
 
-        lines = [
-            "#ifndef __HOST_CONFIG_H__",
-            "#define __HOST_CONFIG_H__",
-            "",
-            "#include <stdint.h>",
-            "",
-            f"#define BIG_KERNEL_NUM {self.big_kernel_count}",
-            f"#define LITTLE_KERNEL_NUM {self.little_kernel_count}",
-            "",
-            "#define NUM_KERNEL (BIG_KERNEL_NUM + LITTLE_KERNEL_NUM)",
-            "",
-        ]
+        little_mergers = [m for m in self.merger_info if m["kernel_type"] == "little"]
+        big_mergers = [m for m in self.merger_info if m["kernel_type"] == "big"]
 
-        # Generate HBM ID arrays
-        little_hbm_edge = []
-        little_hbm_node = []
-        big_hbm_edge = []
-        big_hbm_node = []
+        def fmt_list(values: List[str]) -> str:
+            return ", ".join(values) if values else ""
+
+        little_pipeline_lengths = [str(m["pipeline_num"]) for m in little_mergers]
+        little_kernel_offsets = [str(m["kernel_start"]) for m in little_mergers]
+        big_pipeline_lengths = [str(m["pipeline_num"]) for m in big_mergers]
+        big_kernel_offsets = [str(m["kernel_start"]) for m in big_mergers]
+
+        little_kernel_group_ids: List[str] = []
+        for idx, merger in enumerate(little_mergers):
+            little_kernel_group_ids.extend([str(idx)] * merger["pipeline_num"])
+
+        big_kernel_group_ids: List[str] = []
+        for idx, merger in enumerate(big_mergers):
+            big_kernel_group_ids.extend([str(idx)] * merger["pipeline_num"])
+
+        little_hbm_edge: List[str] = []
+        little_hbm_node: List[str] = []
+        big_hbm_edge: List[str] = []
+        big_hbm_node: List[str] = []
 
         hbm_idx = 0
-        for i in range(self.little_kernel_count):
+        for _ in range(self.little_kernel_count):
             little_hbm_edge.append(str(hbm_idx))
             little_hbm_node.append(str(hbm_idx + 1))
             hbm_idx += 2
 
-        for i in range(self.big_kernel_count):
+        for _ in range(self.big_kernel_count):
             big_hbm_edge.append(str(hbm_idx))
             big_hbm_node.append(str(hbm_idx + 1))
             hbm_idx += 2
 
-        lines.append(f"#define LITTLE_KERNEL_HBM_EDGE_ID {{{', '.join(little_hbm_edge)}}}")
-        lines.append(f"#define LITTLE_KERNEL_HBM_NODE_ID {{{', '.join(little_hbm_node)}}}")
-        lines.append(f"#define BIG_KERNEL_HBM_EDGE_ID {{{', '.join(big_hbm_edge)}}}")
-        lines.append(f"#define BIG_KERNEL_HBM_NODE_ID {{{', '.join(big_hbm_node)}}}")
-        lines.append("")
-        lines.append("#endif /* __HOST_CONFIG_H__ */")
+        replacements = {
+            "BIG_KERNEL_NUM": str(self.big_kernel_count),
+            "LITTLE_KERNEL_NUM": str(self.little_kernel_count),
+            "NUM_LITTLE_MERGERS": str(len(little_mergers)),
+            "NUM_BIG_MERGERS": str(len(big_mergers)),
+            "LITTLE_MERGER_PIPELINE_LENGTHS": fmt_list(little_pipeline_lengths),
+            "LITTLE_MERGER_KERNEL_OFFSETS": fmt_list(little_kernel_offsets),
+            "BIG_MERGER_PIPELINE_LENGTHS": fmt_list(big_pipeline_lengths),
+            "BIG_MERGER_KERNEL_OFFSETS": fmt_list(big_kernel_offsets),
+            "LITTLE_KERNEL_GROUP_ID": fmt_list(little_kernel_group_ids),
+            "BIG_KERNEL_GROUP_ID": fmt_list(big_kernel_group_ids),
+            "LITTLE_KERNEL_HBM_EDGE_ID": fmt_list(little_hbm_edge),
+            "LITTLE_KERNEL_HBM_NODE_ID": fmt_list(little_hbm_node),
+            "BIG_KERNEL_HBM_EDGE_ID": fmt_list(big_hbm_edge),
+            "BIG_KERNEL_HBM_NODE_ID": fmt_list(big_hbm_node),
+        }
+
+        if template_path.exists():
+            content = template_path.read_text()
+            for key, value in replacements.items():
+                content = content.replace(f"{{{{{key}}}}}", value)
+        else:
+            lines = [
+                "#ifndef __HOST_CONFIG_H__",
+                "#define __HOST_CONFIG_H__",
+                "",
+                "#include <stdint.h>",
+                "",
+                f"#define BIG_KERNEL_NUM {replacements['BIG_KERNEL_NUM']}",
+                f"#define LITTLE_KERNEL_NUM {replacements['LITTLE_KERNEL_NUM']}",
+                "",
+                f"#define NUM_LITTLE_MERGERS {replacements['NUM_LITTLE_MERGERS']}",
+                f"#define NUM_BIG_MERGERS {replacements['NUM_BIG_MERGERS']}",
+                "",
+                "#define NUM_KERNEL (BIG_KERNEL_NUM + LITTLE_KERNEL_NUM)",
+                "",
+                "static constexpr uint32_t LITTLE_MERGER_PIPELINE_LENGTHS[] = {" +
+                replacements["LITTLE_MERGER_PIPELINE_LENGTHS"] + "};",
+                "static constexpr uint32_t LITTLE_MERGER_KERNEL_OFFSETS[] = {" +
+                replacements["LITTLE_MERGER_KERNEL_OFFSETS"] + "};",
+                "static constexpr uint32_t BIG_MERGER_PIPELINE_LENGTHS[] = {" +
+                replacements["BIG_MERGER_PIPELINE_LENGTHS"] + "};",
+                "static constexpr uint32_t BIG_MERGER_KERNEL_OFFSETS[] = {" +
+                replacements["BIG_MERGER_KERNEL_OFFSETS"] + "};",
+                "static constexpr uint32_t LITTLE_KERNEL_GROUP_ID[] = {" +
+                replacements["LITTLE_KERNEL_GROUP_ID"] + "};",
+                "static constexpr uint32_t BIG_KERNEL_GROUP_ID[] = {" +
+                replacements["BIG_KERNEL_GROUP_ID"] + "};",
+                "",
+                f"#define LITTLE_KERNEL_HBM_EDGE_ID {{{replacements['LITTLE_KERNEL_HBM_EDGE_ID']}}}",
+                f"#define LITTLE_KERNEL_HBM_NODE_ID {{{replacements['LITTLE_KERNEL_HBM_NODE_ID']}}}",
+                f"#define BIG_KERNEL_HBM_EDGE_ID {{{replacements['BIG_KERNEL_HBM_EDGE_ID']}}}",
+                f"#define BIG_KERNEL_HBM_NODE_ID {{{replacements['BIG_KERNEL_HBM_NODE_ID']}}}",
+                "",
+                "#endif /* __HOST_CONFIG_H__ */",
+            ]
+            content = "\n".join(lines)
 
         with open(output_path, "w") as f:
-            f.write("\n".join(lines))
+            f.write(content)
 
         print(f"Generated: {output_path}")
 
     def generate_host_files(self):
-        """Generate host code files (templates need manual update for multiple SP/DP arrays)."""
-        print("\nHost code generation:")
-        print("  NOTE: Host code templates need manual updates for multiple SP/DP arrays.")
-        print("  The graph partitioning logic needs to be updated to create separate")
-        print("  SPs_1, SPs_2, DPs_1, DPs_2 arrays based on the merger configuration.")
-        print("  This requires understanding the graph partitioning algorithm.")
-        print("  Please review and update:")
-        print("    - templates/host/generated_host.cpp.template")
-        print("    - templates/host/generated_host.h.template")
-        print("    - graph_preprocess logic")
+        """Generate host code files from templates."""
+        import shutil
+
+        print("\nGenerating host sources from templates...")
+
+        host_template_dir = self.templates_dir / "host"
+        host_output_dir = self.scripts_dir / "host"
+
+        template_map = {
+            "generated_host.cpp.template": "generated_host.cpp",
+            "generated_host.h.template": "generated_host.h",
+            "acc_setup.h.template": "acc_setup/acc_setup.h",
+        }
+
+        for template_name, output_name in template_map.items():
+            src = host_template_dir / template_name
+            dst = host_output_dir / output_name
+
+            if not src.exists():
+                print(f"  [WARN] Host template missing: {src}")
+                continue
+
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+            print(f"  Copied host template: {template_name} -> {output_name}")
 
 
 def main():

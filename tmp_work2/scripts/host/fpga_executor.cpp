@@ -64,55 +64,68 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
         algo_host.transfer_data_from_fpga();
 
         // iv. 性能统计
-        int cnt = 0;
-        int partition_cnt = 0;
-        for (auto &event_vec : acc.big_kernel_events) {
-            for (auto &event : event_vec) {
-                unsigned long start = 0, end = 0;
-                event.getProfilingInfo(CL_PROFILING_COMMAND_START, &start);
-                event.getProfilingInfo(CL_PROFILING_COMMAND_END, &end);
-                double iteration_time_ns = end - start;
-                current_kernel_time_sec = std::max(current_kernel_time_sec,
-                                                   iteration_time_ns * 1.0e-9);
-                double mteps = (double)partition_container.SPs[partition_cnt]
-                                   .pipeline_edges[cnt]
-                                   .num_edges /
-                               (iteration_time_ns * 1.0e-9) / 1.0e6;
+        size_t sparse_flat_idx = 0;
+        for (size_t group_idx = 0;
+             group_idx < partition_container.num_sparse_groups; ++group_idx) {
+            const auto &group = partition_container.sparse_groups[group_idx];
+            for (size_t part_idx = 0; part_idx < group.partitions.size();
+                 ++part_idx, ++sparse_flat_idx) {
+                const auto &partition = group.partitions[part_idx];
+                for (unsigned int local_pip = 0;
+                     local_pip < group.num_pipelines; ++local_pip) {
+                    unsigned int global_pip = group.pipeline_offset + local_pip;
+                    auto &event =
+                        acc.big_kernel_events[sparse_flat_idx][global_pip];
+                    unsigned long start = 0, end = 0;
+                    event.getProfilingInfo(CL_PROFILING_COMMAND_START, &start);
+                    event.getProfilingInfo(CL_PROFILING_COMMAND_END, &end);
+                    double iteration_time_ns = end - start;
+                    current_kernel_time_sec = std::max(
+                        current_kernel_time_sec, iteration_time_ns * 1.0e-9);
+                    double mteps = static_cast<double>(
+                                       partition.pipeline_edges[local_pip].num_edges) /
+                                   (iteration_time_ns * 1.0e-9) / 1.0e6;
 
-                std::cout << "FPGA Iteration " << iter << ": "
-                          << "Sparse Partition " << partition_cnt << ", "
-                          << "Big Kernel " << cnt++ << ", "
-                          << "Time = " << (iteration_time_ns * 1.0e-6)
-                          << " ms, "
-                          << "Throughput = " << mteps << " MTEPS" << std::endl;
+                    std::cout << "FPGA Iteration " << iter << ": "
+                              << "Sparse Group " << group_idx << ", Partition "
+                              << part_idx << ", Big Kernel " << global_pip
+                              << ", Time = " << (iteration_time_ns * 1.0e-6)
+                              << " ms, Throughput = " << mteps << " MTEPS"
+                              << std::endl;
+                }
             }
-            partition_cnt++;
-            cnt = 0;
         }
-        cnt = 0;
-        partition_cnt = 0;
-        for (auto &event_vec : acc.little_kernel_events) {
-            for (auto &event : event_vec) {
-                unsigned long start = 0, end = 0;
-                event.getProfilingInfo(CL_PROFILING_COMMAND_START, &start);
-                event.getProfilingInfo(CL_PROFILING_COMMAND_END, &end);
-                double iteration_time_ns = end - start;
-                current_kernel_time_sec = std::max(current_kernel_time_sec,
-                                                   iteration_time_ns * 1.0e-9);
-                double mteps = (double)partition_container.DPs[partition_cnt]
-                                   .pipeline_edges[cnt]
-                                   .num_edges /
-                               (iteration_time_ns * 1.0e-9) / 1.0e6;
 
-                std::cout << "FPGA Iteration " << iter << ": "
-                          << "Dense Partition " << partition_cnt << ", "
-                          << "Little Kernel " << cnt++ << ", "
-                          << "Time = " << (iteration_time_ns * 1.0e-6)
-                          << " ms, "
-                          << "Throughput = " << mteps << " MTEPS" << std::endl;
+        size_t dense_flat_idx = 0;
+        for (size_t group_idx = 0;
+             group_idx < partition_container.num_dense_groups; ++group_idx) {
+            const auto &group = partition_container.dense_groups[group_idx];
+            for (size_t part_idx = 0; part_idx < group.partitions.size();
+                 ++part_idx, ++dense_flat_idx) {
+                const auto &partition = group.partitions[part_idx];
+                for (unsigned int local_pip = 0;
+                     local_pip < group.num_pipelines; ++local_pip) {
+                    unsigned int global_pip = group.pipeline_offset + local_pip;
+                    auto &event =
+                        acc.little_kernel_events[dense_flat_idx][global_pip];
+                    unsigned long start = 0, end = 0;
+                    event.getProfilingInfo(CL_PROFILING_COMMAND_START, &start);
+                    event.getProfilingInfo(CL_PROFILING_COMMAND_END, &end);
+                    double iteration_time_ns = end - start;
+                    current_kernel_time_sec = std::max(
+                        current_kernel_time_sec, iteration_time_ns * 1.0e-9);
+                    double mteps = static_cast<double>(
+                                       partition.pipeline_edges[local_pip].num_edges) /
+                                   (iteration_time_ns * 1.0e-9) / 1.0e6;
+
+                    std::cout << "FPGA Iteration " << iter << ": "
+                              << "Dense Group " << group_idx << ", Partition "
+                              << part_idx << ", Little Kernel " << global_pip
+                              << ", Time = " << (iteration_time_ns * 1.0e-6)
+                              << " ms, Throughput = " << mteps << " MTEPS"
+                              << std::endl;
+                }
             }
-            partition_cnt++;
-            cnt = 0;
         }
 
         {

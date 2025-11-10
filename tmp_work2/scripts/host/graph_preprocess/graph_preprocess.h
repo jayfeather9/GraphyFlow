@@ -7,6 +7,7 @@
 #include <algorithm> // std::swap
 #include <iomanip>
 #include <numeric> // std::iota
+#include <unordered_map>
 #include <vector>
 
 /**
@@ -48,6 +49,13 @@ typedef struct PartitionDescriptor {
 
 } PartitionDescriptor;
 
+typedef struct PartitionGroup {
+    unsigned int group_id;
+    unsigned int pipeline_offset;
+    unsigned int num_pipelines;
+    std::vector<PartitionDescriptor> partitions;
+} PartitionGroup;
+
 /**
  * @struct PartitionContainer
  * @brief A container holding all graph partitions.
@@ -61,12 +69,19 @@ typedef struct PartitionContainer {
     unsigned int num_graph_edges;
 
     // Partition collections
+    unsigned int num_dense_groups;
+    unsigned int num_sparse_groups;
     unsigned int num_dense_partitions;
     unsigned int num_sparse_partitions;
 
-    std::vector<PartitionDescriptor>
-        DPs; // Partitions for Dense (little) kernels
-    std::vector<PartitionDescriptor> SPs; // Partitions for Sparse (big) kernels
+    std::vector<PartitionGroup> dense_groups;
+    std::vector<PartitionGroup> sparse_groups;
+
+    // Mapping between flattened partition index and (group, partition) pair
+    std::vector<std::pair<size_t, size_t>> dense_partition_order;
+    std::vector<std::pair<size_t, size_t>> sparse_partition_order;
+    std::vector<std::vector<size_t>> dense_partition_indices;
+    std::vector<std::vector<size_t>> sparse_partition_indices;
 
 } PartitionContainer;
 

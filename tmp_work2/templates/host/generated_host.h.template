@@ -61,6 +61,12 @@ class AlgorithmHost {
     std::vector<bus_word_t, aligned_allocator<bus_word_t>>
         writer_kernel_host_outputs;
     uint32_t big_dst_offset = 0;
+
+    // Apply kernel metadata (per merger group)
+    std::vector<uint32_t> little_merger_lengths;
+    std::vector<uint32_t> little_merger_offsets;
+    std::vector<uint32_t> big_merger_lengths;
+    std::vector<uint32_t> big_merger_offsets;
 };
 
 #endif // __GENERATED_HOST_H__
