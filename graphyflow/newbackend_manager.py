@@ -975,8 +975,6 @@ axistream2stream:
         code_lines.append(CodePragma(content="STREAM variable = pe_mem_out_streams depth = 4"))
         pe_mem_out_streams_var = HLSVar(var_name="pe_mem_out_streams", var_type=pe_mem_out_streams_type)
 
-        # LOOP_FOR_60:
-        code_lines.append(CodeOther(text="LOOP_FOR_60:"))
         # for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++)
         for_4_codes: List[HLSCodeLine] = []
         # #pragma HLS UNROLL
@@ -4959,8 +4957,8 @@ axistream2stream:
         top_vars = {
             "IN_VAR_A_key":A_key,
             "IN_VAR_B_key":B_key,
-            "IN_VAR_A_t":HLSVar(var_name="uram_low",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
-            "IN_VAR_B_t":HLSVar(var_name="update_low",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
+            "IN_VAR_A_t":  HLSVar(var_name="update_low",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),# HLSVar(var_name="uram_low",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
+            "IN_VAR_B_t":  HLSVar(var_name="uram_low",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),# HLSVar(var_name="update_low",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
 
             "OUT_VAR" : HLSVar(var_name="uram_low",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
         }
@@ -4972,8 +4970,8 @@ axistream2stream:
         top_vars = {
             "IN_VAR_A_key":A_key,
             "IN_VAR_B_key":B_key,
-            "IN_VAR_A_t":HLSVar(var_name="uram_high",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
-            "IN_VAR_B_t":HLSVar(var_name="update_high",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
+            "IN_VAR_A_t":  HLSVar(var_name="update_high",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),# HLSVar(var_name="uram_high",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
+            "IN_VAR_B_t":  HLSVar(var_name="uram_high",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),  # HLSVar(var_name="update_high",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
 
             "OUT_VAR" : HLSVar(var_name="uram_high",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
         }
@@ -4997,8 +4995,8 @@ axistream2stream:
         top_vars = {
             "IN_VAR_A_key":A_key,
             "IN_VAR_B_key":B_key,
-            "IN_VAR_A_t":HLSVar(var_name="tmp_prop_arrary[j]",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
-            "IN_VAR_B_t":HLSVar(var_name="update",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
+            "IN_VAR_A_t": HLSVar(var_name="update",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),# HLSVar(var_name="1tmp_prop_arrary[j]",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
+            "IN_VAR_B_t": HLSVar(var_name="tmp_prop_arrary[j]",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),# HLSVar(var_name="update",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
 
             "OUT_VAR" : HLSVar(var_name="tmp_prop_arrary[j]",var_type=HLSType(basic_type=HLSBasicType.AP_FIXED_POD)),
         }
