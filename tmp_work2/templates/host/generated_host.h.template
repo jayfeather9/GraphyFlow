@@ -19,7 +19,8 @@ struct PartitionBuffer {
     std::vector<bus_word_t, aligned_allocator<bus_word_t>> packed_node_props;
     uint32_t node_prop_offset;
     uint32_t dst_prop_offset;
-    uint32_t src_buf_offset;
+    uint32_t src_buf_offset; // for dense
+    uint32_t src_prop_offset; // for sparse
 };
 
 class AlgorithmHost {

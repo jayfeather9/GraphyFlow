@@ -64,19 +64,26 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
     for (size_t g = 0; g < container.num_dense_groups; ++g) {
         auto &group = container.dense_groups[g];
         group.group_id = static_cast<unsigned int>(g);
-        group.pipeline_offset =
-            (g < little_offset_len) ? LITTLE_MERGER_KERNEL_OFFSETS[g] : 0;
-        group.num_pipelines =
-            (g < little_pipeline_len) ? LITTLE_MERGER_PIPELINE_LENGTHS[g] : 0;
+        if (g >= little_offset_len || g >= little_pipeline_len) {
+            std::cerr
+                << "[ERROR] Mismatch in little merger group configuration!"
+                << std::endl;
+            exit(1);
+        }
+        group.pipeline_offset = LITTLE_MERGER_KERNEL_OFFSETS[g];
+        group.num_pipelines = LITTLE_MERGER_PIPELINE_LENGTHS[g];
     }
 
     for (size_t g = 0; g < container.num_sparse_groups; ++g) {
         auto &group = container.sparse_groups[g];
         group.group_id = static_cast<unsigned int>(g);
-        group.pipeline_offset =
-            (g < big_offset_len) ? BIG_MERGER_KERNEL_OFFSETS[g] : 0;
-        group.num_pipelines =
-            (g < big_pipeline_len) ? BIG_MERGER_PIPELINE_LENGTHS[g] : 0;
+        if (g >= big_offset_len || g >= big_pipeline_len) {
+            std::cerr << "[ERROR] Mismatch in big merger group configuration!"
+                      << std::endl;
+            exit(1);
+        }
+        group.pipeline_offset = BIG_MERGER_KERNEL_OFFSETS[g];
+        group.num_pipelines = BIG_MERGER_PIPELINE_LENGTHS[g];
     }
 
     printf("Global graph has %d vertices and %d edges.\n", graph->num_vertices,
@@ -105,116 +112,273 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
               << " unique destination vertices (sorted by indegree)."
               << std::endl;
 
-    // --- PHASE 2: distribute destination vertices among groups ---
+    // --- PHASE 2: distribute destination vertices among groups and partitions
+    // ---
     struct DestinationAssignment {
         bool is_dense;
         size_t group_idx;
+        size_t partition_idx;
     };
 
     std::unordered_map<int, DestinationAssignment> dst_assignment;
-    std::vector<std::set<int>> little_dst_sets(container.num_dense_groups);
-    std::vector<std::set<int>> big_dst_sets(container.num_sparse_groups);
+    // For dense: [group][partition] -> set of dst nodes
+    std::vector<std::vector<std::set<int>>> little_dst_sets(
+        container.num_dense_groups, std::vector<std::set<int>>());
+    // For sparse: [group][partition] -> set of dst nodes
+    std::vector<std::vector<std::set<int>>> big_dst_sets(
+        container.num_sparse_groups, std::vector<std::set<int>>());
 
-    auto compute_distribution = [](size_t num_groups,
-                                   const std::vector<uint32_t> &pipeline_counts,
-                                   size_t available_vertices) {
-        std::vector<size_t> counts(num_groups, 0);
-        if (num_groups == 0 || available_vertices == 0) {
-            return counts;
-        }
-
-        double total_weight = 0.0;
-        for (size_t g = 0; g < num_groups; ++g) {
-            total_weight += std::max<uint32_t>(1, pipeline_counts[g]);
-        }
-
-        size_t remaining_vertices = available_vertices;
-        double remaining_weight = total_weight;
-        for (size_t g = 0; g < num_groups; ++g) {
-            if (remaining_vertices == 0) {
-                counts[g] = 0;
-                continue;
-            }
-
-            double weight = std::max<uint32_t>(1, pipeline_counts[g]);
-            double fraction = (remaining_weight <= 0.0)
-                                  ? (1.0 / std::max<size_t>(1, num_groups - g))
-                                  : (weight / remaining_weight);
-            size_t assign =
-                static_cast<size_t>(fraction * static_cast<double>(remaining_vertices));
-            if (assign == 0 && remaining_vertices > 0 && weight > 0.0) {
-                assign = 1;
-            }
-            if (assign > remaining_vertices) {
-                assign = remaining_vertices;
-            }
-            if (g == num_groups - 1) {
-                assign = remaining_vertices;
-            }
-
-            counts[g] = assign;
-            remaining_vertices -= assign;
-            remaining_weight -= weight;
-        }
-
-        return counts;
-    };
-
-    std::vector<uint32_t> little_pipeline_counts(container.num_dense_groups, 0);
-    for (size_t g = 0; g < container.num_dense_groups; ++g) {
-        little_pipeline_counts[g] = container.dense_groups[g].num_pipelines;
-    }
-
-    std::vector<uint32_t> big_pipeline_counts(container.num_sparse_groups, 0);
-    for (size_t g = 0; g < container.num_sparse_groups; ++g) {
-        big_pipeline_counts[g] = container.sparse_groups[g].num_pipelines;
-    }
-
-    size_t total_vertices = unique_dst_vertices.size();
+    size_t total_dst_vertices = unique_dst_vertices.size();
     size_t vertex_cursor = 0;
 
-    auto little_counts =
-        compute_distribution(container.num_dense_groups, little_pipeline_counts,
-                             total_vertices);
+    std::cout << "[PHASE 2] Total dst vertices: " << total_dst_vertices
+              << std::endl;
+
+    size_t one_partition_capacity =
+        static_cast<size_t>(container.num_dense_groups) * LITTLE_MAX_DST +
+        static_cast<size_t>(container.num_sparse_groups) * BIG_MAX_DST;
+
+    size_t partition_number =
+        (total_dst_vertices + one_partition_capacity - 1) /
+        one_partition_capacity;
+
+    std::cout << "[PHASE 2] Calculated partition number needed: "
+              << partition_number << std::endl;
+
+    // evenly distribute dst vertices into partitions
+    for (size_t part = 0; part < partition_number; ++part) {
+        size_t vertices_to_assign = std::min(
+            one_partition_capacity, total_dst_vertices - vertex_cursor);
+
+        std::cout << "[PHASE 2]   Partition " << part << ": assigning "
+                  << vertices_to_assign << " vertices" << std::endl;
+
+        // Create partition for each group
+        for (size_t g = 0; g < container.num_dense_groups; ++g) {
+            little_dst_sets[g].resize(part + 1);
+        }
+        for (size_t g = 0; g < container.num_sparse_groups; ++g) {
+            big_dst_sets[g].resize(part + 1);
+        }
+
+        // Distribute vertices evenly across all groups for this partition
+        size_t total_groups =
+            container.num_dense_groups + container.num_sparse_groups;
+        for (size_t i = 0; i < vertices_to_assign; ++i) {
+            size_t group_idx = i % total_groups;
+            int vertex_id = unique_dst_vertices[vertex_cursor++];
+            if (group_idx >= container.num_dense_groups) {
+                // Sparse group
+                group_idx -= container.num_dense_groups;
+                big_dst_sets[group_idx][part].insert(vertex_id);
+                dst_assignment[vertex_id] = {false, group_idx, part};
+                continue;
+            }
+            little_dst_sets[group_idx][part].insert(vertex_id);
+            dst_assignment[vertex_id] = {true, group_idx, part};
+        }
+    }
+
+    // Case 1: If dst_num > NUM_LITTLE_MERGERS * LITTLE_MAX_DST
+    // Spread all dsts evenly for each dense group (1 partition for each group),
+    // sparse empty if (total_dst_vertices <= dense_capacity_per_partition &&
+    // DENSE_PARTITION_NUM > 0) {
+    //     std::cout << "[PHASE 2] Case 1: dst_num (" << total_dst_vertices
+    //               << ") <= dense_capacity_per_partition (" <<
+    //               dense_capacity_per_partition
+    //               << "), using single partition per dense group" <<
+    //               std::endl;
+
+    //     // Create one partition for each dense group
+    //     for (size_t g = 0; g < container.num_dense_groups; ++g) {
+    //         little_dst_sets[g].resize(1);
+    //     }
+
+    //     for (size_t g = 0; g < container.num_sparse_groups; ++g) {
+    //         big_dst_sets[g].resize(1);
+    //     }
+
+    //     // Distribute vertices evenly across dense & sparse groups
+    //     int all_group_num = container.num_dense_groups +
+    //     container.num_sparse_groups; for (size_t i = 0; i <
+    //     total_dst_vertices; ++i) {
+    //         size_t group_idx = i % all_group_num;
+    //         int vertex_id = unique_dst_vertices[i];
+    //         if (group_idx >= container.num_dense_groups) {
+    //             // Sparse group
+    //             group_idx -= container.num_dense_groups;
+    //             big_dst_sets[group_idx][0].insert(vertex_id);
+    //             dst_assignment[vertex_id] = {false, group_idx, 0};
+    //             continue;
+    //         }
+    //         little_dst_sets[group_idx][0].insert(vertex_id);
+    //         dst_assignment[vertex_id] = {true, group_idx, 0};
+    //     }
+    //     vertex_cursor = total_dst_vertices;
+
+    // } else {
+    //     // Case 2 & 3: Can fit in dense partitions (possibly with overflow to
+    //     sparse) std::cout << "[PHASE 2] Case 2/3: dst_num (" <<
+    //     total_dst_vertices
+    //               << ") <= total_dense_capacity (" << total_dense_capacity
+    //               << "), using multiple partitions" << std::endl;
+
+    //     // first, fill the first dense partition and first sparse partition
+    //     {
+    //         size_t vertices_to_assign = dense_capacity_per_partition;
+
+    //         std::cout << "[PHASE 2]   Dense partition 0: assigning "
+    //                   << vertices_to_assign << " vertices" << std::endl;
+
+    //         // Create partition for each group
+    //         for (size_t g = 0; g < container.num_dense_groups; ++g) {
+    //             little_dst_sets[g].resize(1);
+    //         }
+
+    //         for (size_t g = 0; g < container.num_sparse_groups; ++g) {
+    //             big_dst_sets[g].resize(1);
+    //         }
+
+    //         // Distribute vertices evenly across groups for this partition
+    //         int all_group_num = container.num_dense_groups +
+    //         container.num_sparse_groups; for (size_t i = 0; i <
+    //         vertices_to_assign; ++i) {
+    //             size_t group_idx = i % all_group_num;
+    //             int vertex_id = unique_dst_vertices[i];
+    //             if (group_idx >= container.num_dense_groups) {
+    //                 // Sparse group
+    //                 group_idx -= container.num_dense_groups;
+    //                 big_dst_sets[group_idx][0].insert(vertex_id);
+    //                 dst_assignment[vertex_id] = {false, group_idx, 0};
+    //                 continue;
+    //             }
+    //             little_dst_sets[group_idx][0].insert(vertex_id);
+    //             dst_assignment[vertex_id] = {true, group_idx, 0};
+    //         }
+    //         vertex_cursor += vertices_to_assign;
+    //     }
+
+    //     // Fill dense partitions for the rest
+    //     for (size_t part = 1; part < DENSE_PARTITION_NUM && vertex_cursor <
+    //     total_dst_vertices; ++part) {
+    //         size_t vertices_to_assign = std::min(
+    //             dense_capacity_per_partition,
+    //             total_dst_vertices - vertex_cursor
+    //         );
+
+    //         std::cout << "[PHASE 2]   Dense partition " << part
+    //                   << ": assigning " << vertices_to_assign << " vertices"
+    //                   << std::endl;
+
+    //         // Create partition for each group
+    //         for (size_t g = 0; g < container.num_dense_groups; ++g) {
+    //             little_dst_sets[g].resize(part + 1);
+    //         }
+
+    //         // Distribute vertices evenly across groups for this partition
+    //         size_t vertices_per_group = vertices_to_assign /
+    //         container.num_dense_groups; size_t extra_vertices =
+    //         vertices_to_assign % container.num_dense_groups;
+
+    //         for (size_t g = 0; g < container.num_dense_groups; ++g) {
+    //             size_t count = vertices_per_group + (g < extra_vertices ? 1 :
+    //             0); for (size_t i = 0; i < count && vertex_cursor <
+    //             total_dst_vertices; ++i) {
+    //                 int vertex_id = unique_dst_vertices[vertex_cursor++];
+    //                 little_dst_sets[g][part].insert(vertex_id);
+    //                 dst_assignment[vertex_id] = {true, g, part};
+    //             }
+    //         }
+    //     }
+
+    //     // If there are remaining vertices after filling all dense
+    //     partitions, use sparse if (vertex_cursor < total_dst_vertices) {
+    //         std::cout << "[PHASE 2] Case 3: Remaining " <<
+    //         (total_dst_vertices - vertex_cursor)
+    //                   << " vertices overflow to sparse groups" << std::endl;
+
+    //         // Similar logic for sparse partitions
+    //         size_t remaining_vertices = total_dst_vertices - vertex_cursor;
+    //         size_t sparse_partition_idx = 0;
+
+    //         while (vertex_cursor < total_dst_vertices) {
+    //             size_t vertices_to_assign = std::min(
+    //                 static_cast<size_t>(container.num_sparse_groups) *
+    //                 BIG_MAX_DST, total_dst_vertices - vertex_cursor
+    //             );
+
+    //             std::cout << "[PHASE 2]   Sparse partition " <<
+    //             sparse_partition_idx
+    //                       << ": assigning " << vertices_to_assign << "
+    //                       vertices" << std::endl;
+
+    //             // Create partition for each group
+    //             for (size_t g = 0; g < container.num_sparse_groups; ++g) {
+    //                 if (big_dst_sets[g].size() <= sparse_partition_idx) {
+    //                     big_dst_sets[g].resize(sparse_partition_idx + 1);
+    //                 }
+    //             }
+
+    //             // Distribute vertices evenly across groups for this
+    //             partition size_t vertices_per_group = vertices_to_assign /
+    //             container.num_sparse_groups; size_t extra_vertices =
+    //             vertices_to_assign % container.num_sparse_groups;
+
+    //             for (size_t g = 0; g < container.num_sparse_groups; ++g) {
+    //                 size_t count = vertices_per_group + (g < extra_vertices ?
+    //                 1 : 0); for (size_t i = 0; i < count && vertex_cursor <
+    //                 total_dst_vertices; ++i) {
+    //                     int vertex_id = unique_dst_vertices[vertex_cursor++];
+    //                     big_dst_sets[g][sparse_partition_idx].insert(vertex_id);
+    //                     dst_assignment[vertex_id] = {false, g,
+    //                     sparse_partition_idx};
+    //                 }
+    //             }
+
+    //             sparse_partition_idx++;
+    //         }
+    //     }
+    // }
+
+    // Count total assignments
+    size_t total_dense_assigned = 0;
+    size_t total_sparse_assigned = 0;
 
     for (size_t g = 0; g < container.num_dense_groups; ++g) {
-        size_t assign = little_counts[g];
-        for (size_t i = 0; i < assign && vertex_cursor < total_vertices; ++i) {
-            int vertex_id = unique_dst_vertices[vertex_cursor++];
-            little_dst_sets[g].insert(vertex_id);
-            dst_assignment[vertex_id] = {true, g};
+        for (size_t p = 0; p < little_dst_sets[g].size(); ++p) {
+            total_dense_assigned += little_dst_sets[g][p].size();
         }
     }
-
-    size_t remaining_vertices = (vertex_cursor <= total_vertices)
-                                    ? (total_vertices - vertex_cursor)
-                                    : 0;
-
-    auto big_counts = compute_distribution(container.num_sparse_groups,
-                                           big_pipeline_counts,
-                                           remaining_vertices);
 
     for (size_t g = 0; g < container.num_sparse_groups; ++g) {
-        size_t assign = big_counts[g];
-        for (size_t i = 0; i < assign && vertex_cursor < total_vertices; ++i) {
-            int vertex_id = unique_dst_vertices[vertex_cursor++];
-            big_dst_sets[g].insert(vertex_id);
-            dst_assignment[vertex_id] = {false, g};
+        for (size_t p = 0; p < big_dst_sets[g].size(); ++p) {
+            total_sparse_assigned += big_dst_sets[g][p].size();
         }
     }
 
-    std::cout << "[PHASE 2] Dense groups assigned "
-              << std::accumulate(little_counts.begin(), little_counts.end(),
-                                 static_cast<size_t>(0))
-              << " dst vertices." << std::endl;
-    std::cout << "[PHASE 2] Sparse groups assigned "
-              << std::accumulate(big_counts.begin(), big_counts.end(),
-                                 static_cast<size_t>(0))
-              << " dst vertices." << std::endl;
+    std::cout << "[PHASE 2] Dense groups assigned " << total_dense_assigned
+              << " dst vertices across " << container.num_dense_groups
+              << " groups." << std::endl;
+    std::cout << "[PHASE 2] Sparse groups assigned " << total_sparse_assigned
+              << " dst vertices across " << container.num_sparse_groups
+              << " groups." << std::endl;
 
     // --- PHASE 3: assign edges based on destination ownership ---
-    std::vector<std::vector<Edge>> edges_lists(
-        container.num_dense_groups + container.num_sparse_groups);
+    // For dense: [group][partition] -> list of edges
+    std::vector<std::vector<std::vector<Edge>>> dense_edges_lists(
+        container.num_dense_groups);
+    // For sparse: [group][partition] -> list of edges
+    std::vector<std::vector<std::vector<Edge>>> sparse_edges_lists(
+        container.num_sparse_groups);
+
+    // Initialize the sizes based on partition counts (after ensuring minimum 1)
+    for (size_t g = 0; g < container.num_dense_groups; ++g) {
+        dense_edges_lists[g].resize(little_dst_sets[g].size());
+    }
+    for (size_t g = 0; g < container.num_sparse_groups; ++g) {
+        sparse_edges_lists[g].resize(big_dst_sets[g].size());
+    }
+
     size_t little_edge_num = 0, big_edge_num = 0;
 
     for (int u = 0; u < graph->num_vertices; ++u) {
@@ -230,13 +394,15 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
             }
 
             const auto &assignment = it->second;
-            size_t list_idx = assignment.is_dense
-                                  ? assignment.group_idx
-                                  : (container.num_dense_groups + assignment.group_idx);
-            edges_lists[list_idx].push_back({u, v, w});
             if (assignment.is_dense) {
+                dense_edges_lists[assignment.group_idx]
+                                 [assignment.partition_idx]
+                                     .push_back({u, v, w});
                 little_edge_num++;
             } else {
+                sparse_edges_lists[assignment.group_idx]
+                                  [assignment.partition_idx]
+                                      .push_back({u, v, w});
                 big_edge_num++;
             }
         }
@@ -252,8 +418,7 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
 
     auto process_partition = [&](const std::vector<Edge> &partition_edges,
                                  const std::set<int> &partition_dst_nodes,
-                                 bool is_dense,
-                                 unsigned int num_pipelines) {
+                                 bool is_dense, unsigned int num_pipelines) {
         PartitionDescriptor pd;
         pd.is_dense = is_dense;
         pd.num_pipelines = num_pipelines;
@@ -309,8 +474,8 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
             uint32_t dest_id = pd.vtx_map[global_edge.dest];
             uint32_t weight = global_edge.weight;
             local_edges.push_back({static_cast<int>(src_id),
-                                  static_cast<int>(dest_id),
-                                  static_cast<int>(weight)});
+                                   static_cast<int>(dest_id),
+                                   static_cast<int>(weight)});
         }
 
         std::sort(local_edges.begin(), local_edges.end(),
@@ -322,14 +487,13 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
             (num_pipelines == 0)
                 ? 0
                 : static_cast<unsigned int>((pd.num_edges + num_pipelines - 1) /
-                                             num_pipelines);
+                                            num_pipelines);
 
         for (unsigned int pip = 0; pip < num_pipelines; ++pip) {
             std::vector<Edge> cur_pip_edges;
             pd.pipeline_edges[pip].pipeline_id = pip;
-            int start_idx =
-                std::min(static_cast<int>(pip * edges_per_pipeline),
-                         static_cast<int>(pd.num_edges));
+            int start_idx = std::min(static_cast<int>(pip * edges_per_pipeline),
+                                     static_cast<int>(pd.num_edges));
             int end_idx =
                 std::min(start_idx + static_cast<int>(edges_per_pipeline),
                          static_cast<int>(pd.num_edges));
@@ -341,9 +505,8 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
                 uint32_t src_id = local_edge.src;
                 uint32_t dest_id = local_edge.dest;
                 uint32_t weight = local_edge.weight;
-                uint32_t cur_src_buffer =
-                    static_cast<uint32_t>(std::floor(static_cast<double>(src_id) /
-                                                      SRC_BUFFER_SIZE));
+                uint32_t cur_src_buffer = static_cast<uint32_t>(
+                    std::floor(static_cast<double>(src_id) / SRC_BUFFER_SIZE));
                 if (is_dense && cur_src_buffer != last_src_buffer) {
                     uint32_t mod8 = cur_pip_edges.size() % 8;
                     if (mod8 != 0) {
@@ -362,8 +525,7 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
 
             pd.pipeline_edges[pip].num_edges = cur_pip_edges.size();
 
-            int padding_size =
-                (8 - (pd.pipeline_edges[pip].num_edges % 8)) % 8;
+            int padding_size = (8 - (pd.pipeline_edges[pip].num_edges % 8)) % 8;
             pd.pipeline_edges[pip].num_edges += padding_size;
 
             pd.pipeline_edges[pip].offsets.resize(pd.num_vertices + 1, 0);
@@ -392,7 +554,8 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
                 int src = cur_pip_edges[j].src;
                 int idx = current_offset[src]++;
                 pd.pipeline_edges[pip].columns.push_back(cur_pip_edges[j].dest);
-                pd.pipeline_edges[pip].weights.push_back(cur_pip_edges[j].weight);
+                pd.pipeline_edges[pip].weights.push_back(
+                    cur_pip_edges[j].weight);
                 if (j == cur_pip_edges.size() - 1) {
                     for (int p = 0; p < padding_size; ++p) {
                         idx = current_offset[src]++;
@@ -407,70 +570,317 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
     };
 
     for (size_t g = 0; g < container.num_dense_groups; ++g) {
-        const auto &dst_nodes = little_dst_sets[g];
-        PartitionDescriptor pd = process_partition(
-            edges_lists[g], dst_nodes, true, container.dense_groups[g].num_pipelines);
+        for (size_t p = 0; p < little_dst_sets[g].size(); ++p) {
+            const auto &dst_nodes = little_dst_sets[g][p];
+            const auto &partition_edges = dense_edges_lists[g][p];
 
-        if (pd.num_vertices == 0 || pd.num_edges == 0) {
-            std::cout << "  - Dense group " << g
-                      << ": no vertices/edges, skipping partition." << std::endl;
-            continue;
-        }
-        container.dense_groups[g].partitions.push_back(pd);
-        size_t part_idx = container.dense_groups[g].partitions.size() - 1;
-        size_t flat_idx = container.dense_partition_order.size();
-        container.dense_partition_order.emplace_back(g, part_idx);
-        container.dense_partition_indices[g].push_back(flat_idx);
-        container.num_dense_partitions = container.dense_partition_order.size();
+            PartitionDescriptor pd =
+                process_partition(partition_edges, dst_nodes, true,
+                                  container.dense_groups[g].num_pipelines);
 
-        std::cout << "  - Dense group " << g << ": partition " << part_idx
-                  << " | vertices: " << pd.num_vertices << ", dsts: "
-                  << pd.num_dsts << ", edges: " << pd.num_edges
-                  << ", pipelines: " << pd.num_pipelines << std::endl;
+            // Keep empty partitions so kernels are enqueued even when dst_num
+            // == 0
+            container.dense_groups[g].partitions.push_back(pd);
+            size_t part_idx = container.dense_groups[g].partitions.size() - 1;
+            size_t flat_idx = container.dense_partition_order.size();
+            container.dense_partition_order.emplace_back(g, part_idx);
+            container.dense_partition_indices[g].push_back(flat_idx);
 
-        for (unsigned int pip = 0; pip < pd.num_pipelines; ++pip) {
-            std::cout << "      pipeline " << pip << ": "
-                      << pd.pipeline_edges[pip].num_edges << " edges"
-                      << std::endl;
+            std::cout << "  - Dense group " << g << ": partition " << part_idx
+                      << " | vertices: " << pd.num_vertices
+                      << ", dsts: " << pd.num_dsts
+                      << ", edges: " << pd.num_edges
+                      << ", pipelines: " << pd.num_pipelines << std::endl;
+
+            for (unsigned int pip = 0; pip < pd.num_pipelines; ++pip) {
+                std::cout << "      pipeline " << pip << ": "
+                          << pd.pipeline_edges[pip].num_edges << " edges"
+                          << std::endl;
+            }
         }
     }
 
     for (size_t g = 0; g < container.num_sparse_groups; ++g) {
-        const auto &dst_nodes = big_dst_sets[g];
-        size_t list_idx = container.num_dense_groups + g;
-        PartitionDescriptor pd = process_partition(
-            edges_lists[list_idx], dst_nodes, false,
-            container.sparse_groups[g].num_pipelines);
-        if (pd.num_vertices == 0 || pd.num_edges == 0) {
-            std::cout << "  - Sparse group " << g
-                      << ": no vertices/edges, skipping partition." << std::endl;
-            continue;
-        }
-        container.sparse_groups[g].partitions.push_back(pd);
-        size_t part_idx = container.sparse_groups[g].partitions.size() - 1;
-        size_t flat_idx = container.sparse_partition_order.size();
-        container.sparse_partition_order.emplace_back(g, part_idx);
-        container.sparse_partition_indices[g].push_back(flat_idx);
-        container.num_sparse_partitions = container.sparse_partition_order.size();
+        for (size_t p = 0; p < big_dst_sets[g].size(); ++p) {
+            const auto &dst_nodes = big_dst_sets[g][p];
+            const auto &partition_edges = sparse_edges_lists[g][p];
 
-        std::cout << "  - Sparse group " << g << ": partition " << part_idx
-                  << " | vertices: " << pd.num_vertices << ", dsts: "
-                  << pd.num_dsts << ", edges: " << pd.num_edges
-                  << ", pipelines: " << pd.num_pipelines << std::endl;
+            PartitionDescriptor pd =
+                process_partition(partition_edges, dst_nodes, false,
+                                  container.sparse_groups[g].num_pipelines);
 
-        for (unsigned int pip = 0; pip < pd.num_pipelines; ++pip) {
-            std::cout << "      pipeline " << pip << ": "
-                      << pd.pipeline_edges[pip].num_edges << " edges"
-                      << std::endl;
+            // Keep empty partitions so kernels are enqueued even when dst_num
+            // == 0
+            container.sparse_groups[g].partitions.push_back(pd);
+            size_t part_idx = container.sparse_groups[g].partitions.size() - 1;
+            size_t flat_idx = container.sparse_partition_order.size();
+            container.sparse_partition_order.emplace_back(g, part_idx);
+            container.sparse_partition_indices[g].push_back(flat_idx);
+
+            std::cout << "  - Sparse group " << g << ": partition " << part_idx
+                      << " | vertices: " << pd.num_vertices
+                      << ", dsts: " << pd.num_dsts
+                      << ", edges: " << pd.num_edges
+                      << ", pipelines: " << pd.num_pipelines << std::endl;
+
+            for (unsigned int pip = 0; pip < pd.num_pipelines; ++pip) {
+                std::cout << "      pipeline " << pip << ": "
+                          << pd.pipeline_edges[pip].num_edges << " edges"
+                          << std::endl;
+            }
         }
     }
+
+    container.num_dense_partitions =
+        static_cast<unsigned int>(container.dense_partition_order.size());
+    container.num_sparse_partitions =
+        static_cast<unsigned int>(container.sparse_partition_order.size());
 
     std::cout << "[SUCCESS] Graph partitioning and preprocessing complete."
               << std::endl;
     std::cout << "  Dense partitions: " << container.num_dense_partitions
-              << " across " << container.num_dense_groups << " groups." << std::endl;
+              << " across " << container.num_dense_groups << " groups."
+              << std::endl;
     std::cout << "  Sparse partitions: " << container.num_sparse_partitions
-              << " across " << container.num_sparse_groups << " groups." << std::endl;
+              << " across " << container.num_sparse_groups << " groups."
+              << std::endl;
+
+    // --- DETAILED DEBUG PRINTS: Print each partition's detailed information
+    // ---
+    std::cout << "\n========== DETAILED PARTITION INFORMATION =========="
+              << std::endl;
+
+    // Print dense partitions
+    for (size_t g = 0; g < container.num_dense_groups; ++g) {
+        const auto &group = container.dense_groups[g];
+        std::cout << "\n--- DENSE GROUP " << g
+                  << " (pipeline_offset=" << group.pipeline_offset
+                  << ", num_pipelines=" << group.num_pipelines << ") ---"
+                  << std::endl;
+
+        for (size_t p = 0; p < group.partitions.size(); ++p) {
+            const auto &partition = group.partitions[p];
+            std::cout << "\n  [DENSE] Group " << g << ", Partition " << p << ":"
+                      << std::endl;
+            std::cout << "    Type: DENSE (LITTLE)" << std::endl;
+            std::cout << "    num_vertices: " << partition.num_vertices
+                      << std::endl;
+            std::cout << "    num_dsts: " << partition.num_dsts << std::endl;
+            std::cout << "    num_edges: " << partition.num_edges << std::endl;
+            std::cout << "    num_pipelines: " << partition.num_pipelines
+                      << std::endl;
+
+            // Print vertex mappings
+            std::cout << "    Vertex Mappings (local_id -> global_id):"
+                      << std::endl;
+            for (const auto &[local_id, global_id] : partition.vtx_map_rev) {
+                std::cout << "      local_id " << local_id << " -> global_id "
+                          << global_id << std::endl;
+            }
+
+            // Print graph edges in "a -> b" format for each pipeline
+            for (unsigned int pip = 0; pip < partition.num_pipelines; ++pip) {
+                const auto &pipeline_edges = partition.pipeline_edges[pip];
+                std::cout << "\n    Pipeline " << pip
+                          << " (num_edges=" << pipeline_edges.num_edges
+                          << "):" << std::endl;
+
+                // Print offsets array
+                std::cout << "      Offsets array (size="
+                          << pipeline_edges.offsets.size() << "):" << std::endl;
+                std::cout << "        ";
+                for (size_t i = 0; i < pipeline_edges.offsets.size(); ++i) {
+                    std::cout << "[" << i << "]=" << pipeline_edges.offsets[i]
+                              << " ";
+                    if ((i + 1) % 16 == 0 &&
+                        i + 1 < pipeline_edges.offsets.size()) {
+                        std::cout << std::endl << "        ";
+                    }
+                }
+                std::cout << std::endl;
+
+                // Print columns array
+                std::cout << "      Columns array (size="
+                          << pipeline_edges.columns.size() << "):" << std::endl;
+                std::cout << "        ";
+                for (size_t i = 0; i < pipeline_edges.columns.size(); ++i) {
+                    std::cout << "[" << i << "]=" << pipeline_edges.columns[i]
+                              << " ";
+                    if ((i + 1) % 16 == 0 &&
+                        i + 1 < pipeline_edges.columns.size()) {
+                        std::cout << std::endl << "        ";
+                    }
+                }
+                std::cout << std::endl;
+
+                // Print weights array
+                std::cout << "      Weights array (size="
+                          << pipeline_edges.weights.size() << "):" << std::endl;
+                std::cout << "        ";
+                for (size_t i = 0; i < pipeline_edges.weights.size(); ++i) {
+                    std::cout << "[" << i << "]=" << pipeline_edges.weights[i]
+                              << " ";
+                    if ((i + 1) % 16 == 0 &&
+                        i + 1 < pipeline_edges.weights.size()) {
+                        std::cout << std::endl << "        ";
+                    }
+                }
+                std::cout << std::endl;
+
+                // Print edges in "a -> b" format
+                std::cout << "      Edges (local_id format):" << std::endl;
+                for (int v = 0; v < static_cast<int>(partition.num_vertices);
+                     ++v) {
+                    int start = pipeline_edges.offsets[v];
+                    int end = pipeline_edges.offsets[v + 1];
+                    for (int e = start; e < end; ++e) {
+                        int src_local = v;
+                        int dst_local = pipeline_edges.columns[e];
+                        int weight = pipeline_edges.weights[e];
+                        int src_global =
+                            partition.vtx_map_rev.count(src_local)
+                                ? partition.vtx_map_rev.at(src_local)
+                                : -1;
+                        int dst_global = -1;
+                        if (dst_local == 0x7FFFFFFF) {
+                            dst_global = -1;
+                        } else if (partition.vtx_map_rev.count(dst_local)) {
+                            dst_global = partition.vtx_map_rev.at(dst_local);
+                        }
+                        if (dst_global == -1) {
+                            std::cout << "        local[" << src_local
+                                      << "] -> DUMMY (weight=" << weight << ")"
+                                      << std::endl;
+                        } else {
+                            std::cout
+                                << "        local[" << src_local
+                                << "] -> local[" << dst_local << "] (global["
+                                << src_global << "] -> global[" << dst_global
+                                << "], weight=" << weight << ")" << std::endl;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Print sparse partitions
+    for (size_t g = 0; g < container.num_sparse_groups; ++g) {
+        const auto &group = container.sparse_groups[g];
+        std::cout << "\n--- SPARSE GROUP " << g
+                  << " (pipeline_offset=" << group.pipeline_offset
+                  << ", num_pipelines=" << group.num_pipelines << ") ---"
+                  << std::endl;
+
+        for (size_t p = 0; p < group.partitions.size(); ++p) {
+            const auto &partition = group.partitions[p];
+            std::cout << "\n  [SPARSE] Group " << g << ", Partition " << p
+                      << ":" << std::endl;
+            std::cout << "    Type: SPARSE (BIG)" << std::endl;
+            std::cout << "    num_vertices: " << partition.num_vertices
+                      << std::endl;
+            std::cout << "    num_dsts: " << partition.num_dsts << std::endl;
+            std::cout << "    num_edges: " << partition.num_edges << std::endl;
+            std::cout << "    num_pipelines: " << partition.num_pipelines
+                      << std::endl;
+
+            // Print vertex mappings
+            std::cout << "    Vertex Mappings (local_id -> global_id):"
+                      << std::endl;
+            for (const auto &[local_id, global_id] : partition.vtx_map_rev) {
+                std::cout << "      local_id " << local_id << " -> global_id "
+                          << global_id << std::endl;
+            }
+
+            // Print graph edges in "a -> b" format for each pipeline
+            for (unsigned int pip = 0; pip < partition.num_pipelines; ++pip) {
+                const auto &pipeline_edges = partition.pipeline_edges[pip];
+                std::cout << "\n    Pipeline " << pip
+                          << " (num_edges=" << pipeline_edges.num_edges
+                          << "):" << std::endl;
+
+                // Print offsets array
+                std::cout << "      Offsets array (size="
+                          << pipeline_edges.offsets.size() << "):" << std::endl;
+                std::cout << "        ";
+                for (size_t i = 0; i < pipeline_edges.offsets.size(); ++i) {
+                    std::cout << "[" << i << "]=" << pipeline_edges.offsets[i]
+                              << " ";
+                    if ((i + 1) % 16 == 0 &&
+                        i + 1 < pipeline_edges.offsets.size()) {
+                        std::cout << std::endl << "        ";
+                    }
+                }
+                std::cout << std::endl;
+
+                // Print columns array
+                std::cout << "      Columns array (size="
+                          << pipeline_edges.columns.size() << "):" << std::endl;
+                std::cout << "        ";
+                for (size_t i = 0; i < pipeline_edges.columns.size(); ++i) {
+                    std::cout << "[" << i << "]=" << pipeline_edges.columns[i]
+                              << " ";
+                    if ((i + 1) % 16 == 0 &&
+                        i + 1 < pipeline_edges.columns.size()) {
+                        std::cout << std::endl << "        ";
+                    }
+                }
+                std::cout << std::endl;
+
+                // Print weights array
+                std::cout << "      Weights array (size="
+                          << pipeline_edges.weights.size() << "):" << std::endl;
+                std::cout << "        ";
+                for (size_t i = 0; i < pipeline_edges.weights.size(); ++i) {
+                    std::cout << "[" << i << "]=" << pipeline_edges.weights[i]
+                              << " ";
+                    if ((i + 1) % 16 == 0 &&
+                        i + 1 < pipeline_edges.weights.size()) {
+                        std::cout << std::endl << "        ";
+                    }
+                }
+                std::cout << std::endl;
+
+                // Print edges in "a -> b" format
+                std::cout << "      Edges (local_id format):" << std::endl;
+                for (int v = 0; v < static_cast<int>(partition.num_vertices);
+                     ++v) {
+                    int start = pipeline_edges.offsets[v];
+                    int end = pipeline_edges.offsets[v + 1];
+                    for (int e = start; e < end; ++e) {
+                        int src_local = v;
+                        int dst_local = pipeline_edges.columns[e];
+                        int weight = pipeline_edges.weights[e];
+                        int src_global =
+                            partition.vtx_map_rev.count(src_local)
+                                ? partition.vtx_map_rev.at(src_local)
+                                : -1;
+                        int dst_global = -1;
+                        if (dst_local == 0x7FFFFFFF) {
+                            dst_global = -1;
+                        } else if (partition.vtx_map_rev.count(dst_local)) {
+                            dst_global = partition.vtx_map_rev.at(dst_local);
+                        }
+                        if (dst_global == -1) {
+                            std::cout << "        local[" << src_local
+                                      << "] -> DUMMY (weight=" << weight << ")"
+                                      << std::endl;
+                        } else {
+                            std::cout
+                                << "        local[" << src_local
+                                << "] -> local[" << dst_local << "] (global["
+                                << src_global << "] -> global[" << dst_global
+                                << "], weight=" << weight << ")" << std::endl;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    std::cout
+        << "\n========== END OF DETAILED PARTITION INFORMATION ==========\n"
+        << std::endl;
 
     return container;
 }

@@ -154,49 +154,35 @@ LOOP_WRITE_OUT:
     }
 }
 
-extern "C" void hbm_writer(
-    bus_word_t *src_prop_1,
-    bus_word_t *src_prop_2,
-    bus_word_t *src_prop_3,
-    bus_word_t *src_prop_4,
-    bus_word_t *src_prop_5,
-    bus_word_t *src_prop_6,
-    bus_word_t *src_prop_7,
-    bus_word_t *src_prop_8,
-    bus_word_t *src_prop_9,
-    bus_word_t *src_prop_10,
-    bus_word_t *src_prop_11,
-    bus_word_t *src_prop_12,
-    bus_word_t *src_prop_13,
-    bus_word_t *output,
-    uint32_t num_partitions_little, uint32_t num_partitions_big,
-    hls::stream<ppb_request_pkt_t> &ppb_req_stream_1,
-    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_1,
-    hls::stream<ppb_request_pkt_t> &ppb_req_stream_2,
-    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_2,
-    hls::stream<ppb_request_pkt_t> &ppb_req_stream_3,
-    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_3,
-    hls::stream<ppb_request_pkt_t> &ppb_req_stream_4,
-    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_4,
-    hls::stream<ppb_request_pkt_t> &ppb_req_stream_5,
-    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_5,
-    hls::stream<ppb_request_pkt_t> &ppb_req_stream_6,
-    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_6,
-    hls::stream<ppb_request_pkt_t> &ppb_req_stream_7,
-    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_7,
-    hls::stream<ppb_request_pkt_t> &ppb_req_stream_8,
-    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_8,
-    hls::stream<ppb_request_pkt_t> &ppb_req_stream_9,
-    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_9,
-    hls::stream<ppb_request_pkt_t> &ppb_req_stream_10,
-    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_10,
-    hls::stream<cacheline_request_pkt_t> &cacheline_req_stream_1,
-    hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream_1,
-    hls::stream<cacheline_request_pkt_t> &cacheline_req_stream_2,
-    hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream_2,
-    hls::stream<cacheline_request_pkt_t> &cacheline_req_stream_3,
-    hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream_3,
-    hls::stream<write_burst_w_dst_pkt_t> &write_burst_stream) {
+extern "C" void
+hbm_writer(bus_word_t *src_prop_1, bus_word_t *src_prop_2,
+           bus_word_t *src_prop_3, bus_word_t *src_prop_4,
+           bus_word_t *src_prop_5, bus_word_t *src_prop_6,
+           bus_word_t *src_prop_7, bus_word_t *src_prop_8,
+           bus_word_t *src_prop_9, bus_word_t *src_prop_10, bus_word_t *output,
+           uint32_t num_partitions_little, uint32_t num_partitions_big,
+           hls::stream<ppb_request_pkt_t> &ppb_req_stream_1,
+           hls::stream<ppb_response_pkt_t> &ppb_resp_stream_1,
+           hls::stream<ppb_request_pkt_t> &ppb_req_stream_2,
+           hls::stream<ppb_response_pkt_t> &ppb_resp_stream_2,
+           hls::stream<ppb_request_pkt_t> &ppb_req_stream_3,
+           hls::stream<ppb_response_pkt_t> &ppb_resp_stream_3,
+           hls::stream<ppb_request_pkt_t> &ppb_req_stream_4,
+           hls::stream<ppb_response_pkt_t> &ppb_resp_stream_4,
+           hls::stream<ppb_request_pkt_t> &ppb_req_stream_5,
+           hls::stream<ppb_response_pkt_t> &ppb_resp_stream_5,
+           hls::stream<ppb_request_pkt_t> &ppb_req_stream_6,
+           hls::stream<ppb_response_pkt_t> &ppb_resp_stream_6,
+           hls::stream<ppb_request_pkt_t> &ppb_req_stream_7,
+           hls::stream<ppb_response_pkt_t> &ppb_resp_stream_7,
+           hls::stream<ppb_request_pkt_t> &ppb_req_stream_8,
+           hls::stream<ppb_response_pkt_t> &ppb_resp_stream_8,
+           hls::stream<ppb_request_pkt_t> &ppb_req_stream_9,
+           hls::stream<ppb_response_pkt_t> &ppb_resp_stream_9,
+           hls::stream<ppb_request_pkt_t> &ppb_req_stream_10,
+           hls::stream<ppb_response_pkt_t> &ppb_resp_stream_10,
+
+           hls::stream<write_burst_w_dst_pkt_t> &write_burst_stream) {
 #pragma HLS INTERFACE m_axi port = src_prop_1 offset = slave bundle = gmem0
 #pragma HLS INTERFACE m_axi port = src_prop_2 offset = slave bundle = gmem1
 #pragma HLS INTERFACE m_axi port = src_prop_3 offset = slave bundle = gmem2
@@ -207,9 +193,6 @@ extern "C" void hbm_writer(
 #pragma HLS INTERFACE m_axi port = src_prop_8 offset = slave bundle = gmem7
 #pragma HLS INTERFACE m_axi port = src_prop_9 offset = slave bundle = gmem8
 #pragma HLS INTERFACE m_axi port = src_prop_10 offset = slave bundle = gmem9
-#pragma HLS INTERFACE m_axi port = src_prop_11 offset = slave bundle = gmem10
-#pragma HLS INTERFACE m_axi port = src_prop_12 offset = slave bundle = gmem11
-#pragma HLS INTERFACE m_axi port = src_prop_13 offset = slave bundle = gmem12
 #pragma HLS INTERFACE m_axi port = output offset = slave bundle = gmem1
 #pragma HLS INTERFACE s_axilite port = src_prop_1 bundle = control
 #pragma HLS INTERFACE s_axilite port = src_prop_2 bundle = control
@@ -221,9 +204,6 @@ extern "C" void hbm_writer(
 #pragma HLS INTERFACE s_axilite port = src_prop_8 bundle = control
 #pragma HLS INTERFACE s_axilite port = src_prop_9 bundle = control
 #pragma HLS INTERFACE s_axilite port = src_prop_10 bundle = control
-#pragma HLS INTERFACE s_axilite port = src_prop_11 bundle = control
-#pragma HLS INTERFACE s_axilite port = src_prop_12 bundle = control
-#pragma HLS INTERFACE s_axilite port = src_prop_13 bundle = control
 #pragma HLS INTERFACE s_axilite port = output bundle = control
 #pragma HLS INTERFACE s_axilite port = num_partitions_little bundle = control
 #pragma HLS INTERFACE s_axilite port = num_partitions_big bundle = control
@@ -330,16 +310,5 @@ extern "C" void hbm_writer(
     little_response_packer(9, little_prop_loader_out_10, ppb_resp_stream_10,
                            num_partitions_little);
 
-    big_node_prop_loader(0, src_prop_11, num_partitions_big,
-                         cacheline_req_stream_1, cacheline_resp_stream_1);
-
-    big_node_prop_loader(1, src_prop_12, num_partitions_big,
-                         cacheline_req_stream_2, cacheline_resp_stream_2);
-
-    big_node_prop_loader(2, src_prop_13, num_partitions_big,
-                         cacheline_req_stream_3, cacheline_resp_stream_3);
-
     write_out(output, write_burst_stream);
 }
-
-

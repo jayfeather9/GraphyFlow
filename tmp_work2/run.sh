@@ -39,6 +39,7 @@ if [ ! -f "$XCLBIN_FILE" ]; then
 fi
 
 # 3. 运行 host 程序
-DATASET="/data/feiyang/test/test/datasets/rmat-19-32.txt"
+DATASET="./graph.txt"
+# DATASET="/data/feiyang/test/test/datasets/rmat-19-32.txt"
 # DATASET="./rmat-19-32.txt"
 ./${EXECUTABLE} ${XCLBIN_FILE} $DATASET

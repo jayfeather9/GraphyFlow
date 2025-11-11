@@ -88,6 +88,8 @@
         "typeindex": "cpp",
         "variant": "cpp",
         "format": "cpp",
-        "text_encoding": "cpp"
-    }
+        "text_encoding": "cpp",
+        "*.template": "cpp"
+    },
+    "auto-scroll.enabled": true
 }

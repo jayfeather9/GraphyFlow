@@ -18,7 +18,7 @@ from typing import List, Dict, Any
 
 # Configuration example
 CONFIG_EXAMPLE = [
-    {"kernel_type": "big", "pipeline_num": 3, "merger_slr": 1, "pipeline_slr": [2, 1, 2]},
+    # {"kernel_type": "big", "pipeline_num": 3, "merger_slr": 1, "pipeline_slr": [2, 1, 2]},
     {"kernel_type": "little", "pipeline_num": 5, "merger_slr": 1, "pipeline_slr": [0, 1, 2, 0, 1]},
     {"kernel_type": "little", "pipeline_num": 5, "merger_slr": 1, "pipeline_slr": [0, 1, 2, 0, 2]},
 ]
@@ -550,9 +550,6 @@ class ConfigGenerator:
         for i in range(1, self.little_kernel_count + 1):
             ppb_stream_params.append(f"    hls::stream<ppb_request_pkt_t> &ppb_req_stream_{i},")
             ppb_stream_params.append(f"    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_{i},")
-        # Remove comma from last param only if there are no big kernels (write_burst_stream comes after)
-        if ppb_stream_params and self.big_kernel_count == 0:
-            ppb_stream_params[-1] = ppb_stream_params[-1].rstrip(",")
 
         # Generate cacheline stream parameters
         # Always keep comma because write_burst_stream comes after
@@ -772,9 +769,6 @@ class ConfigGenerator:
         for i in range(1, self.little_kernel_count + 1):
             hbm_ppb_stream_params.append(f"    hls::stream<ppb_request_pkt_t> &ppb_req_stream_{i},")
             hbm_ppb_stream_params.append(f"    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_{i},")
-        # Remove comma from last param only if there are no big kernels
-        if hbm_ppb_stream_params and self.big_kernel_count == 0:
-            hbm_ppb_stream_params[-1] = hbm_ppb_stream_params[-1].rstrip(",")
 
         # Generate cacheline stream parameters
         hbm_cacheline_stream_params = []
@@ -1128,18 +1122,24 @@ class ConfigGenerator:
                 "",
                 "#define NUM_KERNEL (BIG_KERNEL_NUM + LITTLE_KERNEL_NUM)",
                 "",
-                "static constexpr uint32_t LITTLE_MERGER_PIPELINE_LENGTHS[] = {" +
-                replacements["LITTLE_MERGER_PIPELINE_LENGTHS"] + "};",
-                "static constexpr uint32_t LITTLE_MERGER_KERNEL_OFFSETS[] = {" +
-                replacements["LITTLE_MERGER_KERNEL_OFFSETS"] + "};",
-                "static constexpr uint32_t BIG_MERGER_PIPELINE_LENGTHS[] = {" +
-                replacements["BIG_MERGER_PIPELINE_LENGTHS"] + "};",
-                "static constexpr uint32_t BIG_MERGER_KERNEL_OFFSETS[] = {" +
-                replacements["BIG_MERGER_KERNEL_OFFSETS"] + "};",
-                "static constexpr uint32_t LITTLE_KERNEL_GROUP_ID[] = {" +
-                replacements["LITTLE_KERNEL_GROUP_ID"] + "};",
-                "static constexpr uint32_t BIG_KERNEL_GROUP_ID[] = {" +
-                replacements["BIG_KERNEL_GROUP_ID"] + "};",
+                "static constexpr uint32_t LITTLE_MERGER_PIPELINE_LENGTHS[] = {"
+                + replacements["LITTLE_MERGER_PIPELINE_LENGTHS"]
+                + "};",
+                "static constexpr uint32_t LITTLE_MERGER_KERNEL_OFFSETS[] = {"
+                + replacements["LITTLE_MERGER_KERNEL_OFFSETS"]
+                + "};",
+                "static constexpr uint32_t BIG_MERGER_PIPELINE_LENGTHS[] = {"
+                + replacements["BIG_MERGER_PIPELINE_LENGTHS"]
+                + "};",
+                "static constexpr uint32_t BIG_MERGER_KERNEL_OFFSETS[] = {"
+                + replacements["BIG_MERGER_KERNEL_OFFSETS"]
+                + "};",
+                "static constexpr uint32_t LITTLE_KERNEL_GROUP_ID[] = {"
+                + replacements["LITTLE_KERNEL_GROUP_ID"]
+                + "};",
+                "static constexpr uint32_t BIG_KERNEL_GROUP_ID[] = {"
+                + replacements["BIG_KERNEL_GROUP_ID"]
+                + "};",
                 "",
                 f"#define LITTLE_KERNEL_HBM_EDGE_ID {{{replacements['LITTLE_KERNEL_HBM_EDGE_ID']}}}",
                 f"#define LITTLE_KERNEL_HBM_NODE_ID {{{replacements['LITTLE_KERNEL_HBM_NODE_ID']}}}",
