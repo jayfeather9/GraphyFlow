@@ -10,6 +10,49 @@
 #include <stdexcept>
 #include <vector>
 
+#ifndef GF_DEBUG_LEVEL
+#define GF_DEBUG_LEVEL 1
+#endif
+
+inline constexpr bool gf_debug_enabled(int level) {
+    return GF_DEBUG_LEVEL >= level;
+}
+
+#define GF_DEBUG_EXEC(level, CODE)                                                                 \
+    do {                                                                                           \
+        if (GF_DEBUG_LEVEL >= level) {                                                             \
+            CODE                                                                                   \
+        }                                                                                          \
+    } while (0)
+
+#define GF_DEBUG_L1(CODE) GF_DEBUG_EXEC(1, CODE)
+#define GF_DEBUG_L2(CODE) GF_DEBUG_EXEC(2, CODE)
+#define GF_DEBUG_L3(CODE) GF_DEBUG_EXEC(3, CODE)
+
+class GFDebugScope {
+  public:
+    explicit GFDebugScope(const char *name) : name_(name) {
+        GF_DEBUG_L1({
+            std::cout << "[DEBUG] Entering " << name_ << std::endl;
+            std::cout << std::flush;
+        });
+    }
+
+    ~GFDebugScope() {
+        GF_DEBUG_L1({
+            std::cout << "[DEBUG] Exiting " << name_ << std::endl;
+            std::cout << std::flush;
+        });
+    }
+
+  private:
+    const char *name_;
+};
+
+#define GF_DEBUG_SCOPE_CONCAT_IMPL(x, y) x##y
+#define GF_DEBUG_SCOPE_CONCAT(x, y) GF_DEBUG_SCOPE_CONCAT_IMPL(x, y)
+#define GF_DEBUG_SCOPE(NAME) GFDebugScope GF_DEBUG_SCOPE_CONCAT(_gf_scope_, __LINE__)(NAME)
+
 // Helper function to print bus_word_t as separate ap_uint<32> chunks
 void print_bus_word(const bus_word_t &word, const std::string &type, size_t word_idx) {
     constexpr int chunks_per_word = AXI_BUS_WIDTH / 32; // 512 / 32 = 16
@@ -58,10 +101,10 @@ AlgorithmHost::AlgorithmHost(AccDescriptor &acc) : acc(acc) {}
 
 void AlgorithmHost::prepare_data(const PartitionContainer &container,
                                  int start_node) {
-    std::cout << "[DEBUG] Entering prepare_data" << std::endl;
-    std::cout << std::flush;
-    std::cout << "--- [Host] Phase 0: Preparing data structures ---"
-              << std::endl;
+    GF_DEBUG_SCOPE("prepare_data");
+    GF_DEBUG_L3({
+        std::cout << "--- [Host] Phase 0: Preparing data structures ---" << std::endl;
+    });
 
     auto start_time = std::chrono::system_clock::now();
     auto current_time = start_time;
@@ -73,15 +116,18 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
         h_distances[start_node] = 0;
     }
     
-    std::cout << "\n========== PHASE 0.1: INITIALIZATION ==========" << std::endl;
-    std::cout << "  m_num_vertices: " << m_num_vertices << std::endl;
-    std::cout << "  start_node: " << start_node << std::endl;
-    std::cout << "  h_distances.size(): " << h_distances.size() << std::endl;
-    std::cout << "  All initial distances:" << std::endl;
-    for (size_t i = 0; i < h_distances.size(); ++i) {
-        std::cout << "    h_distances[" << i << "] = " << h_distances[i].to_float() << std::endl;
-    }
-    std::cout << "========== END PHASE 0.1 ==========\n" << std::endl;
+    GF_DEBUG_L3({
+        std::cout << "\n========== PHASE 0.1: INITIALIZATION ==========" << std::endl;
+        std::cout << "  m_num_vertices: " << m_num_vertices << std::endl;
+        std::cout << "  start_node: " << start_node << std::endl;
+        std::cout << "  h_distances.size(): " << h_distances.size() << std::endl;
+        std::cout << "  All initial distances:" << std::endl;
+        for (size_t i = 0; i < h_distances.size(); ++i) {
+            std::cout << "    h_distances[" << i << "] = " << h_distances[i].to_float() << std::endl;
+        }
+    std::cout << "========== END PHASE 0.1 ==========" << std::endl
+          << std::endl;
+    });
 
     // 2. Prepare host-side input buffers for each pipeline
     const size_t bytes_per_word = AXI_BUS_WIDTH / 8;
@@ -121,12 +167,17 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
         auto group_part = container.sparse_partition_order[flat_idx];
         const auto &group = container.sparse_groups[group_part.first];
         const auto &big_partition = group.partitions[group_part.second];
-        printf("Preparing BIG partition data for group %zu, partition %zu\n",
-               group_part.first, group_part.second);
+     GF_DEBUG_L3({
+     GF_DEBUG_L2({
+         printf("Preparing BIG partition data for group %zu, partition %zu\n",
+             group_part.first, group_part.second);
+     });
+     });
         if (previous_group != static_cast<int32_t>(group_part.first)) {
             // Reset offsets for new group
             sparse_src_prop_offset = 0;
             sparse_node_offset = 0;
+            sparse_dst_offset = 0;
             previous_group = static_cast<int32_t>(group_part.first);
         }
 
@@ -175,19 +226,21 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
             sparse_buffers[flat_idx].node_prop_offset = sparse_node_offset;
             sparse_node_offset += node_word_count;
             
-            // Detailed debug print for BIG partition node props
-            std::cout << "\n========== PHASE 0.2.1: BIG Partition " << flat_idx 
-                      << " (Group " << group_part.first << ", Partition " << group_part.second 
-                      << ") Node Props ==========" << std::endl;
-            std::cout << "  node_word_count: " << node_word_count << std::endl;
-            std::cout << "  node_prop_offset: " << sparse_buffers[flat_idx].node_prop_offset << std::endl;
-            std::cout << "  src_prop_offset: " << sparse_buffers[flat_idx].src_prop_offset << std::endl;
-            std::cout << "  packed_node_props.size(): " << sparse_buffers[flat_idx].packed_node_props.size() << std::endl;
-            std::cout << "  All words of packed_node_props:" << std::endl;
-            for (size_t w = 0; w < sparse_buffers[flat_idx].packed_node_props.size(); ++w) {
-                print_bus_word(sparse_buffers[flat_idx].packed_node_props[w], "node_prop", w);
-            }
-            std::cout << "========== END PHASE 0.2.1 ==========\n" << std::endl;
+            GF_DEBUG_L3({
+                std::cout << "\n========== PHASE 0.2.1: BIG Partition " << flat_idx
+                          << " (Group " << group_part.first << ", Partition " << group_part.second
+                          << ") Node Props ==========" << std::endl;
+                std::cout << "  node_word_count: " << node_word_count << std::endl;
+                std::cout << "  node_prop_offset: " << sparse_buffers[flat_idx].node_prop_offset << std::endl;
+                std::cout << "  src_prop_offset: " << sparse_buffers[flat_idx].src_prop_offset << std::endl;
+                std::cout << "  packed_node_props.size(): " << sparse_buffers[flat_idx].packed_node_props.size() << std::endl;
+                std::cout << "  All words of packed_node_props:" << std::endl;
+                for (size_t w = 0; w < sparse_buffers[flat_idx].packed_node_props.size(); ++w) {
+                    print_bus_word(sparse_buffers[flat_idx].packed_node_props[w], "node_prop", w);
+                }
+                std::cout << "========== END PHASE 0.2.1 ==========" << std::endl
+                          << std::endl;
+            });
 
             const size_t dst_word_number =
                 (big_partition.num_dsts + dist_per_word - 1) / dist_per_word;
@@ -220,25 +273,29 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
             sparse_buffers[flat_idx].dst_prop_offset = sparse_dst_offset;
             sparse_dst_offset += dst_word_count;
             
-            // Detailed debug print for BIG partition dst props
-            std::cout << "\n========== PHASE 0.2.2: BIG Partition " << flat_idx 
-                      << " (Group " << group_part.first << ", Partition " << group_part.second 
-                      << ") Dst Props ==========" << std::endl;
-            std::cout << "  dst_word_count: " << dst_word_count << std::endl;
-            std::cout << "  dst_prop_offset: " << sparse_buffers[flat_idx].dst_prop_offset << std::endl;
-            std::cout << "  packed_dst_props.size(): " << sparse_buffers[flat_idx].packed_dst_props.size() << std::endl;
-            std::cout << "  All words of packed_dst_props:" << std::endl;
-            for (size_t w = 0; w < sparse_buffers[flat_idx].packed_dst_props.size(); ++w) {
-                print_bus_word(sparse_buffers[flat_idx].packed_dst_props[w], "node_prop", w);
-            }
-            std::cout << "========== END PHASE 0.2.2 ==========\n" << std::endl;
+            GF_DEBUG_L3({
+                std::cout << "\n========== PHASE 0.2.2: BIG Partition " << flat_idx
+                          << " (Group " << group_part.first << ", Partition " << group_part.second
+                          << ") Dst Props ==========" << std::endl;
+                std::cout << "  dst_word_count: " << dst_word_count << std::endl;
+                std::cout << "  dst_prop_offset: " << sparse_buffers[flat_idx].dst_prop_offset << std::endl;
+                std::cout << "  packed_dst_props.size(): " << sparse_buffers[flat_idx].packed_dst_props.size() << std::endl;
+                std::cout << "  All words of packed_dst_props:" << std::endl;
+                for (size_t w = 0; w < sparse_buffers[flat_idx].packed_dst_props.size(); ++w) {
+                    print_bus_word(sparse_buffers[flat_idx].packed_dst_props[w], "node_prop", w);
+                }
+                std::cout << "========== END PHASE 0.2.2 ==========" << std::endl
+                          << std::endl;
+            });
         }
 
         current_time = std::chrono::system_clock::now();
-        std::cout
-            << "--- [Host] Phase 0: Prepared shared big node props ("
-            << std::chrono::duration<double>(current_time - start_time).count()
-            << " sec) ---" << std::endl;
+        GF_DEBUG_L1({
+            std::cout << "--- [Host] Phase 0: Prepared shared big node props ("
+                      << std::chrono::duration<double>(current_time - start_time)
+                             .count()
+                      << " sec) ---" << std::endl;
+        });
         start_time = current_time;
 
         // Pack edge properties for EACH big pipeline
@@ -257,9 +314,11 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
             temp_byte_buffer.reserve(word_number * bytes_per_word);
 
             if (pipeline_edges.num_edges == 0) {
-                printf(
-                    "Padding SP Group %zu Partition %zu, big pipe %u with 8 dummy edges.\n",
-                    group_part.first, group_part.second, local_pip);
+                GF_DEBUG_L3({
+                    printf(
+                        "Padding SP Group %zu Partition %zu, big pipe %u with 8 dummy edges.\n",
+                        group_part.first, group_part.second, local_pip);
+                });
                 const uint32_t dummy_dst_id = 0x7FFFFFFF;
                 const uint32_t dummy_src_id = 0;
 
@@ -330,24 +389,40 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                     .packed_edge_props.data(),
                 temp_byte_buffer.data(), temp_byte_buffer.size());
             
-            // Detailed debug print for BIG partition edge props
-            std::cout << "\n========== PHASE 0.2.3: BIG Partition " << flat_idx 
-                      << " (Group " << group_part.first << ", Partition " << group_part.second 
-                      << ") Pipeline " << local_pip << " Edge Props ==========" << std::endl;
-            std::cout << "  packed_edge_props.size(): " << sparse_buffers[flat_idx].pipelines[local_pip].packed_edge_props.size() << std::endl;
-            std::cout << "  All words of packed_edge_props:" << std::endl;
-            for (size_t w = 0; w < sparse_buffers[flat_idx].pipelines[local_pip].packed_edge_props.size(); ++w) {
-                print_bus_word(sparse_buffers[flat_idx].pipelines[local_pip].packed_edge_props[w], "edge", w);
-            }
-            std::cout << "========== END PHASE 0.2.3 ==========\n" << std::endl;
+            GF_DEBUG_L3({
+                std::cout << "\n========== PHASE 0.2.3: BIG Partition " << flat_idx
+                          << " (Group " << group_part.first << ", Partition "
+                          << group_part.second << ") Pipeline " << local_pip
+                          << " Edge Props ==========" << std::endl;
+                std::cout << "  packed_edge_props.size(): "
+                          << sparse_buffers[flat_idx]
+                                 .pipelines[local_pip]
+                                 .packed_edge_props.size()
+                          << std::endl;
+                std::cout << "  All words of packed_edge_props:" << std::endl;
+                for (size_t w = 0; w < sparse_buffers[flat_idx]
+                                             .pipelines[local_pip]
+                                             .packed_edge_props.size();
+                     ++w) {
+                    print_bus_word(
+                        sparse_buffers[flat_idx]
+                            .pipelines[local_pip]
+                            .packed_edge_props[w],
+                        "edge", w);
+                }
+                std::cout << "========== END PHASE 0.2.3 ==========" << std::endl
+                          << std::endl;
+            });
         }
 
         current_time = std::chrono::system_clock::now();
-        std::cout
-            << "--- [Host] Phase 0: Prepared " << group.num_pipelines
-            << " big pipeline edge props ("
-            << std::chrono::duration<double>(current_time - start_time).count()
-            << " sec) ---" << std::endl;
+        GF_DEBUG_L1({
+            std::cout << "--- [Host] Phase 0: Prepared " << group.num_pipelines
+                      << " big pipeline edge props ("
+                      << std::chrono::duration<double>(current_time - start_time)
+                             .count()
+                      << " sec) ---" << std::endl;
+        });
         start_time = current_time;
     }
 
@@ -360,12 +435,15 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
         const auto &group = container.dense_groups[group_part.first];
         const auto &little_partition =
             group.partitions[group_part.second];
-        printf("Preparing LITTLE partition data for group %zu, partition %zu\n",
-               group_part.first, group_part.second);
+     GF_DEBUG_L2({
+         printf("Preparing LITTLE partition data for group %zu, partition %zu\n",
+             group_part.first, group_part.second);
+     });
         if (previous_group != static_cast<int32_t>(group_part.first)) {
             // Reset offsets for new group
             dense_src_buf_offset = 0;
             dense_node_offset = 0;
+            dense_dst_offset = 0;
             previous_group = static_cast<int32_t>(group_part.first);
         }
 
@@ -428,20 +506,33 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
             dense_buffers[flat_idx].src_buf_offset = dense_src_buf_offset;
             dense_src_buf_offset += src_buf_cnt;
             
-            // Detailed debug print for LITTLE partition node props
-            std::cout << "\n========== PHASE 0.3.1: LITTLE Partition " << flat_idx 
-                      << " (Group " << group_part.first << ", Partition " << group_part.second 
-                      << ") Node Props ==========" << std::endl;
-            std::cout << "  node_word_count: " << node_word_count << std::endl;
-            std::cout << "  src_buf_cnt: " << src_buf_cnt << std::endl;
-            std::cout << "  node_prop_offset: " << dense_buffers[flat_idx].node_prop_offset << std::endl;
-            std::cout << "  src_buf_offset: " << dense_buffers[flat_idx].src_buf_offset << std::endl;
-            std::cout << "  packed_node_props.size(): " << dense_buffers[flat_idx].packed_node_props.size() << std::endl;
-            std::cout << "  All words of packed_node_props:" << std::endl;
-            for (size_t w = 0; w < dense_buffers[flat_idx].packed_node_props.size(); ++w) {
-                print_bus_word(dense_buffers[flat_idx].packed_node_props[w], "node_prop", w);
-            }
-            std::cout << "========== END PHASE 0.3.1 ==========\n" << std::endl;
+            GF_DEBUG_L3({
+                std::cout << "\n========== PHASE 0.3.1: LITTLE Partition " << flat_idx
+                          << " (Group " << group_part.first << ", Partition "
+                          << group_part.second << ") Node Props =========="
+                          << std::endl;
+                std::cout << "  node_word_count: " << node_word_count
+                          << std::endl;
+                std::cout << "  src_buf_cnt: " << src_buf_cnt << std::endl;
+                std::cout << "  node_prop_offset: "
+                          << dense_buffers[flat_idx].node_prop_offset
+                          << std::endl;
+                std::cout << "  src_buf_offset: "
+                          << dense_buffers[flat_idx].src_buf_offset
+                          << std::endl;
+                std::cout << "  packed_node_props.size(): "
+                          << dense_buffers[flat_idx].packed_node_props.size()
+                          << std::endl;
+                std::cout << "  All words of packed_node_props:" << std::endl;
+                for (size_t w = 0;
+                     w < dense_buffers[flat_idx].packed_node_props.size();
+                     ++w) {
+                    print_bus_word(dense_buffers[flat_idx].packed_node_props[w],
+                                   "node_prop", w);
+                }
+                std::cout << "========== END PHASE 0.3.1 ==========" << std::endl
+                          << std::endl;
+            });
 
             const size_t dst_word_number =
                 (little_partition.num_dsts + dist_per_word - 1) / dist_per_word;
@@ -472,25 +563,39 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
             dense_buffers[flat_idx].dst_prop_offset = dense_dst_offset;
             dense_dst_offset += dst_word_count;
             
-            // Detailed debug print for LITTLE partition dst props
-            std::cout << "\n========== PHASE 0.3.2: LITTLE Partition " << flat_idx 
-                      << " (Group " << group_part.first << ", Partition " << group_part.second 
-                      << ") Dst Props ==========" << std::endl;
-            std::cout << "  dst_word_count: " << dst_word_count << std::endl;
-            std::cout << "  dst_prop_offset: " << dense_buffers[flat_idx].dst_prop_offset << std::endl;
-            std::cout << "  packed_dst_props.size(): " << dense_buffers[flat_idx].packed_dst_props.size() << std::endl;
-            std::cout << "  All words of packed_dst_props:" << std::endl;
-            for (size_t w = 0; w < dense_buffers[flat_idx].packed_dst_props.size(); ++w) {
-                print_bus_word(dense_buffers[flat_idx].packed_dst_props[w], "node_prop", w);
-            }
-            std::cout << "========== END PHASE 0.3.2 ==========\n" << std::endl;
+            GF_DEBUG_L3({
+                std::cout << "\n========== PHASE 0.3.2: LITTLE Partition " << flat_idx
+                          << " (Group " << group_part.first << ", Partition "
+                          << group_part.second << ") Dst Props =========="
+                          << std::endl;
+                std::cout << "  dst_word_count: " << dst_word_count
+                          << std::endl;
+                std::cout << "  dst_prop_offset: "
+                          << dense_buffers[flat_idx].dst_prop_offset
+                          << std::endl;
+                std::cout << "  packed_dst_props.size(): "
+                          << dense_buffers[flat_idx].packed_dst_props.size()
+                          << std::endl;
+                std::cout << "  All words of packed_dst_props:" << std::endl;
+                for (size_t w = 0;
+                     w < dense_buffers[flat_idx].packed_dst_props.size();
+                     ++w) {
+                    print_bus_word(dense_buffers[flat_idx].packed_dst_props[w],
+                                   "node_prop", w);
+                }
+                std::cout << "========== END PHASE 0.3.2 ==========" << std::endl
+                          << std::endl;
+            });
         }
 
         current_time = std::chrono::system_clock::now();
-        std::cout
-            << "--- [Host] Phase 0: Prepared shared little node props ("
-            << std::chrono::duration<double>(current_time - start_time).count()
-            << " sec) ---" << std::endl;
+        GF_DEBUG_L1({
+            std::cout
+                << "--- [Host] Phase 0: Prepared shared little node props ("
+                << std::chrono::duration<double>(current_time - start_time)
+                       .count()
+                << " sec) ---" << std::endl;
+        });
         start_time = current_time;
 
         // Pack edge properties for EACH little pipeline
@@ -511,9 +616,11 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
             temp_byte_buffer.reserve(word_number * bytes_per_word);
 
             if (pipeline_edges.num_edges == 0) {
-                printf(
-                    "Padding DP Group %zu Partition %zu, little pipe %u with 8 dummy edges.\n",
-                    group_part.first, group_part.second, pip);
+                GF_DEBUG_L3({
+                    printf(
+                        "Padding DP Group %zu Partition %zu, little pipe %u with 8 dummy edges.\n",
+                        group_part.first, group_part.second, pip);
+                });
                 // Add 8 dummy edges with dst_id = 0x7FFFFFFF and src_id = 0
                 const uint32_t dummy_dst_id = 0x7FFFFFFF;
                 const uint32_t dummy_src_id = 0;
@@ -594,24 +701,39 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                 dense_buffers[flat_idx].pipelines[pip].packed_edge_props.data(),
                 temp_byte_buffer.data(), temp_byte_buffer.size());
             
-            // Detailed debug print for LITTLE partition edge props
-            std::cout << "\n========== PHASE 0.3.3: LITTLE Partition " << flat_idx 
-                      << " (Group " << group_part.first << ", Partition " << group_part.second 
-                      << ") Pipeline " << pip << " Edge Props ==========" << std::endl;
-            std::cout << "  packed_edge_props.size(): " << dense_buffers[flat_idx].pipelines[pip].packed_edge_props.size() << std::endl;
-            std::cout << "  All words of packed_edge_props:" << std::endl;
-            for (size_t w = 0; w < dense_buffers[flat_idx].pipelines[pip].packed_edge_props.size(); ++w) {
-                print_bus_word(dense_buffers[flat_idx].pipelines[pip].packed_edge_props[w], "edge", w);
-            }
-            std::cout << "========== END PHASE 0.3.3 ==========\n" << std::endl;
+            GF_DEBUG_L3({
+                std::cout << "\n========== PHASE 0.3.3: LITTLE Partition " << flat_idx
+                          << " (Group " << group_part.first << ", Partition "
+                          << group_part.second << ") Pipeline " << pip
+                          << " Edge Props ==========" << std::endl;
+                std::cout << "  packed_edge_props.size(): "
+                          << dense_buffers[flat_idx]
+                                 .pipelines[pip]
+                                 .packed_edge_props.size()
+                          << std::endl;
+                std::cout << "  All words of packed_edge_props:" << std::endl;
+                for (size_t w = 0; w < dense_buffers[flat_idx]
+                                             .pipelines[pip]
+                                             .packed_edge_props.size();
+                     ++w) {
+                    print_bus_word(
+                        dense_buffers[flat_idx].pipelines[pip]
+                            .packed_edge_props[w],
+                        "edge", w);
+                }
+                std::cout << "========== END PHASE 0.3.3 ==========" << std::endl
+                          << std::endl;
+            });
         }
 
         current_time = std::chrono::system_clock::now();
-        std::cout
-            << "--- [Host] Phase 0: Prepared " << group.num_pipelines
-            << " little pipeline edge props ("
-            << std::chrono::duration<double>(current_time - start_time).count()
-            << " sec) ---" << std::endl;
+        GF_DEBUG_L1({
+            std::cout << "--- [Host] Phase 0: Prepared " << group.num_pipelines
+                      << " little pipeline edge props ("
+                      << std::chrono::duration<double>(current_time - start_time)
+                             .count()
+                      << " sec) ---" << std::endl;
+        });
         start_time = current_time;
     }
 
@@ -634,11 +756,18 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
     apply_kernel_node_props.assign(total_little_dst_words + total_big_dst_words,
                                    0);
     
-    std::cout << "\n========== PHASE 0.4: APPLY KERNEL NODE PROPS INIT ==========" << std::endl;
-    std::cout << "  total_little_dst_words: " << total_little_dst_words << std::endl;
-    std::cout << "  total_big_dst_words: " << total_big_dst_words << std::endl;
-    std::cout << "  apply_kernel_node_props.size(): " << apply_kernel_node_props.size() << std::endl;
-    std::cout << "========== END PHASE 0.4 ==========\n" << std::endl;
+    GF_DEBUG_L3({
+        std::cout << "\n========== PHASE 0.4: APPLY KERNEL NODE PROPS INIT =========="
+                  << std::endl;
+        std::cout << "  total_little_dst_words: " << total_little_dst_words
+                  << std::endl;
+        std::cout << "  total_big_dst_words: " << total_big_dst_words
+                  << std::endl;
+        std::cout << "  apply_kernel_node_props.size(): "
+                  << apply_kernel_node_props.size() << std::endl;
+    std::cout << "========== END PHASE 0.4 ==========" << std::endl
+          << std::endl;
+    });
 
     little_merger_lengths.assign(container.num_dense_groups, 0);
     little_merger_offsets.assign(container.num_dense_groups, 0);
@@ -653,8 +782,23 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
             size_t flat_idx =
                 container.dense_partition_indices[group_idx][part_idx];
             const auto &dst_props = dense_buffers[flat_idx].packed_dst_props;
-            std::copy(dst_props.begin(), dst_props.end(),
-                      apply_kernel_node_props.begin() + apply_offset);
+            if (apply_offset + dst_props.size() >
+                apply_kernel_node_props.size()) {
+                std::cerr << "[ERROR] apply_kernel_node_props overflow: dense group "
+                          << group_idx << ", partition " << part_idx
+                          << ", apply_offset " << apply_offset
+                          << ", dst_size " << dst_props.size()
+                          << ", total " << apply_kernel_node_props.size()
+                          << std::endl;
+                std::cerr << std::flush;
+                throw std::runtime_error(
+                    "apply_kernel_node_props overflow (dense)");
+            }
+            if (!dst_props.empty()) {
+                std::memcpy(apply_kernel_node_props.data() + apply_offset,
+                            dst_props.data(),
+                            dst_props.size() * sizeof(bus_word_t));
+            }
             apply_offset += dst_props.size();
         }
         little_merger_lengths[group_idx] = static_cast<uint32_t>(
@@ -674,45 +818,75 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
             size_t flat_idx =
                 container.sparse_partition_indices[group_idx][part_idx];
             const auto &dst_props = sparse_buffers[flat_idx].packed_dst_props;
-            std::copy(dst_props.begin(), dst_props.end(),
-                      apply_kernel_node_props.begin() + apply_offset);
+            if (apply_offset + dst_props.size() >
+                apply_kernel_node_props.size()) {
+                std::cerr << "[ERROR] apply_kernel_node_props overflow: sparse group "
+                          << group_idx << ", partition " << part_idx
+                          << ", apply_offset " << apply_offset
+                          << ", dst_size " << dst_props.size()
+                          << ", total " << apply_kernel_node_props.size()
+                          << std::endl;
+                std::cerr << std::flush;
+                throw std::runtime_error(
+                    "apply_kernel_node_props overflow (sparse)");
+            }
+            if (!dst_props.empty()) {
+                std::memcpy(apply_kernel_node_props.data() + apply_offset,
+                            dst_props.data(),
+                            dst_props.size() * sizeof(bus_word_t));
+            }
             apply_offset += dst_props.size();
         }
         big_merger_lengths[group_idx] = static_cast<uint32_t>(
             apply_offset - big_merger_offsets[group_idx]);
     }
     
-    std::cout << "\n========== PHASE 0.5: MERGER OFFSETS AND LENGTHS ==========" << std::endl;
-    std::cout << "  little_merger_lengths:" << std::endl;
-    for (size_t i = 0; i < little_merger_lengths.size(); ++i) {
-        std::cout << "    [" << i << "] = " << little_merger_lengths[i] << std::endl;
-    }
-    std::cout << "  little_merger_offsets:" << std::endl;
-    for (size_t i = 0; i < little_merger_offsets.size(); ++i) {
-        std::cout << "    [" << i << "] = " << little_merger_offsets[i] << std::endl;
-    }
-    std::cout << "  big_merger_lengths:" << std::endl;
-    for (size_t i = 0; i < big_merger_lengths.size(); ++i) {
-        std::cout << "    [" << i << "] = " << big_merger_lengths[i] << std::endl;
-    }
-    std::cout << "  big_merger_offsets:" << std::endl;
-    for (size_t i = 0; i < big_merger_offsets.size(); ++i) {
-        std::cout << "    [" << i << "] = " << big_merger_offsets[i] << std::endl;
-    }
-    std::cout << "  big_dst_offset: " << big_dst_offset << std::endl;
-    std::cout << "========== END PHASE 0.5 ==========\n" << std::endl;
+    GF_DEBUG_L3({
+        std::cout
+            << "\n========== PHASE 0.5: MERGER OFFSETS AND LENGTHS =========="
+            << std::endl;
+        std::cout << "  little_merger_lengths:" << std::endl;
+        for (size_t i = 0; i < little_merger_lengths.size(); ++i) {
+            std::cout << "    [" << i << "] = " << little_merger_lengths[i]
+                      << std::endl;
+        }
+        std::cout << "  little_merger_offsets:" << std::endl;
+        for (size_t i = 0; i < little_merger_offsets.size(); ++i) {
+            std::cout << "    [" << i << "] = " << little_merger_offsets[i]
+                      << std::endl;
+        }
+        std::cout << "  big_merger_lengths:" << std::endl;
+        for (size_t i = 0; i < big_merger_lengths.size(); ++i) {
+            std::cout << "    [" << i << "] = " << big_merger_lengths[i]
+                      << std::endl;
+        }
+        std::cout << "  big_merger_offsets:" << std::endl;
+        for (size_t i = 0; i < big_merger_offsets.size(); ++i) {
+            std::cout << "    [" << i << "] = " << big_merger_offsets[i]
+                      << std::endl;
+        }
+        std::cout << "  big_dst_offset: " << big_dst_offset << std::endl;
+    std::cout << "========== END PHASE 0.5 ==========" << std::endl
+          << std::endl;
+    });
 
     if (apply_kernel_node_props.empty()) {
         apply_kernel_node_props.assign(1, 0);
     }
     
-    std::cout << "\n========== PHASE 0.6: APPLY KERNEL NODE PROPS FINAL ==========" << std::endl;
-    std::cout << "  apply_kernel_node_props.size(): " << apply_kernel_node_props.size() << std::endl;
-    std::cout << "  All words of apply_kernel_node_props:" << std::endl;
-    for (size_t w = 0; w < apply_kernel_node_props.size(); ++w) {
-        print_bus_word(apply_kernel_node_props[w], "node_prop", w);
-    }
-    std::cout << "========== END PHASE 0.6 ==========\n" << std::endl;
+    GF_DEBUG_L3({
+        std::cout
+            << "\n========== PHASE 0.6: APPLY KERNEL NODE PROPS FINAL =========="
+            << std::endl;
+        std::cout << "  apply_kernel_node_props.size(): "
+                  << apply_kernel_node_props.size() << std::endl;
+        std::cout << "  All words of apply_kernel_node_props:" << std::endl;
+        for (size_t w = 0; w < apply_kernel_node_props.size(); ++w) {
+            print_bus_word(apply_kernel_node_props[w], "node_prop", w);
+        }
+    std::cout << "========== END PHASE 0.6 ==========" << std::endl
+          << std::endl;
+    });
 
     writer_kernel_node_props.resize(LITTLE_KERNEL_NUM + BIG_KERNEL_NUM);
     size_t little_node_words =
@@ -730,18 +904,30 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
             big_node_words, 0);
     }
     
-    std::cout << "\n========== PHASE 0.7: WRITER KERNEL NODE PROPS INIT ==========" << std::endl;
-    std::cout << "  LITTLE_KERNEL_NUM: " << LITTLE_KERNEL_NUM << std::endl;
-    std::cout << "  BIG_KERNEL_NUM: " << BIG_KERNEL_NUM << std::endl;
-    std::cout << "  total_little_node_words: " << total_little_node_words << std::endl;
-    std::cout << "  total_big_node_words: " << total_big_node_words << std::endl;
-    std::cout << "  little_node_words: " << little_node_words << std::endl;
-    std::cout << "  big_node_words: " << big_node_words << std::endl;
-    std::cout << "  writer_kernel_node_props.size(): " << writer_kernel_node_props.size() << std::endl;
-    for (size_t i = 0; i < writer_kernel_node_props.size(); ++i) {
-        std::cout << "    writer_kernel_node_props[" << i << "].size(): " << writer_kernel_node_props[i].size() << std::endl;
-    }
-    std::cout << "========== END PHASE 0.7 ==========\n" << std::endl;
+    GF_DEBUG_L3({
+        std::cout
+            << "\n========== PHASE 0.7: WRITER KERNEL NODE PROPS INIT =========="
+            << std::endl;
+        std::cout << "  LITTLE_KERNEL_NUM: " << LITTLE_KERNEL_NUM
+                  << std::endl;
+        std::cout << "  BIG_KERNEL_NUM: " << BIG_KERNEL_NUM << std::endl;
+        std::cout << "  total_little_node_words: " << total_little_node_words
+                  << std::endl;
+        std::cout << "  total_big_node_words: " << total_big_node_words
+                  << std::endl;
+        std::cout << "  little_node_words: " << little_node_words
+                  << std::endl;
+        std::cout << "  big_node_words: " << big_node_words << std::endl;
+        std::cout << "  writer_kernel_node_props.size(): "
+                  << writer_kernel_node_props.size() << std::endl;
+        for (size_t i = 0; i < writer_kernel_node_props.size(); ++i) {
+            std::cout << "    writer_kernel_node_props[" << i
+                      << "].size(): "
+                      << writer_kernel_node_props[i].size() << std::endl;
+        }
+    std::cout << "========== END PHASE 0.7 ==========" << std::endl
+          << std::endl;
+    });
 
     for (size_t flat_idx = 0; flat_idx < container.num_dense_partitions;
          ++flat_idx) {
@@ -750,14 +936,34 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
         for (unsigned int local_pip = 0; local_pip < group.num_pipelines;
              ++local_pip) {
             unsigned int global_pip = group.pipeline_offset + local_pip;
-            std::copy(dense_buffers[flat_idx].packed_node_props.begin(),
-                      dense_buffers[flat_idx].packed_node_props.end(),
-                      writer_kernel_node_props[global_pip].begin() +
-                          dense_buffers[flat_idx].node_prop_offset);
-            printf("LITTLE group %zu partition %zu (global pip %u) node_offset %u\n",
-                   group_part.first, group_part.second, global_pip,
-                   dense_buffers[flat_idx].node_prop_offset);
-            fflush(stdout);
+            const auto &src = dense_buffers[flat_idx].packed_node_props;
+            if (dense_buffers[flat_idx].node_prop_offset + src.size() >
+                writer_kernel_node_props[global_pip].size()) {
+                std::cerr << "[ERROR] writer_kernel_node_props overflow: LITTLE group "
+                          << group_part.first << ", partition "
+                          << group_part.second << ", global_pip "
+                          << global_pip << ", node_offset "
+                          << dense_buffers[flat_idx].node_prop_offset
+                          << ", src_size " << src.size() << ", total "
+                          << writer_kernel_node_props[global_pip].size()
+                          << std::endl;
+                std::cerr << std::flush;
+                throw std::runtime_error(
+                    "writer_kernel_node_props overflow (little)");
+            }
+            if (!src.empty()) {
+                std::memcpy(writer_kernel_node_props[global_pip].data() +
+                                dense_buffers[flat_idx].node_prop_offset,
+                            src.data(),
+                            src.size() * sizeof(bus_word_t));
+            }
+            GF_DEBUG_L3({
+                printf(
+                    "LITTLE group %zu partition %zu (global pip %u) node_offset %u\n",
+                    group_part.first, group_part.second, global_pip,
+                    dense_buffers[flat_idx].node_prop_offset);
+                fflush(stdout);
+            });
         }
     }
     for (size_t flat_idx = 0; flat_idx < container.num_sparse_partitions;
@@ -767,57 +973,92 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
         for (unsigned int local_pip = 0; local_pip < group.num_pipelines;
              ++local_pip) {
             unsigned int global_pip = group.pipeline_offset + local_pip;
-            std::copy(
-                sparse_buffers[flat_idx].packed_node_props.begin(),
-                sparse_buffers[flat_idx].packed_node_props.end(),
+            const auto &src = sparse_buffers[flat_idx].packed_node_props;
+            if (sparse_buffers[flat_idx].node_prop_offset + src.size() >
                 writer_kernel_node_props[global_pip + LITTLE_KERNEL_NUM]
-                    .begin() + sparse_buffers[flat_idx].node_prop_offset);
-            printf("BIG group %zu partition %zu (global pip %u) node_offset %u\n",
-                   group_part.first, group_part.second, global_pip,
-                   sparse_buffers[flat_idx].node_prop_offset);
-            fflush(stdout);
+                    .size()) {
+                std::cerr << "[ERROR] writer_kernel_node_props overflow: BIG group "
+                          << group_part.first << ", partition "
+                          << group_part.second << ", global_pip "
+                          << global_pip << ", node_offset "
+                          << sparse_buffers[flat_idx].node_prop_offset
+                          << ", src_size " << src.size() << ", total "
+                          << writer_kernel_node_props[global_pip +
+                                                           LITTLE_KERNEL_NUM]
+                                 .size()
+                          << std::endl;
+                std::cerr << std::flush;
+                throw std::runtime_error(
+                    "writer_kernel_node_props overflow (big)");
+            }
+            if (!src.empty()) {
+                std::memcpy(writer_kernel_node_props[global_pip +
+                                                     LITTLE_KERNEL_NUM]
+                                .data() +
+                                sparse_buffers[flat_idx].node_prop_offset,
+                            src.data(),
+                            src.size() * sizeof(bus_word_t));
+            }
+            GF_DEBUG_L3({
+                printf(
+                    "BIG group %zu partition %zu (global pip %u) node_offset %u\n",
+                    group_part.first, group_part.second, global_pip,
+                    sparse_buffers[flat_idx].node_prop_offset);
+                fflush(stdout);
+            });
         }
     }
     
-    std::cout << "\n========== PHASE 0.8: WRITER KERNEL NODE PROPS FILLED ==========" << std::endl;
-    for (int pip = 0; pip < LITTLE_KERNEL_NUM; ++pip) {
-        std::cout << "  writer_kernel_node_props[" << pip << "] (LITTLE):" << std::endl;
-        std::cout << "    size(): " << writer_kernel_node_props[pip].size() << std::endl;
-        std::cout << "    All words:" << std::endl;
-        for (size_t w = 0; w < writer_kernel_node_props[pip].size(); ++w) {
-            print_bus_word(writer_kernel_node_props[pip][w], "node_prop", w);
+    GF_DEBUG_L3({
+        std::cout << "\n========== PHASE 0.8: WRITER KERNEL NODE PROPS FILLED =========="
+                  << std::endl;
+        for (int pip = 0; pip < LITTLE_KERNEL_NUM; ++pip) {
+            std::cout << "  writer_kernel_node_props[" << pip
+                      << "] (LITTLE):" << std::endl;
+            std::cout << "    size(): " << writer_kernel_node_props[pip].size()
+                      << std::endl;
+            std::cout << "    All words:" << std::endl;
+            for (size_t w = 0; w < writer_kernel_node_props[pip].size(); ++w) {
+                print_bus_word(writer_kernel_node_props[pip][w], "node_prop",
+                               w);
+            }
         }
-    }
-    for (int pip = 0; pip < BIG_KERNEL_NUM; ++pip) {
-        int idx = pip + LITTLE_KERNEL_NUM;
-        std::cout << "  writer_kernel_node_props[" << idx << "] (BIG):" << std::endl;
-        std::cout << "    size(): " << writer_kernel_node_props[idx].size() << std::endl;
-        std::cout << "    All words:" << std::endl;
-        for (size_t w = 0; w < writer_kernel_node_props[idx].size(); ++w) {
-            print_bus_word(writer_kernel_node_props[idx][w], "node_prop", w);
+        for (int pip = 0; pip < BIG_KERNEL_NUM; ++pip) {
+            int idx = pip + LITTLE_KERNEL_NUM;
+            std::cout << "  writer_kernel_node_props[" << idx
+                      << "] (BIG):" << std::endl;
+            std::cout << "    size(): " << writer_kernel_node_props[idx].size()
+                      << std::endl;
+            std::cout << "    All words:" << std::endl;
+            for (size_t w = 0; w < writer_kernel_node_props[idx].size(); ++w) {
+                print_bus_word(writer_kernel_node_props[idx][w], "node_prop",
+                               w);
+            }
         }
-    }
-    std::cout << "========== END PHASE 0.8 ==========\n" << std::endl;
+    std::cout << "========== END PHASE 0.8 ==========" << std::endl
+          << std::endl;
+    });
     
     current_time = std::chrono::system_clock::now();
-    std::cout
-        << "--- [Host] Phase 0: Prepared apply kernel node props ("
-        << std::chrono::duration<double>(current_time - start_time).count()
-        << " sec) ---" << std::endl;
-    std::cout << "[DEBUG] Exiting prepare_data" << std::endl;
-    std::cout << std::flush;
+    GF_DEBUG_L1({
+        std::cout << "--- [Host] Phase 0: Prepared apply kernel node props ("
+                  << std::chrono::duration<double>(current_time - start_time)
+                         .count()
+                  << " sec) ---" << std::endl;
+    });
 }
 
 // --- PHASE 1: BUFFER SETUP ---
 // MODIFIED: Create separate edge buffers for each pipeline, but share node
 // buffers within partition
 void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
-    std::cout << "[DEBUG] Entering setup_buffers" << std::endl;
-    std::cout << std::flush;
+    GF_DEBUG_SCOPE("setup_buffers");
     cl_int err;
-    std::cout
-        << "--- [Host] Phase 1: Setting up HBM buffers for all pipelines ---"
-        << std::endl;
+    GF_DEBUG_L1({
+        std::cout
+            << "--- [Host] Phase 1: Setting up HBM buffers for all pipelines ---"
+            << std::endl;
+    });
 
     // 1.1: Clear old buffer handles and resize host-side result vectors
     writer_kernel_node_prop_buffers.clear();
@@ -826,13 +1067,20 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
     size_t dists_per_word = AXI_BUS_WIDTH / DISTANCE_BITWIDTH;
     size_t total_output_words = apply_kernel_node_props.size();
     
-    std::cout << "\n========== PHASE 1.1: BUFFER SETUP INIT ==========" << std::endl;
-    std::cout << "  bytes_per_word: " << bytes_per_word << std::endl;
-    std::cout << "  dists_per_word: " << dists_per_word << std::endl;
-    std::cout << "  total_output_words: " << total_output_words << std::endl;
-    std::cout << "  container.num_dense_partitions: " << container.num_dense_partitions << std::endl;
-    std::cout << "  container.num_sparse_partitions: " << container.num_sparse_partitions << std::endl;
-    std::cout << "========== END PHASE 1.1 ==========\n" << std::endl;
+    GF_DEBUG_L3({
+        std::cout << "\n========== PHASE 1.1: BUFFER SETUP INIT =========="
+                  << std::endl;
+        std::cout << "  bytes_per_word: " << bytes_per_word << std::endl;
+        std::cout << "  dists_per_word: " << dists_per_word << std::endl;
+        std::cout << "  total_output_words: " << total_output_words
+                  << std::endl;
+        std::cout << "  container.num_dense_partitions: "
+                  << container.num_dense_partitions << std::endl;
+        std::cout << "  container.num_sparse_partitions: "
+                  << container.num_sparse_partitions << std::endl;
+    std::cout << "========== END PHASE 1.1 ==========" << std::endl
+          << std::endl;
+    });
 
     // --- 1.2: Setup buffers for LITTLE pipelines ---
     for (size_t flat_idx = 0; flat_idx < container.num_dense_partitions;
@@ -856,10 +1104,14 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
             size_t num_edge_words =
                 dense_buffers[flat_idx].pipelines[local_pip]
                     .packed_edge_props.size();
-            printf(
-                "LITTLE group %zu partition %zu (global pip %u) edge words %zu\n",
-                group_part.first, group_part.second, global_pip,
-                num_edge_words);
+            GF_DEBUG_L3({
+                GF_DEBUG_L3({
+                    printf(
+                        "LITTLE group %zu partition %zu (global pip %u) edge words %zu\n",
+                        group_part.first, group_part.second, global_pip,
+                        num_edge_words);
+                });
+            });
             OCL_CHECK(err, edge_props_buf = cl::Buffer(
                                acc.context,
                                CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX |
@@ -870,13 +1122,20 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
             dense_buffers[flat_idx].pipelines[local_pip].edge_props_buffer =
                 edge_props_buf;
             
-            std::cout << "  [DEBUG] Created LITTLE edge buffer: group=" << group_part.first 
-                      << ", partition=" << group_part.second << ", local_pip=" << local_pip 
-                      << ", global_pip=" << global_pip << ", num_edge_words=" << num_edge_words << std::endl;
+            GF_DEBUG_L2({
+                std::cout << "  [DEBUG] Created LITTLE edge buffer: group="
+                          << group_part.first << ", partition="
+                          << group_part.second << ", local_pip=" << local_pip
+                          << ", global_pip=" << global_pip
+                          << ", num_edge_words=" << num_edge_words
+                          << std::endl;
+            });
         }
 
-        std::cout << "  Created " << group.num_pipelines
-                  << " little pipeline edge buffers." << std::endl;
+        GF_DEBUG_L2({
+            std::cout << "  Created " << group.num_pipelines
+                      << " little pipeline edge buffers." << std::endl;
+        });
     }
 
     // --- 1.3: Setup buffers for BIG pipelines ---
@@ -901,9 +1160,13 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
             size_t num_edge_words =
                 sparse_buffers[flat_idx].pipelines[local_pip]
                     .packed_edge_props.size();
-            printf("BIG group %zu partition %zu (global pip %u) edge words %zu\n",
-                   group_part.first, group_part.second, global_pip,
-                   num_edge_words);
+         GF_DEBUG_L3({
+         GF_DEBUG_L3({
+          printf("BIG group %zu partition %zu (global pip %u) edge words %zu\n",
+              group_part.first, group_part.second, global_pip,
+              num_edge_words);
+         });
+         });
             OCL_CHECK(err, edge_props_buf = cl::Buffer(
                                acc.context,
                                CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX |
@@ -914,13 +1177,20 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
             sparse_buffers[flat_idx].pipelines[local_pip].edge_props_buffer =
                 edge_props_buf;
             
-            std::cout << "  [DEBUG] Created BIG edge buffer: group=" << group_part.first 
-                      << ", partition=" << group_part.second << ", local_pip=" << local_pip 
-                      << ", global_pip=" << global_pip << ", num_edge_words=" << num_edge_words << std::endl;
+            GF_DEBUG_L2({
+                std::cout << "  [DEBUG] Created BIG edge buffer: group="
+                          << group_part.first << ", partition="
+                          << group_part.second << ", local_pip=" << local_pip
+                          << ", global_pip=" << global_pip
+                          << ", num_edge_words=" << num_edge_words
+                          << std::endl;
+            });
         }
 
-        std::cout << "  Created " << group.num_pipelines
-                  << " big pipeline edge buffers." << std::endl;
+        GF_DEBUG_L2({
+            std::cout << "  Created " << group.num_pipelines
+                      << " big pipeline edge buffers." << std::endl;
+        });
     }
 
     // --- 1.4: Setup shared node property buffers for hbm_writer (14 total: 11
@@ -941,15 +1211,22 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
                                       num_node_words * bytes_per_word,
                                       &hbm_ext_node, &err));
         writer_kernel_node_prop_buffers.push_back(node_buf);
-        printf("[DEBUG] Pushed to writer_kernel_node_prop_buffers[%d] little pip %d, words %zu\n",
-               pip, pip, num_node_words);
+        GF_DEBUG_L3({
+            printf("[DEBUG] Pushed to writer_kernel_node_prop_buffers[%d] little pip %d, words %zu\n",
+                   pip, pip, num_node_words);
+        });
         
-        std::cout << "  [DETAILED] LITTLE writer_kernel_node_prop_buffers[" << pip << "]:" << std::endl;
-        std::cout << "    num_node_words: " << num_node_words << std::endl;
-        std::cout << "    All words of data:" << std::endl;
-        for (size_t w = 0; w < writer_kernel_node_props[pip].size(); ++w) {
-            print_bus_word(writer_kernel_node_props[pip][w], "node_prop", w);
-        }
+        GF_DEBUG_L3({
+            std::cout << "  [DETAILED] LITTLE writer_kernel_node_prop_buffers["
+                      << pip << "]:" << std::endl;
+            std::cout << "    num_node_words: " << num_node_words
+                      << std::endl;
+            std::cout << "    All words of data:" << std::endl;
+            for (size_t w = 0; w < writer_kernel_node_props[pip].size(); ++w) {
+                print_bus_word(writer_kernel_node_props[pip][w], "node_prop",
+                               w);
+            }
+        });
     }
 
     // Create 3 big node prop buffers for hbm_writer
@@ -970,15 +1247,25 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
                                       num_node_words * bytes_per_word,
                                       &hbm_ext_node, &err));
         writer_kernel_node_prop_buffers.push_back(node_buf);
-        printf("[DEBUG] Pushed to writer_kernel_node_prop_buffers[%d] big pip %d, words %zu\n",
-               pip + LITTLE_KERNEL_NUM, pip, num_node_words);
+        GF_DEBUG_L3({
+            printf("[DEBUG] Pushed to writer_kernel_node_prop_buffers[%d] big pip %d, words %zu\n",
+                   pip + LITTLE_KERNEL_NUM, pip, num_node_words);
+        });
         
-        std::cout << "  [DETAILED] BIG writer_kernel_node_prop_buffers[" << (pip + LITTLE_KERNEL_NUM) << "]:" << std::endl;
-        std::cout << "    num_node_words: " << num_node_words << std::endl;
-        std::cout << "    All words of data:" << std::endl;
-        for (size_t w = 0; w < writer_kernel_node_props[pip + LITTLE_KERNEL_NUM].size(); ++w) {
-            print_bus_word(writer_kernel_node_props[pip + LITTLE_KERNEL_NUM][w], "node_prop", w);
-        }
+        GF_DEBUG_L3({
+            std::cout << "  [DETAILED] BIG writer_kernel_node_prop_buffers["
+                      << (pip + LITTLE_KERNEL_NUM) << "]:" << std::endl;
+            std::cout << "    num_node_words: " << num_node_words
+                      << std::endl;
+            std::cout << "    All words of data:" << std::endl;
+            for (size_t w = 0;
+                 w < writer_kernel_node_props[pip + LITTLE_KERNEL_NUM].size();
+                 ++w) {
+                print_bus_word(writer_kernel_node_props[pip + LITTLE_KERNEL_NUM]
+                                   [w],
+                               "node_prop", w);
+            }
+        });
     }
 
     // --- 1.5: Setup unified output buffer ---
@@ -1013,42 +1300,54 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
                                   apply_node_words * bytes_per_word,
                                   &hbm_ext_apply, &err));
     
-    std::cout << "\n========== PHASE 1.6: APPLY KERNEL NODE PROP BUFFER ==========" << std::endl;
-    std::cout << "  apply_node_words: " << apply_node_words << std::endl;
-    std::cout << "  Buffer size (bytes): " << (apply_node_words * bytes_per_word) << std::endl;
-    std::cout << "  All words of apply_kernel_node_props:" << std::endl;
-    for (size_t w = 0; w < apply_kernel_node_props.size(); ++w) {
-        print_bus_word(apply_kernel_node_props[w], "node_prop", w);
-    }
-    std::cout << "========== END PHASE 1.6 ==========\n" << std::endl;
+    GF_DEBUG_L3({
+        std::cout
+            << "\n========== PHASE 1.6: APPLY KERNEL NODE PROP BUFFER =========="
+            << std::endl;
+        std::cout << "  apply_node_words: " << apply_node_words << std::endl;
+        std::cout << "  Buffer size (bytes): "
+                  << (apply_node_words * bytes_per_word) << std::endl;
+        std::cout << "  All words of apply_kernel_node_props:" << std::endl;
+        for (size_t w = 0; w < apply_kernel_node_props.size(); ++w) {
+            print_bus_word(apply_kernel_node_props[w], "node_prop", w);
+        }
+    std::cout << "========== END PHASE 1.6 ==========" << std::endl
+          << std::endl;
+    });
 
-    std::cout << "[SUCCESS] HBM buffers created: " << LITTLE_KERNEL_NUM
-              << " little + " << BIG_KERNEL_NUM << " big pipelines, "
-              << "total output size: " << total_output_words << " words."
-              << std::endl;
-    std::cout << "[DEBUG] Exiting setup_buffers" << std::endl;
-    std::cout << std::flush;
+    GF_DEBUG_L1({
+        std::cout << "[SUCCESS] HBM buffers created: " << LITTLE_KERNEL_NUM
+                  << " little + " << BIG_KERNEL_NUM << " big pipelines, "
+                  << "total output size: " << total_output_words
+                  << " words." << std::endl;
+    });
 }
 
 void AlgorithmHost::update_data(const PartitionContainer &container) {
-    std::cout << "[DEBUG] Entering update_data" << std::endl;
-    std::cout << std::flush;
-    std::cout
-        << "--- [Host] Phase 2.1: Updating host-side data for new iteration ---"
-        << std::endl;
+    GF_DEBUG_SCOPE("update_data");
+    GF_DEBUG_L1({
+        std::cout << "--- [Host] Phase 2.1: Updating host-side data for new iteration ---"
+                  << std::endl;
+    });
 
     const size_t bytes_per_word = AXI_BUS_WIDTH / 8;
     const size_t dists_per_word = AXI_BUS_WIDTH / DISTANCE_BITWIDTH;
     
-    std::cout << "\n========== PHASE 2.1: UPDATE DATA INIT ==========" << std::endl;
-    std::cout << "  bytes_per_word: " << bytes_per_word << std::endl;
-    std::cout << "  dists_per_word: " << dists_per_word << std::endl;
-    std::cout << "  h_distances.size(): " << h_distances.size() << std::endl;
-    std::cout << "  All updated distances:" << std::endl;
-    for (size_t i = 0; i < h_distances.size(); ++i) {
-        std::cout << "    h_distances[" << i << "] = " << h_distances[i].to_float() << std::endl;
-    }
-    std::cout << "========== END PHASE 2.1 INIT ==========\n" << std::endl;
+    GF_DEBUG_L3({
+        std::cout << "\n========== PHASE 2.1: UPDATE DATA INIT =========="
+                  << std::endl;
+        std::cout << "  bytes_per_word: " << bytes_per_word << std::endl;
+        std::cout << "  dists_per_word: " << dists_per_word << std::endl;
+        std::cout << "  h_distances.size(): " << h_distances.size()
+                  << std::endl;
+        std::cout << "  All updated distances:" << std::endl;
+        for (size_t i = 0; i < h_distances.size(); ++i) {
+            std::cout << "    h_distances[" << i
+                      << "] = " << h_distances[i].to_float() << std::endl;
+        }
+    std::cout << "========== END PHASE 2.1 INIT ==========" << std::endl
+          << std::endl;
+    });
 
     // Update BIG partition node distances (shared across all big pipelines)
     for (size_t flat_idx = 0; flat_idx < container.num_sparse_partitions;
@@ -1095,24 +1394,56 @@ void AlgorithmHost::update_data(const PartitionContainer &container) {
         for (unsigned int local_pip = 0; local_pip < group.num_pipelines;
              ++local_pip) {
             unsigned int global_pip = group.pipeline_offset + local_pip;
-            std::copy(
-                sparse_buffers[flat_idx].packed_node_props.begin(),
-                sparse_buffers[flat_idx].packed_node_props.end(),
+            const auto &src = sparse_buffers[flat_idx].packed_node_props;
+            if (sparse_buffers[flat_idx].node_prop_offset + src.size() >
                 writer_kernel_node_props[global_pip + LITTLE_KERNEL_NUM]
-                    .begin() + sparse_buffers[flat_idx].node_prop_offset);
+                    .size()) {
+                std::cerr << "[ERROR] update_data overflow: BIG group "
+                          << group_part.first << ", partition "
+                          << group_part.second << ", global_pip "
+                          << global_pip << ", node_offset "
+                          << sparse_buffers[flat_idx].node_prop_offset
+                          << ", src_size " << src.size() << ", total "
+                          << writer_kernel_node_props[global_pip +
+                                                           LITTLE_KERNEL_NUM]
+                                 .size()
+                          << std::endl;
+                std::cerr << std::flush;
+                throw std::runtime_error(
+                    "writer_kernel_node_props overflow in update_data (big)");
+            }
+            if (!src.empty()) {
+                std::memcpy(writer_kernel_node_props[global_pip +
+                                                     LITTLE_KERNEL_NUM]
+                                .data() +
+                                sparse_buffers[flat_idx].node_prop_offset,
+                            src.data(),
+                            src.size() * sizeof(bus_word_t));
+            }
             
-            std::cout << "  [UPDATE] BIG partition " << flat_idx << ", pipeline " << local_pip 
-                      << " (global " << global_pip << "): updated node props" << std::endl;
+            GF_DEBUG_L2({
+                std::cout << "  [UPDATE] BIG partition " << flat_idx
+                          << ", pipeline " << local_pip << " (global "
+                          << global_pip << "): updated node props"
+                          << std::endl;
+            });
         }
         
-        std::cout << "\n========== PHASE 2.1.1: BIG Partition " << flat_idx 
-                  << " Updated Node Props ==========" << std::endl;
-        std::cout << "  packed_node_props.size(): " << sparse_buffers[flat_idx].packed_node_props.size() << std::endl;
-        std::cout << "  All words:" << std::endl;
-        for (size_t w = 0; w < sparse_buffers[flat_idx].packed_node_props.size(); ++w) {
-            print_bus_word(sparse_buffers[flat_idx].packed_node_props[w], "node_prop", w);
-        }
-        std::cout << "========== END PHASE 2.1.1 ==========\n" << std::endl;
+        GF_DEBUG_L3({
+            std::cout << "\n========== PHASE 2.1.1: BIG Partition " << flat_idx
+                      << " Updated Node Props ==========" << std::endl;
+            std::cout << "  packed_node_props.size(): "
+                      << sparse_buffers[flat_idx].packed_node_props.size()
+                      << std::endl;
+            std::cout << "  All words:" << std::endl;
+            for (size_t w = 0;
+                 w < sparse_buffers[flat_idx].packed_node_props.size(); ++w) {
+                print_bus_word(sparse_buffers[flat_idx].packed_node_props[w],
+                               "node_prop", w);
+            }
+            std::cout << "========== END PHASE 2.1.1 ==========" << std::endl
+                      << std::endl;
+        });
 
         // update big_dst_node_props for apply kernel
         {
@@ -1147,23 +1478,52 @@ void AlgorithmHost::update_data(const PartitionContainer &container) {
             // base = big merger's absolute offset + group-local dst offset
             const uint32_t merger_abs_offset =
                 big_merger_offsets[group_part.first];
-            std::copy(
-                sparse_buffers[flat_idx].packed_dst_props.begin(),
-                sparse_buffers[flat_idx].packed_dst_props.end(),
-                apply_kernel_node_props.begin() + merger_abs_offset +
-                    sparse_buffers[flat_idx].dst_prop_offset);
+            const auto &dst_props = sparse_buffers[flat_idx].packed_dst_props;
+            if (merger_abs_offset + sparse_buffers[flat_idx].dst_prop_offset +
+                    dst_props.size() >
+                apply_kernel_node_props.size()) {
+                std::cerr << "[ERROR] apply_kernel_node_props overflow during update (sparse): group "
+                          << group_part.first << ", partition "
+                          << group_part.second
+                          << ", merger_abs_offset " << merger_abs_offset
+                          << ", dst_offset "
+                          << sparse_buffers[flat_idx].dst_prop_offset
+                          << ", dst_size " << dst_props.size()
+                          << ", total " << apply_kernel_node_props.size()
+                          << std::endl;
+                std::cerr << std::flush;
+                throw std::runtime_error(
+                    "apply_kernel_node_props overflow in update_data (sparse)");
+            }
+            if (!dst_props.empty()) {
+                std::memcpy(apply_kernel_node_props.data() +
+                                merger_abs_offset +
+                                sparse_buffers[flat_idx].dst_prop_offset,
+                            dst_props.data(),
+                            dst_props.size() * sizeof(bus_word_t));
+            }
         }
         
-        std::cout << "\n========== PHASE 2.1.2: BIG Partition " << flat_idx 
-                  << " Updated Dst Props ==========" << std::endl;
-        std::cout << "  packed_dst_props.size(): " << sparse_buffers[flat_idx].packed_dst_props.size() << std::endl;
-        std::cout << "  merger_abs_offset: " << big_merger_offsets[group_part.first] << std::endl;
-        std::cout << "  dst_prop_offset: " << sparse_buffers[flat_idx].dst_prop_offset << std::endl;
-        std::cout << "  All words:" << std::endl;
-        for (size_t w = 0; w < sparse_buffers[flat_idx].packed_dst_props.size(); ++w) {
-            print_bus_word(sparse_buffers[flat_idx].packed_dst_props[w], "node_prop", w);
-        }
-        std::cout << "========== END PHASE 2.1.2 ==========\n" << std::endl;
+        GF_DEBUG_L3({
+            std::cout << "\n========== PHASE 2.1.2: BIG Partition " << flat_idx
+                      << " Updated Dst Props ==========" << std::endl;
+            std::cout << "  packed_dst_props.size(): "
+                      << sparse_buffers[flat_idx].packed_dst_props.size()
+                      << std::endl;
+            std::cout << "  merger_abs_offset: "
+                      << big_merger_offsets[group_part.first] << std::endl;
+            std::cout << "  dst_prop_offset: "
+                      << sparse_buffers[flat_idx].dst_prop_offset
+                      << std::endl;
+            std::cout << "  All words:" << std::endl;
+            for (size_t w = 0;
+                 w < sparse_buffers[flat_idx].packed_dst_props.size(); ++w) {
+                print_bus_word(sparse_buffers[flat_idx].packed_dst_props[w],
+                               "node_prop", w);
+            }
+            std::cout << "========== END PHASE 2.1.2 ==========" << std::endl
+                      << std::endl;
+        });
     }
 
     // Update LITTLE partition node distances (shared across all little
@@ -1221,23 +1581,51 @@ void AlgorithmHost::update_data(const PartitionContainer &container) {
         for (unsigned int local_pip = 0; local_pip < group.num_pipelines;
              ++local_pip) {
             unsigned int global_pip = group.pipeline_offset + local_pip;
-            std::copy(dense_buffers[flat_idx].packed_node_props.begin(),
-                      dense_buffers[flat_idx].packed_node_props.end(),
-                      writer_kernel_node_props[global_pip].begin() +
-                          dense_buffers[flat_idx].node_prop_offset);
+            const auto &src = dense_buffers[flat_idx].packed_node_props;
+            if (dense_buffers[flat_idx].node_prop_offset + src.size() >
+                writer_kernel_node_props[global_pip].size()) {
+                std::cerr << "[ERROR] update_data overflow: LITTLE group "
+                          << group_part.first << ", partition "
+                          << group_part.second << ", global_pip "
+                          << global_pip << ", node_offset "
+                          << dense_buffers[flat_idx].node_prop_offset
+                          << ", src_size " << src.size() << ", total "
+                          << writer_kernel_node_props[global_pip].size()
+                          << std::endl;
+                std::cerr << std::flush;
+                throw std::runtime_error(
+                    "writer_kernel_node_props overflow in update_data (little)");
+            }
+            if (!src.empty()) {
+                std::memcpy(writer_kernel_node_props[global_pip].data() +
+                                dense_buffers[flat_idx].node_prop_offset,
+                            src.data(),
+                            src.size() * sizeof(bus_word_t));
+            }
             
-            std::cout << "  [UPDATE] LITTLE partition " << flat_idx << ", pipeline " << local_pip 
-                      << " (global " << global_pip << "): updated node props" << std::endl;
+            GF_DEBUG_L2({
+                std::cout << "  [UPDATE] LITTLE partition " << flat_idx
+                          << ", pipeline " << local_pip << " (global "
+                          << global_pip << "): updated node props"
+                          << std::endl;
+            });
         }
         
-        std::cout << "\n========== PHASE 2.1.3: LITTLE Partition " << flat_idx 
-                  << " Updated Node Props ==========" << std::endl;
-        std::cout << "  packed_node_props.size(): " << dense_buffers[flat_idx].packed_node_props.size() << std::endl;
-        std::cout << "  All words:" << std::endl;
-        for (size_t w = 0; w < dense_buffers[flat_idx].packed_node_props.size(); ++w) {
-            print_bus_word(dense_buffers[flat_idx].packed_node_props[w], "node_prop", w);
-        }
-        std::cout << "========== END PHASE 2.1.3 ==========\n" << std::endl;
+        GF_DEBUG_L3({
+            std::cout << "\n========== PHASE 2.1.3: LITTLE Partition " << flat_idx
+                      << " Updated Node Props ==========" << std::endl;
+            std::cout << "  packed_node_props.size(): "
+                      << dense_buffers[flat_idx].packed_node_props.size()
+                      << std::endl;
+            std::cout << "  All words:" << std::endl;
+            for (size_t w = 0;
+                 w < dense_buffers[flat_idx].packed_node_props.size(); ++w) {
+                print_bus_word(dense_buffers[flat_idx].packed_node_props[w],
+                               "node_prop", w);
+            }
+        std::cout << "========== END PHASE 2.1.3 ==========" << std::endl
+              << std::endl;
+        });
 
         // update little_dst_node_props for apply kernel
         {
@@ -1272,135 +1660,193 @@ void AlgorithmHost::update_data(const PartitionContainer &container) {
             // base = little merger's absolute offset + group-local dst offset
             const uint32_t merger_abs_offset =
                 little_merger_offsets[group_part.first];
-            std::copy(
-                dense_buffers[flat_idx].packed_dst_props.begin(),
-                dense_buffers[flat_idx].packed_dst_props.end(),
-                apply_kernel_node_props.begin() + merger_abs_offset +
-                    dense_buffers[flat_idx].dst_prop_offset);
+            const auto &dst_props = dense_buffers[flat_idx].packed_dst_props;
+            if (merger_abs_offset + dense_buffers[flat_idx].dst_prop_offset +
+                    dst_props.size() >
+                apply_kernel_node_props.size()) {
+                std::cerr << "[ERROR] apply_kernel_node_props overflow during update (dense): group "
+                          << group_part.first << ", partition "
+                          << group_part.second
+                          << ", merger_abs_offset " << merger_abs_offset
+                          << ", dst_offset "
+                          << dense_buffers[flat_idx].dst_prop_offset
+                          << ", dst_size " << dst_props.size()
+                          << ", total " << apply_kernel_node_props.size()
+                          << std::endl;
+                std::cerr << std::flush;
+                throw std::runtime_error(
+                    "apply_kernel_node_props overflow in update_data (dense)");
+            }
+            if (!dst_props.empty()) {
+                std::memcpy(apply_kernel_node_props.data() +
+                                merger_abs_offset +
+                                dense_buffers[flat_idx].dst_prop_offset,
+                            dst_props.data(),
+                            dst_props.size() * sizeof(bus_word_t));
+            }
         }
         
-        std::cout << "\n========== PHASE 2.1.4: LITTLE Partition " << flat_idx 
-                  << " Updated Dst Props ==========" << std::endl;
-        std::cout << "  packed_dst_props.size(): " << dense_buffers[flat_idx].packed_dst_props.size() << std::endl;
-        std::cout << "  merger_abs_offset: " << little_merger_offsets[group_part.first] << std::endl;
-        std::cout << "  dst_prop_offset: " << dense_buffers[flat_idx].dst_prop_offset << std::endl;
-        std::cout << "  All words:" << std::endl;
-        for (size_t w = 0; w < dense_buffers[flat_idx].packed_dst_props.size(); ++w) {
-            print_bus_word(dense_buffers[flat_idx].packed_dst_props[w], "node_prop", w);
-        }
-        std::cout << "========== END PHASE 2.1.4 ==========\n" << std::endl;
+        GF_DEBUG_L3({
+            std::cout << "\n========== PHASE 2.1.4: LITTLE Partition " << flat_idx
+                      << " Updated Dst Props ==========" << std::endl;
+            std::cout << "  packed_dst_props.size(): "
+                      << dense_buffers[flat_idx].packed_dst_props.size()
+                      << std::endl;
+            std::cout << "  merger_abs_offset: "
+                      << little_merger_offsets[group_part.first] << std::endl;
+            std::cout << "  dst_prop_offset: "
+                      << dense_buffers[flat_idx].dst_prop_offset
+                      << std::endl;
+            std::cout << "  All words:" << std::endl;
+            for (size_t w = 0;
+                 w < dense_buffers[flat_idx].packed_dst_props.size(); ++w) {
+                print_bus_word(dense_buffers[flat_idx].packed_dst_props[w],
+                               "node_prop", w);
+            }
+        std::cout << "========== END PHASE 2.1.4 ==========" << std::endl
+              << std::endl;
+        });
     }
 
     // Print first pipeline's node prop data for each dense and sparse group
-    // Dense groups
-    for (size_t g = 0; g < container.num_dense_groups; ++g) {
-        const auto &grp = container.dense_groups[g];
-        if (grp.num_pipelines == 0) {
-            continue;
-        }
-        size_t pip = grp.pipeline_offset; // dense pipelines are 0-based in global index space
-        if (pip >= writer_kernel_node_props.size()) {
-            continue;
-        }
-        const auto &node_props = writer_kernel_node_props[pip];
-        std::cout << "Pipeline " << pip << std::endl;
-        std::cout << "  (Dense partition)" << std::endl;
-        std::cout << "  Group " << g << std::endl;
-        std::cout << "  Words: " << node_props.size() << std::endl;
-        for (size_t word_idx = 0; word_idx < node_props.size(); ++word_idx) {
-            const bus_word_t &word = node_props[word_idx];
-            std::cout << "Pipeline " << pip << ", Word " << word_idx << ": ";
-            for (size_t data_idx = 0; data_idx < dists_per_word; ++data_idx) {
-                const int high_bit =
-                    static_cast<int>((data_idx + 1) * DISTANCE_BITWIDTH - 1);
-                const int low_bit =
-                    static_cast<int>(data_idx * DISTANCE_BITWIDTH);
-                ap_uint<DISTANCE_BITWIDTH> raw_bits =
-                    word.range(high_bit, low_bit);
-                distance_t dist = 0;
-                dist.range(DISTANCE_BITWIDTH - 1, 0) = raw_bits;
-                float dist_float = dist.to_float();
-                std::cout << dist_float << " ";
+    GF_DEBUG_L3({
+        // Dense groups
+        for (size_t g = 0; g < container.num_dense_groups; ++g) {
+            const auto &grp = container.dense_groups[g];
+            if (grp.num_pipelines == 0) {
+                continue;
             }
-            std::cout << std::endl;
-        }
-        std::cout << std::flush;
-    }
-    // Sparse groups
-    for (size_t g = 0; g < container.num_sparse_groups; ++g) {
-        const auto &grp = container.sparse_groups[g];
-        if (grp.num_pipelines == 0) {
-            continue;
-        }
-        size_t pip = LITTLE_KERNEL_NUM + grp.pipeline_offset; // sparse pipelines follow dense pipelines
-        if (pip >= writer_kernel_node_props.size()) {
-            continue;
-        }
-        const auto &node_props = writer_kernel_node_props[pip];
-        std::cout << "Pipeline " << pip << std::endl;
-        std::cout << "  (Sparse partition)" << std::endl;
-        std::cout << "  Group " << g << std::endl;
-        std::cout << "  Words: " << node_props.size() << std::endl;
-        for (size_t word_idx = 0; word_idx < node_props.size(); ++word_idx) {
-            const bus_word_t &word = node_props[word_idx];
-            std::cout << "Pipeline " << pip << ", Word " << word_idx << ": ";
-            for (size_t data_idx = 0; data_idx < dists_per_word; ++data_idx) {
-                const int high_bit =
-                    static_cast<int>((data_idx + 1) * DISTANCE_BITWIDTH - 1);
-                const int low_bit =
-                    static_cast<int>(data_idx * DISTANCE_BITWIDTH);
-                ap_uint<DISTANCE_BITWIDTH> raw_bits =
-                    word.range(high_bit, low_bit);
-                distance_t dist = 0;
-                dist.range(DISTANCE_BITWIDTH - 1, 0) = raw_bits;
-                float dist_float = dist.to_float();
-                std::cout << dist_float << " ";
+            size_t pip = grp.pipeline_offset; // dense pipelines are 0-based in global index space
+            if (pip >= writer_kernel_node_props.size()) {
+                continue;
             }
-            std::cout << std::endl;
+            const auto &node_props = writer_kernel_node_props[pip];
+            std::cout << "Pipeline " << pip << std::endl;
+            std::cout << "  (Dense partition)" << std::endl;
+            std::cout << "  Group " << g << std::endl;
+            std::cout << "  Words: " << node_props.size() << std::endl;
+            for (size_t word_idx = 0; word_idx < node_props.size();
+                 ++word_idx) {
+                const bus_word_t &word = node_props[word_idx];
+                std::cout << "Pipeline " << pip << ", Word " << word_idx
+                          << ": ";
+                for (size_t data_idx = 0; data_idx < dists_per_word;
+                     ++data_idx) {
+                    const int high_bit = static_cast<int>((data_idx + 1) *
+                                                          DISTANCE_BITWIDTH -
+                                                          1);
+                    const int low_bit =
+                        static_cast<int>(data_idx * DISTANCE_BITWIDTH);
+                    ap_uint<DISTANCE_BITWIDTH> raw_bits =
+                        word.range(high_bit, low_bit);
+                    distance_t dist = 0;
+                    dist.range(DISTANCE_BITWIDTH - 1, 0) = raw_bits;
+                    float dist_float = dist.to_float();
+                    std::cout << dist_float << " ";
+                }
+                std::cout << std::endl;
+            }
+            std::cout << std::flush;
         }
-        std::cout << std::flush;
-    }
 
-    std::cout << "\n========== PHASE 2.2: ALL UPDATED APPLY KERNEL NODE PROPS ==========" << std::endl;
-    std::cout << "  apply_kernel_node_props.size(): " << apply_kernel_node_props.size() << std::endl;
-    std::cout << "  All words of apply_kernel_node_props:" << std::endl;
-    for (size_t w = 0; w < apply_kernel_node_props.size(); ++w) {
-        print_bus_word(apply_kernel_node_props[w], "node_prop", w);
-    }
-    std::cout << "========== END PHASE 2.2 ==========\n" << std::endl;
-
-    std::cout << "\n========== PHASE 2.3: ALL UPDATED WRITER KERNEL NODE PROPS ==========" << std::endl;
-    for (int pip = 0; pip < LITTLE_KERNEL_NUM; ++pip) {
-        std::cout << "  writer_kernel_node_props[" << pip << "] (LITTLE):" << std::endl;
-        std::cout << "    size(): " << writer_kernel_node_props[pip].size() << std::endl;
-        std::cout << "    All words:" << std::endl;
-        for (size_t w = 0; w < writer_kernel_node_props[pip].size(); ++w) {
-            print_bus_word(writer_kernel_node_props[pip][w], "node_prop", w);
+        // Sparse groups
+        for (size_t g = 0; g < container.num_sparse_groups; ++g) {
+            const auto &grp = container.sparse_groups[g];
+            if (grp.num_pipelines == 0) {
+                continue;
+            }
+            size_t pip = LITTLE_KERNEL_NUM +
+                         grp.pipeline_offset; // sparse pipelines follow dense pipelines
+            if (pip >= writer_kernel_node_props.size()) {
+                continue;
+            }
+            const auto &node_props = writer_kernel_node_props[pip];
+            std::cout << "Pipeline " << pip << std::endl;
+            std::cout << "  (Sparse partition)" << std::endl;
+            std::cout << "  Group " << g << std::endl;
+            std::cout << "  Words: " << node_props.size() << std::endl;
+            for (size_t word_idx = 0; word_idx < node_props.size();
+                 ++word_idx) {
+                const bus_word_t &word = node_props[word_idx];
+                std::cout << "Pipeline " << pip << ", Word " << word_idx
+                          << ": ";
+                for (size_t data_idx = 0; data_idx < dists_per_word;
+                     ++data_idx) {
+                    const int high_bit = static_cast<int>((data_idx + 1) *
+                                                          DISTANCE_BITWIDTH -
+                                                          1);
+                    const int low_bit =
+                        static_cast<int>(data_idx * DISTANCE_BITWIDTH);
+                    ap_uint<DISTANCE_BITWIDTH> raw_bits =
+                        word.range(high_bit, low_bit);
+                    distance_t dist = 0;
+                    dist.range(DISTANCE_BITWIDTH - 1, 0) = raw_bits;
+                    float dist_float = dist.to_float();
+                    std::cout << dist_float << " ";
+                }
+                std::cout << std::endl;
+            }
+            std::cout << std::flush;
         }
-    }
-    for (int pip = 0; pip < BIG_KERNEL_NUM; ++pip) {
-        int idx = pip + LITTLE_KERNEL_NUM;
-        std::cout << "  writer_kernel_node_props[" << idx << "] (BIG):" << std::endl;
-        std::cout << "    size(): " << writer_kernel_node_props[idx].size() << std::endl;
-        std::cout << "    All words:" << std::endl;
-        for (size_t w = 0; w < writer_kernel_node_props[idx].size(); ++w) {
-            print_bus_word(writer_kernel_node_props[idx][w], "node_prop", w);
-        }
-    }
-    std::cout << "========== END PHASE 2.3 ==========\n" << std::endl;
+    });
 
-    std::cout << "[SUCCESS] Host-side data updated for new iteration."
-              << std::endl;
-    std::cout << "[DEBUG] Exiting update_data" << std::endl;
-    std::cout << std::flush;
+    GF_DEBUG_L3({
+        std::cout << "\n========== PHASE 2.2: ALL UPDATED APPLY KERNEL NODE PROPS =========="
+                  << std::endl;
+        std::cout << "  apply_kernel_node_props.size(): "
+                  << apply_kernel_node_props.size() << std::endl;
+        std::cout << "  All words of apply_kernel_node_props:" << std::endl;
+        for (size_t w = 0; w < apply_kernel_node_props.size(); ++w) {
+            print_bus_word(apply_kernel_node_props[w], "node_prop", w);
+        }
+    std::cout << "========== END PHASE 2.2 ==========" << std::endl
+          << std::endl;
+    });
+
+    GF_DEBUG_L3({
+        std::cout << "\n========== PHASE 2.3: ALL UPDATED WRITER KERNEL NODE PROPS =========="
+                  << std::endl;
+        for (int pip = 0; pip < LITTLE_KERNEL_NUM; ++pip) {
+            std::cout << "  writer_kernel_node_props[" << pip
+                      << "] (LITTLE):" << std::endl;
+            std::cout << "    size(): " << writer_kernel_node_props[pip].size()
+                      << std::endl;
+            std::cout << "    All words:" << std::endl;
+            for (size_t w = 0; w < writer_kernel_node_props[pip].size(); ++w) {
+                print_bus_word(writer_kernel_node_props[pip][w], "node_prop",
+                               w);
+            }
+        }
+        for (int pip = 0; pip < BIG_KERNEL_NUM; ++pip) {
+            int idx = pip + LITTLE_KERNEL_NUM;
+            std::cout << "  writer_kernel_node_props[" << idx
+                      << "] (BIG):" << std::endl;
+            std::cout << "    size(): " << writer_kernel_node_props[idx].size()
+                      << std::endl;
+            std::cout << "    All words:" << std::endl;
+            for (size_t w = 0; w < writer_kernel_node_props[idx].size(); ++w) {
+                print_bus_word(writer_kernel_node_props[idx][w], "node_prop",
+                               w);
+            }
+        }
+    std::cout << "========== END PHASE 2.3 ==========" << std::endl
+          << std::endl;
+    });
+
+    GF_DEBUG_L1({
+        std::cout << "[SUCCESS] Host-side data updated for new iteration."
+                  << std::endl;
+    });
 }
 
 void AlgorithmHost::transfer_data_to_fpga(const PartitionContainer &container) {
-    std::cout << "[DEBUG] Entering transfer_data_to_fpga" << std::endl;
-    std::cout << std::flush;
+    GF_DEBUG_SCOPE("transfer_data_to_fpga");
     cl_int err;
-    std::cout << "--- [Host] Phase 2.2: Transferring data to FPGA HBM ---"
-              << std::endl;
+    GF_DEBUG_L1({
+        std::cout
+            << "--- [Host] Phase 2.2: Transferring data to FPGA HBM ---"
+            << std::endl;
+    });
 
     // Transfer edge buffers for sparse groups
     for (size_t group_idx = 0; group_idx < container.num_sparse_groups;
@@ -1443,11 +1889,14 @@ void AlgorithmHost::transfer_data_to_fpga(const PartitionContainer &container) {
                     std::cerr << std::flush;
                     throw std::runtime_error("local_pip out of bounds for sparse_buffers pipelines");
                 }
-                std::cout << "[DEBUG] Migrating sparse group " << group_idx
-                          << " local_pip " << local_pip << " (global "
-                          << global_pip << ") partition " << part_idx
-                          << " flat_idx " << flat_idx << std::endl;
-                std::cout << std::flush;
+                GF_DEBUG_L2({
+                    std::cout << "[DEBUG] Migrating sparse group "
+                              << group_idx << " local_pip " << local_pip
+                              << " (global " << global_pip << ") partition "
+                              << part_idx << " flat_idx " << flat_idx
+                              << std::endl;
+                    std::cout << std::flush;
+                });
                 OCL_CHECK(err,
                           err = acc.big_gs_queue[global_pip]
                                     .enqueueMigrateMemObjects(
@@ -1458,6 +1907,8 @@ void AlgorithmHost::transfer_data_to_fpga(const PartitionContainer &container) {
             }
         }
     }
+    for (auto &q : acc.big_gs_queue)
+        q.finish();
 
     // exit(0);
     // possible bug part
@@ -1529,26 +1980,31 @@ void AlgorithmHost::transfer_data_to_fpga(const PartitionContainer &container) {
                           << global_pip << ") partition " << part_idx
                           << " flat_idx " << flat_idx << std::endl;
                 std::cout << std::flush;
-                // OCL_CHECK(err,
-                //           err = acc.little_gs_queue[global_pip]
-                //                     .enqueueMigrateMemObjects(
-                //                         {dense_buffers[flat_idx]
-                //                              .pipelines[local_pip]
-                //                              .edge_props_buffer},
-                //                         0));
+                OCL_CHECK(err,
+                          err = acc.little_gs_queue[global_pip]
+                                    .enqueueMigrateMemObjects(
+                                        {dense_buffers[flat_idx]
+                                             .pipelines[local_pip]
+                                             .edge_props_buffer},
+                                        0));
             }
         }
     }
+    for (auto &q : acc.little_gs_queue)
+        q.finish();
     // possible bug part
     // exit(0);
 
     // Transfer apply_kernel node buffer
-    std::cout << "[DEBUG] Migrating apply_kernel_node_prop_buffer (words="
-              << apply_kernel_node_props.size() << ")" << std::endl;
-    std::cout << std::flush;
+    GF_DEBUG_L2({
+        std::cout << "[DEBUG] Migrating apply_kernel_node_prop_buffer (words="
+                  << apply_kernel_node_props.size() << ")" << std::endl;
+        std::cout << std::flush;
+    });
     OCL_CHECK(err,
               err = acc.apply_queue.enqueueMigrateMemObjects(
                   {apply_kernel_node_prop_buffer}, 0 /* 0 means from host*/));
+    acc.apply_queue.finish();
 
     // Transfer hbm_writer node prop buffers
     const size_t expected_writer_buffers =
@@ -1562,17 +2018,21 @@ void AlgorithmHost::transfer_data_to_fpga(const PartitionContainer &container) {
             "writer_kernel_node_prop_buffers size mismatch");
     }
     for (size_t i = 0; i < writer_kernel_node_prop_buffers.size(); ++i) {
-        std::cout << "[DEBUG] Migrating writer_kernel_node_prop_buffer index "
-                  << i << std::endl;
-        std::cout << std::flush;
+        GF_DEBUG_L2({
+            std::cout << "[DEBUG] Migrating writer_kernel_node_prop_buffer index "
+                      << i << std::endl;
+            std::cout << std::flush;
+        });
         OCL_CHECK(err, err = acc.hbm_writer_queue.enqueueMigrateMemObjects(
                            {writer_kernel_node_prop_buffers[i]},
                            0 /* 0 means from host*/));
     }
     // exit(0);
 
-    std::cout << "[DEBUG] Completed writer buffer migrations" << std::endl;
-    std::cout << std::flush;
+    GF_DEBUG_L2({
+        std::cout << "[DEBUG] Completed writer buffer migrations" << std::endl;
+        std::cout << std::flush;
+    });
 
     // Wait for all transfers to complete
     if (acc.big_gs_queue.size() != static_cast<size_t>(BIG_KERNEL_NUM)) {
@@ -1582,11 +2042,12 @@ void AlgorithmHost::transfer_data_to_fpga(const PartitionContainer &container) {
         std::cerr << std::flush;
         throw std::runtime_error("big_gs_queue size mismatch");
     }
-    std::cout << "[DEBUG] Finishing big queues (" << acc.big_gs_queue.size()
-              << ")" << std::endl;
-    std::cout << std::flush;
-    for (auto &q : acc.big_gs_queue)
-        q.finish();
+    GF_DEBUG_L2({
+        std::cout << "[DEBUG] Finishing big queues (" << acc.big_gs_queue.size()
+                  << ")" << std::endl;
+        std::cout << std::flush;
+    });
+    
     if (acc.little_gs_queue.size() != static_cast<size_t>(LITTLE_KERNEL_NUM)) {
         std::cerr << "[ERROR] Bounds violation: little_gs_queue.size()="
                   << acc.little_gs_queue.size() << " (expected "
@@ -1594,31 +2055,35 @@ void AlgorithmHost::transfer_data_to_fpga(const PartitionContainer &container) {
         std::cerr << std::flush;
         throw std::runtime_error("little_gs_queue size mismatch");
     }
-    std::cout << "[DEBUG] Finishing little queues ("
-              << acc.little_gs_queue.size() << ")" << std::endl;
-    std::cout << std::flush;
-    for (auto &q : acc.little_gs_queue)
-        q.finish();
-    std::cout << "[DEBUG] Finishing apply queue" << std::endl;
-    std::cout << std::flush;
-    acc.apply_queue.finish();
-    std::cout << "[DEBUG] Finishing hbm_writer queue" << std::endl;
-    std::cout << std::flush;
+    GF_DEBUG_L2({
+        std::cout << "[DEBUG] Finishing little queues ("
+                  << acc.little_gs_queue.size() << ")" << std::endl;
+        std::cout << std::flush;
+    });
+    
+    GF_DEBUG_L2({
+        std::cout << "[DEBUG] Finishing apply queue" << std::endl;
+        std::cout << std::flush;
+    });
+    
+    GF_DEBUG_L2({
+        std::cout << "[DEBUG] Finishing hbm_writer queue" << std::endl;
+        std::cout << std::flush;
+    });
     acc.hbm_writer_queue.finish();
 
-    std::cout
-        << "[SUCCESS] All data packed and transferred for current iteration."
-        << std::endl;
-    std::cout << "[DEBUG] Exiting transfer_data_to_fpga" << std::endl;
-    std::cout << std::flush;
+    GF_DEBUG_L1({
+        std::cout
+            << "[SUCCESS] All data packed and transferred for current iteration."
+            << std::endl;
+    });
 }
 
 // --- PHASE 3: KERNEL EXECUTION ---
 // MODIFIED: Kernel arguments are updated to match the new kernel signature.
 void AlgorithmHost::execute_kernel_iteration(
     const PartitionContainer &container) {
-    std::cout << "[DEBUG] Entering execute_kernel_iteration" << std::endl;
-    std::cout << std::flush;
+    GF_DEBUG_SCOPE("execute_kernel_iteration");
     cl_int err;
     // std::cout << "--- [Host] Phase 3: Enqueuing kernel tasks ---" <<
     // std::endl;
@@ -1631,6 +2096,156 @@ void AlgorithmHost::execute_kernel_iteration(
         little_merger_lengths.begin(), little_merger_lengths.end(), 0u);
     uint32_t big_dst_word_num = std::accumulate(
         big_merger_lengths.begin(), big_merger_lengths.end(), 0u);
+    
+    // 3.3: Enqueue apply_kernel (receives merged streams from little_merger and
+    // big_merger)
+    {
+        auto &apply_kernel = acc.apply_krnl;
+
+        int arg_idx = 0;
+        OCL_CHECK(err, err = apply_kernel.setArg(
+                           arg_idx++, apply_kernel_node_prop_buffer));
+        OCL_CHECK(err,
+                  err = apply_kernel.setArg(
+                      arg_idx++, static_cast<uint32_t>(little_merger_lengths.size())));
+        OCL_CHECK(err,
+                  err = apply_kernel.setArg(
+                      arg_idx++, static_cast<uint32_t>(big_merger_lengths.size())));
+        {
+            uint32_t idx = 0;
+            for (uint32_t len : little_merger_lengths) {
+                GF_DEBUG_L3({
+                    printf("apply little_merger_lengths[%u] = %u\n", idx,
+                           len);
+                });
+                OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, len));
+                idx++;
+            }
+            GF_DEBUG_L3({ fflush(stdout); });
+        }
+        {
+            uint32_t idx = 0;
+            for (uint32_t len : big_merger_lengths) {
+                GF_DEBUG_L3({
+                    printf("apply big_merger_lengths[%u] = %u\n", idx, len);
+                });
+                OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, len));
+                idx++;
+            }
+            GF_DEBUG_L3({ fflush(stdout); });
+        }
+        {
+            uint32_t idx = 0;
+            for (uint32_t offset : little_merger_offsets) {
+                GF_DEBUG_L3({
+                    printf("apply little_merger_offsets[%u] = %u\n", idx,
+                           offset);
+                });
+                OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, offset));
+                idx++;
+            }
+            GF_DEBUG_L3({ fflush(stdout); });
+        }
+        {
+            uint32_t idx = 0;
+            for (uint32_t offset : big_merger_offsets) {
+                GF_DEBUG_L3({
+                    printf("apply big_merger_offsets[%u] = %u\n", idx,
+                           offset);
+                });
+                OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, offset));
+                idx++;
+            }
+            GF_DEBUG_L3({ fflush(stdout); });
+        }
+
+        GF_DEBUG_L3({
+            printf(
+                "Enqueue Apply Kernel: little_dst_words %u, big_dst_words %u, "
+                "little_groups %u, big_groups %u\n",
+                little_dst_word_num, big_dst_word_num,
+                static_cast<uint32_t>(little_merger_lengths.size()),
+                static_cast<uint32_t>(big_merger_lengths.size()));
+            fflush(stdout);
+        });
+
+        OCL_CHECK(err, err = acc.apply_queue.enqueueTask(
+                           apply_kernel, nullptr, &acc.apply_kernel_event));
+    }
+
+    // Enqueue hbm_writer kernel
+    {
+        auto &writer_kernel = acc.hbm_writer_krnl;
+
+        std::vector<uint32_t> little_group_partition_counts(
+            container.num_dense_groups, 0);
+        for (size_t group_idx = 0; group_idx < container.num_dense_groups;
+             ++group_idx) {
+            if (group_idx < container.dense_partition_indices.size()) {
+                little_group_partition_counts[group_idx] = static_cast<uint32_t>(
+                    container.dense_partition_indices[group_idx].size());
+            }
+        }
+
+        std::vector<uint32_t> big_group_partition_counts(
+            container.num_sparse_groups, 0);
+        for (size_t group_idx = 0; group_idx < container.num_sparse_groups;
+             ++group_idx) {
+            if (group_idx < container.sparse_partition_indices.size()) {
+                big_group_partition_counts[group_idx] = static_cast<uint32_t>(
+                    container.sparse_partition_indices[group_idx].size());
+            }
+        }
+
+        const uint32_t total_little_partitions = std::accumulate(
+            little_group_partition_counts.begin(),
+            little_group_partition_counts.end(), 0u);
+        const uint32_t total_big_partitions = std::accumulate(
+            big_group_partition_counts.begin(),
+            big_group_partition_counts.end(), 0u);
+
+        int arg_idx = 0;
+        // writer_kernel_node_prop_buffers
+        for (const auto &buffer : writer_kernel_node_prop_buffers) {
+            OCL_CHECK(err, err = writer_kernel.setArg(arg_idx++, buffer));
+        }
+        OCL_CHECK(err, err = writer_kernel.setArg(arg_idx++,
+                                                  writer_kernel_output_buffer));
+        for (uint32_t count : little_group_partition_counts) {
+            OCL_CHECK(err, err = writer_kernel.setArg(arg_idx++, count));
+        }
+        for (uint32_t count : big_group_partition_counts) {
+            OCL_CHECK(err, err = writer_kernel.setArg(arg_idx++, count));
+        }
+
+        GF_DEBUG_L3({
+            printf(
+                "Enqueue HBM Writer Kernel: node_prop_buffers %zu, "
+                "total_little_partitions %u, total_big_partitions %u\n",
+                writer_kernel_node_prop_buffers.size(),
+                total_little_partitions, total_big_partitions);
+            std::cout << "    Little group partition counts: [";
+            for (size_t i = 0; i < little_group_partition_counts.size(); ++i) {
+                std::cout << little_group_partition_counts[i];
+                if (i + 1 < little_group_partition_counts.size()) {
+                    std::cout << ", ";
+                }
+            }
+            std::cout << "]" << std::endl;
+            std::cout << "    Big group partition counts: [";
+            for (size_t i = 0; i < big_group_partition_counts.size(); ++i) {
+                std::cout << big_group_partition_counts[i];
+                if (i + 1 < big_group_partition_counts.size()) {
+                    std::cout << ", ";
+                }
+            }
+            std::cout << "]" << std::endl;
+            fflush(stdout);
+        });
+
+        OCL_CHECK(err, err = acc.hbm_writer_queue.enqueueTask(
+                           writer_kernel, nullptr, &acc.hbm_writer_event));
+    }
 
     // 3.1: Enqueue BIG gs kernels (one per pipeline, each with different edges,
     // same nodes)
@@ -1664,12 +2279,15 @@ void AlgorithmHost::execute_kernel_iteration(
                 OCL_CHECK(err, err = kernel.setArg(arg_idx++, big_num_dsts));
                 OCL_CHECK(err, err = kernel.setArg(arg_idx++, memory_offset));
 
-                printf("Enqueue Big GS Kernel: SP Group %zu Partition %zu, "
-                       "big pipe %u, num_vertices %u, num_edges %u, num_dsts "
-                       "%u, memory_offset %u\n",
-                       group_idx, part_idx, global_pip, big_num_vertices,
-                       pip_num_edges, big_num_dsts, memory_offset);
-                fflush(stdout);
+                GF_DEBUG_L3({
+                    printf(
+                        "Enqueue Big GS Kernel: SP Group %zu Partition %zu, "
+                        "big pipe %u, num_vertices %u, num_edges %u, num_dsts "
+                        "%u, memory_offset %u\n",
+                        group_idx, part_idx, global_pip, big_num_vertices,
+                        pip_num_edges, big_num_dsts, memory_offset);
+                    fflush(stdout);
+                });
 
                 OCL_CHECK(
                     err,
@@ -1703,8 +2321,6 @@ void AlgorithmHost::execute_kernel_iteration(
                 uint32_t little_num_vertices = partition.num_vertices;
                 uint32_t little_num_dsts = partition.num_dsts;
                 // Pad num_dsts up to a multiple of 8 so little mergers always flush full packets
-                uint32_t padded_little_num_dsts =
-                    (little_num_dsts + 7u) / 8u * 8u;
                 uint32_t memory_offset =
                     dense_buffers[dense_flat_idx].src_buf_offset;
 
@@ -1714,16 +2330,18 @@ void AlgorithmHost::execute_kernel_iteration(
                           err = kernel.setArg(arg_idx++, little_num_vertices));
                 OCL_CHECK(err, err = kernel.setArg(arg_idx++, pip_num_edges));
                 OCL_CHECK(err,
-                          err = kernel.setArg(arg_idx++, padded_little_num_dsts));
+                          err = kernel.setArg(arg_idx++, little_num_dsts));
                 OCL_CHECK(err, err = kernel.setArg(arg_idx++, memory_offset));
 
-                printf(
-                    "Enqueue Little GS Kernel: DP Group %zu Partition %zu, "
-                    "little pipe %u, num_vertices %u, num_edges %u, num_dsts "
-                    "%u (padded to %u), memory_offset %u\n",
-                    group_idx, part_idx, global_pip, little_num_vertices,
-                    pip_num_edges, little_num_dsts, padded_little_num_dsts, memory_offset);
-                fflush(stdout);
+                GF_DEBUG_L3({
+                    printf(
+                        "Enqueue Little GS Kernel: DP Group %zu Partition %zu, "
+                        "little pipe %u, num_vertices %u, num_edges %u, num_dsts "
+                        "%u, memory_offset %u\n",
+                        group_idx, part_idx, global_pip, little_num_vertices,
+                        pip_num_edges, little_num_dsts, memory_offset);
+                    fflush(stdout);
+                });
 
                 OCL_CHECK(err,
                           err = acc.little_gs_queue[global_pip].enqueueTask(
@@ -1734,114 +2352,22 @@ void AlgorithmHost::execute_kernel_iteration(
         }
     }
 
-    // 3.3: Enqueue apply_kernel (receives merged streams from little_merger and
-    // big_merger)
-    {
-        auto &apply_kernel = acc.apply_krnl;
-
-        int arg_idx = 0;
-        OCL_CHECK(err, err = apply_kernel.setArg(
-                           arg_idx++, apply_kernel_node_prop_buffer));
-        OCL_CHECK(err,
-                  err = apply_kernel.setArg(
-                      arg_idx++, static_cast<uint32_t>(little_merger_lengths.size())));
-        OCL_CHECK(err,
-                  err = apply_kernel.setArg(
-                      arg_idx++, static_cast<uint32_t>(big_merger_lengths.size())));
-        {
-            uint32_t idx = 0;
-            for (uint32_t len : little_merger_lengths) {
-                printf("apply little_merger_lengths[%u] = %u\n", idx, len);
-                OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, len));
-                idx++;
-            }
-            fflush(stdout);
-        }
-        {
-            uint32_t idx = 0;
-            for (uint32_t len : big_merger_lengths) {
-                printf("apply big_merger_lengths[%u] = %u\n", idx, len);
-                OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, len));
-                idx++;
-            }
-            fflush(stdout);
-        }
-        {
-            uint32_t idx = 0;
-            for (uint32_t offset : little_merger_offsets) {
-                printf("apply little_merger_offsets[%u] = %u\n", idx, offset);
-                OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, offset));
-                idx++;
-            }
-            fflush(stdout);
-        }
-        {
-            uint32_t idx = 0;
-            for (uint32_t offset : big_merger_offsets) {
-                printf("apply big_merger_offsets[%u] = %u\n", idx, offset);
-                OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, offset));
-                idx++;
-            }
-            fflush(stdout);
-        }
-
-        printf(
-            "Enqueue Apply Kernel: little_dst_words %u, big_dst_words %u, "
-            "little_groups %u, big_groups %u\n",
-            little_dst_word_num, big_dst_word_num,
-            static_cast<uint32_t>(little_merger_lengths.size()),
-            static_cast<uint32_t>(big_merger_lengths.size()));
-        fflush(stdout);
-
-        OCL_CHECK(err, err = acc.apply_queue.enqueueTask(
-                           apply_kernel, nullptr, &acc.apply_kernel_event));
-    }
-
-    // Enqueue hbm_writer kernel
-    {
-        auto &writer_kernel = acc.hbm_writer_krnl;
-        uint32_t num_little_partitions = container.num_dense_partitions;
-        ;
-        uint32_t num_big_partitions = container.num_sparse_partitions;
-
-        int arg_idx = 0;
-        // writer_kernel_node_prop_buffers
-        for (const auto &buffer : writer_kernel_node_prop_buffers) {
-            OCL_CHECK(err, err = writer_kernel.setArg(arg_idx++, buffer));
-        }
-        OCL_CHECK(err, err = writer_kernel.setArg(arg_idx++,
-                                                  writer_kernel_output_buffer));
-        OCL_CHECK(err,
-                  err = writer_kernel.setArg(arg_idx++, num_little_partitions));
-        OCL_CHECK(err,
-                  err = writer_kernel.setArg(arg_idx++, num_big_partitions));
-
-        printf(
-            "Enqueue HBM Writer Kernel: node_prop_buffers %zu, "
-            "num_little_partitions %u, num_big_partitions %u\n",
-            writer_kernel_node_prop_buffers.size(), num_little_partitions,
-            num_big_partitions);
-        fflush(stdout);
-
-        OCL_CHECK(err, err = acc.hbm_writer_queue.enqueueTask(
-                           writer_kernel, nullptr, &acc.hbm_writer_event));
-    }
-
     auto enqueue_end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> enqueue_time = enqueue_end - enqueue_start;
-    std::cout << "[SUCCESS] All kernel tasks enqueued for one iteration (Time: "
-              << enqueue_time.count() << " seconds)" << std::endl;
-    std::cout << "[DEBUG] Exiting execute_kernel_iteration" << std::endl;
-    std::cout << std::flush;
+    GF_DEBUG_L1({
+        std::cout << "[SUCCESS] All kernel tasks enqueued for one iteration (Time: "
+                  << enqueue_time.count() << " seconds)" << std::endl;
+    });
 }
 
 // --- PHASE 4: DATA TRANSFER FROM FPGA ---
 void AlgorithmHost::transfer_data_from_fpga() {
-    std::cout << "[DEBUG] Entering transfer_data_from_fpga" << std::endl;
-    std::cout << std::flush;
+    GF_DEBUG_SCOPE("transfer_data_from_fpga");
     cl_int err;
-    std::cout << "--- [Host] Phase 4: Transferring results from FPGA ---"
-              << std::endl;
+    GF_DEBUG_L1({
+        std::cout << "--- [Host] Phase 4: Transferring results from FPGA ---"
+                  << std::endl;
+    });
 
     auto transfer_start = std::chrono::high_resolution_clock::now();
 
@@ -1856,22 +2382,23 @@ void AlgorithmHost::transfer_data_from_fpga() {
 
     auto transfer_end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> transfer_time = transfer_end - transfer_start;
-    std::cout << "[SUCCESS] All results transferred from HBM (Time: "
-              << transfer_time.count() << " seconds)" << std::endl;
-    std::cout << "[DEBUG] Exiting transfer_data_from_fpga" << std::endl;
-    std::cout << std::flush;
+    GF_DEBUG_L1({
+        std::cout << "[SUCCESS] All results transferred from HBM (Time: "
+                  << transfer_time.count() << " seconds)" << std::endl;
+    });
 }
 
 // --- PHASE 5: CONVERGENCE CHECK AND GLOBAL STATE UPDATE ---
 // REWRITTEN: Implements unpacking logic to parse results from 512-bit words.
 bool AlgorithmHost::check_convergence_and_update(
     const PartitionContainer &container) {
-    std::cout << "[DEBUG] Entering check_convergence_and_update" << std::endl;
-    std::cout << std::flush;
+    GF_DEBUG_SCOPE("check_convergence_and_update");
     bool changed = false;
-    std::cout << "--- [Host] Phase 5: Unpacking results and checking for "
-                 "convergence ---"
-              << std::endl;
+    GF_DEBUG_L1({
+        std::cout << "--- [Host] Phase 5: Unpacking results and checking for "
+                     "convergence ---"
+                  << std::endl;
+    });
 
     std::map<int, distance_t> min_distances;
     const int dists_per_word = AXI_BUS_WIDTH / DISTANCE_BITWIDTH;
@@ -1883,14 +2410,19 @@ bool AlgorithmHost::check_convergence_and_update(
     int word_idx = 0;
     int dist_in_word = 0;
     
-    std::cout << "\n========== PHASE 5: CONVERGENCE CHECK INIT ==========" << std::endl;
-    std::cout << "  dists_per_word: " << dists_per_word << std::endl;
-    std::cout << "  writer_kernel_host_outputs.size(): " << writer_kernel_host_outputs.size() << std::endl;
-    std::cout << "  All words of writer_kernel_host_outputs:" << std::endl;
-    for (size_t w = 0; w < writer_kernel_host_outputs.size(); ++w) {
-        print_bus_word(writer_kernel_host_outputs[w], "node_prop", w);
-    }
-    std::cout << "========== END PHASE 5 INIT ==========\n" << std::endl;
+    GF_DEBUG_L3({
+        std::cout << "\n========== PHASE 5: CONVERGENCE CHECK INIT =========="
+                  << std::endl;
+        std::cout << "  dists_per_word: " << dists_per_word << std::endl;
+        std::cout << "  writer_kernel_host_outputs.size(): "
+                  << writer_kernel_host_outputs.size() << std::endl;
+        std::cout << "  All words of writer_kernel_host_outputs:" << std::endl;
+        for (size_t w = 0; w < writer_kernel_host_outputs.size(); ++w) {
+            print_bus_word(writer_kernel_host_outputs[w], "node_prop", w);
+        }
+    std::cout << "========== END PHASE 5 INIT ==========" << std::endl
+          << std::endl;
+    });
 
     // Process little partition destinations [0:little_dst_num]
     for (size_t group_idx = 0; group_idx < container.num_dense_groups;
@@ -1927,9 +2459,16 @@ bool AlgorithmHost::check_convergence_and_update(
                 }
             }
 
+            // Align to next word boundary between partitions to skip per-partition padding
+            if (dist_in_word != 0) {
+                dist_in_word = 0;
+                word_idx++;
+            }
+
             // print other node's local & global id
-            for (int local_id = little_partition.num_dsts;
-                 local_id < little_partition.num_vertices; ++local_id) {
+          for (int local_id = little_partition.num_dsts;
+              local_id < static_cast<int>(little_partition.num_vertices);
+              ++local_id) {
                 if (little_partition.vtx_map_rev.count(local_id)) {
                     int global_id = little_partition.vtx_map_rev.at(local_id);
                     (void)global_id;
@@ -1978,9 +2517,15 @@ bool AlgorithmHost::check_convergence_and_update(
                     word_idx++;
                 }
             }
+            // Align to next word boundary between partitions to skip per-partition padding
+            if (dist_in_word != 0) {
+                dist_in_word = 0;
+                word_idx++;
+            }
             // Optional: iterate non-destination nodes if needed
-            for (int local_id = big_partition.num_dsts;
-                 local_id < big_partition.num_vertices; ++local_id) {
+          for (int local_id = big_partition.num_dsts;
+              local_id < static_cast<int>(big_partition.num_vertices);
+              ++local_id) {
                 if (big_partition.vtx_map_rev.count(local_id)) {
                     int global_id = big_partition.vtx_map_rev.at(local_id);
                     (void)global_id;
@@ -1990,42 +2535,60 @@ bool AlgorithmHost::check_convergence_and_update(
     }
 
     // Update global distance vector and check for changes
-    std::cout << "\n========== PHASE 5.1: MIN DISTANCES COLLECTED ==========" << std::endl;
-    std::cout << "  min_distances.size(): " << min_distances.size() << std::endl;
-    std::cout << "  All min_distances:" << std::endl;
-    for (auto const &[global_id, new_dist] : min_distances) {
-        std::cout << "    global_id=" << global_id << ", new_dist=" << new_dist.to_float() 
-                  << ", old_dist=" << (global_id < m_num_vertices ? h_distances[global_id].to_float() : -1.0f) << std::endl;
-    }
-    std::cout << "========== END PHASE 5.1 ==========\n" << std::endl;
+    GF_DEBUG_L2({
+        std::cout
+            << "\n========== PHASE 5.1: MIN DISTANCES COLLECTED =========="
+            << std::endl;
+        std::cout << "  min_distances.size(): " << min_distances.size()
+                  << std::endl;
+        std::cout << "  All min_distances:" << std::endl;
+        for (auto const &[global_id, new_dist] : min_distances) {
+            std::cout << "    global_id=" << global_id << ", new_dist="
+                      << new_dist.to_float() << ", old_dist="
+                      << (global_id < m_num_vertices
+                              ? h_distances[global_id].to_float()
+                              : -1.0f)
+                      << std::endl;
+        }
+      std::cout << "========== END PHASE 5.1 ==========" << std::endl
+            << std::endl;
+    });
     
     for (auto const &[global_id, new_dist] : min_distances) {
         if (global_id < m_num_vertices && new_dist < h_distances[global_id]) {
-            std::cout << "  [UPDATE] global_id=" << global_id << ": " << h_distances[global_id].to_float() 
-                      << " -> " << new_dist.to_float() << std::endl;
+            GF_DEBUG_L2({
+                std::cout << "  [UPDATE] global_id=" << global_id << ": "
+                          << h_distances[global_id].to_float() << " -> "
+                          << new_dist.to_float() << std::endl;
+            });
             h_distances[global_id] = new_dist;
             changed = true;
         }
     }
 
-    std::cout << "\n========== PHASE 5.2: ALL UPDATED H_DISTANCES ==========" << std::endl;
-    std::cout << "  All h_distances after update:" << std::endl;
-    for (size_t i = 0; i < h_distances.size(); ++i) {
-        std::cout << "    h_distances[" << i << "] = " << h_distances[i].to_float() << std::endl;
-    }
-    std::cout << "========== END PHASE 5.2 ==========\n" << std::endl;
+    GF_DEBUG_L2({
+        std::cout << "\n========== PHASE 5.2: ALL UPDATED H_DISTANCES =========="
+                  << std::endl;
+        std::cout << "  All h_distances after update:" << std::endl;
+        for (size_t i = 0; i < h_distances.size(); ++i) {
+            std::cout << "    h_distances[" << i
+                      << "] = " << h_distances[i].to_float() << std::endl;
+        }
+      std::cout << "========== END PHASE 5.2 ==========" << std::endl
+            << std::endl;
+    });
 
     if (changed) {
-        std::cout << "[INFO] Distances updated. Preparing for next iteration."
-                  << std::endl;
+        GF_DEBUG_L1({
+            std::cout << "[INFO] Distances updated. Preparing for next iteration."
+                      << std::endl;
+        });
     } else {
-        std::cout << "[INFO] No distance updates. Algorithm has converged."
-                  << std::endl;
+        GF_DEBUG_L1({
+            std::cout << "[INFO] No distance updates. Algorithm has converged."
+                      << std::endl;
+        });
     }
-
-    std::cout << "[DEBUG] Exiting check_convergence_and_update (changed="
-              << std::boolalpha << changed << ")" << std::endl;
-    std::cout << std::noboolalpha << std::flush;
     return !changed;
 }
 

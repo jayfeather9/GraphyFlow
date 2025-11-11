@@ -18,7 +18,7 @@ from typing import List, Dict, Any
 
 # Configuration example
 CONFIG_EXAMPLE = [
-    # {"kernel_type": "big", "pipeline_num": 3, "merger_slr": 1, "pipeline_slr": [2, 1, 2]},
+    {"kernel_type": "big", "pipeline_num": 3, "merger_slr": 1, "pipeline_slr": [2, 1, 2]},
     {"kernel_type": "little", "pipeline_num": 5, "merger_slr": 1, "pipeline_slr": [0, 1, 2, 0, 1]},
     {"kernel_type": "little", "pipeline_num": 5, "merger_slr": 1, "pipeline_slr": [0, 1, 2, 0, 2]},
 ]
@@ -523,6 +523,13 @@ class ConfigGenerator:
 
         total_kernels = self.little_kernel_count + self.big_kernel_count
 
+        little_mergers = [m for m in self.merger_info if m["kernel_type"] == "little"]
+        big_mergers = [m for m in self.merger_info if m["kernel_type"] == "big"]
+        little_mergers_by_id = sorted(little_mergers, key=lambda x: x["merger_id"])
+        big_mergers_by_id = sorted(big_mergers, key=lambda x: x["merger_id"])
+        little_mergers_by_offset = sorted(little_mergers, key=lambda x: x["kernel_start"])
+        big_mergers_by_offset = sorted(big_mergers, key=lambda x: x["kernel_start"])
+
         # Generate src_prop parameters
         # Always add comma because output parameter comes after
         src_prop_params = []
@@ -544,6 +551,16 @@ class ConfigGenerator:
                 f"#pragma HLS INTERFACE s_axilite port = src_prop_{i} bundle = control"
             )
 
+        # Generate per-group num_partitions scalar parameters (ordered by merger_id)
+        num_partition_params: List[str] = []
+        for merger in little_mergers_by_id:
+            num_partition_params.append(f"    uint32_t little_group_{merger['merger_id']}_num_partitions,")
+        for merger in big_mergers_by_id:
+            num_partition_params.append(f"    uint32_t big_group_{merger['merger_id']}_num_partitions,")
+        num_partition_param_str = "\n".join(num_partition_params)
+        if num_partition_param_str:
+            num_partition_param_str += "\n"
+
         # Generate PPB stream parameters
         # Add comma to last param only if there are big kernels (cacheline streams come after)
         ppb_stream_params = []
@@ -562,6 +579,20 @@ class ConfigGenerator:
                 f"    hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream_{i},"
             )
 
+        # Generate interface pragmas for per-group partition counts
+        num_partition_pragmas: List[str] = []
+        for merger in little_mergers_by_id:
+            num_partition_pragmas.append(
+                f"#pragma HLS INTERFACE s_axilite port = little_group_{merger['merger_id']}_num_partitions bundle = control"
+            )
+        for merger in big_mergers_by_id:
+            num_partition_pragmas.append(
+                f"#pragma HLS INTERFACE s_axilite port = big_group_{merger['merger_id']}_num_partitions bundle = control"
+            )
+        num_partition_pragmas_str = "\n".join(num_partition_pragmas)
+        if num_partition_pragmas_str:
+            num_partition_pragmas_str += "\n"
+
         # Generate little_prop_loader_out stream declarations
         little_prop_loader_out_streams = []
         for i in range(1, self.little_kernel_count + 1):
@@ -579,39 +610,49 @@ class ConfigGenerator:
                 little_prop_loader_out_streams.append("")
 
         # Generate little_node_prop_loader and little_response_packer calls
-        little_node_prop_loader_calls = []
-        for i in range(self.little_kernel_count):
-            idx = i + 1
-            little_node_prop_loader_calls.append(
-                f"    little_node_prop_loader({i}, src_prop_{idx}, num_partitions_little,"
-            )
-            little_node_prop_loader_calls.append(
-                f"                            ppb_req_stream_{idx}, little_prop_loader_out_{idx});"
-            )
-            little_node_prop_loader_calls.append(
-                f"    little_response_packer({i}, little_prop_loader_out_{idx}, ppb_resp_stream_{idx},"
-            )
-            little_node_prop_loader_calls.append("                           num_partitions_little);")
-            if i < self.little_kernel_count - 1:
-                little_node_prop_loader_calls.append("")
+        little_node_prop_loader_calls: List[str] = []
+        little_global_idx = 0
+        for merger in little_mergers_by_offset:
+            group_param = f"little_group_{merger['merger_id']}_num_partitions"
+            for _ in range(merger["pipeline_num"]):
+                src_idx = little_global_idx + 1
+                little_node_prop_loader_calls.append(
+                    f"    little_node_prop_loader({little_global_idx}, src_prop_{src_idx}, {group_param},"
+                )
+                little_node_prop_loader_calls.append(
+                    f"                            ppb_req_stream_{src_idx}, little_prop_loader_out_{src_idx});"
+                )
+                little_node_prop_loader_calls.append(
+                    f"    little_response_packer({little_global_idx}, little_prop_loader_out_{src_idx}, ppb_resp_stream_{src_idx},"
+                )
+                little_node_prop_loader_calls.append(f"                           {group_param});")
+                little_global_idx += 1
+                if little_global_idx < self.little_kernel_count:
+                    little_node_prop_loader_calls.append("")
 
         # Generate big_node_prop_loader calls
-        big_node_prop_loader_calls = []
-        for i in range(self.big_kernel_count):
-            idx = self.little_kernel_count + i + 1
-            big_node_prop_loader_calls.append(
-                f"    big_node_prop_loader({i}, src_prop_{idx}, num_partitions_big,"
-            )
-            big_node_prop_loader_calls.append(
-                f"                         cacheline_req_stream_{i+1}, cacheline_resp_stream_{i+1});"
-            )
-            if i < self.big_kernel_count - 1:
-                big_node_prop_loader_calls.append("")
+        big_node_prop_loader_calls: List[str] = []
+        big_global_idx = 0
+        for merger in big_mergers_by_offset:
+            group_param = f"big_group_{merger['merger_id']}_num_partitions"
+            for _ in range(merger["pipeline_num"]):
+                src_idx = self.little_kernel_count + big_global_idx + 1
+                stream_idx = big_global_idx + 1
+                big_node_prop_loader_calls.append(
+                    f"    big_node_prop_loader({big_global_idx}, src_prop_{src_idx}, {group_param},"
+                )
+                big_node_prop_loader_calls.append(
+                    f"                         cacheline_req_stream_{stream_idx}, cacheline_resp_stream_{stream_idx});"
+                )
+                big_global_idx += 1
+                if big_global_idx < self.big_kernel_count:
+                    big_node_prop_loader_calls.append("")
 
         # Replace placeholders
         content = content.replace("{{SRC_PROP_PARAMS}}", "\n".join(src_prop_params))
         content = content.replace("{{SRC_PROP_M_AXI_PRAGMAS}}", "\n".join(src_prop_m_axi_pragmas))
         content = content.replace("{{SRC_PROP_S_AXILITE_PRAGMAS}}", "\n".join(src_prop_s_axilite_pragmas))
+        content = content.replace("{{NUM_PARTITIONS_PARAMS}}", num_partition_param_str)
         content = content.replace(
             "{{PPB_STREAM_PARAMS}}", "\n".join(ppb_stream_params) if ppb_stream_params else ""
         )
@@ -619,6 +660,7 @@ class ConfigGenerator:
             "{{CACHELINE_STREAM_PARAMS}}",
             "\n".join(cacheline_stream_params) if cacheline_stream_params else "",
         )
+        content = content.replace("{{NUM_PARTITION_PRAGMAS}}", num_partition_pragmas_str)
         content = content.replace(
             "{{LITTLE_PROP_LOADER_OUT_STREAMS}}",
             "\n".join(little_prop_loader_out_streams) if little_prop_loader_out_streams else "",
@@ -784,7 +826,10 @@ class ConfigGenerator:
         hbm_writer_param_lines = ['extern "C" void hbm_writer(']
         hbm_writer_param_lines.extend(hbm_src_prop_params)
         hbm_writer_param_lines.append("    bus_word_t *output,")
-        hbm_writer_param_lines.append("    uint32_t num_partitions_little, uint32_t num_partitions_big,")
+        for merger in sorted(little_mergers, key=lambda x: x["merger_id"]):
+            hbm_writer_param_lines.append(f"    uint32_t little_group_{merger['merger_id']}_num_partitions,")
+        for merger in sorted(big_mergers, key=lambda x: x["merger_id"]):
+            hbm_writer_param_lines.append(f"    uint32_t big_group_{merger['merger_id']}_num_partitions,")
         hbm_writer_param_lines.extend(hbm_ppb_stream_params)
         hbm_writer_param_lines.extend(hbm_cacheline_stream_params)
         hbm_writer_param_lines.append("    hls::stream<write_burst_w_dst_pkt_t> &write_burst_stream);")

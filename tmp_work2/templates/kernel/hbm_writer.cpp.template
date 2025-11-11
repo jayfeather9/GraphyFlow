@@ -157,7 +157,7 @@ LOOP_WRITE_OUT:
 extern "C" void hbm_writer(
 {{SRC_PROP_PARAMS}}
     bus_word_t *output,
-    uint32_t num_partitions_little, uint32_t num_partitions_big,
+{{NUM_PARTITIONS_PARAMS}}
 {{PPB_STREAM_PARAMS}}
 {{CACHELINE_STREAM_PARAMS}}
     hls::stream<write_burst_w_dst_pkt_t> &write_burst_stream) {
@@ -165,8 +165,7 @@ extern "C" void hbm_writer(
 #pragma HLS INTERFACE m_axi port = output offset = slave bundle = gmem1
 {{SRC_PROP_S_AXILITE_PRAGMAS}}
 #pragma HLS INTERFACE s_axilite port = output bundle = control
-#pragma HLS INTERFACE s_axilite port = num_partitions_little bundle = control
-#pragma HLS INTERFACE s_axilite port = num_partitions_big bundle = control
+{{NUM_PARTITION_PRAGMAS}}
 #pragma HLS INTERFACE s_axilite port = return bundle = control
 #pragma HLS DATAFLOW
 

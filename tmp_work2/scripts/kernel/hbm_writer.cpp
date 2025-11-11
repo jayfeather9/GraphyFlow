@@ -154,35 +154,42 @@ LOOP_WRITE_OUT:
     }
 }
 
-extern "C" void
-hbm_writer(bus_word_t *src_prop_1, bus_word_t *src_prop_2,
-           bus_word_t *src_prop_3, bus_word_t *src_prop_4,
-           bus_word_t *src_prop_5, bus_word_t *src_prop_6,
-           bus_word_t *src_prop_7, bus_word_t *src_prop_8,
-           bus_word_t *src_prop_9, bus_word_t *src_prop_10, bus_word_t *output,
-           uint32_t num_partitions_little, uint32_t num_partitions_big,
-           hls::stream<ppb_request_pkt_t> &ppb_req_stream_1,
-           hls::stream<ppb_response_pkt_t> &ppb_resp_stream_1,
-           hls::stream<ppb_request_pkt_t> &ppb_req_stream_2,
-           hls::stream<ppb_response_pkt_t> &ppb_resp_stream_2,
-           hls::stream<ppb_request_pkt_t> &ppb_req_stream_3,
-           hls::stream<ppb_response_pkt_t> &ppb_resp_stream_3,
-           hls::stream<ppb_request_pkt_t> &ppb_req_stream_4,
-           hls::stream<ppb_response_pkt_t> &ppb_resp_stream_4,
-           hls::stream<ppb_request_pkt_t> &ppb_req_stream_5,
-           hls::stream<ppb_response_pkt_t> &ppb_resp_stream_5,
-           hls::stream<ppb_request_pkt_t> &ppb_req_stream_6,
-           hls::stream<ppb_response_pkt_t> &ppb_resp_stream_6,
-           hls::stream<ppb_request_pkt_t> &ppb_req_stream_7,
-           hls::stream<ppb_response_pkt_t> &ppb_resp_stream_7,
-           hls::stream<ppb_request_pkt_t> &ppb_req_stream_8,
-           hls::stream<ppb_response_pkt_t> &ppb_resp_stream_8,
-           hls::stream<ppb_request_pkt_t> &ppb_req_stream_9,
-           hls::stream<ppb_response_pkt_t> &ppb_resp_stream_9,
-           hls::stream<ppb_request_pkt_t> &ppb_req_stream_10,
-           hls::stream<ppb_response_pkt_t> &ppb_resp_stream_10,
+extern "C" void hbm_writer(
+    bus_word_t *src_prop_1, bus_word_t *src_prop_2, bus_word_t *src_prop_3,
+    bus_word_t *src_prop_4, bus_word_t *src_prop_5, bus_word_t *src_prop_6,
+    bus_word_t *src_prop_7, bus_word_t *src_prop_8, bus_word_t *src_prop_9,
+    bus_word_t *src_prop_10, bus_word_t *src_prop_11, bus_word_t *src_prop_12,
+    bus_word_t *src_prop_13, bus_word_t *output,
+    uint32_t little_group_1_num_partitions,
+    uint32_t little_group_2_num_partitions, uint32_t big_group_0_num_partitions,
 
-           hls::stream<write_burst_w_dst_pkt_t> &write_burst_stream) {
+    hls::stream<ppb_request_pkt_t> &ppb_req_stream_1,
+    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_1,
+    hls::stream<ppb_request_pkt_t> &ppb_req_stream_2,
+    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_2,
+    hls::stream<ppb_request_pkt_t> &ppb_req_stream_3,
+    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_3,
+    hls::stream<ppb_request_pkt_t> &ppb_req_stream_4,
+    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_4,
+    hls::stream<ppb_request_pkt_t> &ppb_req_stream_5,
+    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_5,
+    hls::stream<ppb_request_pkt_t> &ppb_req_stream_6,
+    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_6,
+    hls::stream<ppb_request_pkt_t> &ppb_req_stream_7,
+    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_7,
+    hls::stream<ppb_request_pkt_t> &ppb_req_stream_8,
+    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_8,
+    hls::stream<ppb_request_pkt_t> &ppb_req_stream_9,
+    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_9,
+    hls::stream<ppb_request_pkt_t> &ppb_req_stream_10,
+    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_10,
+    hls::stream<cacheline_request_pkt_t> &cacheline_req_stream_1,
+    hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream_1,
+    hls::stream<cacheline_request_pkt_t> &cacheline_req_stream_2,
+    hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream_2,
+    hls::stream<cacheline_request_pkt_t> &cacheline_req_stream_3,
+    hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream_3,
+    hls::stream<write_burst_w_dst_pkt_t> &write_burst_stream) {
 #pragma HLS INTERFACE m_axi port = src_prop_1 offset = slave bundle = gmem0
 #pragma HLS INTERFACE m_axi port = src_prop_2 offset = slave bundle = gmem1
 #pragma HLS INTERFACE m_axi port = src_prop_3 offset = slave bundle = gmem2
@@ -193,6 +200,9 @@ hbm_writer(bus_word_t *src_prop_1, bus_word_t *src_prop_2,
 #pragma HLS INTERFACE m_axi port = src_prop_8 offset = slave bundle = gmem7
 #pragma HLS INTERFACE m_axi port = src_prop_9 offset = slave bundle = gmem8
 #pragma HLS INTERFACE m_axi port = src_prop_10 offset = slave bundle = gmem9
+#pragma HLS INTERFACE m_axi port = src_prop_11 offset = slave bundle = gmem10
+#pragma HLS INTERFACE m_axi port = src_prop_12 offset = slave bundle = gmem11
+#pragma HLS INTERFACE m_axi port = src_prop_13 offset = slave bundle = gmem12
 #pragma HLS INTERFACE m_axi port = output offset = slave bundle = gmem1
 #pragma HLS INTERFACE s_axilite port = src_prop_1 bundle = control
 #pragma HLS INTERFACE s_axilite port = src_prop_2 bundle = control
@@ -204,9 +214,17 @@ hbm_writer(bus_word_t *src_prop_1, bus_word_t *src_prop_2,
 #pragma HLS INTERFACE s_axilite port = src_prop_8 bundle = control
 #pragma HLS INTERFACE s_axilite port = src_prop_9 bundle = control
 #pragma HLS INTERFACE s_axilite port = src_prop_10 bundle = control
+#pragma HLS INTERFACE s_axilite port = src_prop_11 bundle = control
+#pragma HLS INTERFACE s_axilite port = src_prop_12 bundle = control
+#pragma HLS INTERFACE s_axilite port = src_prop_13 bundle = control
 #pragma HLS INTERFACE s_axilite port = output bundle = control
-#pragma HLS INTERFACE s_axilite port = num_partitions_little bundle = control
-#pragma HLS INTERFACE s_axilite port = num_partitions_big bundle = control
+#pragma HLS INTERFACE s_axilite port = little_group_1_num_partitions bundle =  \
+    control
+#pragma HLS INTERFACE s_axilite port = little_group_2_num_partitions bundle =  \
+    control
+#pragma HLS INTERFACE s_axilite port = big_group_0_num_partitions bundle =     \
+    control
+
 #pragma HLS INTERFACE s_axilite port = return bundle = control
 #pragma HLS DATAFLOW
 
@@ -260,55 +278,64 @@ hbm_writer(bus_word_t *src_prop_1, bus_word_t *src_prop_2,
     // #pragma HLS BIND_STORAGE variable = little_prop_loader_out_10 type = FIFO
     // impl = BRAM
 
-    little_node_prop_loader(0, src_prop_1, num_partitions_little,
+    little_node_prop_loader(0, src_prop_1, little_group_1_num_partitions,
                             ppb_req_stream_1, little_prop_loader_out_1);
     little_response_packer(0, little_prop_loader_out_1, ppb_resp_stream_1,
-                           num_partitions_little);
+                           little_group_1_num_partitions);
 
-    little_node_prop_loader(1, src_prop_2, num_partitions_little,
+    little_node_prop_loader(1, src_prop_2, little_group_1_num_partitions,
                             ppb_req_stream_2, little_prop_loader_out_2);
     little_response_packer(1, little_prop_loader_out_2, ppb_resp_stream_2,
-                           num_partitions_little);
+                           little_group_1_num_partitions);
 
-    little_node_prop_loader(2, src_prop_3, num_partitions_little,
+    little_node_prop_loader(2, src_prop_3, little_group_1_num_partitions,
                             ppb_req_stream_3, little_prop_loader_out_3);
     little_response_packer(2, little_prop_loader_out_3, ppb_resp_stream_3,
-                           num_partitions_little);
+                           little_group_1_num_partitions);
 
-    little_node_prop_loader(3, src_prop_4, num_partitions_little,
+    little_node_prop_loader(3, src_prop_4, little_group_1_num_partitions,
                             ppb_req_stream_4, little_prop_loader_out_4);
     little_response_packer(3, little_prop_loader_out_4, ppb_resp_stream_4,
-                           num_partitions_little);
+                           little_group_1_num_partitions);
 
-    little_node_prop_loader(4, src_prop_5, num_partitions_little,
+    little_node_prop_loader(4, src_prop_5, little_group_1_num_partitions,
                             ppb_req_stream_5, little_prop_loader_out_5);
     little_response_packer(4, little_prop_loader_out_5, ppb_resp_stream_5,
-                           num_partitions_little);
+                           little_group_1_num_partitions);
 
-    little_node_prop_loader(5, src_prop_6, num_partitions_little,
+    little_node_prop_loader(5, src_prop_6, little_group_2_num_partitions,
                             ppb_req_stream_6, little_prop_loader_out_6);
     little_response_packer(5, little_prop_loader_out_6, ppb_resp_stream_6,
-                           num_partitions_little);
+                           little_group_2_num_partitions);
 
-    little_node_prop_loader(6, src_prop_7, num_partitions_little,
+    little_node_prop_loader(6, src_prop_7, little_group_2_num_partitions,
                             ppb_req_stream_7, little_prop_loader_out_7);
     little_response_packer(6, little_prop_loader_out_7, ppb_resp_stream_7,
-                           num_partitions_little);
+                           little_group_2_num_partitions);
 
-    little_node_prop_loader(7, src_prop_8, num_partitions_little,
+    little_node_prop_loader(7, src_prop_8, little_group_2_num_partitions,
                             ppb_req_stream_8, little_prop_loader_out_8);
     little_response_packer(7, little_prop_loader_out_8, ppb_resp_stream_8,
-                           num_partitions_little);
+                           little_group_2_num_partitions);
 
-    little_node_prop_loader(8, src_prop_9, num_partitions_little,
+    little_node_prop_loader(8, src_prop_9, little_group_2_num_partitions,
                             ppb_req_stream_9, little_prop_loader_out_9);
     little_response_packer(8, little_prop_loader_out_9, ppb_resp_stream_9,
-                           num_partitions_little);
+                           little_group_2_num_partitions);
 
-    little_node_prop_loader(9, src_prop_10, num_partitions_little,
+    little_node_prop_loader(9, src_prop_10, little_group_2_num_partitions,
                             ppb_req_stream_10, little_prop_loader_out_10);
     little_response_packer(9, little_prop_loader_out_10, ppb_resp_stream_10,
-                           num_partitions_little);
+                           little_group_2_num_partitions);
+
+    big_node_prop_loader(0, src_prop_11, big_group_0_num_partitions,
+                         cacheline_req_stream_1, cacheline_resp_stream_1);
+
+    big_node_prop_loader(1, src_prop_12, big_group_0_num_partitions,
+                         cacheline_req_stream_2, cacheline_resp_stream_2);
+
+    big_node_prop_loader(2, src_prop_13, big_group_0_num_partitions,
+                         cacheline_req_stream_3, cacheline_resp_stream_3);
 
     write_out(output, write_burst_stream);
 }
