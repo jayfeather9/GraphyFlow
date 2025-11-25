@@ -2,7 +2,6 @@
 from __future__ import annotations
 from enum import Enum
 from typing import List, Optional, Union, Dict, Any, Tuple
-import graphyflow.dataflow_ir_datatype as dftype
 import graphyflow.dataflow_ir as dfir
 import re
 import copy
@@ -18,7 +17,6 @@ class HLSBasicType(Enum):
     INT = "int32_t"
     FLOAT = "ap_fixed<32, 16>"
 
-    
     REAL_FLOAT = "float"
     AP_UINT = "ap_uint"
     BOOL = "bool"
@@ -26,7 +24,7 @@ class HLSBasicType(Enum):
     STREAM = "stream"
     ARRAY = "array"
     POINTER = "pointer"
-    AP_AXIU  = "ap_axiu"
+    AP_AXIU = "ap_axiu"
 
     # typedef：
     NODE_ID = "node_id_t"
@@ -35,8 +33,8 @@ class HLSBasicType(Enum):
     AP_FIXED_POD = "ap_fixed_pod_t"
     DISTANCE_T = "distance_t"
     OUT_END_MARMER_T = "out_end_marker_t"
-    NODE_DIST_PKT_T="node_dist_pkt_t"
-    WRITE_BURST_PKT_T="write_burst_pkt_t"
+    NODE_DIST_PKT_T = "node_dist_pkt_t"
+    WRITE_BURST_PKT_T = "write_burst_pkt_t"
     CACHELINE_REQUEST_PKT_T = "cacheline_request_pkt_t"
     CACHELINE_RESPONSE_PKT_T = "cacheline_response_pkt_t"
     CACHELINE_DATA_PKT_T = "cacheline_data_pkt_t"
@@ -45,7 +43,6 @@ class HLSBasicType(Enum):
     PPB_RESPONSE_PKT_T = "ppb_response_pkt_t"
     WRITE_BURST_W_DST_PKT_T = "write_burst_w_dst_pkt_t"
     LITTLE_OUT_PKT_T = "little_out_pkt_t"
-
 
     def __repr__(self) -> str:
         return self.value
@@ -58,7 +55,7 @@ class HLSBasicType(Enum):
             HLSBasicType.ARRAY,
             HLSBasicType.POINTER,
             HLSBasicType.AP_UINT,
-            HLSBasicType.AP_AXIU
+            HLSBasicType.AP_AXIU,
         ]
 
 
@@ -150,8 +147,8 @@ class HLSType:
             if self.name in HLSType._all_names:
                 if struct_name is not None:
                     assert False, f"Struct name collision detected: {self.name}"
-                #else:
-                    #self.name = f"{self.name}_{self.readable_id}"
+                # else:
+                # self.name = f"{self.name}_{self.readable_id}"
 
         HLSType._all_names.add(self.name)
         HLSType._full_to_type[self.full_name] = self
