@@ -1,0 +1,609 @@
+On branch yxx
+Your branch is up to date with 'origin/yxx'.
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   graphyflow/project_generator.py
+	modified:   graphyflow/project_template/scripts/host/generated_host.cpp
+	modified:   graphyflow/project_template/scripts/kernel/apply_kernel.cpp
+	modified:   graphyflow/project_template/scripts/kernel/kernel.mk
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	diff.txt
+	graphyflow/kernel_numbers.py
+
+--------------------------------------------------
+Changes not staged for commit:
+diff --git i/graphyflow/project_generator.py w/graphyflow/project_generator.py
+index 55a1e04..2c7a2e9 100644
+--- i/graphyflow/project_generator.py
++++ w/graphyflow/project_generator.py
+@@ -3,6 +3,7 @@ from pathlib import Path
+ from typing import Any, Dict,List, Optional
+ import copy
+ import sys
++import textwrap
+ from .global_graph import GlobalGraph
+ from .dataflow_ir import ComponentCollection
+ # from .backend_manager import BackendManager
+@@ -14,20 +15,33 @@ INIT_VALUE = "16384.0"
+ # You can change the number of kernels and their HBM mapping here.
+ 
+ # 
+-NUM_BIG_KERNELS = 3
+-NUM_LITTLE_KERNELS = 11
++from .kernel_numbers import NUM_BIG_KERNELS, NUM_LITTLE_KERNELS
+ 
+ # HBM channel IDs for Big Kernels. The list length must match NUM_BIG_KERNELS.
+-big_kernel_hbm_edge_id = [22,24,26]
+-big_kernel_hbm_node_id = [23,25,27] # for hbm writer
++# big_kernel_hbm_edge_id = [22,24,26]
++# big_kernel_hbm_node_id = [23,25,27] # for hbm writer
+ 
+-little_kernel_hbm_edge_id = [0,2,4,6,8,10,12,14,16,18,20]
+-little_kernel_hbm_node_id = [1,3,5,7,9,11,13,15,17,19,21] # for hbm writer
++# little_kernel_hbm_edge_id = [0,2,4,6,8,10,12,14,16,18,20]
++# little_kernel_hbm_node_id = [1,3,5,7,9,11,13,15,17,19,21] # for hbm writer
++
++hbm_edge_ids = [0,2,4,6,8,10,12,14,16,18,20,22,24,26]
++hbm_node_ids = [1,3,5,7,9,11,13,15,17,19,21,23,25,27]
++
++little_kernel_hbm_edge_id = hbm_edge_ids[:NUM_LITTLE_KERNELS]
++little_kernel_hbm_node_id = hbm_node_ids[:NUM_LITTLE_KERNELS]
++
++big_kernel_hbm_edge_id = hbm_edge_ids[NUM_LITTLE_KERNELS:NUM_LITTLE_KERNELS+NUM_BIG_KERNELS]
++big_kernel_hbm_node_id = hbm_node_ids[NUM_LITTLE_KERNELS:NUM_LITTLE_KERNELS+NUM_BIG_KERNELS]
+ 
+ apply_kernel_hbm_node_id = [30]
+ hbm_writer_output_id = [1]
+-big_kernel_slr = ["SLR2","SLR1", "SLR2"]
+-little_kernel_slr = ["SLR0","SLR1", "SLR2","SLR0","SLR1", "SLR2","SLR0","SLR1", "SLR2","SLR0","SLR1"]
++# big_kernel_slr = ["SLR2","SLR1", "SLR2"]
++# little_kernel_slr = ["SLR0","SLR1", "SLR2","SLR0","SLR1", "SLR2","SLR0","SLR1", "SLR2","SLR0","SLR1"]
++
++slr_list = ["SLR0","SLR1", "SLR2","SLR0","SLR1", "SLR2","SLR0","SLR1", "SLR2","SLR0","SLR1","SLR2","SLR1","SLR2"]
++
++big_kernel_slr = slr_list[NUM_LITTLE_KERNELS:NUM_LITTLE_KERNELS+NUM_BIG_KERNELS]
++little_kernel_slr = slr_list[:NUM_LITTLE_KERNELS]
+ 
+ little_merger_slr = ["SLR1"]
+ big_merger_slr = ["SLR1"]
+@@ -116,14 +130,19 @@ def _create_cfg(dest: Path, kernel_name: str):
+ 
+     # --- 1. Kernel Instantiation (nk) ---
+     content.append("\n# --- 1. Kernel Instantiation (nk) ---")
+-    content.append(f"nk=graphyflow_little:{NUM_LITTLE_KERNELS}")
+-    content.append(f"nk=graphyflow_big:{NUM_BIG_KERNELS}")
++    has_little = NUM_LITTLE_KERNELS > 0
++    has_big = NUM_BIG_KERNELS > 0
++
++    if has_little:
++        content.append(f"nk=graphyflow_little:{NUM_LITTLE_KERNELS}")
++    if has_big:
++        content.append(f"nk=graphyflow_big:{NUM_BIG_KERNELS}")
+ 
+     content.append(f"nk=hbm_writer:1")
+     content.append(f"nk=apply_kernel:1")
+-    if NUM_BIG_KERNELS >0 :
++    if has_little:
+         content.append(f"nk=little_merger:1")
+-    if NUM_LITTLE_KERNELS > 0:
++    if has_big:
+         content.append(f"nk=big_merger:1")
+ 
+     # --- 2. HBM Port Mapping (sp) ---
+@@ -208,14 +227,16 @@ def _create_cfg(dest: Path, kernel_name: str):
+     # -- Stream connections for mergers and apply_kernel --
+     
+     # little_merger_1 (SLR1) -> apply_kernel_1 (SLR1)
+-    fifo_l_merger_to_app = get_fifo_suffix(l_merger_slr, app_slr)
+-    content.append(f"\n# -- Stream connections for little_merger_1 --")
+-    content.append(f"stream_connect=little_merger_1.kernel_out_stream:apply_kernel_1.little_kernel_out_stream{fifo_l_merger_to_app}")
++    if NUM_LITTLE_KERNELS > 0:
++        fifo_l_merger_to_app = get_fifo_suffix(l_merger_slr, app_slr)
++        content.append(f"\n# -- Stream connections for little_merger_1 --")
++        content.append(f"stream_connect=little_merger_1.kernel_out_stream:apply_kernel_1.little_kernel_out_stream{fifo_l_merger_to_app}")
+ 
+     # big_merger_1 (SLR1) -> apply_kernel_1 (SLR1)
+-    fifo_b_merger_to_app = get_fifo_suffix(b_merger_slr, app_slr)
+-    content.append(f"\n# -- Stream connections for big_merger_1 --")
+-    content.append(f"stream_connect=big_merger_1.kernel_out_stream:apply_kernel_1.big_kernel_out_stream{fifo_b_merger_to_app}")
++    if NUM_BIG_KERNELS > 0:
++        fifo_b_merger_to_app = get_fifo_suffix(b_merger_slr, app_slr)
++        content.append(f"\n# -- Stream connections for big_merger_1 --")
++        content.append(f"stream_connect=big_merger_1.kernel_out_stream:apply_kernel_1.big_kernel_out_stream{fifo_b_merger_to_app}")
+ 
+     # apply_kernel_1 (SLR1) -> hbm_writer_1 (SLR0)
+     fifo_app_to_writer = get_fifo_suffix(app_slr, writer_slr)
+@@ -235,8 +256,10 @@ def _create_cfg(dest: Path, kernel_name: str):
+ 
+     content.append(f"slr=hbm_writer_1:{hbm_writer_slr[0]}")
+     content.append(f"slr=apply_kernel_1:{apply_kernel_slr[0]}")
+-    content.append(f"slr=little_merger_1:{little_merger_slr[0]}")
+-    content.append(f"slr=big_merger_1:{big_merger_slr[0]}")
++    if has_little:
++        content.append(f"slr=little_merger_1:{little_merger_slr[0]}")
++    if has_big:
++        content.append(f"slr=big_merger_1:{big_merger_slr[0]}")
+ 
+     # --- 5. 写入文件 ---
+     try:
+@@ -251,6 +274,260 @@ def _create_cfg(dest: Path, kernel_name: str):
+         print(f"error when creating: {dest.parent}: {e}", file=sys.stderr)
+ 
+ 
++def _format_apply_params(params: List[str]) -> str:
++    if not params:
++        return ""
++    if len(params) == 1:
++        return params[0]
++    return ",\n             ".join(params)
++
++
++def _build_apply_kernel_templates(has_little: bool, has_big: bool) -> Dict[str, str]:
++    """Create apply_kernel template fragments for the current kernel counts."""
++
++    params = ["bus_word_t *node_props"]
++    interface_pragmas = [
++        "#pragma HLS INTERFACE m_axi port = node_props offset = slave bundle = gmem0",
++        "#pragma HLS INTERFACE s_axilite port = node_props bundle = control",
++    ]
++
++    if has_little:
++        params.append("uint32_t little_kernel_length")
++        interface_pragmas.append(
++            "#pragma HLS INTERFACE s_axilite port = little_kernel_length bundle = control"
++        )
++    if has_big:
++        params.append("uint32_t big_kernel_length")
++        interface_pragmas.append(
++            "#pragma HLS INTERFACE s_axilite port = big_kernel_length bundle = control"
++        )
++    if has_little:
++        params.append("uint32_t little_kernel_st_offset")
++        interface_pragmas.append(
++            "#pragma HLS INTERFACE s_axilite port = little_kernel_st_offset bundle = control"
++        )
++    if has_big:
++        params.append("uint32_t big_kernel_st_offset")
++        interface_pragmas.append(
++            "#pragma HLS INTERFACE s_axilite port = big_kernel_st_offset bundle = control"
++        )
++
++    if has_little:
++        params.append("hls::stream<write_burst_pkt_t> &little_kernel_out_stream")
++    if has_big:
++        params.append("hls::stream<write_burst_pkt_t> &big_kernel_out_stream")
++    params.append("hls::stream<write_burst_w_dst_pkt_t> &kernel_out_stream")
++
++    interface_pragmas.append(
++        "#pragma HLS INTERFACE s_axilite port = return bundle = control"
++    )
++
++    apply_params = _format_apply_params(params)
++    apply_interface_pragmas = "\n".join(interface_pragmas)
++
++    if has_little and has_big:
++        merge_function = textwrap.dedent(
++            """
++            void merge_big_little_writes(
++                hls::stream<write_burst_pkt_t> &little_kernel_out_stream,
++                hls::stream<write_burst_pkt_t> &big_kernel_out_stream,
++                hls::stream<in_write_burst_w_dst_pkt_t> &kernel_out_stream,
++                uint32_t little_kernel_length, uint32_t big_kernel_length,
++                uint32_t little_kernel_st_offset, uint32_t big_kernel_st_offset) {
++                write_burst_pkt_t big_tmp_prop_pkt;
++                write_burst_pkt_t little_tmp_prop_pkt;
++
++                uint32_t little_idx = little_kernel_st_offset;
++                uint32_t big_idx = big_kernel_st_offset;
++                uint32_t total_length = little_kernel_length + big_kernel_length;
++
++            LOOP_MERGE_WRITES:
++                while (true) {
++                    if (total_length == 0) {
++                        in_write_burst_w_dst_pkt_t end_pkt;
++                        end_pkt.end_flag = true;
++                        kernel_out_stream.write(end_pkt);
++                        break;
++                    }
++
++                    if (little_kernel_out_stream.read_nb(little_tmp_prop_pkt)) {
++                        in_write_burst_w_dst_pkt_t little_write_burst;
++                        little_write_burst.data = little_tmp_prop_pkt.data;
++                        little_write_burst.dest_addr = little_idx;
++                        little_write_burst.end_flag = false;
++                        kernel_out_stream.write(little_write_burst);
++                        little_idx++;
++                        total_length--;
++                    } else if (big_kernel_out_stream.read_nb(big_tmp_prop_pkt)) {
++                        in_write_burst_w_dst_pkt_t big_write_burst;
++                        big_write_burst.data = big_tmp_prop_pkt.data;
++                        big_write_burst.dest_addr = big_idx;
++                        big_write_burst.end_flag = false;
++                        kernel_out_stream.write(big_write_burst);
++                        big_idx++;
++                        total_length--;
++                    }
++                }
++            }
++            """
++        )
++        merge_call = (
++            "merge_big_little_writes(little_kernel_out_stream, "
++            "big_kernel_out_stream, write_burst_stream, "
++            "little_kernel_length, big_kernel_length, "
++            "little_kernel_st_offset, big_kernel_st_offset);"
++        )
++    elif has_little:
++        merge_function = textwrap.dedent(
++            """
++            void merge_little_writes(
++                hls::stream<write_burst_pkt_t> &little_kernel_out_stream,
++                hls::stream<in_write_burst_w_dst_pkt_t> &kernel_out_stream,
++                uint32_t little_kernel_length,
++                uint32_t little_kernel_st_offset) {
++                write_burst_pkt_t little_tmp_prop_pkt;
++
++                uint32_t little_idx = little_kernel_st_offset;
++                uint32_t remaining = little_kernel_length;
++
++            LOOP_MERGE_WRITES:
++                while (true) {
++                    if (remaining == 0) {
++                        in_write_burst_w_dst_pkt_t end_pkt;
++                        end_pkt.end_flag = true;
++                        kernel_out_stream.write(end_pkt);
++                        break;
++                    }
++
++                    if (little_kernel_out_stream.read_nb(little_tmp_prop_pkt)) {
++                        in_write_burst_w_dst_pkt_t little_write_burst;
++                        little_write_burst.data = little_tmp_prop_pkt.data;
++                        little_write_burst.dest_addr = little_idx;
++                        little_write_burst.end_flag = false;
++                        kernel_out_stream.write(little_write_burst);
++                        little_idx++;
++                        remaining--;
++                    }
++                }
++            }
++            """
++        )
++        merge_call = (
++            "merge_little_writes(little_kernel_out_stream, write_burst_stream, "
++            "little_kernel_length, little_kernel_st_offset);"
++        )
++    elif has_big:
++        merge_function = textwrap.dedent(
++            """
++            void merge_big_writes(
++                hls::stream<write_burst_pkt_t> &big_kernel_out_stream,
++                hls::stream<in_write_burst_w_dst_pkt_t> &kernel_out_stream,
++                uint32_t big_kernel_length, uint32_t big_kernel_st_offset) {
++                write_burst_pkt_t big_tmp_prop_pkt;
++
++                uint32_t big_idx = big_kernel_st_offset;
++                uint32_t remaining = big_kernel_length;
++
++            LOOP_MERGE_WRITES:
++                while (true) {
++                    if (remaining == 0) {
++                        in_write_burst_w_dst_pkt_t end_pkt;
++                        end_pkt.end_flag = true;
++                        kernel_out_stream.write(end_pkt);
++                        break;
++                    }
++
++                    if (big_kernel_out_stream.read_nb(big_tmp_prop_pkt)) {
++                        in_write_burst_w_dst_pkt_t big_write_burst;
++                        big_write_burst.data = big_tmp_prop_pkt.data;
++                        big_write_burst.dest_addr = big_idx;
++                        big_write_burst.end_flag = false;
++                        kernel_out_stream.write(big_write_burst);
++                        big_idx++;
++                        remaining--;
++                    }
++                }
++            }
++            """
++        )
++        merge_call = (
++            "merge_big_writes(big_kernel_out_stream, write_burst_stream, "
++            "big_kernel_length, big_kernel_st_offset);"
++        )
++    else:
++        merge_function = textwrap.dedent(
++            """
++            void merge_empty_writes(
++                hls::stream<in_write_burst_w_dst_pkt_t> &kernel_out_stream) {
++                in_write_burst_w_dst_pkt_t end_pkt;
++                end_pkt.end_flag = true;
++                kernel_out_stream.write(end_pkt);
++            }
++            """
++        )
++        merge_call = "merge_empty_writes(write_burst_stream);"
++
++    return {
++        "apply_params": apply_params,
++        "apply_interface_pragmas": apply_interface_pragmas,
++        "merge_function": merge_function,
++        "merge_call": merge_call,
++    }
++
++
++def _build_apply_kernel_host_setargs(has_little: bool, has_big: bool) -> str:
++    """Host-side setArg snippet matching the synthesized apply_kernel signature."""
++
++    if has_little and has_big:
++        block = textwrap.dedent(
++            """
++            int arg_idx = 0;
++            OCL_CHECK(err, err = apply_kernel.setArg(
++                                   arg_idx++, apply_kernel_node_prop_buffer));
++            OCL_CHECK(err,
++                      err = apply_kernel.setArg(arg_idx++, little_dst_word_num));
++            OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, big_dst_word_num));
++            OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, (uint32_t)0));
++            OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, big_dst_offset));
++            """
++        )
++        return textwrap.indent(block, "        ")
++
++    if has_little:
++        block = textwrap.dedent(
++            """
++            int arg_idx = 0;
++            OCL_CHECK(err, err = apply_kernel.setArg(
++                                   arg_idx++, apply_kernel_node_prop_buffer));
++            OCL_CHECK(err,
++                      err = apply_kernel.setArg(arg_idx++, little_dst_word_num));
++            OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, (uint32_t)0));
++            """
++        )
++        return textwrap.indent(block, "        ")
++
++    if has_big:
++        block = textwrap.dedent(
++            """
++            int arg_idx = 0;
++            OCL_CHECK(err, err = apply_kernel.setArg(
++                                   arg_idx++, apply_kernel_node_prop_buffer));
++            OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, big_dst_word_num));
++            OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, big_dst_offset));
++            """
++        )
++        return textwrap.indent(block, "        ")
++
++    block = textwrap.dedent(
++        """
++        int arg_idx = 0;
++        OCL_CHECK(err, err = apply_kernel.setArg(
++                               arg_idx++, apply_kernel_node_prop_buffer));
++        """
++    )
++    return textwrap.indent(block, "        ")
++
++
+ def _generate_hbm_writer():
+     code = "extern \"C\" void hbm_writer(\n"
+     for i in range(NUM_LITTLE_KERNELS+NUM_BIG_KERNELS):
+@@ -512,15 +789,12 @@ if (merge_flag) {{
+     return code
+ 
+ def _generate_shared_params():
+-    code = """
+-extern "C" void
+-apply_kernel(bus_word_t *node_props, uint32_t little_kernel_length,
+-             uint32_t big_kernel_length, uint32_t little_kernel_st_offset,
+-             uint32_t big_kernel_st_offset,
+-             hls::stream<write_burst_pkt_t> &little_kernel_out_stream,
+-             hls::stream<write_burst_pkt_t> &big_kernel_out_stream,
+-             hls::stream<write_burst_w_dst_pkt_t> &kernel_out_stream);
+-"""
++    apply_templates = _build_apply_kernel_templates(
++        has_little=NUM_LITTLE_KERNELS > 0, has_big=NUM_BIG_KERNELS > 0
++    )
++
++    code = "extern \"C\" void\n"
++    code += f"apply_kernel({apply_templates['apply_params']});\n\n"
+     code += "extern \"C\" void\n"
+     code += "big_merger("
+     for i in range(NUM_BIG_KERNELS):
+@@ -647,6 +921,23 @@ def generate_project(
+     _copy_and_template(template_dir / "run.sh", output_dir / "run.sh", replacements)
+     (output_dir / "run.sh").chmod(0o755)
+ 
++    has_big = NUM_BIG_KERNELS > 0
++    has_little = NUM_LITTLE_KERNELS > 0
++
++    kernel_names = ["apply_kernel", "hbm_writer"]
++    if has_big:
++        kernel_names.insert(0, "graphyflow_big")
++        kernel_names.append("big_merger")
++    if has_little:
++        kernel_names.insert(0, "graphyflow_little")
++        kernel_names.append("little_merger")
++
++    _copy_and_template(
++        template_dir / "scripts" / "kernel" / "kernel.mk",
++        output_dir / "scripts" / "kernel" / "kernel.mk",
++        {"{{KERNEL_NAMES}}": " ".join(kernel_names)},
++    )
++
+     # 4. Instantiate backend and generate all dynamic code
+     print("[3/6] Generating Dynamic Source Code via BackendManager...")
+     bkd_mng = BackendManager()
+@@ -664,24 +955,47 @@ def generate_project(
+         copy.deepcopy(comp_col), global_graph, f"{kernel_name}_big"
+     )
+ 
++    apply_templates = _build_apply_kernel_templates(
++        has_little=has_little, has_big=has_big
++    )
+     replacements = {
+         "{{GRAPHYFLOW_APPLY_FUNC}}": apply_func,
++        "{{MERGE_FUNCTION}}": apply_templates["merge_function"],
++        "{{APPLY_PARAMS}}": apply_templates["apply_params"],
++        "{{APPLY_INTERFACE_PRAGMAS}}": apply_templates["apply_interface_pragmas"],
++        "{{MERGE_CALL}}": apply_templates["merge_call"],
+     }
+-    _copy_and_template(template_dir / "scripts"/"kernel"/"apply_kernel.cpp", output_dir / "scripts" / "kernel" /"apply_kernel.cpp", replacements)
++    _copy_and_template(
++        template_dir / "scripts" / "kernel" / "apply_kernel.cpp",
++        output_dir / "scripts" / "kernel" / "apply_kernel.cpp",
++        replacements,
++    )
++
++    host_apply_setargs = _build_apply_kernel_host_setargs(
++        has_little=has_little, has_big=has_big
++    )
++    _copy_and_template(
++        template_dir / "scripts" / "host" / "generated_host.cpp",
++        output_dir / "scripts" / "host" / "generated_host.cpp",
++        {"{{APPLY_KERNEL_SETARGS}}": host_apply_setargs},
++    )
+ 
+     hbm_writer = _generate_hbm_writer()
+     little_merger = _generate_little_merger(little_merger_inline_codes)
+     big_merger = _generate_big_merger(big_merger_inline_codes)
+     # 5. Deploy all dynamically generated files
+     print(f"[4/6] Deploying Generated Kernel Files to '{kernel_script_dir}'")
+-    (kernel_script_dir / f"{kernel_name}_big.h").write_text(kernel_h_big)
+-    (kernel_script_dir / f"{kernel_name}_big.cpp").write_text(kernel_cpp_big)
+-    (kernel_script_dir / f"{kernel_name}_little.h").write_text(kernel_h_little)
+-    (kernel_script_dir / f"{kernel_name}_little.cpp").write_text(kernel_cpp_little)
++    if has_big:
++        (kernel_script_dir / f"{kernel_name}_big.h").write_text(kernel_h_big)
++        (kernel_script_dir / f"{kernel_name}_big.cpp").write_text(kernel_cpp_big)
++        (kernel_script_dir / f"big_merger.cpp").write_text(big_merger)
++
++    if has_little:
++        (kernel_script_dir / f"{kernel_name}_little.h").write_text(kernel_h_little)
++        (kernel_script_dir / f"{kernel_name}_little.cpp").write_text(kernel_cpp_little)
++        (kernel_script_dir / f"little_merger.cpp").write_text(little_merger)
+ 
+     (kernel_script_dir / f"shared_kernel_params.h").write_text(shared_kernel_params)
+-    (kernel_script_dir / f"little_merger.cpp").write_text(little_merger)
+-    (kernel_script_dir / f"big_merger.cpp").write_text(big_merger)
+     
+     hbm_writer_file = kernel_script_dir / f"hbm_writer.cpp"
+     with open(hbm_writer_file, 'a', encoding='utf-8') as f:
+diff --git i/graphyflow/project_template/scripts/host/generated_host.cpp w/graphyflow/project_template/scripts/host/generated_host.cpp
+index 55a3654..895092f 100644
+--- i/graphyflow/project_template/scripts/host/generated_host.cpp
++++ w/graphyflow/project_template/scripts/host/generated_host.cpp
+@@ -1023,14 +1023,7 @@ void AlgorithmHost::execute_kernel_iteration(
+     {
+         auto &apply_kernel = acc.apply_krnl;
+ 
+-        int arg_idx = 0;
+-        OCL_CHECK(err, err = apply_kernel.setArg(
+-                           arg_idx++, apply_kernel_node_prop_buffer));
+-        OCL_CHECK(err,
+-                  err = apply_kernel.setArg(arg_idx++, little_dst_word_num));
+-        OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, big_dst_word_num));
+-        OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, (uint32_t)0));
+-        OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, big_dst_offset));
++        {{APPLY_KERNEL_SETARGS}}
+ 
+         OCL_CHECK(err, err = acc.apply_queue.enqueueTask(
+                            apply_kernel, nullptr, &acc.apply_kernel_event));
+diff --git i/graphyflow/project_template/scripts/kernel/apply_kernel.cpp w/graphyflow/project_template/scripts/kernel/apply_kernel.cpp
+index 3ff8182..d02d3dc 100644
+--- i/graphyflow/project_template/scripts/kernel/apply_kernel.cpp
++++ w/graphyflow/project_template/scripts/kernel/apply_kernel.cpp
+@@ -1,71 +1,17 @@
+ #include "shared_kernel_params.h"
+ 
+-void merge_big_little_writes(
+-    hls::stream<write_burst_pkt_t> &little_kernel_out_stream,
+-    hls::stream<write_burst_pkt_t> &big_kernel_out_stream,
+-    hls::stream<in_write_burst_w_dst_pkt_t> &kernel_out_stream,
+-    uint32_t little_kernel_length, uint32_t big_kernel_length,
+-    uint32_t little_kernel_st_offset, uint32_t big_kernel_st_offset) {
+-    write_burst_pkt_t big_tmp_prop_pkt;
+-    write_burst_pkt_t little_tmp_prop_pkt;
+-
+-    uint32_t little_idx = little_kernel_st_offset;
+-    uint32_t big_idx = big_kernel_st_offset;
+-    uint32_t total_length = little_kernel_length + big_kernel_length;
+-
+-LOOP_MERGE_WRITES:
+-    while (true) {
+-        if (total_length == 0) {
+-            in_write_burst_w_dst_pkt_t end_pkt;
+-            end_pkt.end_flag = true;
+-            kernel_out_stream.write(end_pkt);
+-            break;
+-        }
+-
+-        if (little_kernel_out_stream.read_nb(little_tmp_prop_pkt)) {
+-            in_write_burst_w_dst_pkt_t little_write_burst;
+-            little_write_burst.data = little_tmp_prop_pkt.data;
+-            little_write_burst.dest_addr = little_idx;
+-            little_write_burst.end_flag = false;
+-            kernel_out_stream.write(little_write_burst);
+-            little_idx++;
+-            total_length--;
+-        } else if (big_kernel_out_stream.read_nb(big_tmp_prop_pkt)) {
+-            in_write_burst_w_dst_pkt_t big_write_burst;
+-            big_write_burst.data = big_tmp_prop_pkt.data;
+-            big_write_burst.dest_addr = big_idx;
+-            big_write_burst.end_flag = false;
+-            kernel_out_stream.write(big_write_burst);
+-            big_idx++;
+-            total_length--;
+-        }
+-    }
+-}
++{{MERGE_FUNCTION}}
+ 
+ {{GRAPHYFLOW_APPLY_FUNC}}
+ 
+ extern "C" void
+-apply_kernel(bus_word_t *node_props, uint32_t little_kernel_length,
+-             uint32_t big_kernel_length, uint32_t little_kernel_st_offset,
+-             uint32_t big_kernel_st_offset,
+-             hls::stream<write_burst_pkt_t> &little_kernel_out_stream,
+-             hls::stream<write_burst_pkt_t> &big_kernel_out_stream,
+-             hls::stream<write_burst_w_dst_pkt_t> &kernel_out_stream) {
+-#pragma HLS INTERFACE m_axi port = node_props offset = slave bundle = gmem0
+-#pragma HLS INTERFACE s_axilite port = node_props bundle = control
+-#pragma HLS INTERFACE s_axilite port = little_kernel_length bundle = control
+-#pragma HLS INTERFACE s_axilite port = big_kernel_length bundle = control
+-#pragma HLS INTERFACE s_axilite port = little_kernel_st_offset bundle = control
+-#pragma HLS INTERFACE s_axilite port = big_kernel_st_offset bundle = control
+-#pragma HLS INTERFACE s_axilite port = return bundle = control
++apply_kernel({{APPLY_PARAMS}}) {
++{{APPLY_INTERFACE_PRAGMAS}}
+ #pragma HLS DATAFLOW
+ 
+     hls::stream<in_write_burst_w_dst_pkt_t> write_burst_stream;
+ #pragma HLS STREAM variable = write_burst_stream depth = 16
+ 
+-    merge_big_little_writes(little_kernel_out_stream, big_kernel_out_stream,
+-                            write_burst_stream, little_kernel_length,
+-                            big_kernel_length, little_kernel_st_offset,
+-                            big_kernel_st_offset);
++    {{MERGE_CALL}}
+     apply_func(node_props, write_burst_stream, kernel_out_stream);
+ }
+\ No newline at end of file
+diff --git i/graphyflow/project_template/scripts/kernel/kernel.mk w/graphyflow/project_template/scripts/kernel/kernel.mk
+index fd5e293..df9e5db 100644
+--- i/graphyflow/project_template/scripts/kernel/kernel.mk
++++ w/graphyflow/project_template/scripts/kernel/kernel.mk
+@@ -13,7 +13,7 @@ EMCONFIG_FILE := ./emconfig.json
+ 
+ # 1. 在这里定义您所有的内核名称。
+ #    这是将来您唯一需要修改的变量。
+-KERNEL_NAMES := graphyflow_little graphyflow_big apply_kernel hbm_writer big_merger little_merger
++KERNEL_NAMES := {{KERNEL_NAMES}}
+ 
+ # 2. 定义最终输出的二进制文件的名称。
+ XCLBIN_NAME := graphyflow_kernels
+no changes added to commit (use "git add" and/or "git commit -a")

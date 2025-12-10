@@ -1023,14 +1023,7 @@ void AlgorithmHost::execute_kernel_iteration(
     {
         auto &apply_kernel = acc.apply_krnl;
 
-        int arg_idx = 0;
-        OCL_CHECK(err, err = apply_kernel.setArg(
-                           arg_idx++, apply_kernel_node_prop_buffer));
-        OCL_CHECK(err,
-                  err = apply_kernel.setArg(arg_idx++, little_dst_word_num));
-        OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, big_dst_word_num));
-        OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, (uint32_t)0));
-        OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, big_dst_offset));
+        {{APPLY_KERNEL_SETARGS}}
 
         OCL_CHECK(err, err = acc.apply_queue.enqueueTask(
                            apply_kernel, nullptr, &acc.apply_kernel_event));
