@@ -3,7 +3,8 @@ from pathlib import Path
 from graphyflow.global_graph import GlobalGraph
 import graphyflow.dataflow_ir as dfir
 from graphyflow.lambda_func import lambda_min
-from graphyflow.passes import delete_placeholder_components_pass
+from graphyflow.passes import delete_placeholder_components_pass, refactor_extract_all_comps
+from graphyflow.visualize_ir import visualize_components
 
 # 导入我们最终的生成器 API
 from graphyflow.project_generator import generate_project
@@ -24,18 +25,25 @@ g = GlobalGraph(
 )
 edges = g.add_graph_input("edge")
 pdu = edges.map_(map_func=lambda edge: (edge.src.distance, edge.dst, edge.weight))
-pdu = pdu.filter(filter_func=lambda x, y, z: z >= 0.0)
+
+# pdu = pdu.map_(map_func=lambda src_dist, dst, edge_w: (src_dist, dst, edge_w + 0.0))
+# pdu = pdu.map_(map_func=lambda src_dist, dst, edge_w: (src_dist, dst, edge_w / 1.0))
+# pdu = pdu.filter(filter_func=lambda x, y, z: z >= 0.0)
 min_dist = pdu.reduce_by(
     reduce_key=lambda src_dist, dst, edge_w: dst.id,
     reduce_transform=lambda src_dist, dst, edge_w: (src_dist + edge_w, dst),
     reduce_method=lambda x, y: (lambda_min(x[0], y[0]), x[1]),
 )
 updated_nodes = min_dist.map_(map_func=lambda dist, node: (lambda_min(dist, node.distance), node))
-
+# updated_nodes = updated_nodes.map_(map_func=lambda dist, node:(dist + 0.0 , node))
+# updated_nodes = updated_nodes.map_(map_func=lambda dist, node:(dist / 1.0 , node))
 # ==================== 2. 前端处理 =======================
 print("\n--- Frontend Processing ---")
 dfirs = g.to_dfir()
 comp_col = delete_placeholder_components_pass(dfirs[0])
+comp_col = refactor_extract_all_comps(comp_col, g)
+dot = visualize_components(str(comp_col))
+dot.render("output/new_dist_ori", view=False, format="png")
 print("DFG-IR generated and optimized.")
 
 # ==================== 3. 一键生成项目！ =======================

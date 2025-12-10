@@ -4,7 +4,6 @@ import copy
 from enum import Enum
 from typing import List, Optional, Union, Dict, Any, Tuple
 from graphyflow.dataflow_ir_datatype import *
-import graphyflow.hls_utils as hls
 
 
 class DfirNode:
@@ -30,12 +29,14 @@ class PortType(Enum):
     def pluggable(self, other: PortType) -> bool:
         return self != other
 
-    def __eq__(self, other: PortType) -> bool:
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, PortType):
+            return NotImplemented
         return self.value == other.value
 
 
 class Port(DfirNode):
-    def __init__(self, name: str, parent: DfirNode) -> None:
+    def __init__(self, name: str, parent: Component) -> None:
         super().__init__()
         self.name = name
         self.unique_name = f"{self.name}_{self.readable_id}"
@@ -44,12 +45,10 @@ class Port(DfirNode):
         self.parent = parent
         self.connection = None
 
-    def __eq__(self, other: Port):
-        return (
-            self.unique_name == other.unique_name
-            and str(self.parent) == str(other.parent)
-            and str(self) == str(other)
-        )
+    def __eq__(self, other: object):
+        if not isinstance(other, Port):
+            return NotImplemented
+        return self.unique_name == other.unique_name and str(self.parent) == str(other.parent)
 
     def __hash__(self) -> int:
         return hash(str(self) + self.unique_name)
@@ -60,17 +59,20 @@ class Port(DfirNode):
 
     @property
     def from_const(self) -> bool:
-        assert self.port_type == PortType.IN and self.connected
+        assert self.port_type == PortType.IN
+        assert self.connection is not None
         return isinstance(self.connection.parent, ConstantComponent)
 
     @property
     def from_const_val(self):
         assert self.from_const
+        assert self.connection is not None
+        assert isinstance(self.connection.parent, ConstantComponent)
         return self.connection.parent.value
 
     def copy(self, copy_comp: CopyComponent) -> Port:
         assert self.port_type == PortType.OUT
-        assert self.connected
+        assert self.connection is not None
         assert self.data_type == copy_comp.input_type
         assert all(not p.connected for p in copy_comp.ports)
         original_connection = self.connection
@@ -93,7 +95,7 @@ class Port(DfirNode):
         my_repr = f"Port[{self.readable_id}] {self.name} ({self.data_type})"
         direction = "=>" if self.port_type == PortType.OUT else "<="
         tgt = self.connection
-        if self.connection is None:
+        if tgt is None:
             return my_repr
         else:
             return f"{my_repr} {direction} [{tgt.readable_id}] {tgt.name} ({tgt.data_type})"
@@ -106,6 +108,14 @@ class ComponentCollection(DfirNode):
         self.inputs = inputs
         self.outputs = outputs
         in_and_out = inputs + outputs
+        for c in self.components:
+            for p in c.ports:
+                if not p.connected:
+                    assert p in in_and_out, f"Port {p} of component {c} is not connected"
+                else:
+                    assert (
+                        p.connection.parent in self.components
+                    ), f"Port {p} of component {c} is connected to an external port"
         assert all(all(p.connected or p in in_and_out for p in c.ports) for c in self.components)
 
     def __repr__(self) -> str:
@@ -117,7 +127,8 @@ class ComponentCollection(DfirNode):
 
     @property
     def output_types(self) -> List[DfirType]:
-        return [p.data_type for p in self.outputs]
+        assert all(p.data_type is not None for p in self.outputs)
+        return [p.data_type for p in self.outputs if p.data_type is not None]
 
     def added(self, component: Component) -> bool:
         return component.readable_id in [c.readable_id for c in self.components]
@@ -181,24 +192,36 @@ class ComponentCollection(DfirNode):
 
     def topo_sort(self) -> List[Component]:
         def port_solved(port: Port) -> bool:
-            if not port.connected:
-                assert port in (self.inputs + self.outputs)
+            # A port is "solved" if it's an official input to this specific collection.
+            if port in self.inputs:
                 return True
-            else:
-                return port.connection.parent in result
+            # If it's not a collection input, it must be connected internally.
+            if not port.connected:
+                raise ConnectionError(f"Found unconnected internal port during topo_sort: {port}")
+            return port.connection.parent in result
 
         def check_reduce(comp: Component) -> bool:
             if not isinstance(comp, ReduceComponent):
                 return False
-            return port_solved(comp.get_port("i_0"))
+            return all(port_solved(p) for p in comp.get_port_group("global", "in"))
 
         result = []
-        waitings = copy.deepcopy(self.components)
+        # waitings = copy.deepcopy(self.components)
+        waitings = self.components[:]
+        last_waitings_len = len(waitings) + 1
+
         while waitings:
+            if len(waitings) >= last_waitings_len:
+                raise RuntimeError(
+                    f"Infinite loop detected in topo_sort. Possible cycle or unconnected internal graph. Waiting on: {[c.name for c in waitings]}"
+                )
+            last_waitings_len = len(waitings)
             new_ones = []
             for comp in waitings:
                 if all(port_solved(p) for p in comp.in_ports) or check_reduce(comp):
                     new_ones.append(comp)
+            if not new_ones:
+                continue
             waitings = [w for w in waitings if w not in new_ones]
             result.extend(new_ones)
         return result
@@ -207,8 +230,8 @@ class ComponentCollection(DfirNode):
 class Component(DfirNode):
     def __init__(
         self,
-        input_type: DfirType,
-        output_type: DfirType,
+        input_type: Optional[DfirType],
+        output_type: Optional[DfirType],
         ports: List[str],
         parallel: bool = False,
         specific_port_types: Optional[Dict[str, DfirType]] = None,
@@ -218,9 +241,7 @@ class Component(DfirNode):
         self.output_type = output_type
         self.ports = [Port(port, self) for port in ports]
         self.in_ports = [p for p in self.ports if p.port_type == PortType.IN]
-        self.input_port_num = len(self.in_ports)
         self.out_ports = [p for p in self.ports if p.port_type == PortType.OUT]
-        self.output_port_num = len(self.out_ports)
         self.parallel = parallel
         if specific_port_types is not None:
             for port_name, data_type in specific_port_types.items():
@@ -255,34 +276,15 @@ class Component(DfirNode):
                 ), f"{port.data_type} != {self.ports[idx].data_type}"
                 self.ports[idx].connect(port)
 
-    def additional_info(self) -> str:
-        return ""
+    def additional_info(self) -> List[str]:
+        return [""]
 
     @property
     def name(self) -> str:
         return f"{self.__class__.__name__[:5]}_{self.readable_id}"
 
-    def to_hls(self) -> hls.HLSFunction:
-        assert False, f"Abstract method to_hls() should be implemented for {self.__class__.__name__}"
-
-    def get_hls_function(
-        self,
-        code_in_loop: List[str],
-        code_before_loop: Optional[List[str]] = [],
-        code_after_loop: Optional[List[str]] = [],
-        name_tail: Optional[str] = None,
-    ) -> hls.HLSFunction:
-        return hls.HLSFunction(
-            name=self.name + (f"_{name_tail}" if name_tail else ""),
-            comp=self,
-            code_in_loop=code_in_loop,
-            code_before_loop=code_before_loop,
-            code_after_loop=code_after_loop,
-        )
-
     def __repr__(self) -> str:
         add_info = self.additional_info()
-        add_info = add_info if isinstance(add_info, list) else [add_info]
         add_info = "\n  ".join(add_info)
         add_info = "\n  " + add_info if add_info else ""
         return (
@@ -306,36 +308,19 @@ class IOComponent(Component):
         else:
             super().__init__(data_type, None, ["i_0"])
 
-    def to_hls(self) -> hls.HLSFunction:
-        assert False, "IOComponent should not be used in HLS"
-
 
 class ConstantComponent(Component):
     def __init__(self, data_type: DfirType, value: Any) -> None:
         super().__init__(None, data_type, ["o_0"], parallel=isinstance(data_type, ArrayType))
         self.value = value
 
-    def additional_info(self) -> str:
-        return f"value: {self.value}"
-
-    def to_hls(self) -> hls.HLSFunction:
-        assert False, "ConstantComponent should not be used in HLS"
+    def additional_info(self) -> List[str]:
+        return [f"value: {self.value}"]
 
 
 class CopyComponent(Component):
     def __init__(self, input_type: DfirType) -> None:
         super().__init__(input_type, input_type, ["i_0", "o_0", "o_1"])
-
-    def to_hls(self) -> hls.HLSFunction:
-        code_in_loop = [
-            r"#type:i_0# copy_src = #read:i_0#;",
-            r"bool #end_flag_val# = copy_src.end_flag;",
-            # r"o_0.write(copy_src);",
-            # r"o_1.write(copy_src);",
-            r"#write_notrans:o_0,copy_src#",
-            r"#write_notrans:o_1,copy_src#",
-        ]
-        return self.get_hls_function(code_in_loop)
 
 
 class GatherComponent(Component):
@@ -348,7 +333,9 @@ class GatherComponent(Component):
             ports.append(f"i_{i}")
             specific_port_types[f"i_{i}"] = input_types[i]
             if parallel:
-                output_types.append(input_types[i].type_)
+                cur_input_type = input_types[i]
+                assert isinstance(cur_input_type, ArrayType)
+                output_types.append(cur_input_type.type_)
             else:
                 output_types.append(input_types[i])
         output_type = TupleType(output_types)
@@ -356,25 +343,6 @@ class GatherComponent(Component):
             output_type = ArrayType(output_type)
         ports.append("o_0")
         super().__init__(output_type, output_type, ports, parallel, specific_port_types)
-
-    def to_hls(self) -> hls.HLSFunction:
-        code_in_loop = ["bool #end_flag_val# = false;"]
-        for i in range(len(self.in_ports)):
-            code_in_loop.extend(
-                [
-                    f"#type:{self.in_ports[i].name}# gather_src_{i} = #read:i_{i}#;",
-                    f"#end_flag_val# |= gather_src_{i}.end_flag;",
-                    f"#peel:{self.in_ports[i].name},gather_src_{i},real_gather_src_{i}#",
-                ]
-            )
-        code_in_loop += [
-            r"#type:o_0# gather_result = {"
-            + ", ".join(f"real_gather_src_{i}" for i in range(len(self.in_ports)))
-            + ", #end_flag_val#"
-            + r"};",
-            r"#write_notrans:o_0,gather_result#",
-        ]
-        return self.get_hls_function(code_in_loop)
 
 
 class ScatterComponent(Component):
@@ -387,6 +355,7 @@ class ScatterComponent(Component):
             real_input_type = input_type.type_
             parallel = True
         ports = ["i_0"]
+        assert isinstance(real_input_type, TupleType)
         for i in range(len(real_input_type.types)):
             ports.append(f"o_{i}")
         # output_type = input_type just for assign
@@ -400,14 +369,6 @@ class ScatterComponent(Component):
                 for i, type_ in enumerate(real_input_type.types)
             },
         )
-
-    def to_hls(self) -> hls.HLSFunction:
-        code_in_loop = []
-        code_in_loop.append(r"#type:i_0# scatter_src = #read:i_0#;")
-        code_in_loop.append(r"bool #end_flag_val# = scatter_src.end_flag;")
-        for i in range(len(self.out_ports)):
-            code_in_loop.append(f"#write:o_{i},scatter_src.ele_{i}#")
-        return self.get_hls_function(code_in_loop)
 
 
 class BinOp(Enum):
@@ -428,6 +389,7 @@ class BinOp(Enum):
     SR = ">>"
     MIN = "min"
     MAX = "max"
+    BITOR = "|"
 
     def __repr__(self) -> str:
         return self.value
@@ -460,6 +422,7 @@ class BinOp(Enum):
             BinOp.MAX,
             BinOp.SL,
             BinOp.SR,
+            BinOp.BITOR
         ]:
             return input_type
         elif self in [BinOp.EQ, BinOp.NE, BinOp.LT, BinOp.GT, BinOp.LE, BinOp.GE]:
@@ -480,18 +443,8 @@ class BinOpComponent(Component):
         super().__init__(input_type, output_type, ["i_0", "i_1", "o_0"], parallel)
         self.op = op
 
-    def additional_info(self) -> str:
-        return f"op: {self.op}"
-
-    def to_hls(self) -> hls.HLSFunction:
-        code_in_loop = [
-            r"#type:i_0# binop_src_0 = #read:i_0#;",
-            r"#type:i_1# binop_src_1 = #read:i_1#;",
-            r"bool #end_flag_val# = binop_src_0.end_flag | binop_src_1.end_flag;",
-            f"#type_inner:o_0# binop_out = {self.op.gen_repr('binop_src_0#may_ele:i_0#', 'binop_src_1#may_ele:i_1#')};",
-            r"#write:o_0,binop_out#",
-        ]
-        return self.get_hls_function(code_in_loop)
+    def additional_info(self) -> List[str]:
+        return [f"op: {self.op}"]
 
 
 class UnaryOp(Enum):
@@ -555,7 +508,9 @@ class UnaryOpComponent(Component):
             parallel = False
             real_input_type = input_type
         if op == UnaryOp.SELECT:
-            assert isinstance(real_input_type, TupleType)
+            assert isinstance(
+                real_input_type, TupleType
+            ), f"input type {real_input_type} is not a tuple type for {op}"
             assert select_index is not None
             inside_output_type = real_input_type.types[select_index]
         elif op == UnaryOp.GET_ATTR:
@@ -572,43 +527,11 @@ class UnaryOpComponent(Component):
         self.op = op
         self.select_index = select_index
 
-    def additional_info(self) -> str:
+    def additional_info(self) -> List[str]:
         if self.op == UnaryOp.SELECT:
             return [f"op: {self.op}", f"select_index: {self.select_index}"]
         else:
-            return f"op: {self.op}"
-
-    def to_hls(self) -> hls.HLSFunction:
-        if self.op == UnaryOp.GET_LENGTH:
-            code_before_loop = [
-                r"uint32_t length = 0;",
-            ]
-            code_in_loop = [
-                r"#read:i_0#;",
-                r"length++;",
-            ]
-            code_after_loop = [
-                # r"#output_length# = 1;",
-                r"#write:o_0,length#",
-            ]
-            return self.get_hls_function(code_in_loop, code_before_loop, code_after_loop)
-        else:
-            trans_dict = {
-                UnaryOp.NOT: "{!unary_src#may_ele:i_0#}",
-                UnaryOp.NEG: "{-unary_src#may_ele:i_0#}",
-                UnaryOp.CAST_BOOL: "{(bool)(unary_src#may_ele:i_0#)}",
-                UnaryOp.CAST_INT: "{(int32_t)(unary_src#may_ele:i_0#)}",
-                UnaryOp.CAST_FLOAT: "{(ap_fixed<32, 16>)(unary_src#may_ele:i_0#)}",
-                UnaryOp.SELECT: f"unary_src.ele_{self.select_index}",
-                UnaryOp.GET_ATTR: f"unary_src.{self.select_index}",
-            }
-            code_in_loop = [
-                f"#type:i_0# unary_src = #read:i_0#;",
-                f"bool #end_flag_val# = unary_src.end_flag;",
-                f"#type_inner:o_0# unary_out = {trans_dict[self.op]};",
-                f"#write:o_0,unary_out#",
-            ]
-            return self.get_hls_function(code_in_loop)
+            return [f"op: {self.op}"]
 
 
 class ConditionalComponent(Component):
@@ -629,18 +552,6 @@ class ConditionalComponent(Component):
             {"i_cond": cond_type},
         )
 
-    def to_hls(self) -> hls.HLSFunction:
-        code_in_loop = [
-            r"#type:i_data# cond_data = #read:i_data#;",
-            r"#type:i_cond# cond = #read:i_cond#;",
-            r"bool #end_flag_val# = cond_data.end_flag | cond.end_flag;",
-            r"#peel:i_data,cond_data,real_cond_data#",
-            r"#peel:i_cond,cond,real_cond#",
-            r"#opt_type:o_0# cond_result = {real_cond_data, real_cond};",
-            r"#write:o_0,cond_result#",
-        ]
-        return self.get_hls_function(code_in_loop)
-
 
 class CollectComponent(Component):
     def __init__(self, input_type: DfirType) -> None:
@@ -648,19 +559,6 @@ class CollectComponent(Component):
         assert isinstance(input_type.type_, OptionalType)
         output_type = ArrayType(input_type.type_.type_)
         super().__init__(input_type, output_type, ["i_0", "o_0"], parallel=True)
-
-    def to_hls(self) -> hls.HLSFunction:
-        # code_before_loop = [
-        #     r"#output_length# = 0;",
-        # ]
-        code_in_loop = [
-            r"#type:i_0# collect_src = #read:i_0#;",
-            r"bool #end_flag_val# = collect_src.end_flag;",
-            r"if (collect_src.valid.ele || #end_flag_val#) {",
-            r"    #write:o_0,collect_src.data#",
-            r"}",
-        ]
-        return self.get_hls_function(code_in_loop)
 
 
 class ReduceComponent(Component):
@@ -671,10 +569,10 @@ class ReduceComponent(Component):
         reduce_key_out_type: DfirType,
     ) -> None:
         assert isinstance(input_type, ArrayType)
-        real_input_type = input_type.type_
+        real_input_type = input_type
         super().__init__(
             input_type,
-            ArrayType(accumulated_type),
+            accumulated_type,
             [
                 "i_0",
                 "o_0",
@@ -697,161 +595,419 @@ class ReduceComponent(Component):
                 "o_reduce_unit_start_1": accumulated_type,
             },
         )
+        self._port_groups: Dict[str, List[Port]] = {
+            "global": [],
+            "key": [],
+            "transform": [],
+            "unit": [],
+        }
+        self.harness_map: Dict[int, Port] = {}
+        # Categorize initial ports
+        for p in self.ports:
+            if p.name in ["i_0", "o_0"]:
+                self._port_groups["global"].append(p)
+            elif "key" in p.name:
+                self._port_groups["key"].append(p)
+            elif "transform" in p.name:
+                self._port_groups["transform"].append(p)
+            elif "unit" in p.name:
+                self._port_groups["unit"].append(p)
 
-    def to_hls_list(
-        self,
-        func_key_name: str,
-        func_transform_name: str,
-        func_unit_name: str,
-    ) -> List[hls.HLSFunction]:
-        # Generate 1st func for key & transform pre-process
-        code_in_loop = [
-            r"#type:i_0# reduce_src = #read:i_0#;",
-            r"bool #end_flag_val# = reduce_src.end_flag;",
-            # f'hls::stream<#type:i_0#> reduce_key_in_stream("reduce_key_in_stream");',
-            # r"#pragma HLS STREAM variable=reduce_key_in_stream depth=4",
-            # f'hls::stream<#type:i_0#> reduce_transform_in_stream("reduce_transform_in_stream");',
-            # r"#pragma HLS STREAM variable=reduce_transform_in_stream depth=4",
-            # r"reduce_src.end_flag = true;",
-            # f"reduce_key_in_stream.write(reduce_src);",
-            # f"reduce_transform_in_stream.write(reduce_src);",
-            # f'hls::stream<#type:i_reduce_key_out#> reduce_key_out_stream("reduce_key_out_stream");',
-            # r"#pragma HLS STREAM variable=reduce_key_out_stream depth=4",
-            # f'hls::stream<#type:i_reduce_transform_out#> reduce_transform_out_stream("reduce_transform_out_stream");',
-            # r"#pragma HLS STREAM variable=reduce_transform_out_stream depth=4",
-            f"#type:i_reduce_key_out# reduce_key_out;",
-            f"#type:i_reduce_transform_out# reduce_transform_out;",
-            f"#call_once:{func_key_name},reduce_src,reduce_key_out#;",
-            f"#call_once:{func_transform_name},reduce_src,reduce_transform_out#;",
-            # r"#type:i_reduce_key_out# reduce_key_out = reduce_key_out_stream.read();",
-            r"reduce_key_out.end_flag = #end_flag_val#;",
-            r"intermediate_key.write(reduce_key_out);",
-            # r"#type:i_reduce_transform_out# reduce_transform_out = reduce_transform_out_stream.read();",
-            r"reduce_transform_out.end_flag = #end_flag_val#;",
-            r"intermediate_transform.write(reduce_transform_out);",
-        ]
-        stage_1_func = self.get_hls_function(code_in_loop, name_tail="pre_process")
-
-        # Generate 2nd func for unit-reduce
-        code_before_loop = [
-            r"#reduce_key_struct# key_mem[MAX_NUM];",
-            # r"#pragma HLS ARRAY_PARTITION variable=key_mem dim=0 complete",
-            r"#pragma HLS BIND_STORAGE variable = key_mem type = RAM_2P impl = URAM",
-            r"#pragma HLS dependence variable=key_mem inter false",
-            r"#reduce_key_struct# key_buffer[L + 1];",
-            r"#pragma HLS ARRAY_PARTITION variable=key_buffer dim=0 complete",
-            r"uint32_t i_buffer[L + 1];",
-            r"#pragma HLS ARRAY_PARTITION variable=i_buffer dim=0 complete",
-            r"for (int i_clear_buffer = 0; i_clear_buffer < L + 1; i_clear_buffer++) {",
-            r"#pragma HLS UNROLL",
-            r"    i_buffer[i_clear_buffer] = MAX_NUM + 1;",
-            r"}",
-            # r"#pragma HLS ARRAY_PARTITION variable=key_mem complete dim=0",
-            r"CLEAR_REDUCE_VALID: for (int i_reduce_clear = 0; i_reduce_clear < MAX_NUM; i_reduce_clear++) {",
-            r"#pragma HLS UNROLL",
-            r"    key_mem[i_reduce_clear].valid.ele = 0;",
-            r"}",
-        ]
-        code_in_loop = [
-            # the reduce_key_struct is {key, valid}, the loop uses one loop ahead
-            # to clear the valid bit to 0 with pipeline
-            f"#type:i_reduce_key_out# reduce_key_out = #read:intermediate_key#;",
-            f"#type:i_reduce_transform_out# reduce_transform_out = #read:intermediate_transform#;",
-            r"bool #end_flag_val# = reduce_key_out.end_flag | reduce_transform_out.end_flag;",
-            # r"bool merged = false;",
-            r"#peel:i_reduce_key_out,reduce_key_out,real_reduce_key_out#",
-            r"#peel:i_reduce_transform_out,reduce_transform_out,real_reduce_transform_out#",
-            # r"SCAN_BRAM_INTER_LOOP: for (int i_in_reduce = 0; i_in_reduce < MAX_NUM; i_in_reduce++) {",
-            # r"#pragma HLS PIPELINE",
-            # r"    #reduce_key_struct# cur_ele = key_mem[i_in_reduce];",
-            # r"    if (!merged && !cur_ele.valid.ele) {",
-            # r"        key_mem[i_in_reduce].valid.ele = 1;",
-            # r"        key_mem[i_in_reduce].key#may_ele:i_reduce_key_out# = real_reduce_key_out;",
-            # r"        key_mem[i_in_reduce].data#may_ele:i_reduce_transform_out# = real_reduce_transform_out;",
-            # r"        merged = true;",
-            # r"    } else if (!merged && cur_ele.valid.ele && #cmpeq:i_reduce_key_out,cur_ele.key,real_reduce_key_out#) {",
-            # # new a stream to call the reduce unit
-            # '        hls::stream<#type:o_reduce_unit_start_0#> reduce_unit_stream_0("reduce_unit_stream_0");',
-            # r"#pragma HLS STREAM variable=reduce_unit_stream_0 depth=4",
-            # '        hls::stream<#type:o_reduce_unit_start_1#> reduce_unit_stream_1("reduce_unit_stream_1");',
-            # r"#pragma HLS STREAM variable=reduce_unit_stream_1 depth=4",
-            # '        hls::stream<#type:i_reduce_unit_end#> reduce_unit_stream_out("reduce_unit_stream_out");',
-            # r"#pragma HLS STREAM variable=reduce_unit_stream_out depth=4",
-            # r"        #write:reduce_unit_stream_0,cur_ele.data#may_ele:i_reduce_transform_out#,#type:i_reduce_transform_out##",
-            # r"        #write:reduce_unit_stream_1,real_reduce_transform_out,#type:i_reduce_transform_out##",
-            # f"        #call_once:{func_unit_name},reduce_unit_stream_0,reduce_unit_stream_1,reduce_unit_stream_out#;",
-            # r"        #type:i_reduce_unit_end# reduce_unit_out = #read:reduce_unit_stream_out#;",
-            # r"        #peel:i_reduce_unit_end,reduce_unit_out,real_reduce_unit_out#",
-            # r"        key_mem[i_in_reduce].data#may_ele:i_reduce_transform_out# = real_reduce_unit_out;",
-            # r"        merged = true;",
-            # r"    }",
-            r"#reduce_key_struct# old_ele = key_mem[real_reduce_key_out#may_ele:i_reduce_key_out#];",
-            r"for (int i_search_buffer = 0; i_search_buffer < L + 1; i_search_buffer++) {",
-            r"#pragma HLS UNROLL",
-            r"    {",
-            r"        if (real_reduce_key_out#may_ele:i_reduce_key_out# == i_buffer[i_search_buffer]) old_ele = key_buffer[i_search_buffer];",
-            r"    }",
-            r"}",
-            r"for (int i_move_buffer = 0; i_move_buffer < L; i_move_buffer++) {",
-            r"#pragma HLS UNROLL",
-            r"    {",
-            r"        i_buffer[i_move_buffer] = i_buffer[i_move_buffer + 1];",
-            r"        key_buffer[i_move_buffer] = key_buffer[i_move_buffer + 1];",
-            r"    }",
-            r"}",
-            r"#reduce_key_struct# new_ele;",
-            r"if (!old_ele.valid.ele) {",
-            r"    new_ele.valid.ele = 1;",
-            r"    new_ele.data = real_reduce_transform_out;",
-            r"} else {",
-            # '    hls::stream<#type:o_reduce_unit_start_0#> reduce_unit_stream_0("reduce_unit_stream_0");',
-            # r"#pragma HLS STREAM variable=reduce_unit_stream_0 depth=1",
-            # '    hls::stream<#type:o_reduce_unit_start_1#> reduce_unit_stream_1("reduce_unit_stream_1");',
-            # r"#pragma HLS STREAM variable=reduce_unit_stream_1 depth=1",
-            # '    hls::stream<#type:i_reduce_unit_end#> reduce_unit_stream_out("reduce_unit_stream_out");',
-            # r"#pragma HLS STREAM variable=reduce_unit_stream_out depth=1",
-            # r"    #write:reduce_unit_stream_0,old_ele.data,#type:i_reduce_transform_out##",
-            # r"    #write:reduce_unit_stream_1,real_reduce_transform_out,#type:i_reduce_transform_out##",
-            r"    #write_nostream:old_ele_data,old_ele.data,#type:i_reduce_transform_out##",
-            r"    #write_nostream:new_ele_data,real_reduce_transform_out,#type:i_reduce_transform_out##",
-            r"    #type:i_reduce_unit_end# reduce_unit_out;",
-            f"    #call_once:{func_unit_name},old_ele_data,new_ele_data,reduce_unit_out#;",
-            # r"    #type:i_reduce_unit_end# reduce_unit_out = #read:reduce_unit_stream_out#;",
-            r"    #peel:i_reduce_unit_end,reduce_unit_out,real_reduce_unit_out#",
-            r"    new_ele.data = real_reduce_unit_out;",
-            r"}",
-            r"key_mem[real_reduce_key_out#may_ele:i_reduce_key_out#] = new_ele;",
-            r"key_buffer[L] = new_ele;",
-            r"i_buffer[L] = real_reduce_key_out#may_ele:i_reduce_key_out#;",
-        ]
-        code_after_loop = [
-            # r"#output_length# = 0;",
-            r"WRITE_KEY_MEM_LOOP: for (int i_write_key_mem = 0; i_write_key_mem < MAX_NUM; i_write_key_mem++) {",
-            r"#pragma HLS PIPELINE",
-            r"    if (key_mem[i_write_key_mem].valid.ele) {",
-            r"        #write_noend:o_0,key_mem[i_write_key_mem].data#may_ele:o_0##",
-            # r"        #output_length#++;",
-            r"    }",
-            r"}",
-            r"#write:o_0,key_mem[0].data#may_ele:o_0##",
-        ]
-        stage_2_func = self.get_hls_function(
-            code_in_loop, code_before_loop, code_after_loop, name_tail="unit_reduce"
+    @property
+    def subg_input_ports(self) -> List[Port]:
+        """
+        Get all out ports that connect to internal components.
+        """
+        sub_graph_ports = (
+            self._port_groups["key"] + self._port_groups["transform"] + self._port_groups["unit"]
         )
-        return [stage_1_func, stage_2_func]
+        sub_graph_out_ports = [p for p in sub_graph_ports if p.port_type == PortType.OUT]
+        return sub_graph_out_ports
+
+    def get_port_group(self, group: str, io_type: Optional[str] = None) -> List[Port]:
+        """
+        Get all ports in a specific functional group.
+        This is a ReduceComponent-specific method for its reconstruction.
+
+        Args:
+            group: The functional group, e.g., 'key', 'transform', 'unit', 'global'.
+            io_type: Optional; 'in' for input ports, 'out' for output ports, None for all ports.
+        Returns:
+            A list of ports in the specified group and type.
+        """
+        assert group in self._port_groups, f"Invalid port group: {group}"
+        if io_type is None:
+            return self._port_groups[group]
+        elif io_type == "in":
+            return [p for p in self._port_groups[group] if p.port_type == PortType.IN]
+        elif io_type == "out":
+            return [p for p in self._port_groups[group] if p.port_type == PortType.OUT]
+        else:
+            raise ValueError(f"Invalid io_type: {io_type}. Must be 'in', 'out', or None.")
+
+    def _add_io_port_pair(
+        self, in_group: str, out_group: str, name_base: str, data_type: DfirType
+    ) -> Tuple[Port, Port]:
+        """
+        Adds a pair of external input and internal output ports to the component.
+        This is a ReduceComponent-specific method for its reconstruction.
+
+        Args:
+            group: The functional group, e.g., 'key', 'transform'.
+            name_base: A descriptive name for the data, e.g., 'passthrough_0'.
+            data_type: The DfirType of the data stream.
+
+        Returns:
+            A tuple of (external_input_port, internal_output_port).
+        """
+        assert in_group in self._port_groups, f"Invalid input port group: {in_group}"
+        assert out_group in self._port_groups, f"Invalid output port group: {out_group}"
+
+        # Create the external-facing input port
+        p_in_name = f"i_{in_group}_{name_base}"
+        p_in = Port(p_in_name, self)
+        p_in.data_type = data_type
+
+        # Create the internal-facing output port
+        p_out_name = f"o_{out_group}_{name_base}"
+        p_out = Port(p_out_name, self)
+        p_out.data_type = data_type
+
+        # assert no same name ports exist
+        assert all(p.name != p_in_name for p in self.ports), f"Port name {p_in_name} already exists."
+        assert all(p.name != p_out_name for p in self.ports), f"Port name {p_out_name} already exists."
+
+        # Add ports to all internal lists for consistency
+        self.ports.extend([p_in, p_out])
+        self.in_ports.append(p_in)
+        self.out_ports.append(p_out)
+        self._port_groups[in_group].append(p_in)
+        self._port_groups[out_group].append(p_out)
+        self.harness_map[p_in.readable_id] = p_out
+
+        return p_in, p_out
+
+    def glb_grp(self, port: Port) -> str:
+        """Get the functional group of a global port."""
+        assert port in self._port_groups["global"], f"Port {port.name} is not in global group"
+        assert port.readable_id in self.harness_map, f"Port {port.name} is not in harness_map"
+        harness_port = self.harness_map[port.readable_id]
+        if harness_port in self._port_groups["key"]:
+            return "key"
+        elif harness_port in self._port_groups["transform"]:
+            return "transform"
+        else:
+            raise ValueError(f"Port {harness_port.name} is not in key or transform group")
+
+    def _remove_port_by_name(self, name: str) -> None:
+        """
+        Removes a port from the component by its name.
+        This is a ReduceComponent-specific method for its reconstruction.
+
+        Args:
+            name: The exact name of the port to remove (e.g., 'i_0').
+        """
+        port_to_remove = self.get_port(name)
+        assert not port_to_remove.connected, f"Cannot remove port '{name}' because it is connected."
+
+        # Remove from primary lists
+        self.ports.remove(port_to_remove)
+        if port_to_remove.port_type == PortType.IN:
+            self.in_ports.remove(port_to_remove)
+        else:
+            self.out_ports.remove(port_to_remove)
+
+        # Remove from any group it might be in
+        for group in self._port_groups.values():
+            if port_to_remove in group:
+                group.remove(port_to_remove)
+
+
+class FusedOpComponent(Component):
+    """
+    A container that wraps a complex subgraph (ComponentCollection) into a single component.
+    It exposes the inputs and outputs of the subgraph as its own ports.
+    The subgraph is restricted to contain only pure computational components.
+    """
+
+    def __init__(self, name: str, sub_graph: ComponentCollection) -> None:
+        self.sub_graph = sub_graph
+        self.port_mapping = {}
+
+        # --- Validation Step ---
+        # Before creating the component, validate the types of components within the subgraph.
+        # This ensures that a FusedOpComponent only contains pure, stateless computational logic.
+        allowed_base_types = (
+            ScatterComponent,
+            GatherComponent,
+            ConstantComponent,
+            CopyComponent,
+            BinOpComponent,
+            UnusedEndMarkerComponent,
+        )
+        disallowed_unary_ops = (UnaryOp.SELECT, UnaryOp.GET_ATTR, UnaryOp.GET_LENGTH)
+        placeholder_only = False
+        if any(isinstance(comp, PlaceholderComponent) for comp in self.sub_graph.components):
+            # assert there's only PlaceholderComponent (for holding places, or there will be no ops)
+            assert all(isinstance(comp, PlaceholderComponent) for comp in self.sub_graph.components)
+            placeholder_only = True
+        for comp in self.sub_graph.components:
+            if isinstance(comp, UnaryOpComponent):
+                if comp.op in disallowed_unary_ops:
+                    raise TypeError(
+                        f"FusedOpComponent cannot contain a UnaryOpComponent with the operation '{comp.op.name}'. "
+                        "Only pure arithmetic or casting operations are allowed."
+                    )
+            elif not isinstance(comp, allowed_base_types):
+                if not placeholder_only:
+                    raise TypeError(
+                        f"Component type '{type(comp).__name__}' is not allowed inside a FusedOpComponent. "
+                        "Allowed types are: Scatter, Gather, Constant, Copy, BinOp, UnusedEndMarker, and specific UnaryOps."
+                    )
+
+        # --- Port Generation Step ---
+        ports = []
+        specific_port_types = {}
+        tmp_port_mapping = {}
+
+        for i, in_port in enumerate(sub_graph.inputs):
+            port_name = f"i_{i}"
+            ports.append(port_name)
+            specific_port_types[port_name] = in_port.data_type
+            tmp_port_mapping[in_port.readable_id] = port_name
+
+        for i, out_port in enumerate(sub_graph.outputs):
+            port_name = f"o_{i}"
+            ports.append(port_name)
+            specific_port_types[port_name] = out_port.data_type
+            tmp_port_mapping[out_port.readable_id] = port_name
+
+        super().__init__(
+            input_type=None,
+            output_type=None,
+            ports=ports,
+            parallel=False,
+            specific_port_types=specific_port_types,
+        )
+        self._custom_name = name
+        for id, port_name in tmp_port_mapping.items():
+            self.port_mapping[id] = self.get_port(port_name)
+
+    @property
+    def name(self) -> str:
+        return f"{self._custom_name}_{self.readable_id}"
+
+    def additional_info(self) -> List[str]:
+        return [f"sub_graph_components: {[c.name for c in self.sub_graph.components]}"]
+
+
+class MemoryReadComponent(Component):
+    """
+    Represents a specialized memory read interface.
+    It takes a list of access patterns to read sub-elements from a base 'node' or 'edge' object,
+    retrieved via a base ID. It builds an internal access tree and exposes each requested
+    sub-element as a dedicated output port. This component does not validate the access
+    paths against any schema; it assumes the provided paths and output types are correct.
+    """
+
+    def __init__(
+        self,
+        access_pattern: List[Tuple[str, List[Union[str, int]]]],
+        output_types: Dict[str, DfirType],
+        parallel: bool = False,
+    ) -> None:
+        """
+        Initializes the MemoryReadComponent.
+
+        Args:
+            access_pattern: A list describing the data to be read. Each element is a tuple
+                            containing the base type ('node' or 'edge') and a list
+                            representing the access path (attributes or indices).
+                            Example: [("node", ["id"]), ("edge", ["src", "pr"])]
+            output_types: A dictionary mapping generated output port names to their DfirTypes.
+                          The key must match the port name generated from the access_pattern.
+                          Example: {"o_node_id": IntType(), "o_edge_src_pr": FloatType()}
+            base_id_type: The DFIR type of the input base ID. Defaults to IntType.
+            parallel: Boolean indicating if this is a parallel (batch) read operation.
+        """
+        self.access_pattern = access_pattern
+        self.access_tree = self._build_access_tree()
+        self.output_types = output_types
+        self.pattern_to_pname = {}
+        self.pname_to_pattern = {}
+        ports = []
+        specific_port_types = {}
+
+        # Dynamically generate an output port for each item in the access pattern.
+        for in_idx, base_type, path in self.access_pattern:
+            # Create a sanitized, unique name for the output port.
+            # e.g., ("edge", ["weight_tuple", 1]) -> "o_edge_weight_tuple_1"
+            path_str = "_".join(map(str, path))
+            port_name = f"o_{in_idx}_{base_type}_{path_str}"
+            ports.append(port_name)
+            self.pattern_to_pname[(in_idx, (base_type, tuple(path)))] = port_name
+            self.pname_to_pattern[port_name] = (in_idx, (base_type, tuple(path)))
+            
+            assert base_type in ["node", "edge"], f"Base type must be 'node' or 'edge', got '{base_type}'"
+            if f"i_{in_idx}_{base_type}_id" not in ports:
+                ports.append(f"i_{in_idx}_{base_type}_id")
+                base_id_type = SpecialIdType(f"{base_type}_id")
+                specific_port_types[f"i_{in_idx}_{base_type}_id"] = (
+                    ArrayType(base_id_type) if parallel else base_id_type
+                )
+
+            # Check if the user provided a type for this generated port.
+            if port_name not in output_types:
+                raise ValueError(
+                    f"The 'output_types' dictionary is missing an entry for the generated port '{port_name}'. "
+                    f"Please provide a DfirType for every access pattern."
+                )
+
+            # Assign the specified type, wrapping in ArrayType if parallel.
+            data_type = output_types[port_name]
+            # assert if parallel, must be arraytype
+            assert not (
+                parallel and not isinstance(data_type, ArrayType)
+            ), f"Output type for port '{port_name}' must be an ArrayType since 'parallel' is True."
+            specific_port_types[port_name] = data_type
+
+        super().__init__(
+            input_type=None,
+            output_type=None,
+            ports=ports,
+            parallel=parallel,
+            specific_port_types=specific_port_types,
+        )
+
+    def _build_access_tree(self) -> Dict:
+        """
+        Processes the flat access_pattern list into a nested dictionary (tree)
+        to represent the hierarchical access structure.
+        """
+        tree = {}
+        print("Building access tree from pattern:", self.access_pattern)
+        for in_idx, base_type, path in self.access_pattern:
+            if base_type not in ["node", "edge"]:
+                raise ValueError(
+                    f"Base type in access pattern must be 'node' or 'edge', but got '{base_type}'."
+                )
+            current_level = tree.setdefault(in_idx, {})
+            current_level = current_level.setdefault(base_type, {})
+            for key in path:
+                current_level = current_level.setdefault(key, {})
+        return tree
+
+    def visualize_access_tree(self) -> None:
+        """
+        Prints a human-readable visualization of the internal access tree to the console.
+        """
+        print("--- MemoryReadComponent Access Tree ---")
+
+        def _print_recursive(node: Dict, prefix: str):
+            sorted_items = sorted(node.items(), key=lambda x: str(x[0]))
+            for i, (key, sub_node) in enumerate(sorted_items):
+                connector = "└── " if i == len(sorted_items) - 1 else "├── "
+                print(f"{prefix}{connector}{key}")
+                new_prefix = prefix + ("    " if i == len(sorted_items) - 1 else "│   ")
+                _print_recursive(sub_node, new_prefix)
+
+        _print_recursive(self.access_tree, "")
+        print("-------------------------------------")
+
+    def additional_info(self) -> str:
+        return [f"read_paths: {self.access_pattern}"]
 
 
 class PlaceholderComponent(Component):
     def __init__(self, data_type: DfirType) -> None:
         super().__init__(data_type, data_type, ["i_0", "o_0"])
 
-    def to_hls(self) -> hls.HLSFunction:
-        assert False, "PlaceholderComponent should not be used in HLS"
-
 
 class UnusedEndMarkerComponent(Component):
     def __init__(self, input_type: DfirType) -> None:
         super().__init__(input_type, None, ["i_0"])
 
-    def to_hls(self) -> hls.HLSFunction:
-        assert False, "UnusedEndMarkerComponent should not be used in HLS"
+
+if __name__ == "__main__":
+    print("--- Running Tests for Custom DFIR Components ---")
+
+    # --- Test Case 1: MemoryReadComponent ---
+    # This test focuses on the access tree generation and visualization.
+    print("\n[1] Testing MemoryReadComponent...")
+
+    # Define a sample access pattern as per your specification.
+    mem_access_pattern = [
+        ("node", ["id"]),
+        ("edge", ["src", "pr"]),
+        ("edge", ["weight_tuple", 1]),
+        ("edge", ["src", "id"]),  # Add another nested access for a richer tree
+    ]
+
+    # Define the necessary output types for the ports that will be generated.
+    # The names must match the auto-generated port names.
+    mem_output_types = {
+        "o_node_id": IntType(),
+        "o_edge_src_pr": FloatType(),
+        "o_edge_weight_tuple_1": FloatType(),
+        "o_edge_src_id": IntType(),
+    }
+
+    try:
+        # Create an instance of the component.
+        mem_read_comp = MemoryReadComponent(access_pattern=mem_access_pattern, output_types=mem_output_types)
+
+        print("Successfully created MemoryReadComponent instance:")
+        print(mem_read_comp)
+
+        # Call the visualization method to test the tree printing.
+        mem_read_comp.visualize_access_tree()
+
+    except Exception as e:
+        print(f"An error occurred during MemoryReadComponent test: {e}")
+
+    # --- Test Case 2: FusedOpComponent ---
+    # This test verifies the creation and validation of the FusedOpComponent.
+    print("\n[2] Testing FusedOpComponent...")
+
+    try:
+        # 1. Create a simple valid subgraph: const1 + const2
+        const1 = ConstantComponent(IntType(), 10)
+        const2 = ConstantComponent(IntType(), 20)
+        binop = BinOpComponent(BinOp.ADD, IntType())
+
+        # Connect the components
+        const1.get_port("o_0").connect(binop.get_port("i_0"))
+        const2.get_port("o_0").connect(binop.get_port("i_1"))
+
+        # Define the subgraph collection
+        sub_graph = ComponentCollection(
+            components=[const1, const2, binop],
+            inputs=[],  # No external inputs for this subgraph
+            outputs=[binop.get_port("o_0")],
+        )
+
+        # 2. Create the FusedOpComponent
+        fused_comp = FusedOpComponent(name="my_fused_adder", sub_graph=sub_graph)
+        print("Successfully created FusedOpComponent instance with a valid subgraph:")
+        print(fused_comp)
+
+        # 3. Test the validation by creating an invalid subgraph
+        print("\n--- Intentionally triggering FusedOpComponent validation error... ---")
+        # GET_ATTR is a disallowed UnaryOp
+        invalid_unary_op = UnaryOpComponent(
+            UnaryOp.GET_ATTR, SpecialType("node"), select_index="id", attr_type=IntType()
+        )
+        invalid_sub_graph = ComponentCollection(
+            components=[invalid_unary_op],
+            inputs=[invalid_unary_op.get_port("i_0")],
+            outputs=[invalid_unary_op.get_port("o_0")],
+        )
+        # This line is expected to raise a TypeError
+        fused_comp_invalid = FusedOpComponent(name="invalid_op", sub_graph=invalid_sub_graph)
+
+    except TypeError as te:
+        print(f"Successfully caught expected validation error: {te}")
+    except Exception as e:
+        print(f"An unexpected error occurred during FusedOpComponent test: {e}")
+
+    print("\n--- All Tests Finished ---")

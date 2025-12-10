@@ -3,8 +3,8 @@
 
 # --- *** 关键修正：使其能够处理不同的目标 *** ---
 TARGET=$1
-EXECUTABLE="{{EXECUTABLE_NAME}}"
-KERNEL="{{KERNEL_NAME}}"
+EXECUTABLE="graphyflow_host"
+XCLBIN_NAME="graphyflow_kernels"
 
 # 默认目标为 sw_emu
 if [ -z "$TARGET" ]; then
@@ -12,6 +12,8 @@ if [ -z "$TARGET" ]; then
 fi
 
 echo "--- Running for target: $TARGET ---"
+
+export XRT_INI_PATH="./xrt.ini"
 
 # 1. 设置环境变量
 source /home/feiyang/set_env.sh
@@ -29,7 +31,7 @@ fi
 export LD_PRELOAD=/lib/x86_64-linux-gnu/libOpenCL.so.1
 
 # 2. 动态构建 .xclbin 文件路径
-XCLBIN_FILE="./xclbin/${KERNEL}.${TARGET}.xclbin"
+XCLBIN_FILE="./xclbin/${XCLBIN_NAME}.${TARGET}.xclbin"
 if [ ! -f "$XCLBIN_FILE" ]; then
     echo "Error: XCLBIN file not found at '$XCLBIN_FILE'"
     echo "Please make sure the project is built for the target '$TARGET' by running 'make all TARGET=$TARGET'"
@@ -38,4 +40,5 @@ fi
 
 # 3. 运行 host 程序
 DATASET="./graph.txt"
+# DATASET="./rmat-19-32.txt"
 ./${EXECUTABLE} ${XCLBIN_FILE} $DATASET

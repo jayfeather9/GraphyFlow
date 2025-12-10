@@ -5,6 +5,7 @@ from typing import List, Optional, Union, Dict, Any, Tuple
 import graphyflow.dataflow_ir_datatype as dftype
 import graphyflow.dataflow_ir as dfir
 import re
+import copy
 
 
 INDENT_UNIT = "    "
@@ -16,13 +17,35 @@ class HLSBasicType(Enum):
     UINT16 = "uint16_t"
     INT = "int32_t"
     FLOAT = "ap_fixed<32, 16>"
-    AP_FIXED_POD = "int32_t"
+
+    
     REAL_FLOAT = "float"
+    AP_UINT = "ap_uint"
     BOOL = "bool"
     STRUCT = "struct"
     STREAM = "stream"
     ARRAY = "array"
     POINTER = "pointer"
+    AP_AXIU  = "ap_axiu"
+
+    # typedef：
+    NODE_ID = "node_id_t"
+    EDGE_ID = "edge_id_t"
+    BUS_WORD_T = "bus_word_t"
+    AP_FIXED_POD = "ap_fixed_pod_t"
+    DISTANCE_T = "distance_t"
+    OUT_END_MARMER_T = "out_end_marker_t"
+    NODE_DIST_PKT_T="node_dist_pkt_t"
+    WRITE_BURST_PKT_T="write_burst_pkt_t"
+    CACHELINE_REQUEST_PKT_T = "cacheline_request_pkt_t"
+    CACHELINE_RESPONSE_PKT_T = "cacheline_response_pkt_t"
+    CACHELINE_DATA_PKT_T = "cacheline_data_pkt_t"
+    REDUCE_WORD_T = "reduce_word_t"
+    PPB_REQUEST_PKT_T = "ppb_request_pkt_t"
+    PPB_RESPONSE_PKT_T = "ppb_response_pkt_t"
+    WRITE_BURST_W_DST_PKT_T = "write_burst_w_dst_pkt_t"
+    LITTLE_OUT_PKT_T = "little_out_pkt_t"
+
 
     def __repr__(self) -> str:
         return self.value
@@ -34,6 +57,8 @@ class HLSBasicType(Enum):
             HLSBasicType.STREAM,
             HLSBasicType.ARRAY,
             HLSBasicType.POINTER,
+            HLSBasicType.AP_UINT,
+            HLSBasicType.AP_AXIU
         ]
 
 
@@ -52,6 +77,8 @@ class HLSType:
         struct_prop_names: Optional[List[str]] = None,
         array_dims: Optional[List[Union[str, int]]] = None,
         is_const_ptr: bool = False,
+        width: Optional[int] = None,
+        axiu_config: Optional[Tuple[int, int, int, int]] = None,
     ) -> None:
         self.type = basic_type
         self.sub_types = sub_types
@@ -60,7 +87,23 @@ class HLSType:
         self.array_dims = array_dims
         self.is_const_ptr = is_const_ptr
 
-        if basic_type.is_simple:
+        self.width = width  # --- 新增 ---
+        self.axiu_config = axiu_config  # --- 新增 ---
+
+        if basic_type == HLSBasicType.AP_AXIU:
+            assert axiu_config is not None
+            W = axiu_config[0]
+            U = axiu_config[1]
+            I = axiu_config[2]
+            D = axiu_config[3]
+
+            self.name = f"ap_axiu<{W}, {U}, {I}, {D}>"
+            self.full_name = self.name
+        elif basic_type == HLSBasicType.AP_UINT:  # --- 新增 ---
+            assert width is not None
+            self.name = f"ap_uint<{width}>"
+            self.full_name = self.name
+        elif basic_type.is_simple:
             self.name = basic_type.value
             self.full_name = self.name
         elif basic_type == HLSBasicType.STREAM:
@@ -102,13 +145,13 @@ class HLSType:
 
         HLSType._all_full_names.add(self.full_name)
 
-        # --- *** 关键修正：仅对非简单类型进行名称冲突检查 *** ---
+        # Only check for name collisions for non-simple types
         if not self.type.is_simple:
             if self.name in HLSType._all_names:
                 if struct_name is not None:
                     assert False, f"Struct name collision detected: {self.name}"
-                else:
-                    self.name = f"{self.name}_{self.readable_id}"
+                #else:
+                    #self.name = f"{self.name}_{self.readable_id}"
 
         HLSType._all_names.add(self.name)
         HLSType._full_to_type[self.full_name] = self
@@ -163,7 +206,7 @@ class HLSType:
                 return f"{base_type_str} {var_name}{dims_str}"
             else:
                 assert False
-        if ref:
+        if ref and self.type != HLSBasicType.POINTER:
             return f"{self.name} &{var_name}"
         return f"{self.name} {var_name}"
 
@@ -187,6 +230,21 @@ class HLSType:
             + f"\n}};\n"
         )
 
+    def compare_struct(self, other: HLSType) -> bool:
+        assert self.type == HLSBasicType.STRUCT and other.type == HLSBasicType.STRUCT
+        if len(self.sub_types) != len(other.sub_types):
+            return False
+        other = copy.deepcopy(other)
+        for st1, st2 in zip(self.sub_types, other.sub_types):
+            # struct, use full comparison
+            if st1.type == HLSBasicType.STRUCT and st2.type == HLSBasicType.STRUCT:
+                if not st1.compare_struct(st2):
+                    return False
+            # others, use name comparison
+            elif st1 != st2:
+                return False
+        return True
+
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, HLSType):
             return NotImplemented
@@ -205,7 +263,7 @@ class HLSVar:
         self.type = var_type
 
     def __repr__(self) -> str:
-        return f"HLSVar({self.name}, {self.type})"
+        return f"HLSVar({self.name}, {self.type}({self.type.type}))"
 
 
 class HLSCodeLine:
@@ -217,14 +275,22 @@ class HLSCodeLine:
 
 
 class CodeVarDecl(HLSCodeLine):
-    def __init__(self, var_name, var_type, init_val=None) -> None:
+    def __init__(self, var_name, var_type, init_val=None, const=False) -> None:
         super().__init__()
         self.var = HLSVar(var_name, var_type)
         self.init_val = init_val
+        self.const = const
 
     def gen_code(self, indent_lvl: int = 0):
         init_code = f" = {self.init_val}" if self.init_val is not None else ""
-        return indent_lvl * INDENT_UNIT + self.var.type.get_upper_decl(self.var.name) + init_code + ";\n"
+        const_code = "const " if self.const else ""
+        return (
+            indent_lvl * INDENT_UNIT
+            + const_code
+            + self.var.type.get_upper_decl(self.var.name)
+            + init_code
+            + ";\n"
+        )
 
 
 class CodeIf(HLSCodeLine):
@@ -271,6 +337,9 @@ class CodeIf(HLSCodeLine):
         return if_part + elif_part + else_part + "\n"
 
 
+GLOBAL_LOOP_CNT = 0
+
+
 class CodeWhile(HLSCodeLine):
     def __init__(
         self,
@@ -280,12 +349,15 @@ class CodeWhile(HLSCodeLine):
         super().__init__()
         self.i_expr = iter_expr
         self.codes = codes
+        global GLOBAL_LOOP_CNT
+        self.loop_id = GLOBAL_LOOP_CNT
+        GLOBAL_LOOP_CNT += 1
 
     def gen_code(self, indent_lvl: int = 0) -> str:
         oind = indent_lvl * INDENT_UNIT
         return (
-            oind
-            + f"while ({self.i_expr.code}) "
+            f"{oind}LOOP_WHILE_{self.loop_id}:\n"
+            + f"{oind}while ({self.i_expr.code}) "
             + "{\n"
             + "".join(c.gen_code(indent_lvl + 1) for c in self.codes)
             + oind
@@ -300,18 +372,27 @@ class CodeFor(HLSCodeLine):
         iter_limit: Union[str, HLSVar],
         iter_cmp="<",
         iter_name="i",
+        iter_start="0",
+        iter_step=None,
+        iter_val_type: HLSType = HLSType(HLSBasicType.UINT),
     ) -> None:
         super().__init__()
         self.i_name = iter_name
+        self.i_start = iter_start
         self.i_cmp = iter_cmp
-        self.i_lim = iter_limit
+        self.i_lim = iter_limit.name if isinstance(iter_limit, HLSVar) else iter_limit
         self.codes = codes
+        self.i_step = iter_step if iter_step else f"{self.i_name}++"
+        self.i_type = iter_val_type
+        global GLOBAL_LOOP_CNT
+        self.loop_id = GLOBAL_LOOP_CNT
+        GLOBAL_LOOP_CNT += 1
 
     def gen_code(self, indent_lvl: int = 0) -> str:
         oind = indent_lvl * INDENT_UNIT
         return (
-            oind
-            + f"for (uint32_t {self.i_name} = 0; {self.i_name} {self.i_cmp} {self.i_lim}; {self.i_name}++) "
+            f"{oind}LOOP_FOR_{self.loop_id}:\n"
+            + f"{oind}for ({self.i_type.name} {self.i_name} = {self.i_start}; {self.i_name} {self.i_cmp} {self.i_lim}; {self.i_step}) "
             + "{\n"
             + "".join(c.gen_code(indent_lvl + 1) for c in self.codes)
             + oind
@@ -505,6 +586,15 @@ class CodeComment(HLSCodeLine):
 
     def gen_code(self, indent_lvl: int = 0) -> str:
         return indent_lvl * INDENT_UNIT + "// " + self.text.strip() + "\n"
+
+
+class CodeOther(HLSCodeLine):
+    def __init__(self, text: str) -> None:
+        super().__init__()
+        self.text = text
+
+    def gen_code(self, indent_lvl: int = 0) -> str:
+        return indent_lvl * INDENT_UNIT + self.text + "\n"
 
 
 class HLSFunction:

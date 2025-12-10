@@ -1,5 +1,8 @@
 cleanexe:
 	-$(RMDIR) $(EXECUTABLE)
+	-$(RMDIR) ./scripts/host/*.o
+	-$(RMDIR) ./scripts/host/acc_setup/acc_setup.o
+	-$(RMDIR) ./scripts/host/graph_preprocess/graph_preprocess.o
 
 clean:
 	-$(RMDIR) sdaccel_* TempConfig system_estimate.xtxt *.rpt
@@ -12,6 +15,9 @@ clean:
 	-$(RMDIR) .run
 	-$(RMDIR) makefile_gen
 	-$(RMDIR) .ipcache
+	-$(RMDIR) ./scripts/host/*.o
+	-$(RMDIR) ./scripts/host/acc_setup/acc_setup.o
+	-$(RMDIR) ./scripts/host/graph_preprocess/graph_preprocess.o
 
 cleanall:
 	-$(RMDIR) $(EXECUTABLE) $(XCLBIN)/{*sw_emu*,*hw_emu*,*hw*} 
@@ -29,3 +35,6 @@ cleanall:
 	-$(RMDIR) .ipcache
 	-$(RMDIR) *.csv
 	-$(RMDIR) *.protoinst
+	-$(RMDIR) ./scripts/host/*.o
+	-$(RMDIR) ./scripts/host/acc_setup/acc_setup.o
+	-$(RMDIR) ./scripts/host/graph_preprocess/graph_preprocess.o

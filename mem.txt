@@ -1,53 +1,41 @@
-void demux_1(hls::stream<struct_kbu_33_t> &in_batch_stream, hls::stream<net_wrapper_kt_pair_141_t_t> (&out_streams)[8]) {
-    struct_kbu_33_t in_batch;
-    while (true) {
-#pragma HLS PIPELINE
-        in_batch = in_batch_stream.read();
-        net_wrapper_kt_pair_141_t_t wrapper_data;
-        for (uint32_t i = 0; i < PE_NUM; i++) {
-#pragma HLS UNROLL
-            if (i < in_batch.end_pos && !in_batch.end_flag) {
-                wrapper_data.end_flag = false;
-                wrapper_data.data = in_batch.data[i];
-                out_streams[i].write(wrapper_data);
-            }
-        }
-        if (in_batch.end_flag) {
-            break;
-        }
-    }
-    // Propagate end_flag to all output streams
-    net_wrapper_kt_pair_141_t_t end_wrapper;
-    end_wrapper.end_flag = true;
-    for (uint32_t i = 0; i < 8; i++) {
-#pragma HLS UNROLL
-        out_streams[i].write(end_wrapper);
-    }
-}
+为各个循环都加一下循环名称，然后跑一下编译看看哪个循环II>1
+不知道需不需要partition一下每个的data，可能会快可能会不快
+改了改reduce unit第四部分，发现跑出来更慢了。。。
+collect要加dependence pragma
+多看report
+需要把reduce的URAM需求减少 （yxx）
+多看看ReGraph的代码思考一下访存的问题，我们和他们的比有什么差别，有什么optimization opportunities
+稍微找一下有没有更新的
+准备合一下yxx的代码，多看看yxx的代码
+想一想paper里用到一些fancy的名字
 
-void Colle_65(hls::stream<struct_obu_19_t> &i_0,
-              hls::stream<struct_sbu_14_t> &o_0) {
-    struct_obu_19_t in_batch_i_0;
-    struct_sbu_14_t out_batch_o_0;
-    while (true) {
-#pragma HLS PIPELINE
-        in_batch_i_0 = i_0.read();
-        uint8_t out_idx;
-        out_idx = 0;
-        for (uint32_t i = 0; i < PE_NUM; i++) {
-#pragma HLS UNROLL
-            if (in_batch_i_0.data[i].valid && i < in_batch_i_0.end_pos) {
-                out_batch_o_0.data[out_idx] = in_batch_i_0.data[i].data;
-                out_idx = (out_idx + 1);
-            }
-        }
-        out_batch_o_0.end_pos = out_idx;
-        out_batch_o_0.end_flag = in_batch_i_0.end_flag;
-        o_0.write(out_batch_o_0);
-        if (in_batch_i_0.end_flag) {
-            break;
-        }
-    }
-}
+再看看report，提高一下Estimated Fmax:
 
-记得把这2个改掉
+看看我电脑上的ReGraph编译报告的频率，和他们一样就行
+
+下一步：优化写入，然后可以优化一下nodeprop loader和edge desc loader的II
+
+优化了src_offset_loader，发现是负优化
+
+先改host改成partition的版本和ReGraph比一下速度吧
+
+添加了graph partition和merge的逻辑，还需要加一个kernel wrapper，然后给kernel加一个int i作为function instantiate（要加pragma），然后改一下调用部分，然后为每个kernel指定一个输出buffer就行
+
+Added kernel cpps, added create queues, now need to modify AlgorithmHost to support multiple partitions
+
+多kernel加完了，a bit faster, but partition method need to change or big graph will all kernel all node and can't support larger graph
+
+---
+
+有几个其他函数的性能优化，记得补上
+
+然后看看逻辑有没有问题，目前生成了代码，但是没编译
+
+正在一个个过函数，下一个要过node_property_responder - DONE
+下一个过host代码
+
+TODO: replace all "struct_ibu_14_t" / "struct_sbu_19_t" in backend_mem_manager.py
+
+注意：受制于数据结构uint16_t大小，partition被分配的node id最大65535
+
+现在的mem manager相关数据结构基本都是写死的，访问结构也是写死的，看看能不能跑pr和别的图算法吧，不能的话再改

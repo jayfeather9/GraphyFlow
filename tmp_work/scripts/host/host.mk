@@ -1,32 +1,70 @@
-# Makefile for the Host Application
+
+# Compiler
 CXX := g++
 
-# Executable name (由顶层 Makefile 传入)
-# EXECUTABLE := graphyflow_host
+# --- Configuration ---
 
-# Source files
-HOST_SRCS := scripts/host/host.cpp \
-             scripts/host/graph_loader.cpp \
-             scripts/host/fpga_executor.cpp \
-             scripts/host/generated_host.cpp \
-             scripts/host/host_verifier.cpp \
-             scripts/host/host_bellman_ford.cpp \
-             scripts/host/xcl2.cpp
+# Executable name (can be passed from a top-level Makefile)
+EXECUTABLE ?= graphyflow_host
+
+# Top-level directory for host source code
+HOST_DIR := scripts/host
+
+# --- Automatic File Discovery ---
+
+# Use the shell's 'find' command to recursively find all .cpp files
+# This automatically includes files in subdirectories like 'acc_setup'.
+HOST_SRCS := $(shell find $(HOST_DIR) -name '*.cpp')
+
+# Generate a list of object files (.o) from the source files list
+# e.g., "scripts/host/host.cpp" becomes "scripts/host/host.o"
+OBJECTS := $(HOST_SRCS:.cpp=.o)
+
+
+# --- Compiler and Linker Flags ---
 
 # Include directories
-# 新增: 将生成的 kernel 目录也加入 include 路径, 内核头文件名与内核名相同
-CXXFLAGS := -Iscripts/host -Iscripts/kernel
+# We now add the top-level host directory. The compiler will handle subdirectories.
+CXXFLAGS := -I$(HOST_DIR)
+CXXFLAGS += -Iscripts/kernel
 CXXFLAGS += -I$(XILINX_XRT)/include
 CXXFLAGS += -I$(XILINX_VITIS)/include
 CXXFLAGS += -I$(XILINX_HLS)/include
 
-# Compiler flags
-CXXFLAGS += -std=c++17 -Wall
+ifeq ($(TARGET),$(filter $(TARGET), sw_emu hw_emu))
+CXXFLAGS += -DEMULATION
+endif
 
-# Linker flags
+# Compiler flags
+CXXFLAGS += -std=c++17 -O3 -Wall -g # Added -g for easier debugging
+
+# Linker flags (no changes needed here)
 LDFLAGS := -L$(XILINX_XRT)/lib
 LDFLAGS += -lOpenCL -lxrt_coreutil -lstdc++ -lrt -pthread -Wl,--export-dynamic
 
-# Build rule for the executable
-$(EXECUTABLE): $(HOST_SRCS)
-	$(CXX) $(CXXFLAGS) $(HOST_SRCS) -o $(EXECUTABLE) $(LDFLAGS)
+
+# --- Build Rules ---
+
+# The "all" rule is the default target. It depends on the final executable.
+all: $(EXECUTABLE)
+
+# Rule to link the final executable from all the object files.
+# This rule runs only if any of the object files (.o) have changed.
+$(EXECUTABLE): $(OBJECTS)
+	@echo "==> Linking executable: $@"
+	$(CXX) $(OBJECTS) -o $(EXECUTABLE) $(LDFLAGS)
+
+# Pattern rule to compile any .cpp file into its corresponding .o file.
+# This rule runs for each .cpp file that has been modified.
+%.o: %.cpp
+	@echo "==> Compiling: $<"
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+# Rule to clean up the build artifacts.
+# Call with "make clean".
+clean:
+	@echo "==> Cleaning up generated files"
+	rm -f $(EXECUTABLE) $(OBJECTS)
+
+# Phony targets are not files. 'all' and 'clean' are actions.
+.PHONY: all clean

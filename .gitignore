@@ -175,8 +175,7 @@ output/
 out.txt
 
 # Graphviz
-component_graph
-component_graph.png
+component_graph*
 
 # others
 copy.sh
@@ -237,3 +236,5 @@ membership.out
 # graphyflow.cpp
 
 generated_project
+graphyflow_host
+.vscode/

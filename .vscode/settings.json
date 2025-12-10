@@ -66,6 +66,14 @@
         "thread": "cpp",
         "cfenv": "cpp",
         "typeinfo": "cpp",
-        "__nullptr": "cpp"
+        "__nullptr": "cpp",
+        "filesystem": "cpp",
+        "__tuple": "cpp",
+        "__node_handle": "cpp",
+        "acc_setup": "cpp",
+        "*.template": "cpp",
+        "cinttypes": "cpp",
+        "__functional_03": "cpp",
+        "unordered_set": "cpp"
     }
 }
