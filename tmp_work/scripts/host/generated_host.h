@@ -35,7 +35,7 @@ class AlgorithmHost {
     void execute_kernel_iteration(const PartitionContainer &container);
     void transfer_data_from_fpga();
     bool check_convergence_and_update(const PartitionContainer &container);
-    const std::vector<int> &get_results() const;
+    const std::vector<unsigned int> &get_results() const;
 
   private:
     AccDescriptor &acc;

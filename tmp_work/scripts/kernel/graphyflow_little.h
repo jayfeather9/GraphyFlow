@@ -60,44 +60,36 @@ typedef ap_axiu<64, 0, 0, 0> little_out_pkt_t;
 typedef ap_axiu<32, 0, 0, 0> ppb_request_pkt_t;
 typedef ap_axiu<512, 0, 0, 32> ppb_response_pkt_t;
 typedef ap_axiu<512, 0, 0, 0> cacheline_data_pkt_t;
-
-// --- Struct Type Definitions (UNCHANGED) ---
-struct distance_req_pack_t {
-    node_id_t idx[PE_NUM];
-    ap_uint<4> offset; // [offset, offset + PE_NUM) are valid
-    bool end_flag;
-};
-
-struct edge_t {
+// --- Struct Type Definitions ---
+struct __attribute__((packed)) edge_t {
     node_id_t src_id;
     ap_uint<20> dst_id;
 };
 
-struct edge_descriptor_batch_t {
-    edge_t edges[PE_NUM];
-};
-
-struct update_t {
+struct __attribute__((packed)) update_t_little {
     ap_uint<20> node_id;
     ap_fixed_pod_t prop;
 };
 
-struct update_tuple_t {
-    update_t data[PE_NUM];
-};
-
-struct ppb_request_t {
+struct __attribute__((packed)) ppb_request_t {
     ap_uint<32> request_round;
     bool end_flag;
 };
 
-struct ppb_response_t {
+struct __attribute__((packed)) ppb_response_t {
     bus_word_t data;
     ap_uint<32> addr;
     bool end_flag;
 };
 
-// --- Top-Level Function Prototype ---
+struct __attribute__((packed)) edge_descriptor_batch_t {
+    edge_t edges[PE_NUM];
+};
+
+struct __attribute__((packed)) update_tuple_t_little {
+    update_t_little data[PE_NUM];
+};
+
 extern "C" void
 graphyflow_little(const bus_word_t *edge_props, int32_t num_nodes,
                   int32_t num_edges, int32_t dst_num, int32_t memory_offset,

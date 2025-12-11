@@ -46,7 +46,7 @@ static void
 apply_func(bus_word_t *node_props,
            hls::stream<in_write_burst_w_dst_pkt_t> &write_burst_stream,
            hls::stream<write_burst_w_dst_pkt_t> &kernel_out_stream) {
-APPLY_LOOP:
+LOOP_WHILE_43:
     while (true) {
         in_write_burst_w_dst_pkt_t in_pkt = write_burst_stream.read();
         if (in_pkt.end_flag) {
@@ -55,23 +55,25 @@ APPLY_LOOP:
             kernel_out_stream.write(end_pkt);
             break;
         }
-
         uint32_t dest_addr = in_pkt.dest_addr;
         bus_word_t ori_props = node_props[dest_addr];
         bus_word_t new_props;
-
         write_burst_w_dst_pkt_t out_pkt;
         out_pkt.dest = dest_addr;
         out_pkt.last = false;
-
-        for (int i = 0; i < 16; i++) {
+    LOOP_FOR_42:
+        for (int32_t i = 0; i < 16; i++) {
 #pragma HLS UNROLL
             ap_fixed_pod_t update = in_pkt.data.range(31 + (i << 5), (i << 5));
             ap_fixed_pod_t old = ori_props.range(31 + (i << 5), (i << 5));
-            ap_fixed_pod_t new_prop = (old < update) ? old : update;
+            ap_fixed_pod_t new_prop;
+            // Begin inline fused op
+            ap_fixed_pod_t BinOp_128_res;
+            BinOp_128_res = (((old) < (update) ? old : update));
+            new_prop = BinOp_128_res;
+            // End inline fused op
             new_props.range(31 + (i << 5), (i << 5)) = new_prop;
         }
-
         out_pkt.data = new_props;
         kernel_out_stream.write(out_pkt);
     }

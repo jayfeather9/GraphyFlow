@@ -1,8 +1,5 @@
 cleanexe:
 	-$(RMDIR) $(EXECUTABLE)
-	-$(RMDIR) ./scripts/host/*.o
-	-$(RMDIR) ./scripts/host/acc_setup/acc_setup.o
-	-$(RMDIR) ./scripts/host/graph_preprocess/graph_preprocess.o
 
 clean:
 	-$(RMDIR) sdaccel_* TempConfig system_estimate.xtxt *.rpt

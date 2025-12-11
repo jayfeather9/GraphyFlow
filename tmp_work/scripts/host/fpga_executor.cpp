@@ -8,10 +8,10 @@
 
 #define KERNEL_NAME "graphyflow"
 
-std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
-                                 const GraphCSR &graph, int start_node,
-                                 double &total_kernel_time_sec,
-                                 int &iter_count) {
+std::vector<unsigned int> run_fpga_kernel(const std::string &xclbin_path,
+                                          const GraphCSR &graph, int start_node,
+                                          double &total_kernel_time_sec,
+                                          int &iter_count) {
 
     // GraphPartiton
     PartitionContainer partition_container = partitionGraph(&graph);
@@ -74,9 +74,7 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
                 double iteration_time_ns = end - start;
                 current_kernel_time_sec = std::max(current_kernel_time_sec,
                                                    iteration_time_ns * 1.0e-9);
-                double mteps = (double)partition_container.SPs[partition_cnt]
-                                   .pipeline_edges[cnt]
-                                   .num_edges /
+                double mteps = (double)partition_container.SPs[cnt].num_edges /
                                (iteration_time_ns * 1.0e-9) / 1.0e6;
 
                 std::cout << "FPGA Iteration " << iter << ": "
@@ -87,7 +85,6 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
                           << "Throughput = " << mteps << " MTEPS" << std::endl;
             }
             partition_cnt++;
-            cnt = 0;
         }
         cnt = 0;
         partition_cnt = 0;
@@ -99,9 +96,7 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
                 double iteration_time_ns = end - start;
                 current_kernel_time_sec = std::max(current_kernel_time_sec,
                                                    iteration_time_ns * 1.0e-9);
-                double mteps = (double)partition_container.DPs[partition_cnt]
-                                   .pipeline_edges[cnt]
-                                   .num_edges /
+                double mteps = (double)partition_container.DPs[cnt].num_edges /
                                (iteration_time_ns * 1.0e-9) / 1.0e6;
 
                 std::cout << "FPGA Iteration " << iter << ": "
@@ -112,7 +107,6 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
                           << "Throughput = " << mteps << " MTEPS" << std::endl;
             }
             partition_cnt++;
-            cnt = 0;
         }
 
         {
@@ -174,8 +168,9 @@ std::vector<int> run_fpga_kernel(const std::string &xclbin_path,
 
     iter_count = iter + 1;
 
-    const std::vector<int> &final_results_ref = algo_host.get_results();
-    std::vector<int> final_results = final_results_ref;
+    const std::vector<unsigned int> &final_results_ref =
+        algo_host.get_results();
+    std::vector<unsigned int> final_results = final_results_ref;
 
     return final_results;
 }

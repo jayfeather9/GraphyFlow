@@ -19,11 +19,21 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
 
     // 1. Initialize algorithm state
     m_num_vertices = container.num_graph_vertices;
-    h_distances.assign(m_num_vertices, distance_t(INFINITY_DIST));
+
+    // h_distances.assign(m_num_vertices, distance_t(INFINITY_DIST));
+    h_distances.assign(m_num_vertices, distance_t(0));
+    /*
     if (start_node < m_num_vertices) {
         h_distances[start_node] = 0;
     }
-
+    */
+    for (int u = 0; u < 32; u++) {
+        int select_index = u;
+        int int_val = 1 << u;
+        unsigned int bit_pattern = static_cast<unsigned int>(int_val);
+        h_distances[select_index] =
+            *reinterpret_cast<distance_t *>(&bit_pattern);
+    }
     // 2. Prepare host-side input buffers for each pipeline
     const size_t bytes_per_word = AXI_BUS_WIDTH / 8;
     dense_buffers.resize(container.num_dense_partitions);
@@ -414,12 +424,6 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
             dense_buffers[i].pipelines[pip].packed_edge_props.resize(
                 (temp_byte_buffer.size() + bytes_per_word - 1) / bytes_per_word,
                 0);
-            // printf("DP No.%d, little pipe No.%d, edge words %d = %d edges\n",
-            // i, pip,
-            //        (int)dense_buffers[i].pipelines[pip]
-            //            .packed_edge_props.size(),
-            //         (int)dense_buffers[i].pipelines[pip]
-            //            .packed_edge_props.size() * edges_per_word);
             std::memcpy(
                 dense_buffers[i].pipelines[pip].packed_edge_props.data(),
                 temp_byte_buffer.data(), temp_byte_buffer.size());
@@ -1086,6 +1090,8 @@ void AlgorithmHost::transfer_data_from_fpga() {
 
 // --- PHASE 5: CONVERGENCE CHECK AND GLOBAL STATE UPDATE ---
 // REWRITTEN: Implements unpacking logic to parse results from 512-bit words.
+
+/*
 bool AlgorithmHost::check_convergence_and_update(
     const PartitionContainer &container) {
     bool changed = false;
@@ -1118,9 +1124,9 @@ bool AlgorithmHost::check_convergence_and_update(
                 if (global_id < m_num_vertices) {
                     distance_t new_dist =
                         *reinterpret_cast<distance_t *>(&dist_pod);
-                    // printf("DP No.%d, little pipe No.%d, local_id %d, "
-                    //        "global_id %d, new_dist %f\n",
-                    //        i, 0, local_id, global_id, (float)new_dist);
+                    printf("DP No.%d, little pipe No.%d, local_id %d, "
+                           "global_id %d, new_dist %f\n",
+                           i, 0, local_id, global_id, (float)new_dist);
 
                     if (min_distances.find(global_id) == min_distances.end() ||
                         new_dist < min_distances[global_id]) {
@@ -1141,9 +1147,9 @@ bool AlgorithmHost::check_convergence_and_update(
              local_id < little_partition.num_vertices; ++local_id) {
             if (little_partition.vtx_map_rev.count(local_id)) {
                 int global_id = little_partition.vtx_map_rev.at(local_id);
-                // printf("DP No.%d, little pipe No.%d, local_id %d, global_id "
-                //        "%d, not dst node\n",
-                //        i, 0, local_id, global_id);
+                printf("DP No.%d, little pipe No.%d, local_id %d, global_id "
+                       "%d, not dst node\n",
+                       i, 0, local_id, global_id);
             }
         }
     }
@@ -1168,10 +1174,9 @@ bool AlgorithmHost::check_convergence_and_update(
                 if (global_id < m_num_vertices) {
                     distance_t new_dist =
                         *reinterpret_cast<distance_t *>(&dist_pod);
-                    // printf("SP No.%d, big pipe No.%d, local_id %d, global_id
-                    // "
-                    //        "%d, new_dist %f\n",
-                    //        i, 0, local_id, global_id, (float)new_dist);
+                    printf("SP No.%d, big pipe No.%d, local_id %d, global_id "
+                           "%d, new_dist %f\n",
+                           i, 0, local_id, global_id, (float)new_dist);
 
                     if (min_distances.find(global_id) == min_distances.end() ||
                         new_dist < min_distances[global_id]) {
@@ -1191,10 +1196,9 @@ bool AlgorithmHost::check_convergence_and_update(
              local_id < big_partition.num_vertices; ++local_id) {
             if (big_partition.vtx_map_rev.count(local_id)) {
                 int global_id = big_partition.vtx_map_rev.at(local_id);
-                // printf("SP No.%d, big pipe No.%d, local_id %d, global_id %d,
-                // "
-                //        "not dst node\n",
-                //        i, 0, local_id, global_id);
+                printf("SP No.%d, big pipe No.%d, local_id %d, global_id %d, "
+                       "not dst node\n",
+                       i, 0, local_id, global_id);
             }
         }
     }
@@ -1232,4 +1236,145 @@ const std::vector<int> &AlgorithmHost::get_results() const {
         }
     }
     return final_distances;
+}
+*/
+bool AlgorithmHost::check_convergence_and_update(
+    const PartitionContainer &container) {
+
+    bool changed = false;
+    std::cout << "--- [Host] Phase 5: Unpacking results and checking for "
+                 "convergence ---"
+              << std::endl;
+
+    // 【已修改】将 'min_distances' 重命名为 'new_masks'，
+    // 并将值类型从 distance_t 更改为 ap_fixed_pod_t (即 unsigned int)
+    // 以明确我们在处理位掩码。
+    std::map<int, ap_fixed_pod_t> new_masks;
+    const int dists_per_word = AXI_BUS_WIDTH / DISTANCE_BITWIDTH;
+
+    int word_idx = 0;
+    int dist_in_word = 0;
+
+    // --- 1. 从 FPGA 结果中解包并合并所有新掩码 ---
+
+    // Process little partition destinations
+    for (int i = 0; i < container.num_dense_partitions; ++i) {
+        const auto &little_partition = container.DPs[i];
+        for (int local_id = 0; local_id < little_partition.num_dsts;
+             ++local_id) {
+
+            int bit_offset = dist_in_word * DISTANCE_BITWIDTH;
+            ap_fixed_pod_t dist_pod =
+                writer_kernel_host_outputs[word_idx].range(
+                    bit_offset + DISTANCE_BITWIDTH - 1, bit_offset);
+
+            if (little_partition.vtx_map_rev.count(local_id)) {
+                int global_id = little_partition.vtx_map_rev.at(local_id);
+                if (global_id < m_num_vertices) {
+
+                    // 【已修改】不再是取最小值，而是“按位或”合并。
+                    // 因为多个FPGA分区可能更新同一个节点的掩码。
+                    if (new_masks.find(global_id) == new_masks.end()) {
+                        new_masks[global_id] = dist_pod;
+                    } else {
+                        new_masks[global_id] = new_masks[global_id] | dist_pod;
+                    }
+                }
+            }
+
+            dist_in_word++;
+            if (dist_in_word >= dists_per_word) {
+                dist_in_word = 0;
+                word_idx++;
+            }
+        }
+    }
+
+    if (dist_in_word != 0) {
+        dist_in_word = 0;
+        word_idx++;
+    }
+
+    // Process big partition destinations (逻辑与 little 相同)
+    for (int i = 0; i < container.num_sparse_partitions; ++i) {
+        const auto &big_partition = container.SPs[i];
+        for (int local_id = 0; local_id < big_partition.num_dsts; ++local_id) {
+            int bit_offset = dist_in_word * DISTANCE_BITWIDTH;
+            ap_fixed_pod_t dist_pod =
+                writer_kernel_host_outputs[word_idx].range(
+                    bit_offset + DISTANCE_BITWIDTH - 1, bit_offset);
+
+            if (big_partition.vtx_map_rev.count(local_id)) {
+                int global_id = big_partition.vtx_map_rev.at(local_id);
+                if (global_id < m_num_vertices) {
+                    // 【已修改】“按位或”合并
+                    if (new_masks.find(global_id) == new_masks.end()) {
+                        new_masks[global_id] = dist_pod;
+                    } else {
+                        new_masks[global_id] = new_masks[global_id] | dist_pod;
+                    }
+                }
+            }
+
+            dist_in_word++;
+            if (dist_in_word >= dists_per_word) {
+                dist_in_word = 0;
+                word_idx++;
+            }
+        }
+    }
+
+    // --- 2. 更新全局掩码向量并检查收敛性 ---
+
+    // 【核心修复】遍历所有收到的新掩码
+    for (auto const &[global_id, new_mask_pod] : new_masks) {
+        if (global_id < m_num_vertices) {
+
+            // 获取 h_distances 中存储的旧掩码的“位模式”
+            ap_fixed_pod_t old_mask_pod =
+                *reinterpret_cast<ap_fixed_pod_t *>(&h_distances[global_id]);
+
+            if (new_mask_pod != old_mask_pod) {
+
+                // 【已修改】
+                // 1. 将 const 的 new_mask_pod 复制到一个非 const 的临时变量中
+                ap_fixed_pod_t temp_mask_pod = new_mask_pod;
+
+                // 2. 对这个非 const 的临时变量取地址并转换
+                h_distances[global_id] =
+                    *reinterpret_cast<distance_t *>(&temp_mask_pod);
+
+                changed = true;
+            }
+        }
+    }
+    if (changed) {
+        std::cout << "[INFO] Bitmasks updated. Preparing for next iteration."
+                  << std::endl;
+    } else {
+        std::cout << "[INFO] No bitmask updates. Algorithm has converged."
+                  << std::endl;
+    }
+
+    return !changed;
+}
+
+const std::vector<unsigned int> &AlgorithmHost::get_results() const {
+
+    // 【已修改】静态变量类型更改为 unsigned int
+    static std::vector<unsigned int> final_bitmasks;
+    final_bitmasks.clear();
+    final_bitmasks.reserve(h_distances.size());
+
+    for (const auto &dist : h_distances) {
+        // 【核心修复】
+        // 错误：.to_int() 会执行数值转换 (例如，位模式 0x0001
+        //       被视为 2^-15，.to_int() 结果为 0)。[cite: 671]
+        // 正确：我们使用 reinterpret_cast 将 ap_fixed<32> 变量的
+        //       32位内存，重新解释为一个 unsigned int，从而保留位模式。
+        unsigned int bitmask = *reinterpret_cast<const unsigned int *>(&dist);
+
+        final_bitmasks.push_back(bitmask);
+    }
+    return final_bitmasks;
 }

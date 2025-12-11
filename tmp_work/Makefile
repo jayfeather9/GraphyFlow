@@ -2,7 +2,7 @@
 #KERNEL_NAME := {{KERNEL_NAME}}
 EXECUTABLE := graphyflow_host
 
-TARGET ?= hw
+TARGET ?= hw_emu
 DEVICE := /opt/xilinx/platforms/xilinx_u55c_gen3x16_xdma_3_202210_1/xilinx_u55c_gen3x16_xdma_3_202210_1.xpfm
 
 .PHONY: all clean cleanall exe check

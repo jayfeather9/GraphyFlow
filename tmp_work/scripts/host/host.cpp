@@ -28,12 +28,13 @@ int main(int argc, char **argv) {
     std::cout << "\n--- Step 2: Running on FPGA ---" << std::endl;
     double total_kernel_time_sec = 0;
     int iter_count = 0;
-    std::vector<int> fpga_distances = run_fpga_kernel(
+    std::vector<unsigned int> fpga_distances = run_fpga_kernel(
         xclbin_file, graph, start_node, total_kernel_time_sec, iter_count);
 
     // 3. 在 Host CPU 上验证 (不变, 按你的要求保留)
     std::cout << "\n--- Step 3: Verifying on Host CPU ---" << std::endl;
-    std::vector<int> host_distances = verify_on_host(graph, start_node);
+    std::vector<unsigned int> host_distances =
+        verify_on_host(graph, start_node);
 
     // 4. 比较结果 (不变)
     std::cout << "\n--- Step 4: Comparing Results ---" << std::endl;

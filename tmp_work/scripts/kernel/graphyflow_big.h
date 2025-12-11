@@ -57,53 +57,54 @@ typedef ap_axiu<512, 0, 0, 0> write_burst_pkt_t;
 typedef ap_axiu<32, 0, 0, 8> cacheline_request_pkt_t;
 typedef ap_axiu<512, 0, 0, 8> cacheline_response_pkt_t;
 typedef ap_axiu<512, 0, 0, 0> cacheline_data_pkt_t;
-
-struct cacheline_req_t {
-    ap_uint<26> idx;
-    ap_uint<8> dst;
-    bool end_flag;
-};
-
-struct cacheline_resp_t {
-    bus_word_t data;
-    ap_uint<8> dst;
-    bool end_flag;
-};
-
-struct node_id_burst_t {
+// --- Struct Type Definitions ---
+struct __attribute__((packed)) node_id_burst_t {
     node_id_t data[PE_NUM];
 };
 
-struct distance_req_pack_t {
+struct __attribute__((packed)) distance_req_pack_t {
     ap_uint<26> idx[PE_NUM];
     ap_uint<4> offset;
     bool end_flag;
 };
 
-struct edge_t {
+struct __attribute__((packed)) cacheline_resp_t {
+    bus_word_t data;
+    ap_uint<8> dst;
+    bool end_flag;
+};
+
+struct __attribute__((packed)) edge_t {
     node_id_t src_id;
     ap_uint<20> dst_id;
 };
 
-struct edge_descriptor_batch_t {
-    edge_t edges[PE_NUM];
-};
-
-struct update_t {
+struct __attribute__((packed)) update_t_big {
     ap_uint<20> node_id;
     ap_fixed_pod_t prop;
     bool end_flag;
 };
 
-struct update_tuple_t {
-    update_t data[PE_NUM];
+struct __attribute__((packed)) cacheline_req_t {
+    ap_uint<26> idx;
+    ap_uint<8> dst;
+    bool end_flag;
 };
 
-// --- Top-Level Function Prototype ---
+struct __attribute__((packed)) edge_descriptor_batch_t {
+    edge_t edges[PE_NUM];
+};
+
+struct __attribute__((packed)) update_tuple_t_big {
+    update_t_big data[PE_NUM];
+};
+
+// --- Top-Level Function Prototypes ---
 extern "C" void
 graphyflow_big(const bus_word_t *edge_props, int32_t num_nodes,
                int32_t num_edges, int32_t dst_num, int32_t memory_offset,
                hls::stream<cacheline_request_pkt_t> &cacheline_req_stream,
                hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream,
                hls::stream<write_burst_pkt_t> &kernel_out_stream);
+
 #endif // __GRAPHYFLOW_GRAPHYFLOW_BIG_H__

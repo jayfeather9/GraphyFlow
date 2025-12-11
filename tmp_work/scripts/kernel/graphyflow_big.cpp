@@ -39,7 +39,7 @@ axistream2stream:
     }
 }
 
-ap_uint<4> count_end_ones(ap_uint<PE_NUM> valid_mask) {
+static ap_uint<4> count_end_ones(ap_uint<PE_NUM> valid_mask) {
 #pragma HLS INLINE
     ap_uint<4> count = 0;
     switch (valid_mask) {
@@ -76,15 +76,15 @@ ap_uint<4> count_end_ones(ap_uint<PE_NUM> valid_mask) {
     return count;
 }
 
+// --- 1. scatter_funcs ---
 static void
 dist_req_packer(hls::stream<node_id_burst_t> &src_id_burst_stream,
                 hls::stream<distance_req_pack_t> &distance_req_pack_stream,
                 int32_t num_nodes) {
-
-    const int max_node_burst_idx = (num_nodes + PE_NUM - 1) / PE_NUM;
+    const int32_t max_node_burst_idx = (num_nodes + PE_NUM - 1) / PE_NUM;
     ap_uint<26> last_idx_max = 0;
 
-LOOP_DRP_SEND_REQ:
+LOOP_FOR_4:
     for (int32_t node_burst_idx = 0; node_burst_idx < max_node_burst_idx;
          node_burst_idx += 1) {
 #pragma HLS PIPELINE II = 1
@@ -93,6 +93,7 @@ LOOP_DRP_SEND_REQ:
         ap_uint<26> cache_idx[PE_NUM];
 #pragma HLS ARRAY_PARTITION variable = cache_idx complete dim = 0
 
+    LOOP_FOR_0:
         for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
             cache_idx[pe_idx] =
@@ -101,14 +102,17 @@ LOOP_DRP_SEND_REQ:
 
         ap_uint<26> cache_idx_diffs[PE_NUM];
 #pragma HLS ARRAY_PARTITION variable = cache_idx_diffs complete dim = 0
+
+    LOOP_FOR_1:
         for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
             cache_idx_diffs[pe_idx] = cache_idx[pe_idx] - last_idx_max;
         }
 
-        // if not all diffs are zero, send a req_pack
         if (cache_idx_diffs[PE_NUM - 1]) {
+            // if not all diffs are zero, send a req_pack
             ap_uint<PE_NUM> valid_mask;
+        LOOP_FOR_2:
             for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
                 if (cache_idx_diffs[pe_idx] == 0) {
@@ -124,14 +128,13 @@ LOOP_DRP_SEND_REQ:
             req_pack.offset = num_unread;
             req_pack.end_flag = false;
 
+        LOOP_FOR_3:
             for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
                 req_pack.idx[pe_idx] = cache_idx[pe_idx];
             }
-
             distance_req_pack_stream.write(req_pack);
         }
-
         last_idx_max = cache_idx[PE_NUM - 1];
     }
     {
@@ -146,7 +149,6 @@ static void
 cacheline_req_sender(hls::stream<distance_req_pack_t> &distance_req_pack_stream,
                      hls::stream<cacheline_req_t> &cacheline_req_stream,
                      int32_t memory_offset) {
-
     {
         cacheline_req_t cache_req;
         cache_req.end_flag = false;
@@ -158,12 +160,15 @@ cacheline_req_sender(hls::stream<distance_req_pack_t> &distance_req_pack_stream,
 #pragma HLS ARRAY_PARTITION variable = cacheline_idx complete dim = 0
 
 LOOP_SEND_CACHE_REQ:
+LOOP_WHILE_7:
     while (true) {
 #pragma HLS PIPELINE II = 1
 #pragma HLS dependence variable = cacheline_idx inter false
 
-        distance_req_pack_t req_pack = distance_req_pack_stream.read();
-        // #pragma HLS ARRAY_PARTITION variable = req_pack.idx complete dim = 0
+        distance_req_pack_t req_pack;
+        req_pack = distance_req_pack_stream.read();
+    // #pragma HLS ARRAY_PARTITION variable = req_pack.idx complete dim = 0
+    LOOP_FOR_5:
         for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
             cacheline_idx[pe_idx] = req_pack.idx[pe_idx];
@@ -171,16 +176,18 @@ LOOP_SEND_CACHE_REQ:
 
         {
         LOOP_SEND_CACHE_REQ_INNER:
+        LOOP_FOR_6:
             for (ap_uint<4> i = req_pack.offset; i < PE_NUM; i++) {
 #pragma HLS PIPELINE II = 1 rewind
 #pragma HLS unroll factor = 1
                 cacheline_req_t cache_req;
-                cache_req.idx = cacheline_idx[i] + memory_offset;
+                cache_req.idx = (cacheline_idx[i] + memory_offset);
                 cache_req.dst = i;
                 cache_req.end_flag = req_pack.end_flag;
                 cacheline_req_stream.write(cache_req);
                 // printf("Sent cacheline req for idx %d to PE %d\n",
-                // (int)cache_req.idx, (int)cache_req.target_pe); fflush(NULL);
+                // // (int)cache_req.idx, (int)cache_req.target_pe);
+                // fflush(NULL);
             }
         }
 
@@ -188,6 +195,7 @@ LOOP_SEND_CACHE_REQ:
             break;
         }
     }
+
     // cache_req.last = true;
     // cacheline_req_stream.write(cache_req);
 }
@@ -195,15 +203,16 @@ LOOP_SEND_CACHE_REQ:
 static void
 node_prop_resp_receiver(hls::stream<cacheline_resp_t> &cacheline_resp_stream,
                         hls::stream<bus_word_t> (&cacheline_streams)[PE_NUM]) {
-
     cacheline_resp_t cache_resp = cacheline_resp_stream.read();
     bus_word_t first_line = cache_resp.data;
+LOOP_FOR_8:
     for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
         cacheline_streams[pe_idx].write(first_line);
     }
 
-LOOP_RECEIVE_CACHE_RESP:
+// LOOP_RECEIVE_CACHE_RESP:
+LOOP_WHILE_9:
     while (true) {
 #pragma HLS PIPELINE II = 1
         if (cacheline_resp_stream.read_nb(cache_resp)) {
@@ -215,14 +224,14 @@ LOOP_RECEIVE_CACHE_RESP:
             cacheline_streams[target_pe].write(resp_line);
         }
     }
+    // End of node_prop_resp_receiver Function
 }
 
 static void
 merge_node_props(hls::stream<bus_word_t> (&cacheline_streams)[PE_NUM],
                  hls::stream<edge_descriptor_batch_t> &edge_stream,
-                 hls::stream<update_tuple_t> &edge_batch_stream,
+                 hls::stream<update_tuple_t_big> &edge_batch_stream,
                  uint32_t edge_num) {
-
     bus_word_t last_cacheline[PE_NUM] = {0};
 #pragma HLS ARRAY_PARTITION variable = last_cacheline complete dim = 0
     ap_uint<26> last_cache_idx[PE_NUM] = {0};
@@ -230,6 +239,7 @@ merge_node_props(hls::stream<bus_word_t> (&cacheline_streams)[PE_NUM],
 
 // Init first cacheline for each PE
 LOOP_INIT_CACHELINE:
+LOOP_FOR_10:
     for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
         last_cacheline[pe_idx] = cacheline_streams[pe_idx].read();
@@ -237,20 +247,22 @@ LOOP_INIT_CACHELINE:
     }
 
     const uint32_t scatter_size = (edge_num >> LOG_PE_NUM);
-    distance_t real_edge_weight =
-        1.0; // All edge weights are 1.0 in unweighted graph
+    distance_t real_edge_weight = 1.0;
+    // All edge weights are 1.0 in unweighted graph
     const ap_fixed_pod_t edge_weight =
         (*reinterpret_cast<ap_fixed_pod_t *>(&real_edge_weight));
 
 LOOP_SCATTER_EDGES:
+LOOP_FOR_13:
     for (int32_t edge_batch_idx = 0; edge_batch_idx < scatter_size;
          edge_batch_idx++) {
 #pragma HLS PIPELINE II = 1
         edge_descriptor_batch_t edge_batch;
         edge_batch = edge_stream.read();
 
-        update_tuple_t out_batch;
+        update_tuple_t_big out_batch;
 
+    LOOP_FOR_11:
         for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
             ap_uint<26> cacheline_idx =
@@ -265,19 +277,23 @@ LOOP_SCATTER_EDGES:
 
             ap_fixed_pod_t prop = cacheline.range(
                 31 + ((ap_uint<9>)offset << 5), ((ap_uint<9>)offset << 5));
-            ap_fixed_pod_t update = prop + edge_weight;
 
+            // Begin inline logic
+            ap_fixed_pod_t BinOp_68_res;
+            BinOp_68_res = (prop + edge_weight);
+            out_batch.data[pe_idx].prop = BinOp_68_res;
             out_batch.data[pe_idx].node_id = edge_batch.edges[pe_idx].dst_id;
-            out_batch.data[pe_idx].prop = update;
+            // End inline logic
             out_batch.data[pe_idx].end_flag = 0;
 
-            if (pe_idx == PE_NUM - 1) {
+            if (pe_idx == (PE_NUM - 1)) {
                 last_cacheline[pe_idx] = cacheline;
                 last_cache_idx[pe_idx] = cacheline_idx;
             }
         }
         edge_batch_stream.write(out_batch);
 
+    LOOP_FOR_12:
         for (int32_t pe_idx = 0; pe_idx < (PE_NUM - 1); pe_idx++) {
 #pragma HLS UNROLL
             last_cacheline[pe_idx] = last_cacheline[PE_NUM - 1];
@@ -286,20 +302,19 @@ LOOP_SCATTER_EDGES:
     }
 }
 
-// --- 2. Utility Network Functions ---
-
-static void demux_1(hls::stream<update_tuple_t> &in_batch_stream,
-                    hls::stream<update_t> (&out_streams)[8],
+// --- 2. gather_funcs ---
+static void demux_1(hls::stream<update_tuple_t_big> &in_batch_stream,
+                    hls::stream<update_t_big> (&out_streams)[8],
                     uint32_t edge_num) {
-    const uint32_t scatter_size = edge_num / PE_NUM;
+    const uint32_t scatter_size = (edge_num / PE_NUM);
 
-LOOP_WHILE_22:
+LOOP_FOR_19:
     for (uint32_t batch_idx = 0; batch_idx < scatter_size; batch_idx++) {
 #pragma HLS PIPELINE II = 1
-        update_tuple_t in_batch;
+        update_tuple_t_big in_batch;
         in_batch = in_batch_stream.read();
 
-    LOOP_FOR_20:
+    LOOP_FOR_18:
         for (uint32_t i = 0; i < PE_NUM; i++) {
 #pragma HLS UNROLL
             if (in_batch.data[i].node_id.range(19, 19) == 0) {
@@ -307,28 +322,30 @@ LOOP_WHILE_22:
             }
         }
     }
-    // Propagate end_flag to all output streams
-LOOP_FOR_21:
+// Propagate end_flag to all output streams
+LOOP_FOR_20:
     for (uint32_t i = 0; i < 8; i++) {
 #pragma HLS UNROLL
-        update_t end_wrapper;
+        update_t_big end_wrapper;
         end_wrapper.end_flag = true;
         out_streams[i].write(end_wrapper);
     }
 }
 
-static void sender_2(int32_t i, hls::stream<update_t> &in1,
-                     hls::stream<update_t> &in2, hls::stream<update_t> &out1,
-                     hls::stream<update_t> &out2, hls::stream<update_t> &out3,
-                     hls::stream<update_t> &out4) {
+static void sender_2(int32_t i, hls::stream<update_t_big> &in1,
+                     hls::stream<update_t_big> &in2,
+                     hls::stream<update_t_big> &out1,
+                     hls::stream<update_t_big> &out2,
+                     hls::stream<update_t_big> &out3,
+                     hls::stream<update_t_big> &out4) {
 #pragma HLS function_instantiate variable = i
     bool in1_end_flag = false;
     bool in2_end_flag = false;
-LOOP_WHILE_23:
+LOOP_WHILE_21:
     while (true) {
 #pragma HLS PIPELINE II = 1
         if ((!in1.empty())) {
-            update_t data1;
+            update_t_big data1;
             data1 = in1.read();
             if ((!data1.end_flag)) {
                 if (((data1.node_id >> i) & 1)) {
@@ -341,7 +358,7 @@ LOOP_WHILE_23:
             }
         }
         if ((!in2.empty())) {
-            update_t data2;
+            update_t_big data2;
             data2 = in2.read();
             if ((!data2.end_flag)) {
                 if (((data2.node_id >> i) & 1)) {
@@ -354,7 +371,7 @@ LOOP_WHILE_23:
             }
         }
         if ((in1_end_flag & in2_end_flag)) {
-            update_t data;
+            update_t_big data;
             data.end_flag = true;
             out1.write(data);
             out2.write(data);
@@ -367,20 +384,22 @@ LOOP_WHILE_23:
     }
 }
 
-static void receiver_2(int32_t i, hls::stream<update_t> &out1,
-                       hls::stream<update_t> &out2, hls::stream<update_t> &in1,
-                       hls::stream<update_t> &in2, hls::stream<update_t> &in3,
-                       hls::stream<update_t> &in4) {
+static void receiver_2(int32_t i, hls::stream<update_t_big> &out1,
+                       hls::stream<update_t_big> &out2,
+                       hls::stream<update_t_big> &in1,
+                       hls::stream<update_t_big> &in2,
+                       hls::stream<update_t_big> &in3,
+                       hls::stream<update_t_big> &in4) {
 #pragma HLS function_instantiate variable = i
     bool in1_end_flag = false;
     bool in2_end_flag = false;
     bool in3_end_flag = false;
     bool in4_end_flag = false;
-LOOP_WHILE_24:
+LOOP_WHILE_22:
     while (true) {
 #pragma HLS PIPELINE II = 1
         if ((!in1.empty())) {
-            update_t data;
+            update_t_big data;
             data = in1.read();
             if ((!data.end_flag)) {
                 out1.write(data);
@@ -388,7 +407,7 @@ LOOP_WHILE_24:
                 in1_end_flag = true;
             }
         } else if ((!in3.empty())) {
-            update_t data;
+            update_t_big data;
             data = in3.read();
             if ((!data.end_flag)) {
                 out1.write(data);
@@ -397,7 +416,7 @@ LOOP_WHILE_24:
             }
         }
         if ((!in2.empty())) {
-            update_t data;
+            update_t_big data;
             data = in2.read();
             if ((!data.end_flag)) {
                 out2.write(data);
@@ -405,7 +424,7 @@ LOOP_WHILE_24:
                 in2_end_flag = true;
             }
         } else if ((!in4.empty())) {
-            update_t data;
+            update_t_big data;
             data = in4.read();
             if ((!data.end_flag)) {
                 out2.write(data);
@@ -414,7 +433,7 @@ LOOP_WHILE_24:
             }
         }
         if ((((in1_end_flag & in2_end_flag) & in3_end_flag) & in4_end_flag)) {
-            update_t data;
+            update_t_big data;
             data.end_flag = true;
             out1.write(data);
             out2.write(data);
@@ -423,39 +442,38 @@ LOOP_WHILE_24:
     }
 }
 
-static void switch2x2_2(int32_t i, hls::stream<update_t> &in1,
-                        hls::stream<update_t> &in2, hls::stream<update_t> &out1,
-                        hls::stream<update_t> &out2) {
+static void switch2x2_2(int32_t i, hls::stream<update_t_big> &in1,
+                        hls::stream<update_t_big> &in2,
+                        hls::stream<update_t_big> &out1,
+                        hls::stream<update_t_big> &out2) {
 #pragma HLS DATAFLOW
-    hls::stream<update_t> l1_1;
+    hls::stream<update_t_big> l1_1;
 #pragma HLS STREAM variable = l1_1 depth = 2
-    hls::stream<update_t> l1_2;
+    hls::stream<update_t_big> l1_2;
 #pragma HLS STREAM variable = l1_2 depth = 2
-    hls::stream<update_t> l1_3;
+    hls::stream<update_t_big> l1_3;
 #pragma HLS STREAM variable = l1_3 depth = 2
-    hls::stream<update_t> l1_4;
+    hls::stream<update_t_big> l1_4;
 #pragma HLS STREAM variable = l1_4 depth = 2
     sender_2(i, in1, in2, l1_1, l1_2, l1_3, l1_4);
     receiver_2(i, out1, out2, l1_1, l1_2, l1_3, l1_4);
 }
 
-// Single-PE aggregation function
-// Handles initialization and aggregation for one PE
 static void
-Reduc_105_unit_reduce_single_pe(hls::stream<update_t> &kt_wrap_item_single,
+Reduc_105_unit_reduce_single_pe(hls::stream<update_t_big> &kt_wrap_item_single,
                                 hls::stream<reduce_word_t> &pe_mem_out,
                                 uint32_t num_word_per_pe) {
-
     // --- Phase 1: Memory Declaration ---
-    const int MEM_SIZE = (MAX_NUM >> LOG_PE_NUM) / DISTANCES_PER_REDUCE_WORD;
+    const int32_t MEM_SIZE =
+        ((MAX_NUM >> LOG_PE_NUM) / DISTANCES_PER_REDUCE_WORD);
     reduce_word_t prop_mem[MEM_SIZE];
 #pragma HLS BIND_STORAGE variable = prop_mem type = RAM_2P impl = URAM
 #pragma HLS dependence variable = prop_mem inter false
 
     // Latency-hiding cache for recently accessed URAM words
-    reduce_word_t cache_data_buffer[L + 1];
+    reduce_word_t cache_data_buffer[(L + 1)];
 #pragma HLS ARRAY_PARTITION variable = cache_data_buffer complete dim = 0
-    ap_uint<20> cache_addr_buffer[L + 1];
+    ap_uint<20> cache_addr_buffer[(L + 1)];
 #pragma HLS ARRAY_PARTITION variable = cache_addr_buffer complete dim = 0
 
 #ifdef EMULATION
@@ -463,17 +481,20 @@ Reduc_105_unit_reduce_single_pe(hls::stream<update_t> &kt_wrap_item_single,
 #endif
 
 LOOP_INIT_CACHE_ADDR:
-    for (int i = 0; i < L + 1; i++) {
+LOOP_FOR_23:
+    for (int32_t i = 0; i < (L + 1); i++) {
 #pragma HLS UNROLL
-        cache_addr_buffer[i] = 0x0; // Invalidate cache
+        cache_addr_buffer[i] = 0x0;
+        // Invalidate cache
         cache_data_buffer[i] = 0;
     }
 
-    // --- Phase 3: Aggregation Loop ---
+// --- Phase 3: Aggregation Loop ---
 LOOP_AGGREGATE:
+LOOP_WHILE_26:
     while (true) {
 #pragma HLS PIPELINE II = 1
-        update_t kt_elem;
+        update_t_big kt_elem;
         kt_elem = kt_wrap_item_single.read();
         if (kt_elem.end_flag) {
             break;
@@ -485,9 +506,10 @@ LOOP_AGGREGATE:
 
         reduce_word_t current_word = prop_mem[word_addr];
 
-        // Check cache first
-        // for (int i = L; i >= 0; --i) {
-        for (int i = 0; i < L + 1; i++) {
+    // Check cache first
+    // for (int i = L; i >= 0; --i) {
+    LOOP_FOR_24:
+        for (int32_t i = 0; i < (L + 1); i++) {
 #pragma HLS UNROLL
             if (cache_addr_buffer[i] == word_addr) {
                 current_word = cache_data_buffer[i];
@@ -495,8 +517,9 @@ LOOP_AGGREGATE:
             }
         }
 
-        // Shift cache
-        for (int i = 0; i < L; i++) {
+    // Shift cache
+    LOOP_FOR_25:
+        for (int32_t i = 0; i < L; i++) {
 #pragma HLS UNROLL
             cache_addr_buffer[i] = cache_addr_buffer[i + 1];
             cache_data_buffer[i] = cache_data_buffer[i + 1];
@@ -507,11 +530,19 @@ LOOP_AGGREGATE:
         ap_fixed_pod_t msb = tmp_cur_word.range(63, 32);
         ap_fixed_pod_t lsb = tmp_cur_word.range(31, 0);
 
-        ap_fixed_pod_t msb_out =
-            (msb < incoming_dist_pod && msb != 0x0) ? msb : incoming_dist_pod;
-        ap_fixed_pod_t lsb_out =
-            (lsb < incoming_dist_pod && lsb != 0x0) ? lsb : incoming_dist_pod;
+        ap_fixed_pod_t msb_out;
+        ap_fixed_pod_t lsb_out;
 
+        // =======  begin inline reduce logic ====
+        msb_out =
+            (msb != 0x0)
+                ? (((msb) < (incoming_dist_pod) ? msb : incoming_dist_pod))
+                : incoming_dist_pod;
+        lsb_out =
+            (lsb != 0x0)
+                ? (((lsb) < (incoming_dist_pod) ? lsb : incoming_dist_pod))
+                : incoming_dist_pod;
+        // =======  end inline reduce logic ====
         reduce_word_t accumulated_msb;
         reduce_word_t accumulated_lsb;
 
@@ -521,7 +552,7 @@ LOOP_AGGREGATE:
         accumulated_lsb.range(63, 32) = tmp_cur_word.range(63, 32);
         accumulated_lsb.range(31, 0) = lsb_out;
 
-        if (key & 0x01) {
+        if ((key & 0x01)) {
             prop_mem[word_addr] = accumulated_msb;
             cache_data_buffer[L] = accumulated_msb;
         } else {
@@ -531,9 +562,10 @@ LOOP_AGGREGATE:
         cache_addr_buffer[L] = word_addr;
     }
 
-    // --- Phase 4: Stream out aggregated memory ---
+// --- Phase 4: Stream out aggregated memory ---
 LOOP_STREAM_OUT:
-    for (int i = 0; i < num_word_per_pe; i++) {
+LOOP_FOR_27:
+    for (int32_t i = 0; i < num_word_per_pe; i++) {
 #pragma HLS UNROLL factor = 1
         reduce_word_t tmp_word = prop_mem[i];
         prop_mem[i] = 0;
@@ -546,11 +578,12 @@ Reduc_105_drain_multi_pe(hls::stream<reduce_word_t> (&pe_mem_in)[PE_NUM],
                          hls::stream<write_burst_pkt_t> &kernel_out_stream,
                          uint32_t num_word_per_pe) {
 LOOP_DRAIN_ADDR:
+LOOP_FOR_29:
     for (int32_t i = 0; i < num_word_per_pe; i++) {
 #pragma HLS PIPELINE II = 1
         write_burst_pkt_t one_write_burst;
         reduce_word_t tmp_data[PE_NUM];
-    LOOP_FOR_57:
+    LOOP_FOR_28:
         for (uint32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
             tmp_data[pe_idx] = pe_mem_in[pe_idx].read();
@@ -565,7 +598,7 @@ LOOP_DRAIN_ADDR:
     }
 }
 
-// --- 5. Top-level AXI Kernel Wrapper ---
+// --- 4. top func ---
 extern "C" void
 graphyflow_big(const bus_word_t *edge_props, int32_t num_nodes,
                int32_t num_edges, int32_t dst_num, int32_t memory_offset,
@@ -590,35 +623,37 @@ graphyflow_big(const bus_word_t *edge_props, int32_t num_nodes,
 #pragma HLS STREAM variable = stream_cachelines depth = 16
     hls::stream<edge_descriptor_batch_t> edge_stream;
 #pragma HLS STREAM variable = edge_stream depth = 16
-    hls::stream<update_tuple_t> stream_edge_data;
+    hls::stream<update_tuple_t_big> stream_edge_data;
 #pragma HLS STREAM variable = stream_edge_data depth = 16
     hls::stream<cacheline_req_t> cacheline_req;
 #pragma HLS STREAM variable = cacheline_req depth = 32
     hls::stream<cacheline_resp_t> cacheline_resp;
 #pragma HLS STREAM variable = cacheline_resp depth = 32
-    hls::stream<update_t> reduce_105_d2o_pair[8];
+    hls::stream<update_t_big> reduce_105_d2o_pair[8];
 #pragma HLS STREAM variable = reduce_105_d2o_pair depth = 8
 #pragma HLS ARRAY_PARTITION variable = reduce_105_d2o_pair complete dim = 0
-    hls::stream<update_t> reduce_105_o2u_pair[8];
+    hls::stream<update_t_big> reduce_105_o2u_pair[8];
 #pragma HLS STREAM variable = reduce_105_o2u_pair depth = 2
 #pragma HLS ARRAY_PARTITION variable = reduce_105_o2u_pair complete dim = 0
 
-    const uint32_t num_words = (dst_num + 1) / DISTANCES_PER_REDUCE_WORD;
-    const uint32_t num_word_per_pe = (num_words + PE_NUM - 1) >> LOG_PE_NUM;
+    const uint32_t num_words = ((dst_num + 1) / DISTANCES_PER_REDUCE_WORD);
+    const uint32_t num_word_per_pe = ((num_words + PE_NUM - 1) >> LOG_PE_NUM);
 
     // --- Data Loading ---
-    const int edges_per_word =
-        AXI_BUS_WIDTH / (NODE_ID_BITWIDTH + NODE_ID_BITWIDTH);
-    const int num_wide_reads = num_edges / edges_per_word;
+    const int32_t edges_per_word =
+        (AXI_BUS_WIDTH / (NODE_ID_BITWIDTH + NODE_ID_BITWIDTH));
+    const int32_t num_wide_reads = (num_edges / edges_per_word);
 
 LOOP_EDL_READ:
-    for (int i = 0; i < num_wide_reads; i++) {
+LOOP_FOR_46:
+    for (int32_t i = 0; i < num_wide_reads; i++) {
 #pragma HLS PIPELINE II = 1
         bus_word_t wide_word = edge_props[i];
         edge_descriptor_batch_t edge_batch;
 
     LOOP_EDL_UNPACK:
-        for (int j = 0; j < edges_per_word; j++) {
+    LOOP_FOR_44:
+        for (int32_t j = 0; j < edges_per_word; j++) {
 #pragma HLS UNROLL
             ap_uint<64> packed_edge = wide_word.range(63 + (j << 6), (j << 6));
             edge_t edge;
@@ -629,7 +664,8 @@ LOOP_EDL_READ:
         edge_stream.write(edge_batch);
 
         node_id_burst_t src_id_burst;
-        for (int j = 0; j < edges_per_word; j++) {
+    LOOP_FOR_45:
+        for (int32_t j = 0; j < edges_per_word; j++) {
 #pragma HLS UNROLL
             node_id_t src_id;
             src_id = edge_batch.edges[j].src_id;
@@ -649,10 +685,10 @@ LOOP_EDL_READ:
 
     demux_1(stream_edge_data, reduce_105_d2o_pair, num_edges);
 
-    hls::stream<update_t> stream_stage_0[8];
+    hls::stream<update_t_big> stream_stage_0[8];
 #pragma HLS STREAM variable = stream_stage_0 depth = 2
 #pragma HLS ARRAY_PARTITION variable = stream_stage_0 complete dim = 0
-    hls::stream<update_t> stream_stage_1[8];
+    hls::stream<update_t_big> stream_stage_1[8];
 #pragma HLS STREAM variable = stream_stage_1 depth = 2
 #pragma HLS ARRAY_PARTITION variable = stream_stage_1 complete dim = 0
     switch2x2_2(2, reduce_105_d2o_pair[0], reduce_105_d2o_pair[1],
@@ -682,7 +718,7 @@ LOOP_EDL_READ:
     // Reduc_105_unit_reduce(reduce_105_o2u_pair, stream_o_0_107, dst_num);
     hls::stream<reduce_word_t> pe_mem_out_streams[PE_NUM];
 #pragma HLS STREAM variable = pe_mem_out_streams depth = 4
-LOOP_FOR_60:
+LOOP_FOR_47:
     for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++) {
 #pragma HLS UNROLL
         Reduc_105_unit_reduce_single_pe(reduce_105_o2u_pair[pe_idx],
