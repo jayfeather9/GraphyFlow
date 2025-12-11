@@ -708,6 +708,8 @@ axistream2stream:
         stream_cacheline_resp_type = HLSType(HLSBasicType.STREAM, sub_types=[cacheline_resp_t_type])
         stream_update_t_type = HLSType(HLSBasicType.STREAM, sub_types=[update_t_type])
         stream_reduce_word_t_type = HLSType(HLSBasicType.STREAM, sub_types=[reduce_word_t_type]) # <--- 应用了你的澄清
+        ap_uint256_type = HLSType(basic_type=HLSBasicType.AP_UINT, width=256)
+        stream_ap_uint256_type = HLSType(HLSBasicType.STREAM, sub_types=[ap_uint256_type])
 
         # --- Stream 数组类型 (本地) ---
         stream_cachelines_type = HLSType(HLSBasicType.ARRAY, sub_types=[stream_bus_word_type], array_dims=["PE_NUM"])
@@ -767,7 +769,7 @@ axistream2stream:
 
         # hls::stream<bus_word_t> stream_cachelines[PE_NUM];
         code_lines.append(CodeVarDecl(var_name="stream_cachelines", var_type=stream_cachelines_type))
-        code_lines.append(CodePragma(content="STREAM variable = stream_cachelines depth = 16"))
+        code_lines.append(CodePragma(content="STREAM variable = stream_cachelines depth = 8"))
         stream_cachelines_var = HLSVar(var_name="stream_cachelines", var_type=stream_cachelines_type)
 
         # hls::stream<edge_descriptor_batch_t> edge_stream;
@@ -820,6 +822,9 @@ axistream2stream:
         # const int num_wide_reads = num_edges / edges_per_word;
         code_lines.append(CodeVarDecl(var_name="num_wide_reads", var_type=int_type, init_val="(num_edges / edges_per_word)", const=True))
         num_wide_reads_var = HLSVar(var_name="num_wide_reads", var_type=int_type)
+        # const uint32_t total_edge_sets = num_edges >> LOG_PE_NUM;
+        code_lines.append(CodeVarDecl(var_name="total_edge_sets", var_type=uint_type, init_val="(num_edges >> LOG_PE_NUM)", const=True))
+        total_edge_sets_var = HLSVar(var_name="total_edge_sets", var_type=uint_type)
         code_lines.append(CodeOther(text=""))
 
         # LOOP_EDL_READ:
@@ -889,7 +894,7 @@ axistream2stream:
         # --- New COO-style Source Property Loading Pipeline ---
         code_lines.append(CodeComment(text="--- New COO-style Source Property Loading Pipeline ---"))
         # dist_req_packer(stream_src_ids, stream_dist_req, num_edges);
-        call_params_1 = [stream_src_ids_var, stream_dist_req_var, num_edges_var]
+        call_params_1 = [stream_src_ids_var, stream_dist_req_var, total_edge_sets_var]
         # code_lines.append(CodeCall(func=dist_req_packer_func, params=call_params_1))
         code_lines.append(CodeCall(func=self.big_top_dataflow_funcs[0], params=call_params_1))
         # cacheline_req_sender(stream_dist_req, cacheline_req, memory_offset);
@@ -912,14 +917,14 @@ axistream2stream:
         code_lines.append(CodeCall(func=self.big_top_dataflow_funcs[2], params=call_params_5))
 
         # merge_node_props(stream_cachelines, edge_stream, stream_edge_data, num_edges);
-        call_params_6 = [stream_cachelines_var, edge_stream_var, stream_edge_data_var, num_edges_var]
+        call_params_6 = [stream_cachelines_var, edge_stream_var, stream_edge_data_var, total_edge_sets_var]
         # code_lines.append(CodeCall(func=merge_node_props_func, params=call_params_6))
         code_lines.append(CodeCall(func=self.big_top_dataflow_funcs[3], params=call_params_6))
         
         code_lines.append(CodeOther(text=""))
 
         # demux_1(stream_edge_data, reduce_105_d2o_pair, num_edges);
-        call_params_7 = [stream_edge_data_var, reduce_105_d2o_pair_var, num_edges_var]
+        call_params_7 = [stream_edge_data_var, reduce_105_d2o_pair_var, total_edge_sets_var]
         # code_lines.append(CodeCall(func=demux_1_func, params=call_params_7))
         code_lines.append(CodeCall(func=self.big_top_dataflow_funcs[4], params=call_params_7))
         code_lines.append(CodeOther(text=""))
@@ -975,6 +980,16 @@ axistream2stream:
         code_lines.append(CodePragma(content="STREAM variable = pe_mem_out_streams depth = 4"))
         pe_mem_out_streams_var = HLSVar(var_name="pe_mem_out_streams", var_type=pe_mem_out_streams_type)
 
+        # hls::stream<ap_uint<256>> drain_lower_stream;
+        code_lines.append(CodeVarDecl(var_name="drain_lower_stream", var_type=stream_ap_uint256_type))
+        code_lines.append(CodePragma(content="STREAM variable = drain_lower_stream depth = 4"))
+        drain_lower_stream_var = HLSVar(var_name="drain_lower_stream", var_type=stream_ap_uint256_type)
+
+        # hls::stream<ap_uint<256>> drain_upper_stream;
+        code_lines.append(CodeVarDecl(var_name="drain_upper_stream", var_type=stream_ap_uint256_type))
+        code_lines.append(CodePragma(content="STREAM variable = drain_upper_stream depth = 4"))
+        drain_upper_stream_var = HLSVar(var_name="drain_upper_stream", var_type=stream_ap_uint256_type)
+
         # for (int32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++)
         for_4_codes: List[HLSCodeLine] = []
         # #pragma HLS UNROLL
@@ -990,10 +1005,16 @@ axistream2stream:
         # (构建 for_4)
         code_lines.append(CodeFor(codes=for_4_codes, iter_limit="PE_NUM", iter_name="pe_idx", iter_val_type=int_type))
 
-        # Reduc_105_drain_multi_pe(...)
-        drain_call_params = [pe_mem_out_streams_var, kernel_out_stream_var, num_word_per_pe_var]
-        # code_lines.append(CodeCall(func=Reduc_105_drain_multi_pe_func, params=drain_call_params))
-        code_lines.append(CodeCall(func=self.big_top_dataflow_funcs[7], params=drain_call_params))
+        # Reduc_105_partial_drain_four lower and upper halves
+        drain_call_params_lower = [pe_mem_out_streams_var, HLSExpr(HLSExprT.CONST, 0), num_word_per_pe_var, drain_lower_stream_var]
+        code_lines.append(CodeCall(func=self.big_top_dataflow_funcs[7], params=drain_call_params_lower))
+
+        drain_call_params_upper = [pe_mem_out_streams_var, HLSExpr(HLSExprT.CONST, 4), num_word_per_pe_var, drain_upper_stream_var]
+        code_lines.append(CodeCall(func=self.big_top_dataflow_funcs[7], params=drain_call_params_upper))
+
+        # Reduc_105_finalize_drain(...)
+        finalize_drain_params = [drain_lower_stream_var, drain_upper_stream_var, num_word_per_pe_var, kernel_out_stream_var]
+        code_lines.append(CodeCall(func=self.big_top_dataflow_funcs[8], params=finalize_drain_params))
 
         # --- 3. Finalize ---
         graphyflow_big_func.codes = code_lines
@@ -1346,11 +1367,12 @@ axistream2stream:
         #
         # dist_req_packer(hls::stream<node_id_burst_t> &src_id_burst_stream,
         #         hls::stream<distance_req_pack_t> &distance_req_pack_stream,
-        #         int32_t num_nodes)
+        #         uint32_t total_edge_sets)
         # --- 1. Define Types & Params ---
         
         # Basic Types
         int_type = HLSType(HLSBasicType.INT)
+        uint_type = HLSType(HLSBasicType.UINT)
         bool_type = HLSType(HLSBasicType.BOOL)
         node_id_type = HLSType(HLSBasicType.NODE_ID)
         
@@ -1386,26 +1408,22 @@ axistream2stream:
         distance_req_pack_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[distance_req_pack_t_type])
         distance_req_pack_stream = HLSVar(var_name="distance_req_pack_stream", var_type=distance_req_pack_stream_type)
         
-        # Param 3: int32_t num_nodes
-        num_nodes = HLSVar(var_name="num_nodes", var_type=int_type)
+        # Param 3: uint32_t total_edge_sets
+        total_edge_sets = HLSVar(var_name="total_edge_sets", var_type=uint_type)
         
-        params.extend([src_id_burst_stream, distance_req_pack_stream, num_nodes])
+        params.extend([src_id_burst_stream, distance_req_pack_stream, total_edge_sets])
         dist_req_packer_func.params = params
         
         # --- 2. Function Body ---
         code_lines: List[HLSCodeLine] = []
-        
-        # const int max_node_burst_idx = (num_nodes + PE_NUM - 1) / PE_NUM;
-        code_lines.append(CodeVarDecl(var_name="max_node_burst_idx", var_type=int_type, init_val="(num_nodes + PE_NUM - 1) / PE_NUM", const=True))
-        max_node_burst_idx_var = HLSVar(var_name="max_node_burst_idx", var_type=int_type)
-        
+
         # ap_uint<...> last_idx_max = 0;
         code_lines.append(CodeVarDecl(var_name="last_idx_max", var_type=cache_idx_elem_type, init_val="0", const=False))
         code_lines.append(CodeOther(text=""))
 
         last_idx_max_var = HLSVar(var_name="last_idx_max", var_type=cache_idx_elem_type)
         
-        # for (int32_t node_burst_idx = 0; ...
+        # for (uint32_t edge_burst_idx = 0; ...
         for_loop_1_codes: List[HLSCodeLine] = []
         # (for_loop_1 object created and added to code_lines at the end)
         
@@ -1573,12 +1591,12 @@ axistream2stream:
         
         # --- Create For Loop 1 ---
         for_loop_1 = CodeFor(codes=for_loop_1_codes, 
-                             iter_limit=max_node_burst_idx_var, 
-                             iter_cmp="<", 
-                             iter_name="node_burst_idx", 
-                             iter_start="0", 
-                             iter_step="node_burst_idx += 1", 
-                             iter_val_type=int_type)
+                     iter_limit=total_edge_sets, 
+                     iter_cmp="<", 
+                     iter_name="edge_burst_idx", 
+                     iter_start="0", 
+                     iter_step="edge_burst_idx++", 
+                     iter_val_type=uint_type)
         code_lines.append(for_loop_1)
         # --- End For Loop 1 ---
         
@@ -1941,22 +1959,16 @@ axistream2stream:
         out_streams_type = HLSType(HLSBasicType.ARRAY, sub_types=[out_streams_elem_type], array_dims=[8])
         out_streams_var = HLSVar(var_name="out_streams", var_type=out_streams_type)
 
-        # Param 3: uint32_t edge_num
-        edge_num_var = HLSVar(var_name="edge_num", var_type=uint_type)
+        # Param 3: uint32_t total_edge_sets
+        total_edge_sets_var = HLSVar(var_name="total_edge_sets", var_type=uint_type)
 
-        params.extend([in_batch_stream_var, out_streams_var, edge_num_var])
+        params.extend([in_batch_stream_var, out_streams_var, total_edge_sets_var])
         demux_1_func.params = params
 
         # --- 2. 函数体 ---
         code_lines: List[HLSCodeLine] = []
 
-        # const uint32_t scatter_size = edge_num / PE_NUM;
-        code_lines.append(CodeVarDecl(var_name="scatter_size", var_type=uint_type, init_val="(edge_num / PE_NUM)", const=True))
-        scatter_size_var = HLSVar(var_name="scatter_size", var_type=uint_type)
-        code_lines.append(CodeOther(text=""))
-
-
-        # for (uint32_t batch_idx = 0; batch_idx < scatter_size; batch_idx++)
+        # for (uint32_t batch_idx = 0; batch_idx < total_edge_sets; batch_idx++)
         for_1_codes: List[HLSCodeLine] = []
         # #pragma HLS PIPELINE II = 1
         for_1_codes.append(CodePragma(content="PIPELINE II = 1"))
@@ -1984,7 +1996,7 @@ axistream2stream:
         # (构建 for_2)
         for_1_codes.append(CodeFor(codes=for_2_codes, iter_limit="PE_NUM", iter_name="i", iter_val_type=uint_type))
         # (构建 for_1)
-        code_lines.append(CodeFor(codes=for_1_codes, iter_limit=scatter_size_var, iter_name="batch_idx", iter_val_type=uint_type))
+        code_lines.append(CodeFor(codes=for_1_codes, iter_limit=total_edge_sets_var, iter_name="batch_idx", iter_val_type=uint_type))
 
         # // Propagate end_flag to all output streams
         code_lines.append(CodeComment(text="Propagate end_flag to all output streams"))
@@ -2843,91 +2855,118 @@ axistream2stream:
         self.big_gather_funcs.append(Reduc_105_unit_reduce_single_pe_func)
         self.big_top_dataflow_funcs.append(Reduc_105_unit_reduce_single_pe_func)
 
-        Reduc_105_drain_multi_pe_func_b = HLSFunction(name="Reduc_105_drain_multi_pe", comp=comp) # 假设 comp 存在
+        Reduc_105_partial_drain_four_func = HLSFunction(name="Reduc_105_partial_drain_four", comp=comp)
         params = []
 
         # --- 1. 定义类型和参数 ---
-        # (基于 graphyflow_little.h 和 graphyflow_big.h)
-
-        # 基础类型
-        int_type = HLSType(HLSBasicType.INT)       # int32_t
-        uint_type = HLSType(HLSBasicType.UINT)      # uint32_t
-        # (来自 .h: #define REDUCE_MEM_WIDTH 64)
+        uint_type = HLSType(HLSBasicType.UINT)
         reduce_word_t_type = HLSType(basic_type=HLSBasicType.REDUCE_WORD_T)
-        # (来自 .h: #define AXI_BUS_WIDTH 512)
-        bus_word_t_type = HLSType(HLSBasicType.BUS_WORD_T) 
-        # (来自 .h: #define DISTANCE_BITWIDTH 32)
-        ap_fixed_pod_t_type = HLSType(HLSBasicType.AP_FIXED_POD) 
+        ap_uint256_type = HLSType(basic_type=HLSBasicType.AP_UINT, width=256)
 
-        write_burst_pkt_t_type = HLSType(HLSBasicType.WRITE_BURST_PKT_T)
-
-        # --- Stream 类型 ---
+        # Stream types
         pe_mem_in_elem_type = HLSType(HLSBasicType.STREAM, sub_types=[reduce_word_t_type])
-        kernel_out_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[write_burst_pkt_t_type])
+        partial_out_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[ap_uint256_type])
 
-        # --- 参数变量 ---
-        # Param 1: hls::stream<reduce_word_t> (&pe_mem_in)[PE_NUM]
         pe_mem_in_type = HLSType(HLSBasicType.ARRAY, sub_types=[pe_mem_in_elem_type], array_dims=["PE_NUM"])
         pe_mem_in_var = HLSVar(var_name="pe_mem_in", var_type=pe_mem_in_type)
-
-        # Param 2: hls::stream<write_burst_pkt_t> &kernel_out_stream
-        kernel_out_stream_var = HLSVar(var_name="kernel_out_stream", var_type=kernel_out_stream_type)
-
-        # Param 3: uint32_t num_word_per_pe
+        base_idx_var = HLSVar(var_name="base_idx", var_type=uint_type)
         num_word_per_pe_var = HLSVar(var_name="num_word_per_pe", var_type=uint_type)
+        partial_out_stream_var = HLSVar(var_name="partial_out_stream", var_type=partial_out_stream_type)
 
-        params.extend([pe_mem_in_var, kernel_out_stream_var, num_word_per_pe_var])
-        Reduc_105_drain_multi_pe_func_b.params = params
+        params.extend([pe_mem_in_var, base_idx_var, num_word_per_pe_var, partial_out_stream_var])
+        Reduc_105_partial_drain_four_func.params = params
 
         # --- 2. 函数体 ---
-        code_lines: List[HLSCodeLine] = []
+        code_lines = []
+        code_lines.append(CodePragma(content="function_instantiate variable = base_idx"))
 
-        # LOOP_DRAIN_ADDR:
-        code_lines.append(CodeOther(text="LOOP_DRAIN_ADDR:"))
-
-        # for (int32_t i = 0; i < num_word_per_pe; i++)
+        # LOOP_PARTIAL_DRAIN:
         for_1_codes: List[HLSCodeLine] = []
-        # #pragma HLS PIPELINE II = 1
         for_1_codes.append(CodePragma(content="PIPELINE II = 1"))
-        # write_burst_pkt_t one_write_burst;
-        for_1_codes.append(CodeVarDecl(var_name="one_write_burst", var_type=write_burst_pkt_t_type))
-        one_write_burst_var = HLSVar(var_name="one_write_burst", var_type=write_burst_pkt_t_type)
-        # reduce_word_t tmp_data[PE_NUM];
-        tmp_data_type = HLSType(HLSBasicType.ARRAY, sub_types=[reduce_word_t_type], array_dims=["PE_NUM"])
-        for_1_codes.append(CodeVarDecl(var_name="tmp_data", var_type=tmp_data_type))
-        tmp_data_var = HLSVar(var_name="tmp_data", var_type=tmp_data_type)
 
-        # for (uint32_t pe_idx = 0; pe_idx < PE_NUM; pe_idx++)
+        # ap_uint<256> packed_out = 0;
+        for_1_codes.append(CodeVarDecl(var_name="packed_out", var_type=ap_uint256_type, init_val="0"))
+        packed_out_var = HLSVar(var_name="packed_out", var_type=ap_uint256_type)
+
+        # for (uint32_t pe_offset = 0; pe_offset < 4; pe_offset++)
         for_2_codes: List[HLSCodeLine] = []
-        # #pragma HLS UNROLL
         for_2_codes.append(CodePragma(content="UNROLL"))
-        # tmp_data[pe_idx] = pe_mem_in[pe_idx].read();
-        tmp_data_pe_idx_var = HLSVar(var_name="tmp_data[pe_idx]", var_type=reduce_word_t_type)
-        read_expr = HLSExpr(HLSExprT.CONST, "pe_mem_in[pe_idx].read()")
-        for_2_codes.append(CodeAssign(var=tmp_data_pe_idx_var, expr=read_expr))
-        for_2_codes.append(CodeOther(text=""))
 
-        # one_write_burst.data.range(31 + (pe_idx << 5), (pe_idx << 5)) = ...
-        assign_1_lhs = HLSVar(var_name="one_write_burst.data.range(31 + (pe_idx << 5), (pe_idx << 5))", var_type=ap_fixed_pod_t_type)
-        assign_1_rhs_expr = HLSExpr(HLSExprT.CONST, "tmp_data[pe_idx].range(31, 0)")
-        for_2_codes.append(CodeAssign(var=assign_1_lhs, expr=assign_1_rhs_expr))
-        # one_write_burst.data.range(..., ... + 256) = ...
-        assign_2_lhs = HLSVar(var_name="one_write_burst.data.range(31 + (pe_idx << 5) + 256, (pe_idx << 5) + 256)", var_type=ap_fixed_pod_t_type)
-        assign_2_rhs_expr = HLSExpr(HLSExprT.CONST, "tmp_data[pe_idx].range(63, 32)")
-        for_2_codes.append(CodeAssign(var=assign_2_lhs, expr=assign_2_rhs_expr))
+        tmp_word_var = HLSVar(var_name="tmp_word", var_type=reduce_word_t_type)
+        for_2_codes.append(CodeVarDecl(var_name="tmp_word", var_type=reduce_word_t_type, init_val="pe_mem_in[base_idx + pe_offset].read()"))
 
-        # (构建 for_2)
-        for_1_codes.append(CodeFor(codes=for_2_codes, iter_limit="PE_NUM", iter_name="pe_idx", iter_val_type=uint_type))
-        # kernel_out_stream.write(one_write_burst);
-        for_1_codes.append(CodeWriteStream(stream_var=kernel_out_stream_var, in_expr=one_write_burst_var))
+        bit_low_var = HLSVar(var_name="bit_low", var_type=uint_type)
+        for_2_codes.append(CodeVarDecl(var_name="bit_low", var_type=uint_type, init_val="(pe_offset << 5)"))
 
-        # (构建 for_1)
-        code_lines.append(CodeFor(codes=for_1_codes, iter_limit=num_word_per_pe_var, iter_name="i", iter_val_type=int_type))
+        assign_low = HLSVar(var_name="packed_out.range(31 + bit_low, bit_low)", var_type=reduce_word_t_type)
+        for_2_codes.append(CodeAssign(var=assign_low, expr=HLSExpr(HLSExprT.CONST, "tmp_word.range(31, 0)")))
 
-        # --- 3. Finalize ---
-        Reduc_105_drain_multi_pe_func_b.codes = code_lines
-        self.big_gather_funcs.append(Reduc_105_drain_multi_pe_func_b)
-        self.big_top_dataflow_funcs.append(Reduc_105_drain_multi_pe_func_b)
+        assign_high = HLSVar(var_name="packed_out.range(31 + bit_low + 128, bit_low + 128)", var_type=reduce_word_t_type)
+        for_2_codes.append(CodeAssign(var=assign_high, expr=HLSExpr(HLSExprT.CONST, "tmp_word.range(63, 32)")))
+
+        for_1_codes.append(CodeFor(codes=for_2_codes, iter_limit="4", iter_name="pe_offset", iter_val_type=uint_type))
+
+        # partial_out_stream.write(packed_out);
+        for_1_codes.append(CodeWriteStream(stream_var=partial_out_stream_var, in_expr=packed_out_var))
+
+        code_lines.append(CodeOther(text="LOOP_PARTIAL_DRAIN:"))
+        code_lines.append(CodeFor(codes=for_1_codes, iter_limit=num_word_per_pe_var, iter_name="word_idx", iter_val_type=uint_type))
+
+        Reduc_105_partial_drain_four_func.codes = code_lines
+        self.big_gather_funcs.append(Reduc_105_partial_drain_four_func)
+        self.big_top_dataflow_funcs.append(Reduc_105_partial_drain_four_func)
+
+        # --- Finalize drain function ---
+        Reduc_105_finalize_drain_func = HLSFunction(name="Reduc_105_finalize_drain", comp=comp)
+        params = []
+
+        # Types
+        write_burst_pkt_t_type = HLSType(HLSBasicType.WRITE_BURST_PKT_T)
+        kernel_out_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[write_burst_pkt_t_type])
+        partial_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[ap_uint256_type])
+
+        lower_stream_var = HLSVar(var_name="lower_pe_pack_stream", var_type=partial_stream_type)
+        upper_stream_var = HLSVar(var_name="upper_pe_pack_stream", var_type=partial_stream_type)
+        num_word_per_pe_var2 = HLSVar(var_name="num_word_per_pe", var_type=uint_type)
+        kernel_out_stream_var = HLSVar(var_name="kernel_out_stream", var_type=kernel_out_stream_type)
+
+        params.extend([lower_stream_var, upper_stream_var, num_word_per_pe_var2, kernel_out_stream_var])
+        Reduc_105_finalize_drain_func.params = params
+
+        code_lines = []
+        for_1_codes = []
+        for_1_codes.append(CodePragma(content="PIPELINE II = 1"))
+
+        code_lines.append(CodeOther(text="LOOP_FINALIZE_DRAIN:"))
+
+        for_1_codes.append(CodeVarDecl(var_name="lower_pe_pack", var_type=ap_uint256_type, init_val="lower_pe_pack_stream.read()"))
+        lower_pe_pack_var = HLSVar(var_name="lower_pe_pack", var_type=ap_uint256_type)
+
+        for_1_codes.append(CodeVarDecl(var_name="upper_pe_pack", var_type=ap_uint256_type, init_val="upper_pe_pack_stream.read()"))
+        upper_pe_pack_var = HLSVar(var_name="upper_pe_pack", var_type=ap_uint256_type)
+
+        write_burst_var = HLSVar(var_name="one_write_burst", var_type=write_burst_pkt_t_type)
+        for_1_codes.append(CodeVarDecl(var_name="one_write_burst", var_type=write_burst_pkt_t_type))
+
+        assign0 = HLSVar(var_name="one_write_burst.data.range(127, 0)", var_type=write_burst_pkt_t_type)
+        for_1_codes.append(CodeAssign(var=assign0, expr=HLSExpr(HLSExprT.CONST, "lower_pe_pack.range(127, 0)")))
+
+        assign1 = HLSVar(var_name="one_write_burst.data.range(255, 128)", var_type=write_burst_pkt_t_type)
+        for_1_codes.append(CodeAssign(var=assign1, expr=HLSExpr(HLSExprT.CONST, "upper_pe_pack.range(127, 0)")))
+
+        assign2 = HLSVar(var_name="one_write_burst.data.range(383, 256)", var_type=write_burst_pkt_t_type)
+        for_1_codes.append(CodeAssign(var=assign2, expr=HLSExpr(HLSExprT.CONST, "lower_pe_pack.range(255, 128)")))
+
+        assign3 = HLSVar(var_name="one_write_burst.data.range(511, 384)", var_type=write_burst_pkt_t_type)
+        for_1_codes.append(CodeAssign(var=assign3, expr=HLSExpr(HLSExprT.CONST, "upper_pe_pack.range(255, 128)")))
+
+        for_1_codes.append(CodeWriteStream(stream_var=kernel_out_stream_var, in_expr=write_burst_var))
+
+        code_lines.append(CodeFor(codes=for_1_codes, iter_limit=num_word_per_pe_var2, iter_name="word_idx", iter_val_type=uint_type))
+
+        Reduc_105_finalize_drain_func.codes = code_lines
+        self.big_gather_funcs.append(Reduc_105_finalize_drain_func)
+        self.big_top_dataflow_funcs.append(Reduc_105_finalize_drain_func)
 
 
         Reduc_105_unit_reduce_func = HLSFunction(name="Reduc_105_unit_reduce", comp=comp) # 假设 comp 存在
@@ -4323,10 +4362,10 @@ axistream2stream:
             edge_batch_stream_type = HLSType(HLSBasicType.STREAM, sub_types=[update_tuple_t_type])
             edge_batch_stream = HLSVar(var_name="edge_batch_stream", var_type=edge_batch_stream_type)
 
-            # Param 4: uint32_t edge_num
-            edge_num_var = HLSVar(var_name="edge_num", var_type=uint_type)
+            # Param 4: uint32_t total_edge_sets
+            total_edge_sets_var = HLSVar(var_name="total_edge_sets", var_type=uint_type)
 
-            params.extend([cacheline_streams, edge_stream, edge_batch_stream, edge_num_var])
+            params.extend([cacheline_streams, edge_stream, edge_batch_stream, total_edge_sets_var])
             merge_node_props_func.params = params
 
             # --- 2. 函数体 ---
@@ -4378,10 +4417,6 @@ axistream2stream:
             code_lines.append(for_loop_1)
             code_lines.append(CodeOther(text=""))
             # --- End for(pe_idx) 1 ---
-
-            # const uint32_t scatter_size = (edge_num >> LOG_PE_NUM);
-            code_lines.append(CodeVarDecl(var_name="scatter_size", var_type=uint_type, init_val="(edge_num >> LOG_PE_NUM)", const=True))
-            scatter_size_var = HLSVar(var_name="scatter_size", var_type=uint_type)
 
             # distance_t real_edge_weight = 1.0; 
             code_lines.append(CodeVarDecl(var_name="real_edge_weight", var_type=distance_t_type, init_val="1.0", const=False))
@@ -4562,7 +4597,7 @@ axistream2stream:
 
             # Create for loop 2
             for_loop_2 = CodeFor(codes=for_loop_2_codes,
-                                iter_limit=scatter_size_var,
+                                iter_limit=total_edge_sets_var,
                                 iter_cmp="<",
                                 iter_name="edge_batch_idx",
                                 iter_start="0",
