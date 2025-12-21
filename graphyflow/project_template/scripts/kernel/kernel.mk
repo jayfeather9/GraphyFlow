@@ -51,6 +51,8 @@ LDFLAGS_VPP += -Iscripts/host
 LDFLAGS_VPP += -I$(XILINX_XRT)/include
 LDFLAGS_VPP += -I$(XILINX_VITIS)/include
 LDFLAGS_VPP += --xp prop:solution.kernel_compiler_margin=10%
+LDFLAGS_VPP += -O3
+LDFLAGS_VPP += --kernel_frequency=220
 
 
 # --- 构建规则 ---
