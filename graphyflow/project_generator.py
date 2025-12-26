@@ -14,6 +14,12 @@ from .newbackend_manager import BackendManager
 INIT_VALUE = "16384.0"
 # You can change the number of kernels and their HBM mapping here.
 
+# Toggle to select memory port type. When True, generator targets DDR instead of HBM.
+USE_DDR = True
+
+# Default kernel frequency (MHz) injected into kernel.mk; adjust as needed.
+KERNEL_FREQUENCY = 220
+
 # 
 from .kernel_numbers import NUM_BIG_KERNELS, NUM_LITTLE_KERNELS
 
@@ -48,6 +54,31 @@ big_merger_slr = ["SLR1"]
 
 apply_kernel_slr = ["SLR1"]
 hbm_writer_slr = ["SLR0"]
+#
+# Default DDR mapping (all kernels on DDR[0]) to support 2 little + 2 big by default.
+# Lengths automatically extend to NUM_LITTLE_KERNELS/NUM_BIG_KERNELS when they differ.
+ddr_edge_ids = [0] * max(NUM_LITTLE_KERNELS + NUM_BIG_KERNELS, 4)
+ddr_node_ids = [0] * max(NUM_LITTLE_KERNELS + NUM_BIG_KERNELS, 4)
+
+little_kernel_ddr_edge_id = ddr_edge_ids[:NUM_LITTLE_KERNELS]
+little_kernel_ddr_node_id = ddr_node_ids[:NUM_LITTLE_KERNELS]
+
+big_kernel_ddr_edge_id = ddr_edge_ids[NUM_LITTLE_KERNELS:NUM_LITTLE_KERNELS+NUM_BIG_KERNELS]
+big_kernel_ddr_node_id = ddr_node_ids[NUM_LITTLE_KERNELS:NUM_LITTLE_KERNELS+NUM_BIG_KERNELS]
+
+apply_kernel_ddr_node_id = [0]
+ddr_writer_output_id = [0]
+
+MEMORY_PORT = "DDR" if USE_DDR else "HBM"
+
+little_kernel_edge_id = little_kernel_ddr_edge_id if USE_DDR else little_kernel_hbm_edge_id
+little_kernel_node_id = little_kernel_ddr_node_id if USE_DDR else little_kernel_hbm_node_id
+
+big_kernel_edge_id = big_kernel_ddr_edge_id if USE_DDR else big_kernel_hbm_edge_id
+big_kernel_node_id = big_kernel_ddr_node_id if USE_DDR else big_kernel_hbm_node_id
+
+apply_kernel_mem_node_id = apply_kernel_ddr_node_id if USE_DDR else apply_kernel_hbm_node_id
+writer_output_id = ddr_writer_output_id if USE_DDR else hbm_writer_output_id
 # 
 # 
 # 
@@ -99,13 +130,13 @@ def _create_cfg(dest: Path, kernel_name: str):
     # --- 1. 派生配置和验证 ---
     try:
         # 验证 Big Kernels
-        assert len(big_kernel_hbm_edge_id) == NUM_BIG_KERNELS
-        assert len(big_kernel_hbm_node_id) == NUM_BIG_KERNELS
+        assert len(big_kernel_edge_id) == NUM_BIG_KERNELS
+        assert len(big_kernel_node_id) == NUM_BIG_KERNELS
         assert len(big_kernel_slr) == NUM_BIG_KERNELS
 
         # 验证 Little Kernels
-        assert len(little_kernel_hbm_edge_id) == NUM_LITTLE_KERNELS
-        assert len(little_kernel_hbm_node_id) == NUM_LITTLE_KERNELS
+        assert len(little_kernel_edge_id) == NUM_LITTLE_KERNELS
+        assert len(little_kernel_node_id) == NUM_LITTLE_KERNELS
         assert len(little_kernel_slr) == NUM_LITTLE_KERNELS
         
         # 验证单实例内核
@@ -113,7 +144,8 @@ def _create_cfg(dest: Path, kernel_name: str):
         assert len(big_merger_slr) == 1
         assert len(apply_kernel_slr) == 1
         assert len(hbm_writer_slr) == 1
-        assert len(apply_kernel_hbm_node_id) == 1
+        assert len(apply_kernel_mem_node_id) == 1
+        assert len(writer_output_id) == 1
         
     except AssertionError as e:
         print(f"配置错误: 全局列表长度与 NUM_... 变量或实例数量不匹配。", file=sys.stderr)
@@ -145,22 +177,22 @@ def _create_cfg(dest: Path, kernel_name: str):
     if has_big:
         content.append(f"nk=big_merger:1")
 
-    # --- 2. HBM Port Mapping (sp) ---
-    content.append("\n# --- 2. HBM Port Mapping (sp) ---")
+    # --- 2. Memory Port Mapping (sp) ---
+    content.append("\n# --- 2. Memory Port Mapping (sp) ---")
 
     # -- graphyflow_little (edge_props) --
     for i in range(NUM_LITTLE_KERNELS):
         instance_num = i + 1
-        hbm_id = little_kernel_hbm_edge_id[i]
+        mem_id = little_kernel_edge_id[i]
         content.append(f"\n# -- Mapping for instance: graphyflow_little_{instance_num} --")
-        content.append(f"sp=graphyflow_little_{instance_num}.edge_props:HBM[{hbm_id}]")
+        content.append(f"sp=graphyflow_little_{instance_num}.edge_props:{MEMORY_PORT}[{mem_id}]")
 
     # -- graphyflow_big (edge_props) --
     for i in range(NUM_BIG_KERNELS):
         instance_num = i + 1
-        hbm_id = big_kernel_hbm_edge_id[i]
+        mem_id = big_kernel_edge_id[i]
         content.append(f"\n# -- Mapping for instance: graphyflow_big_{instance_num} --")
-        content.append(f"sp=graphyflow_big_{instance_num}.edge_props:HBM[{hbm_id}]")
+        content.append(f"sp=graphyflow_big_{instance_num}.edge_props:{MEMORY_PORT}[{mem_id}]")
 
     # -- Mapping for instance: hbm_writer_1 --
     content.append(f"\n# -- Mapping for instance: hbm_writer_1 --")
@@ -169,21 +201,21 @@ def _create_cfg(dest: Path, kernel_name: str):
     # little 
     for i in range(NUM_LITTLE_KERNELS):
         port_index = i + 1
-        hbm_id = little_kernel_hbm_node_id[i]
-        content.append(f"sp=hbm_writer_1.src_prop_{port_index}:HBM[{hbm_id}]")
+        mem_id = little_kernel_node_id[i]
+        content.append(f"sp=hbm_writer_1.src_prop_{port_index}:{MEMORY_PORT}[{mem_id}]")
         
     # big 
     for i in range(NUM_BIG_KERNELS):
         port_index = i + 1 + NUM_LITTLE_KERNELS
-        hbm_id = big_kernel_hbm_node_id[i]
-        content.append(f"sp=hbm_writer_1.src_prop_{port_index}:HBM[{hbm_id}]")
+        mem_id = big_kernel_node_id[i]
+        content.append(f"sp=hbm_writer_1.src_prop_{port_index}:{MEMORY_PORT}[{mem_id}]")
     
     # hbm_writer_1 output 
-    content.append(f"sp=hbm_writer_1.output:HBM[{hbm_writer_output_id[0]}]") # reserved
+    content.append(f"sp=hbm_writer_1.output:{MEMORY_PORT}[{writer_output_id[0]}]") # reserved
 
     # -- Mapping for instance: apply_kernel_1 --
     content.append(f"\n# -- Mapping for instance: apply_kernel_1 --")
-    content.append(f"sp=apply_kernel_1.node_props:HBM[{apply_kernel_hbm_node_id[0]}]")
+    content.append(f"sp=apply_kernel_1.node_props:{MEMORY_PORT}[{apply_kernel_mem_node_id[0]}]")
 
     # --- 3. Stream Connections ---
     content.append("\n# --- 3. Stream Connections ---")
@@ -840,11 +872,21 @@ def fill_host_config(file_to_modify: Path):
         replacements = {
             "%BIG_KERNEL_NUM%": NUM_BIG_KERNELS,
             "%LITTLE_KERNEL_NUM%": NUM_LITTLE_KERNELS,
+            "%USE_DDR%": USE_DDR,
+            "%BIG_KERNEL_MEM_EDGE_ID%": big_kernel_edge_id,
+            "%BIG_KERNEL_MEM_NODE_ID%": big_kernel_node_id,
+            "%LITTLE_KERNEL_MEM_EDGE_ID%": little_kernel_edge_id,
+            "%LITTLE_KERNEL_MEM_NODE_ID%": little_kernel_node_id,
+
             "%BIG_KERNEL_HBM_EDGE_ID%": big_kernel_hbm_edge_id,
             "%BIG_KERNEL_HBM_NODE_ID%": big_kernel_hbm_node_id,
-
             "%LITTLE_KERNEL_HBM_EDGE_ID%": little_kernel_hbm_edge_id,
             "%LITTLE_KERNEL_HBM_NODE_ID%": little_kernel_hbm_node_id,
+
+            "%BIG_KERNEL_DDR_EDGE_ID%": big_kernel_ddr_edge_id,
+            "%BIG_KERNEL_DDR_NODE_ID%": big_kernel_ddr_node_id,
+            "%LITTLE_KERNEL_DDR_EDGE_ID%": little_kernel_ddr_edge_id,
+            "%LITTLE_KERNEL_DDR_NODE_ID%": little_kernel_ddr_node_id,
         }
 
         original_content = file_to_modify.read_text(encoding="utf-8")
@@ -854,6 +896,8 @@ def fill_host_config(file_to_modify: Path):
             replacement_string = ""
             if isinstance(value, list):
                 replacement_string = f"{{{', '.join(map(str, value))}}}"
+            elif isinstance(value, bool):
+                replacement_string = "1" if value else "0"
             elif isinstance(value, int):
                 replacement_string = str(value)
 
@@ -935,7 +979,7 @@ def generate_project(
     _copy_and_template(
         template_dir / "scripts" / "kernel" / "kernel.mk",
         output_dir / "scripts" / "kernel" / "kernel.mk",
-        {"{{KERNEL_NAMES}}": " ".join(kernel_names)},
+        {"{{KERNEL_NAMES}}": " ".join(kernel_names), "{{KERNEL_FREQ}}": str(KERNEL_FREQUENCY)},
     )
 
     # 4. Instantiate backend and generate all dynamic code
