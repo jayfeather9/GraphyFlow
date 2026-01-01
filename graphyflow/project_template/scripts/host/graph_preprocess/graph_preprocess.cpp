@@ -43,9 +43,18 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
     printf("Global graph has %d vertices and %d edges.\n", graph->num_vertices,
            graph->num_edges);
 
-    std::cout << "[INFO] Creating 2 partitions: 1 little (max "
-              << LITTLE_MAX_DST << " dsts) and 1 big (max " << BIG_MAX_DST
-              << " dsts)" << std::endl;
+    const bool has_little = LITTLE_KERNEL_NUM > 0;
+    const bool has_big = BIG_KERNEL_NUM > 0;
+    if (!has_little && !has_big) {
+        std::cerr << "[ERROR] No kernels available (both LITTLE_KERNEL_NUM and "
+                     "BIG_KERNEL_NUM are 0)."
+                  << std::endl;
+        exit(1);
+    }
+    std::cout << "[INFO] Kernel availability: " << LITTLE_KERNEL_NUM
+              << " little, " << BIG_KERNEL_NUM << " big. "
+              << "Little max dsts " << LITTLE_MAX_DST << ", big max dsts "
+              << BIG_MAX_DST << "." << std::endl;
 
     // --- PHASE 1: Identify and Collect All Unique Destination Vertices ---
     std::set<int> unique_dst_vertices_set;
@@ -81,21 +90,51 @@ PartitionContainer partitionGraph(const GraphCSR *graph) {
     std::vector<size_t> little_partition_sizes;
     std::vector<size_t> big_partition_sizes;
 
-    size_t remaining_dsts = unique_dst_vertices.size();
-    while (remaining_dsts > 0) {
-        size_t assign_to_little =
-            std::min((size_t)LITTLE_MAX_DST, remaining_dsts);
-        if (assign_to_little == remaining_dsts) {
-            assign_to_little = (size_t)(remaining_dsts * 0.8);
+    auto push_partition = [](std::vector<size_t> &vec, size_t size) {
+        if (size > 0) {
+            vec.push_back(size);
         }
-        little_partition_sizes.push_back(assign_to_little);
-        little_dst_sets.emplace_back();
-        remaining_dsts -= assign_to_little;
+    };
 
-        size_t assign_to_big = std::min((size_t)BIG_MAX_DST, remaining_dsts);
-        big_partition_sizes.push_back(assign_to_big);
-        big_dst_sets.emplace_back();
-        remaining_dsts -= assign_to_big;
+    size_t remaining_dsts = unique_dst_vertices.size();
+    if (has_little && !has_big) {
+        while (remaining_dsts > 0) {
+            size_t assign_to_little =
+                std::min((size_t)LITTLE_MAX_DST, remaining_dsts);
+            push_partition(little_partition_sizes, assign_to_little);
+            little_dst_sets.emplace_back();
+            remaining_dsts -= assign_to_little;
+        }
+    } else if (!has_little && has_big) {
+        while (remaining_dsts > 0) {
+            size_t assign_to_big = std::min((size_t)BIG_MAX_DST, remaining_dsts);
+            push_partition(big_partition_sizes, assign_to_big);
+            big_dst_sets.emplace_back();
+            remaining_dsts -= assign_to_big;
+        }
+    } else { // both big and little kernels are available
+        while (remaining_dsts > 0) {
+            size_t assign_to_little =
+                std::min((size_t)LITTLE_MAX_DST, remaining_dsts);
+            if (assign_to_little == remaining_dsts) {
+                // keep at least 20% for the big side
+                assign_to_little =
+                    std::max<size_t>(1, (remaining_dsts * 8 + 9) / 10);
+            }
+            push_partition(little_partition_sizes, assign_to_little);
+            little_dst_sets.emplace_back();
+            remaining_dsts = (remaining_dsts > assign_to_little)
+                                 ? remaining_dsts - assign_to_little
+                                 : 0;
+
+            size_t assign_to_big =
+                std::min((size_t)BIG_MAX_DST, remaining_dsts);
+            push_partition(big_partition_sizes, assign_to_big);
+            if (assign_to_big > 0) {
+                big_dst_sets.emplace_back();
+                remaining_dsts -= assign_to_big;
+            }
+        }
     }
 
     size_t vertex_idx = 0;

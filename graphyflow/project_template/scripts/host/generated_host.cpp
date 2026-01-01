@@ -611,9 +611,15 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
 
     // --- 1.5: Setup unified output buffer ---
     cl_mem_ext_ptr_t hbm_ext_output;
-    hbm_ext_output.flags =
-        XCL_MEM_TOPOLOGY |
-        acc.little_kernel_hbm_node_id[0]; // Use first HBM bank
+    // Pick a valid HBM bank for the unified output buffer. Prefer a little
+    // kernel bank if available, otherwise fall back to a big kernel bank.
+    int output_bank = 0;
+    if (!acc.little_kernel_hbm_node_id.empty()) {
+        output_bank = acc.little_kernel_hbm_node_id[0];
+    } else if (!acc.big_kernel_hbm_node_id.empty()) {
+        output_bank = acc.big_kernel_hbm_node_id[0];
+    }
+    hbm_ext_output.flags = XCL_MEM_TOPOLOGY | output_bank;
     hbm_ext_output.obj = nullptr;
     hbm_ext_output.param = 0;
 
@@ -1014,15 +1020,38 @@ void AlgorithmHost::execute_kernel_iteration(
     {
         auto &apply_kernel = acc.apply_krnl;
 
-        
         int arg_idx = 0;
         OCL_CHECK(err, err = apply_kernel.setArg(
                                arg_idx++, apply_kernel_node_prop_buffer));
-        OCL_CHECK(err,
-                  err = apply_kernel.setArg(arg_idx++, little_dst_word_num));
-        OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, big_dst_word_num));
-        OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, (uint32_t)0));
-        OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, big_dst_offset));
+
+        bool has_little = (LITTLE_KERNEL_NUM > 0);
+        bool has_big = (BIG_KERNEL_NUM > 0);
+
+        if (has_little && has_big) {
+            // Mixed mode: little + big outputs
+            uint32_t little_offset_words = 0;
+            OCL_CHECK(err, err = apply_kernel.setArg(
+                                   arg_idx++, little_dst_word_num));
+            OCL_CHECK(err,
+                      err = apply_kernel.setArg(arg_idx++, big_dst_word_num));
+            OCL_CHECK(err, err = apply_kernel.setArg(
+                                   arg_idx++, little_offset_words));
+            OCL_CHECK(err, err = apply_kernel.setArg(
+                                   arg_idx++, big_dst_offset));
+        } else if (has_big) {
+            // Big-only mode
+            OCL_CHECK(err,
+                      err = apply_kernel.setArg(arg_idx++, big_dst_word_num));
+            OCL_CHECK(err, err = apply_kernel.setArg(
+                                   arg_idx++, big_dst_offset));
+        } else {
+            // Little-only mode
+            uint32_t little_offset_words = 0;
+            OCL_CHECK(err, err = apply_kernel.setArg(
+                                   arg_idx++, little_dst_word_num));
+            OCL_CHECK(err, err = apply_kernel.setArg(
+                                   arg_idx++, little_offset_words));
+        }
 
 
         OCL_CHECK(err, err = acc.apply_queue.enqueueTask(
