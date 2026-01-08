@@ -75,6 +75,12 @@ source /opt/Xilinx2024/Vitis/2024.1/settings64.sh
 source /opt/xilinx/xrt/setup.sh
 ```
 
+If you’re using bash/zsh directly (no fish), the equivalent is:
+
+```bash
+source /home/feiyang/set_env.sh
+```
+
 ### Standard build/run (with log capture)
 From repo root:
 
@@ -95,6 +101,22 @@ set ts (date +%Y%m%d_%H%M%S)
 ./run.sh hw_emu &| tee "logs/run_hw_emu.$ts.log"
 ```
 
+For bash, the same idea is:
+
+```bash
+cd generated_project
+source /home/feiyang/set_env.sh
+mkdir -p logs
+
+python3 gen_random_graph.py 64 256
+
+ts=$(date +%Y%m%d_%H%M%S)
+make all TARGET=hw_emu 2>&1 | tee "logs/make_all_hw_emu.$ts.log"
+
+ts=$(date +%Y%m%d_%H%M%S)
+./run.sh hw_emu 2>&1 | tee "logs/run_hw_emu.$ts.log"
+```
+
 ### Important: socket restrictions and “local port errors”
 Observed earlier:
 - `v++`/`xcd` sometimes prints repeated lines like:
@@ -108,6 +130,18 @@ Mitigation:
 - When sockets are allowed, the log instead shows:
   - `Running Dispatch Server on port: <port>`
   - and the repeated “exception getting local port” spam disappears.
+
+Related sandbox symptom:
+- Vivado may also complain about not being able to write to `~/.Xilinx/.../XilinxTclStore`. That’s another sign you’re in a restricted environment; use a “full access” terminal/session.
+
+### Fast compile-only (for II=1 checks)
+If you want to rebuild only the `graphyflow_big` kernel XO (without linking the full xclbin), from `generated_project/`:
+
+```bash
+rm -f xclbin/graphyflow_big.hw_emu.xo xclbin/graphyflow_big.hw_emu.xo.compile_summary
+ts=$(date +%Y%m%d_%H%M%S)
+make xclbin/graphyflow_big.hw_emu.xo TARGET=hw_emu 2>&1 | tee "logs/make_big_xo_hw_emu.$ts.log"
+```
 
 ---
 
@@ -206,6 +240,10 @@ cp -a xbar_variants/plain/graphyflow_big.h   generated_project/scripts/kernel/gr
 ```
 
 This lets you validate the design in `hw_emu` without modifying the Python generator yet.
+
+When switching variants, it helps to force a rebuild of the big kernel:
+- delete `generated_project/xclbin/graphyflow_big.hw_emu.xo*` before running `make`.
+- if you hit weird cached behavior, it’s safe to delete `generated_project/_x`, `generated_project/.Xil`, and `generated_project/.run` (they are regenerated).
 
 **Long term**, once all variants are stable:
 - add a generator option to emit the desired network variant (omega vs xbar variant).
