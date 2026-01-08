@@ -15,10 +15,10 @@ INIT_VALUE = "16384.0"
 # You can change the number of kernels and their HBM mapping here.
 
 # Toggle to select memory port type. When True, generator targets DDR instead of HBM.
-USE_DDR = True
+USE_DDR = False
 
 # Default kernel frequency (MHz) injected into kernel.mk; adjust as needed.
-KERNEL_FREQUENCY = 220
+KERNEL_FREQUENCY = 250
 
 # 
 from .kernel_numbers import NUM_BIG_KERNELS, NUM_LITTLE_KERNELS
