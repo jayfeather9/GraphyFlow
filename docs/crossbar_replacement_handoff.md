@@ -148,7 +148,7 @@ and:
 ## 4) What was implemented so far (plain crossbar, “with nothing”)
 
 ### New folder created
-Four folders were created (only `plain` has code so far):
+Four folders were created (only `plain` has implementation so far; others are placeholders so the folder layout is tracked in git):
 - `xbar_variants/plain`
 - `xbar_variants/rr`
 - `xbar_variants/voq`
@@ -182,14 +182,14 @@ The previous 12 `switch2x2_2(...)` calls were removed and replaced with:
 crossbar_skid_fixed(reduce_105_d2o_pair, reduce_105_o2u_pair);
 ```
 
-### Important note (likely future compile issue)
-The initial implementation used:
-- a `break;` inside a fully-unrolled scan loop.
+### Implementation note (HLS friendliness)
+The implementation was refactored to avoid `break` inside fully-unrolled loops (priority selection is done via one-hot + encoder), to keep synthesis/pipelining predictable.
 
-In HLS, `break` inside an unrolled loop can be problematic or lead to unexpected synthesis behavior.
-If compilation fails or II != 1, refactor the arbitration selection to avoid `break`:
-- compute `winner` using a priority encoder style (no loop early-exit)
-- or use `read_nb` / `write_nb` patterns
+### Plain variant validated (hw_emu)
+Validation was completed using the “copy into `generated_project/` and build/run” workflow:
+- Build log: `generated_project/logs/make_all_hw_emu.20260108_175220.log`
+- Run log: `generated_project/logs/run_hw_emu.20260108_180137.log` (reported `SUCCESS: Results match!`)
+- II=1 evidence: `generated_project/_x/reports/graphyflow_big.hw_emu/v++_compile_graphyflow_big.hw_emu_guidance.html` contains `Final II = 1` for loop `LOOP_WHILE_XBAR_SKID_FIXED`.
 
 ---
 
@@ -212,53 +212,20 @@ This lets you validate the design in `hw_emu` without modifying the Python gener
 
 ---
 
-## 6) Major blocker encountered: disk full (build cannot proceed)
+## 6) Practical build blockers (sandbox + disk)
 
-### What happened
-While attempting to rebuild `hw_emu` for the new crossbar kernel, the system hit:
-- `OSError: [Errno 28] No space left on device`
+### Sandbox restrictions (observed)
+In sandboxed environments, `v++`/Vivado may fail during `hw_emu` (e.g. “local port” errors, and/or Vivado complaining about not being able to write under `~/.Xilinx`).
 
-This prevented:
-- `bass` from creating temporary files,
-- `tee` from writing logs,
-- and `make` from proceeding reliably.
+Mitigation:
+- run the build/run in a “full access” environment where local IPC and user-home writes are allowed.
+- when working, the log shows `Running Dispatch Server on port: <port>` (instead of failing early).
 
-### Root cause
-`generated_project/_x` became enormous:
-- `generated_project/_x` was measured at ~359 GB at one point.
-
-This is consistent with Vitis/Vivado generating large intermediate trees during `hw_emu` builds.
-
-### What was cleaned
-The following were deleted to reclaim space:
+### Disk usage (possible)
+`generated_project/_x` can get very large during `hw_emu` builds. If disk space gets tight, it’s safe to delete:
 - `generated_project/_x`
 - `generated_project/.run`
 - `generated_project/.Xil`
-
-### But disk is still effectively full
-Even after deleting those, `df -h /` still reported `Use% 100%` with almost no available space.
-This means:
-- there is still another large consumer elsewhere on `/`, OR
-- space had not been fully released due to still-running processes, OR
-- filesystem reserved space / delayed reclaim.
-
-### Processes that were still running
-There were long-running `make all TARGET=hw_emu` / `v++` / `vitis_hls` processes (some from prior aborted runs).
-They were killed (TERM then KILL).
-
-### What you must do next to unblock work
-1) Confirm no Vitis/Vivado processes are still writing:
-   ```bash
-   ps -u feiyang -o pid,etime,cmd | rg -n "(v\\+\\+|vivado|xsim|vitis_hls|xcd|hw_emu)"
-   ```
-2) Identify where the remaining disk usage is:
-   ```bash
-   sudo du -sh /* 2>/dev/null | sort -h | tail -n 50
-   du -sh /home/feiyang/* 2>/dev/null | sort -h | tail -n 50
-   ```
-3) Delete/move large, non-essential data until you have **tens of GB free**.
-   - The build system can easily recreate `_x` again.
-4) Only after reclaiming space, retry the build.
 
 ---
 
@@ -268,55 +235,21 @@ They were killed (TERM then KILL).
 `generated_project/` appears to be untracked. That means:
 - changes inside it won’t be committed unless explicitly added (don’t add it).
 
-### Tracked files modified earlier (not related to crossbar)
-There are tracked modifications in:
-- `graphyflow/kernel_numbers.py` (changed kernel counts)
-- `graphyflow/project_generator.py` (changed `USE_DDR` and frequency)
-
-These were made earlier to align the generated project with:
-- 11 little + 3 big kernels
-- HBM usage
-- 250 MHz frequency
-
-Before committing crossbar work, decide whether these config changes are intended for the main branch or should be reverted.
-
-### Untracked docs
-- `docs/agent_hw_emu_runbook.md` was created earlier.
-- `docs/network_variants.md` exists but currently appears untracked as well.
-
-Decide whether to add them to git.
+### Commits made so far
+- Generator defaults (11 little + 3 big, HBM, 250 MHz): commit `76b4560`
+- Crossbar variant skeleton + plain implementation + docs: commit `05eb326`
 
 ---
 
-## 8) Next engineering steps (once disk is unblocked)
+## 8) Next engineering steps (after plain passing)
 
-### Step A — Compile the plain crossbar and confirm II=1
-1) Copy plain variant into `generated_project/scripts/kernel/graphyflow_big.cpp`
-2) Build `hw_emu` and log it with `tee`
-3) Verify in the build log that the crossbar loop is II=1
-   - Search the v++ HLS log lines for the crossbar loop label (add a unique loop label if needed).
-
-If II != 1:
-- reduce control complexity in the loop:
-  - avoid `break` in unrolled loops,
-  - avoid multiple writes to the same output in one cycle,
-  - prefer `read_nb`/`write_nb` or explicit `.empty()`/`.full()` gating.
-
-### Step B — Run hw_emu and verify correctness
-Run:
-```bash
-./run.sh hw_emu |& tee logs/run_hw_emu.xbar_plain.<ts>.log
-```
-Success criteria:
-- The host comparison reports `SUCCESS: Results match!`
-
-### Step C — Scale input size
+### Step A — Scale input size
 After correctness:
 - generate a larger random graph or provide a real graph file
 - run hw_emu again
 - check throughput / runtime
 
-### Step D — Implement the remaining variants
+### Step B — Implement the remaining variants
 Implement in separate variant folders:
 
 #### `xbar_variants/rr`
@@ -388,10 +321,7 @@ Each commit should be small, buildable, and testable.
 
 ## 11) What is still missing right now (as of writing this file)
 
-1) **Disk space is still effectively full**, preventing reliable builds.
-2) Plain crossbar has been coded but **not yet validated** in `hw_emu` after the omega replacement, because builds were blocked by disk.
-3) RR/VOQ/VOQ+RR variants are not implemented yet.
-4) No commits have been made for the crossbar work yet.
+1) RR/VOQ/VOQ+RR variants are not implemented yet.
+2) Larger-graph `hw_emu` runs haven’t been done yet (only small random graph validation was performed).
 
-Once disk space is restored and the plain crossbar passes `hw_emu`, the rest is straightforward iterative implementation + testing + commits.
-
+The plain crossbar is validated in `hw_emu` and has II=1 on its main loop; the remaining work is straightforward iterative implementation + testing + commits.
