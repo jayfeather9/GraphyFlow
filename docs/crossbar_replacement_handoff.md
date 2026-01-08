@@ -237,6 +237,19 @@ These variants are implemented in `xbar_variants/` and were compile-checked (XO 
 Note on VOQ implementations:
 - they avoid `.empty()`/`.full()` query fanout by tracking per-VOQ occupancy counters, and they flush end tokens in a separate loop after the data loop drains (to keep the data loop at II=1).
 
+### End-to-end hw_emu validation (rr/voq/voq_rr)
+All three variants were validated end-to-end via `make all TARGET=hw_emu` + `./run.sh hw_emu` after copying the variant sources into `generated_project/scripts/kernel/`:
+
+- RR:
+  - Build log: `generated_project/logs/make_all_hw_emu.xbar_rr.20260108_201913.log`
+  - Run log: `generated_project/logs/run_hw_emu.xbar_rr.20260108_202629.log` (`SUCCESS: Results match!`)
+- VOQ:
+  - Build log: `generated_project/logs/make_all_hw_emu.xbar_voq.20260108_202928.log`
+  - Run log: `generated_project/logs/run_hw_emu.xbar_voq.20260108_203705.log` (`SUCCESS: Results match!`)
+- VOQ+RR:
+  - Build log: `generated_project/logs/make_all_hw_emu.xbar_voq_rr.20260108_204139.log`
+  - Run log: `generated_project/logs/run_hw_emu.xbar_voq_rr.20260108_204913.log` (`SUCCESS: Results match!`)
+
 ---
 
 ## 5) How to integrate the variant into the build (current approach)
@@ -380,7 +393,6 @@ Each commit should be small, buildable, and testable.
 
 ## 11) What is still missing right now (as of writing this file)
 
-1) End-to-end `hw_emu` validation for `rr`, `voq`, `voq_rr` variants (plain is validated).
-2) Larger-graph `hw_emu` runs haven’t been done yet (only small random graph validation was performed).
+1) Larger-graph `hw_emu` runs haven’t been done yet (only small random graph validation was performed).
 
 The plain crossbar is validated in `hw_emu` and has II=1 on its main loop; the remaining work is straightforward iterative implementation + testing + commits.
