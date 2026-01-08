@@ -62,6 +62,17 @@ Every function that is part of the DATAFLOW streaming pipeline must:
 
 ## 1) Environment + build/run procedure (known working)
 
+### New: parallel hardware builds on a server (`TARGET=hw`)
+If you want to compile **baseline + all 4 crossbar variants** in parallel (e.g., on a server), use:
+
+- `docs/parallel_hw_build_variants.md`
+
+That document is written for a newcomer and explains how to:
+- generate a clean baseline `generated_project/`,
+- create **5 independent** build directories (baseline + 4 variants),
+- swap in `xbar_variants/*/graphyflow_big.*`,
+- run `make all TARGET=hw` in parallel with per-variant logs.
+
 ### Environment activation
 The environment is sourced using fish’s `bass`:
 
@@ -254,30 +265,22 @@ All three variants were validated end-to-end via `make all TARGET=hw_emu` + `./r
 Dataset generation (done once, reused across runs):
 - `cd generated_project && python3 gen_random_graph.py 2000 4000` (writes `generated_project/graph.txt`)
 
-How cycles were computed:
-- The host prints per-kernel timing from OpenCL event profiling (`CL_PROFILING_COMMAND_START/END`).
-- Assuming the configured clock is 250 MHz (`--kernel_frequency=250`), we use 4 ns/cycle, i.e. `cycles = round(ns / 4)`.
-- “Total cycles” below correspond to the run’s `Total FPGA Kernel Execution Time` (sum of per-iteration `FPGA Iteration X: Time = ... ms`).
-- “Big-kernel cycles” below are `sum over iterations (max Big Kernel time in that iteration)`; this isolates the `graphyflow_big` critical-path kernel time per iteration.
+Important correction:
+- The numbers printed by the host as `... Time = ... ms` are **runtime/driver timestamps under emulation**, and **must not** be converted into “hardware cycles” by assuming a fixed clock period.
+- For cycle counts you must use Vitis/XRT profiling/trace (or hardware counters) and extract cycles from those artifacts.
 
-All variants converged in 10 FPGA iterations on this dataset.
+What is still needed (TODO):
+- Re-run baseline + 4 variants with Vitis/XRT timeline/trace properly enabled.
+- Extract **per-iteration** cycle counts for:
+  - `graphyflow_big` only (e.g., max across the 3 big CUs per iteration), and
+  - end-to-end iteration span (all kernels in the iteration).
+- Add a table here comparing baseline vs all 4 variants on the same dataset.
 
-- Plain:
-  - Run log: `generated_project/logs/run_hw_emu.xbar_plain.n2000_e4000.20260108_205756.log`
-  - Total: 670,008.0 ms → 167,502,000,000 cycles
-  - Big-kernel: 366,575.0 ms → 91,643,750,000 cycles
-- RR:
-  - Run log: `generated_project/logs/run_hw_emu.xbar_rr.n2000_e4000.20260108_211836.log`
-  - Total: 643,750.0 ms → 160,937,450,000 cycles
-  - Big-kernel: 368,748.8 ms → 92,187,200,000 cycles
-- VOQ:
-  - Run log: `generated_project/logs/run_hw_emu.xbar_voq.n2000_e4000.20260108_214737.log`
-  - Total: 729,787.0 ms → 182,446,800,000 cycles
-  - Big-kernel: 387,243.8 ms → 96,810,950,000 cycles
-- VOQ+RR:
-  - Run log: `generated_project/logs/run_hw_emu.xbar_voq_rr.n2000_e4000.20260108_220859.log`
-  - Total: 708,090.0 ms → 177,022,525,000 cycles
-  - Big-kernel: 396,299.4 ms → 99,074,850,000 cycles
+Run logs for correctness (same dataset, hw_emu):
+- Plain: `generated_project/logs/run_hw_emu.xbar_plain.n2000_e4000.20260108_205756.log`
+- RR: `generated_project/logs/run_hw_emu.xbar_rr.n2000_e4000.20260108_211836.log`
+- VOQ: `generated_project/logs/run_hw_emu.xbar_voq.n2000_e4000.20260108_214737.log`
+- VOQ+RR: `generated_project/logs/run_hw_emu.xbar_voq_rr.n2000_e4000.20260108_220859.log`
 
 ---
 
