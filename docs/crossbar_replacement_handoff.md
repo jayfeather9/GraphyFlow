@@ -250,6 +250,35 @@ All three variants were validated end-to-end via `make all TARGET=hw_emu` + `./r
   - Build log: `generated_project/logs/make_all_hw_emu.xbar_voq_rr.20260108_204139.log`
   - Run log: `generated_project/logs/run_hw_emu.xbar_voq_rr.20260108_204913.log` (`SUCCESS: Results match!`)
 
+### Cycle counts on a shared dataset (2000 nodes / 4000 edges)
+Dataset generation (done once, reused across runs):
+- `cd generated_project && python3 gen_random_graph.py 2000 4000` (writes `generated_project/graph.txt`)
+
+How cycles were computed:
+- The host prints per-kernel timing from OpenCL event profiling (`CL_PROFILING_COMMAND_START/END`).
+- Assuming the configured clock is 250 MHz (`--kernel_frequency=250`), we use 4 ns/cycle, i.e. `cycles = round(ns / 4)`.
+- “Total cycles” below correspond to the run’s `Total FPGA Kernel Execution Time` (sum of per-iteration `FPGA Iteration X: Time = ... ms`).
+- “Big-kernel cycles” below are `sum over iterations (max Big Kernel time in that iteration)`; this isolates the `graphyflow_big` critical-path kernel time per iteration.
+
+All variants converged in 10 FPGA iterations on this dataset.
+
+- Plain:
+  - Run log: `generated_project/logs/run_hw_emu.xbar_plain.n2000_e4000.20260108_205756.log`
+  - Total: 670,008.0 ms → 167,502,000,000 cycles
+  - Big-kernel: 366,575.0 ms → 91,643,750,000 cycles
+- RR:
+  - Run log: `generated_project/logs/run_hw_emu.xbar_rr.n2000_e4000.20260108_211836.log`
+  - Total: 643,750.0 ms → 160,937,450,000 cycles
+  - Big-kernel: 368,748.8 ms → 92,187,200,000 cycles
+- VOQ:
+  - Run log: `generated_project/logs/run_hw_emu.xbar_voq.n2000_e4000.20260108_214737.log`
+  - Total: 729,787.0 ms → 182,446,800,000 cycles
+  - Big-kernel: 387,243.8 ms → 96,810,950,000 cycles
+- VOQ+RR:
+  - Run log: `generated_project/logs/run_hw_emu.xbar_voq_rr.n2000_e4000.20260108_220859.log`
+  - Total: 708,090.0 ms → 177,022,525,000 cycles
+  - Big-kernel: 396,299.4 ms → 99,074,850,000 cycles
+
 ---
 
 ## 5) How to integrate the variant into the build (current approach)
