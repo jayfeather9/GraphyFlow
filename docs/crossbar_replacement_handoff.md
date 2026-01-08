@@ -182,16 +182,18 @@ and:
 ## 4) What was implemented so far (plain crossbar, “with nothing”)
 
 ### New folder created
-Four folders were created (only `plain` has implementation so far; others are placeholders so the folder layout is tracked in git):
+Four variant folders exist under `xbar_variants/`:
 - `xbar_variants/plain`
 - `xbar_variants/rr`
 - `xbar_variants/voq`
 - `xbar_variants/voq_rr`
 
 ### Copy of kernel source used as the working base
-The baseline big-kernel source was copied into:
-- `xbar_variants/plain/graphyflow_big.cpp`
-- `xbar_variants/plain/graphyflow_big.h`
+Each variant currently carries a full copy of the baseline big-kernel source (so you can swap it into `generated_project/` without touching the generator yet):
+- `xbar_variants/plain/graphyflow_big.cpp` + `xbar_variants/plain/graphyflow_big.h`
+- `xbar_variants/rr/graphyflow_big.cpp` + `xbar_variants/rr/graphyflow_big.h`
+- `xbar_variants/voq/graphyflow_big.cpp` + `xbar_variants/voq/graphyflow_big.h`
+- `xbar_variants/voq_rr/graphyflow_big.cpp` + `xbar_variants/voq_rr/graphyflow_big.h`
 
 ### Plain crossbar implementation
 In `xbar_variants/plain/graphyflow_big.cpp`, a new function was added:
@@ -224,6 +226,16 @@ Validation was completed using the “copy into `generated_project/` and build/r
 - Build log: `generated_project/logs/make_all_hw_emu.20260108_175220.log`
 - Run log: `generated_project/logs/run_hw_emu.20260108_180137.log` (reported `SUCCESS: Results match!`)
 - II=1 evidence: `generated_project/_x/reports/graphyflow_big.hw_emu/v++_compile_graphyflow_big.hw_emu_guidance.html` contains `Final II = 1` for loop `LOOP_WHILE_XBAR_SKID_FIXED`.
+
+### Remaining variants implemented (not yet end-to-end hw_emu validated)
+These variants are implemented in `xbar_variants/` and were compile-checked (XO compile) for II=1:
+
+- `rr`: `crossbar_skid_rr(...)` main loop label `LOOP_WHILE_XBAR_SKID_RR` (example log: `generated_project/logs/make_big_xo_hw_emu.rr.20260108_184945.log`)
+- `voq`: `crossbar_voq_fixed(...)` main loop label `LOOP_WHILE_XBAR_VOQ_FIXED` and end-flush loop `LOOP_WHILE_XBAR_VOQ_FLUSH_ENDS` (example log: `generated_project/logs/make_big_xo_hw_emu.voq.20260108_200705.log`)
+- `voq_rr`: `crossbar_voq_rr(...)` main loop label `LOOP_WHILE_XBAR_VOQ_RR` and end-flush loop `LOOP_WHILE_XBAR_VOQ_RR_FLUSH_ENDS` (example log: `generated_project/logs/make_big_xo_hw_emu.voq_rr.20260108_200903.log`)
+
+Note on VOQ implementations:
+- they avoid `.empty()`/`.full()` query fanout by tracking per-VOQ occupancy counters, and they flush end tokens in a separate loop after the data loop drains (to keep the data loop at II=1).
 
 ---
 
@@ -276,6 +288,9 @@ Mitigation:
 ### Commits made so far
 - Generator defaults (11 little + 3 big, HBM, 250 MHz): commit `76b4560`
 - Crossbar variant skeleton + plain implementation + docs: commit `05eb326`
+- RR variant: commit `6f66ba5`
+- VOQ variant: commit `738deb0`
+- VOQ+RR variant: commit `f265368`
 
 ---
 
@@ -304,6 +319,12 @@ Implement in separate variant folders:
 
 #### `xbar_variants/voq_rr`
 - same VOQ, but per-output RR ordering
+
+### Step C — Validate rr/voq/voq_rr end-to-end in hw_emu
+For each variant (`rr`, `voq`, `voq_rr`):
+1) copy the variant into `generated_project/scripts/kernel/graphyflow_big.cpp` + `.h`
+2) run `make all TARGET=hw_emu` (or at least the big-kernel XO compile for II checks)
+3) run `./run.sh hw_emu` and confirm `SUCCESS: Results match!`
 
 ### Step E — Minimal-test kernel (if needed)
 If integration debugging is painful, create a minimized HLS test kernel:
@@ -359,7 +380,7 @@ Each commit should be small, buildable, and testable.
 
 ## 11) What is still missing right now (as of writing this file)
 
-1) RR/VOQ/VOQ+RR variants are not implemented yet.
+1) End-to-end `hw_emu` validation for `rr`, `voq`, `voq_rr` variants (plain is validated).
 2) Larger-graph `hw_emu` runs haven’t been done yet (only small random graph validation was performed).
 
 The plain crossbar is validated in `hw_emu` and has II=1 on its main loop; the remaining work is straightforward iterative implementation + testing + commits.
