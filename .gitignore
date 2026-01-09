@@ -226,6 +226,7 @@ emconfig.json
 xrt.ini
 xsa.xml
 graph.txt
+sample_link.ini
 
 *.csv
 *.run_summary
