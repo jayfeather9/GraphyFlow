@@ -121,10 +121,8 @@ request_manager(hls::stream<edge_descriptor_batch_t> &edge_burst_stm,
                 ap_fixed_pod_t src_prop = uram_row.range(31 + ((ap_uint<9>)uram_row_offset << 5), ((ap_uint<9>)uram_row_offset << 5));
                 // Begin inline logic
                 ap_fixed_pod_t BinOp_68_res;
-                ap_fixed_pod_t edge_weight =
-                    ((ap_fixed_pod_t)an_edge_burst.edges[u].weight)
-                    << (DISTANCE_BITWIDTH - DISTANCE_INTEGER_PART);
-                BinOp_68_res = (src_prop + edge_weight);
+                ap_fixed_pod_t edge_prop = an_edge_burst.edges[u].prop;
+                BinOp_68_res = (src_prop + edge_prop);
                 an_update_set.data[u].prop = BinOp_68_res;
                 an_update_set.data[u].node_id = an_edge_burst.edges[u].dst_id;
                 // End inline logic
@@ -388,7 +386,9 @@ extern "C" void
     // --- Data Loading ---
     // --- Data Loading ---
     const uint32_t total_edge_sets = (num_edges >> LOG_PE_NUM);
-    const int32_t edges_per_word = (AXI_BUS_WIDTH / (NODE_ID_BITWIDTH + NODE_ID_BITWIDTH));
+    const int32_t bits_per_edge =
+        (NODE_ID_BITWIDTH + NODE_ID_BITWIDTH + DISTANCE_BITWIDTH + 32);
+    const int32_t edges_per_word = (AXI_BUS_WIDTH / bits_per_edge);
     const int32_t num_wide_reads = (num_edges / edges_per_word);
     
     const uint32_t num_words = ((dst_num + 1) >> 1);
@@ -399,17 +399,25 @@ extern "C" void
     for (int32_t i = 0; i < num_wide_reads; i++) {
 #pragma HLS PIPELINE II = 1
         bus_word_t wide_word = edge_props[i];
-        edge_descriptor_batch_t edge_batch;
+        static edge_descriptor_batch_t edge_batch;
+#pragma HLS dependence variable = edge_batch inter false
         LOOP_EDL_UNPACK:
         LOOP_FOR_49:
         for (int32_t j = 0; j < edges_per_word; j++) {
 #pragma HLS UNROLL
-            ap_uint<64> packed_edge = wide_word.range(63 + (j << 6), (j << 6));
-            edge_batch.edges[j].dst_id = packed_edge.range(19, 0);
-            edge_batch.edges[j].weight = packed_edge.range(31, 20);
-            edge_batch.edges[j].src_id = packed_edge.range(63, 32);
+            ap_uint<128> packed_edge =
+                wide_word.range(127 + (j << 7), (j << 7));
+            edge_batch.edges[((i & 0x1) << 2) + j].dst_id =
+                packed_edge.range(19, 0);
+            edge_batch.edges[((i & 0x1) << 2) + j].prop =
+                packed_edge.range(95, 64);
+            edge_batch.edges[((i & 0x1) << 2) + j].src_id =
+                packed_edge.range(63, 32);
         }
-        edge_stream.write(edge_batch);
+
+        if ((i & 0x1) == 0x1) {
+            edge_stream.write(edge_batch);
+        }
     }
     
     stream2axistream(ppb_req_stream_internal, ppb_req_stream);

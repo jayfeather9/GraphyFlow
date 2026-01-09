@@ -274,10 +274,8 @@ merge_node_props(hls::stream<bus_word_t> (&cacheline_streams)[PE_NUM],
             
             // Begin inline logic
             ap_fixed_pod_t BinOp_68_res;
-            ap_fixed_pod_t edge_weight =
-                ((ap_fixed_pod_t)edge_batch.edges[pe_idx].weight)
-                << (DISTANCE_BITWIDTH - DISTANCE_INTEGER_PART);
-            BinOp_68_res = (prop + edge_weight);
+            ap_fixed_pod_t edge_prop = edge_batch.edges[pe_idx].prop;
+            BinOp_68_res = (prop + edge_prop);
             out_batch.data[pe_idx].prop = BinOp_68_res;
             out_batch.data[pe_idx].node_id = edge_batch.edges[pe_idx].dst_id;
             // End inline logic
@@ -656,39 +654,44 @@ extern "C" void
     const uint32_t num_word_per_pe = ((num_words + PE_NUM - 1) >> LOG_PE_NUM);
     
     // --- Data Loading ---
-    const int32_t edges_per_word = (AXI_BUS_WIDTH / (NODE_ID_BITWIDTH + NODE_ID_BITWIDTH));
-    const int32_t num_wide_reads = (num_edges / edges_per_word);
     const uint32_t total_edge_sets = (num_edges >> LOG_PE_NUM);
+    const int32_t bits_per_edge =
+        (NODE_ID_BITWIDTH + NODE_ID_BITWIDTH + DISTANCE_BITWIDTH + 32);
+    const int32_t edges_per_word = (AXI_BUS_WIDTH / bits_per_edge);
+    const int32_t num_wide_reads = (num_edges / edges_per_word);
     
     LOOP_EDL_READ:
     LOOP_FOR_47:
     for (int32_t i = 0; i < num_wide_reads; i++) {
 #pragma HLS PIPELINE II = 1
         bus_word_t wide_word = edge_props[i];
-        edge_descriptor_batch_t edge_batch;
+        static edge_descriptor_batch_t edge_batch;
+#pragma HLS dependence variable = edge_batch inter false
         
         LOOP_EDL_UNPACK:
         LOOP_FOR_45:
         for (int32_t j = 0; j < edges_per_word; j++) {
 #pragma HLS UNROLL
-            ap_uint<64> packed_edge = wide_word.range(63 + (j << 6), (j << 6));
+            ap_uint<128> packed_edge =
+                wide_word.range(127 + (j << 7), (j << 7));
             edge_t edge;
             edge.dst_id = packed_edge.range(19, 0);
-            edge.weight = packed_edge.range(31, 20);
             edge.src_id = packed_edge.range(63, 32);
-            edge_batch.edges[j] = edge;
+            edge.prop = packed_edge.range(95, 64);
+            edge_batch.edges[((i & 0x1) << 2) + j] = edge;
         }
-        edge_stream.write(edge_batch);
-        
-        node_id_burst_t src_id_burst;
-        LOOP_FOR_46:
-        for (int32_t j = 0; j < edges_per_word; j++) {
+
+        if ((i & 0x1) == 0x1) {
+            edge_stream.write(edge_batch);
+
+            node_id_burst_t src_id_burst;
+            LOOP_FOR_46:
+            for (int32_t j = 0; j < PE_NUM; j++) {
 #pragma HLS UNROLL
-            node_id_t src_id;
-            src_id = edge_batch.edges[j].src_id;
-            src_id_burst.data[j] = src_id;
+                src_id_burst.data[j] = edge_batch.edges[j].src_id;
+            }
+            stream_src_ids.write(src_id_burst);
         }
-        stream_src_ids.write(src_id_burst);
     }
     
     // --- New COO-style Source Property Loading Pipeline ---
