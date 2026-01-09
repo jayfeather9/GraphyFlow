@@ -67,10 +67,6 @@ request_manager(hls::stream<edge_descriptor_batch_t> &edge_burst_stm,
     
     edge_descriptor_batch_t an_edge_burst;
     
-    distance_t real_edge_weight = 1.0;
-    // All edge weights are 1.0 in unweighted graph
-    const ap_fixed_pod_t edge_weight = (*reinterpret_cast<ap_fixed_pod_t *>(&real_edge_weight));
-    
     scatterLoop:
     LOOP_WHILE_17:
     while (true) {
@@ -125,6 +121,9 @@ request_manager(hls::stream<edge_descriptor_batch_t> &edge_burst_stm,
                 ap_fixed_pod_t src_prop = uram_row.range(31 + ((ap_uint<9>)uram_row_offset << 5), ((ap_uint<9>)uram_row_offset << 5));
                 // Begin inline logic
                 ap_fixed_pod_t BinOp_68_res;
+                ap_fixed_pod_t edge_weight =
+                    ((ap_fixed_pod_t)an_edge_burst.edges[u].weight)
+                    << (DISTANCE_BITWIDTH - DISTANCE_INTEGER_PART);
                 BinOp_68_res = (src_prop + edge_weight);
                 an_update_set.data[u].prop = BinOp_68_res;
                 an_update_set.data[u].node_id = an_edge_burst.edges[u].dst_id;
@@ -407,6 +406,7 @@ extern "C" void
 #pragma HLS UNROLL
             ap_uint<64> packed_edge = wide_word.range(63 + (j << 6), (j << 6));
             edge_batch.edges[j].dst_id = packed_edge.range(19, 0);
+            edge_batch.edges[j].weight = packed_edge.range(31, 20);
             edge_batch.edges[j].src_id = packed_edge.range(63, 32);
         }
         edge_stream.write(edge_batch);
@@ -424,4 +424,3 @@ extern "C" void
     Reduc_105_partial_drain_impl(1, pe_mem_outs_2, pe_mem_out_partial_2, rounded_num_words, max_pod);
     Reduc_105_finalize_drain(pe_mem_out_partial_1, pe_mem_out_partial_2, kernel_out_stream, rounded_num_words, max_pod);
 }
-

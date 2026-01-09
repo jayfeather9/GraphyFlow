@@ -64,6 +64,7 @@ typedef ap_axiu<512, 0, 0, 0> cacheline_data_pkt_t;
 struct __attribute__((packed)) edge_t {
     node_id_t src_id;
     ap_uint<20> dst_id;
+    ap_uint<12> weight;
 };
 
 struct __attribute__((packed)) update_t_little {

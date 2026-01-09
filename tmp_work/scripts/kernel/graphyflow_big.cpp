@@ -249,10 +249,6 @@ merge_node_props(hls::stream<bus_word_t> (&cacheline_streams)[PE_NUM],
         last_cache_idx[pe_idx] = 0x0;
     }
     
-    distance_t real_edge_weight = 1.0;
-    // All edge weights are 1.0 in unweighted graph
-    const ap_fixed_pod_t edge_weight = (*reinterpret_cast<ap_fixed_pod_t *>(&real_edge_weight));
-    
     LOOP_SCATTER_EDGES:
     LOOP_FOR_13:
     for (int32_t edge_batch_idx = 0; edge_batch_idx < total_edge_sets; edge_batch_idx++) {
@@ -278,6 +274,9 @@ merge_node_props(hls::stream<bus_word_t> (&cacheline_streams)[PE_NUM],
             
             // Begin inline logic
             ap_fixed_pod_t BinOp_68_res;
+            ap_fixed_pod_t edge_weight =
+                ((ap_fixed_pod_t)edge_batch.edges[pe_idx].weight)
+                << (DISTANCE_BITWIDTH - DISTANCE_INTEGER_PART);
             BinOp_68_res = (prop + edge_weight);
             out_batch.data[pe_idx].prop = BinOp_68_res;
             out_batch.data[pe_idx].node_id = edge_batch.edges[pe_idx].dst_id;
@@ -675,6 +674,7 @@ extern "C" void
             ap_uint<64> packed_edge = wide_word.range(63 + (j << 6), (j << 6));
             edge_t edge;
             edge.dst_id = packed_edge.range(19, 0);
+            edge.weight = packed_edge.range(31, 20);
             edge.src_id = packed_edge.range(63, 32);
             edge_batch.edges[j] = edge;
         }
@@ -735,4 +735,3 @@ extern "C" void
     Reduc_105_partial_drain_four(pe_mem_out_streams, 4, num_word_per_pe, drain_upper_stream);
     Reduc_105_finalize_drain(drain_lower_stream, drain_upper_stream, num_word_per_pe, kernel_out_stream);
 }
-

@@ -77,6 +77,7 @@ struct __attribute__((packed)) cacheline_resp_t {
 struct __attribute__((packed)) edge_t {
     node_id_t src_id;
     ap_uint<20> dst_id;
+    ap_uint<12> weight;
 };
 
 struct __attribute__((packed)) update_t_big {

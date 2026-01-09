@@ -1,6 +1,7 @@
 #include "generated_host.h"
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <limits>
@@ -136,6 +137,13 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
             const size_t bytes_per_edge =
                 (NODE_ID_BITWIDTH + NODE_ID_BITWIDTH) / 8;
             const size_t edges_per_word = bytes_per_word / bytes_per_edge;
+            constexpr uint32_t kDstIdBits = 20;
+            constexpr uint32_t kWeightBits = 12;
+            static_assert(kDstIdBits + kWeightBits == 32,
+                          "dst_id(20) + weight(12) must fit in 32 bits");
+            constexpr uint32_t kDstIdMask = (1u << kDstIdBits) - 1u;
+            constexpr uint32_t kWeightMask = (1u << kWeightBits) - 1u;
+            constexpr uint32_t kWeightShift = kDstIdBits;
 
             // Check if this pipeline has no edges - if so, add 8 dummy edges
             const size_t actual_edges =
@@ -151,6 +159,7 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                 // Add 8 dummy edges with dst_id = 0x7FFFFFFF and src_id = 0
                 const uint32_t dummy_dst_id = 0x7FFFFFFF;
                 const uint32_t dummy_src_id = 0;
+                const uint32_t dummy_weight = 0;
 
                 for (int dummy_idx = 0; dummy_idx < 8; ++dummy_idx) {
                     if ((temp_byte_buffer.size() % bytes_per_word) +
@@ -164,10 +173,14 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                     }
 
                     char edge_bytes[bytes_per_edge];
+                    const uint32_t packed_dst_weight =
+                        (dummy_dst_id & kDstIdMask) |
+                        ((dummy_weight & kWeightMask) << kWeightShift);
 
-                    // Pack dst_id (first NODE_ID_BITWIDTH bits)
+                    // Pack {dst_id[19:0], weight[11:0]} into lower 32 bits
                     for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
-                        edge_bytes[b] = (dummy_dst_id >> (8 * b)) & 0xFF;
+                        edge_bytes[b] =
+                            (packed_dst_weight >> (8 * b)) & 0xFF;
                     }
 
                     // Pack src_id (next NODE_ID_BITWIDTH bits)
@@ -197,10 +210,28 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
 
                         char edge_bytes[bytes_per_edge];
                         uint32_t dest_id = pipeline_edges.columns[edge_idx];
+                        int weight_i = pipeline_edges.weights[edge_idx];
+                        if (weight_i < 0 ||
+                            static_cast<uint32_t>(weight_i) > kWeightMask) {
+                            std::cerr
+                                << "[ERROR] Edge weight out of supported range "
+                                   "[0.."
+                                << kWeightMask << "]: " << weight_i
+                                << " (SP " << i << ", pip " << pip
+                                << ", edge_idx " << edge_idx << ")"
+                                << std::endl;
+                            exit(EXIT_FAILURE);
+                        }
+                        const uint32_t weight =
+                            static_cast<uint32_t>(weight_i);
+                        const uint32_t packed_dst_weight =
+                            (dest_id & kDstIdMask) |
+                            ((weight & kWeightMask) << kWeightShift);
 
-                        // Pack dst_id (first NODE_ID_BITWIDTH bits)
+                        // Pack {dst_id[19:0], weight[11:0]} into lower 32 bits
                         for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
-                            edge_bytes[b] = (dest_id >> (8 * b)) & 0xFF;
+                            edge_bytes[b] =
+                                (packed_dst_weight >> (8 * b)) & 0xFF;
                         }
 
                         // Pack src_id (next NODE_ID_BITWIDTH bits)
@@ -332,6 +363,13 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
             const size_t bytes_per_edge =
                 (NODE_ID_BITWIDTH + NODE_ID_BITWIDTH) / 8;
             const size_t edges_per_word = bytes_per_word / bytes_per_edge;
+            constexpr uint32_t kDstIdBits = 20;
+            constexpr uint32_t kWeightBits = 12;
+            static_assert(kDstIdBits + kWeightBits == 32,
+                          "dst_id(20) + weight(12) must fit in 32 bits");
+            constexpr uint32_t kDstIdMask = (1u << kDstIdBits) - 1u;
+            constexpr uint32_t kWeightMask = (1u << kWeightBits) - 1u;
+            constexpr uint32_t kWeightShift = kDstIdBits;
 
             // Check if this pipeline has no edges - if so, add 8 dummy edges
             const size_t actual_edges =
@@ -348,6 +386,7 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                 // Add 8 dummy edges with dst_id = 0x7FFFFFFF and src_id = 0
                 const uint32_t dummy_dst_id = 0x7FFFFFFF;
                 const uint32_t dummy_src_id = 0;
+                const uint32_t dummy_weight = 0;
 
                 for (int dummy_idx = 0; dummy_idx < 8; ++dummy_idx) {
                     if ((temp_byte_buffer.size() % bytes_per_word) +
@@ -361,10 +400,14 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
                     }
 
                     char edge_bytes[bytes_per_edge];
+                    const uint32_t packed_dst_weight =
+                        (dummy_dst_id & kDstIdMask) |
+                        ((dummy_weight & kWeightMask) << kWeightShift);
 
-                    // Pack dst_id (first NODE_ID_BITWIDTH bits)
+                    // Pack {dst_id[19:0], weight[11:0]} into lower 32 bits
                     for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
-                        edge_bytes[b] = (dummy_dst_id >> (8 * b)) & 0xFF;
+                        edge_bytes[b] =
+                            (packed_dst_weight >> (8 * b)) & 0xFF;
                     }
 
                     // Pack src_id (next NODE_ID_BITWIDTH bits)
@@ -394,10 +437,28 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
 
                         char edge_bytes[bytes_per_edge];
                         uint32_t dest_id = pipeline_edges.columns[edge_idx];
+                        int weight_i = pipeline_edges.weights[edge_idx];
+                        if (weight_i < 0 ||
+                            static_cast<uint32_t>(weight_i) > kWeightMask) {
+                            std::cerr
+                                << "[ERROR] Edge weight out of supported range "
+                                   "[0.."
+                                << kWeightMask << "]: " << weight_i
+                                << " (DP " << i << ", pip " << pip
+                                << ", edge_idx " << edge_idx << ")"
+                                << std::endl;
+                            exit(EXIT_FAILURE);
+                        }
+                        const uint32_t weight =
+                            static_cast<uint32_t>(weight_i);
+                        const uint32_t packed_dst_weight =
+                            (dest_id & kDstIdMask) |
+                            ((weight & kWeightMask) << kWeightShift);
 
-                        // Pack dst_id (first NODE_ID_BITWIDTH bits)
+                        // Pack {dst_id[19:0], weight[11:0]} into lower 32 bits
                         for (int b = 0; b < NODE_ID_BITWIDTH / 8; ++b) {
-                            edge_bytes[b] = (dest_id >> (8 * b)) & 0xFF;
+                            edge_bytes[b] =
+                                (packed_dst_weight >> (8 * b)) & 0xFF;
                         }
 
                         // Pack src_id (next NODE_ID_BITWIDTH bits)
