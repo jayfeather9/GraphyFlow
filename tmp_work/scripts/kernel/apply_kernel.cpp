@@ -1,5 +1,6 @@
 #include "shared_kernel_params.h"
 
+
 void merge_big_little_writes(
     hls::stream<write_burst_pkt_t> &little_kernel_out_stream,
     hls::stream<write_burst_pkt_t> &big_kernel_out_stream,
@@ -42,11 +43,12 @@ LOOP_MERGE_WRITES:
     }
 }
 
+
 static void
-apply_func(bus_word_t *node_props,
-           hls::stream<in_write_burst_w_dst_pkt_t> &write_burst_stream,
-           hls::stream<write_burst_w_dst_pkt_t> &kernel_out_stream) {
-LOOP_WHILE_43:
+apply_func(bus_word_t* node_props,
+ hls::stream<in_write_burst_w_dst_pkt_t> &write_burst_stream,
+ hls::stream<write_burst_w_dst_pkt_t> &kernel_out_stream) {
+    LOOP_WHILE_44:
     while (true) {
         in_write_burst_w_dst_pkt_t in_pkt = write_burst_stream.read();
         if (in_pkt.end_flag) {
@@ -61,7 +63,7 @@ LOOP_WHILE_43:
         write_burst_w_dst_pkt_t out_pkt;
         out_pkt.dest = dest_addr;
         out_pkt.last = false;
-    LOOP_FOR_42:
+        LOOP_FOR_43:
         for (int32_t i = 0; i < 16; i++) {
 #pragma HLS UNROLL
             ap_fixed_pod_t update = in_pkt.data.range(31 + (i << 5), (i << 5));
@@ -79,9 +81,13 @@ LOOP_WHILE_43:
     }
 }
 
+
+
 extern "C" void
-apply_kernel(bus_word_t *node_props, uint32_t little_kernel_length,
-             uint32_t big_kernel_length, uint32_t little_kernel_st_offset,
+apply_kernel(bus_word_t *node_props,
+             uint32_t little_kernel_length,
+             uint32_t big_kernel_length,
+             uint32_t little_kernel_st_offset,
              uint32_t big_kernel_st_offset,
              hls::stream<write_burst_pkt_t> &little_kernel_out_stream,
              hls::stream<write_burst_pkt_t> &big_kernel_out_stream,
@@ -98,9 +104,6 @@ apply_kernel(bus_word_t *node_props, uint32_t little_kernel_length,
     hls::stream<in_write_burst_w_dst_pkt_t> write_burst_stream;
 #pragma HLS STREAM variable = write_burst_stream depth = 16
 
-    merge_big_little_writes(little_kernel_out_stream, big_kernel_out_stream,
-                            write_burst_stream, little_kernel_length,
-                            big_kernel_length, little_kernel_st_offset,
-                            big_kernel_st_offset);
+    merge_big_little_writes(little_kernel_out_stream, big_kernel_out_stream, write_burst_stream, little_kernel_length, big_kernel_length, little_kernel_st_offset, big_kernel_st_offset);
     apply_func(node_props, write_burst_stream, kernel_out_stream);
 }

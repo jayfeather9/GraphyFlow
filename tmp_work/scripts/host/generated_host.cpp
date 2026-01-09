@@ -20,19 +20,10 @@ void AlgorithmHost::prepare_data(const PartitionContainer &container,
     // 1. Initialize algorithm state
     m_num_vertices = container.num_graph_vertices;
 
-    // h_distances.assign(m_num_vertices, distance_t(INFINITY_DIST));
-    h_distances.assign(m_num_vertices, distance_t(0));
-    /*
-    if (start_node < m_num_vertices) {
-        h_distances[start_node] = 0;
-    }
-    */
-    for (int u = 0; u < 32; u++) {
-        int select_index = u;
-        int int_val = 1 << u;
-        unsigned int bit_pattern = static_cast<unsigned int>(int_val);
-        h_distances[select_index] =
-            *reinterpret_cast<distance_t *>(&bit_pattern);
+    // Initialize distances for SSSP: INF everywhere, 0 at start_node
+    h_distances.assign(m_num_vertices, distance_t(INFINITY_DIST));
+    if (start_node >= 0 && start_node < m_num_vertices) {
+        h_distances[start_node] = distance_t(0);
     }
     // 2. Prepare host-side input buffers for each pipeline
     const size_t bytes_per_word = AXI_BUS_WIDTH / 8;
@@ -620,9 +611,15 @@ void AlgorithmHost::setup_buffers(const PartitionContainer &container) {
 
     // --- 1.5: Setup unified output buffer ---
     cl_mem_ext_ptr_t hbm_ext_output;
-    hbm_ext_output.flags =
-        XCL_MEM_TOPOLOGY |
-        acc.little_kernel_hbm_node_id[0]; // Use first HBM bank
+    // Pick a valid HBM bank for the unified output buffer. Prefer a little
+    // kernel bank if available, otherwise fall back to a big kernel bank.
+    int output_bank = 0;
+    if (!acc.little_kernel_hbm_node_id.empty()) {
+        output_bank = acc.little_kernel_hbm_node_id[0];
+    } else if (!acc.big_kernel_hbm_node_id.empty()) {
+        output_bank = acc.big_kernel_hbm_node_id[0];
+    }
+    hbm_ext_output.flags = XCL_MEM_TOPOLOGY | output_bank;
     hbm_ext_output.obj = nullptr;
     hbm_ext_output.param = 0;
 
@@ -1025,12 +1022,37 @@ void AlgorithmHost::execute_kernel_iteration(
 
         int arg_idx = 0;
         OCL_CHECK(err, err = apply_kernel.setArg(
-                           arg_idx++, apply_kernel_node_prop_buffer));
-        OCL_CHECK(err,
-                  err = apply_kernel.setArg(arg_idx++, little_dst_word_num));
-        OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, big_dst_word_num));
-        OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, (uint32_t)0));
-        OCL_CHECK(err, err = apply_kernel.setArg(arg_idx++, big_dst_offset));
+                               arg_idx++, apply_kernel_node_prop_buffer));
+
+        bool has_little = (LITTLE_KERNEL_NUM > 0);
+        bool has_big = (BIG_KERNEL_NUM > 0);
+
+        if (has_little && has_big) {
+            // Mixed mode: little + big outputs
+            uint32_t little_offset_words = 0;
+            OCL_CHECK(err, err = apply_kernel.setArg(
+                                   arg_idx++, little_dst_word_num));
+            OCL_CHECK(err,
+                      err = apply_kernel.setArg(arg_idx++, big_dst_word_num));
+            OCL_CHECK(err, err = apply_kernel.setArg(
+                                   arg_idx++, little_offset_words));
+            OCL_CHECK(err, err = apply_kernel.setArg(
+                                   arg_idx++, big_dst_offset));
+        } else if (has_big) {
+            // Big-only mode
+            OCL_CHECK(err,
+                      err = apply_kernel.setArg(arg_idx++, big_dst_word_num));
+            OCL_CHECK(err, err = apply_kernel.setArg(
+                                   arg_idx++, big_dst_offset));
+        } else {
+            // Little-only mode
+            uint32_t little_offset_words = 0;
+            OCL_CHECK(err, err = apply_kernel.setArg(
+                                   arg_idx++, little_dst_word_num));
+            OCL_CHECK(err, err = apply_kernel.setArg(
+                                   arg_idx++, little_offset_words));
+        }
+
 
         OCL_CHECK(err, err = acc.apply_queue.enqueueTask(
                            apply_kernel, nullptr, &acc.apply_kernel_event));
@@ -1246,23 +1268,17 @@ bool AlgorithmHost::check_convergence_and_update(
                  "convergence ---"
               << std::endl;
 
-    // 【已修改】将 'min_distances' 重命名为 'new_masks'，
-    // 并将值类型从 distance_t 更改为 ap_fixed_pod_t (即 unsigned int)
-    // 以明确我们在处理位掩码。
-    std::map<int, ap_fixed_pod_t> new_masks;
+    std::map<int, distance_t> min_distances;
     const int dists_per_word = AXI_BUS_WIDTH / DISTANCE_BITWIDTH;
 
     int word_idx = 0;
     int dist_in_word = 0;
-
-    // --- 1. 从 FPGA 结果中解包并合并所有新掩码 ---
 
     // Process little partition destinations
     for (int i = 0; i < container.num_dense_partitions; ++i) {
         const auto &little_partition = container.DPs[i];
         for (int local_id = 0; local_id < little_partition.num_dsts;
              ++local_id) {
-
             int bit_offset = dist_in_word * DISTANCE_BITWIDTH;
             ap_fixed_pod_t dist_pod =
                 writer_kernel_host_outputs[word_idx].range(
@@ -1271,13 +1287,13 @@ bool AlgorithmHost::check_convergence_and_update(
             if (little_partition.vtx_map_rev.count(local_id)) {
                 int global_id = little_partition.vtx_map_rev.at(local_id);
                 if (global_id < m_num_vertices) {
+                    ap_fixed_pod_t temp_pod = dist_pod;
+                    distance_t new_dist =
+                        *reinterpret_cast<distance_t *>(&temp_pod);
 
-                    // 【已修改】不再是取最小值，而是“按位或”合并。
-                    // 因为多个FPGA分区可能更新同一个节点的掩码。
-                    if (new_masks.find(global_id) == new_masks.end()) {
-                        new_masks[global_id] = dist_pod;
-                    } else {
-                        new_masks[global_id] = new_masks[global_id] | dist_pod;
+                    auto it = min_distances.find(global_id);
+                    if (it == min_distances.end() || new_dist < it->second) {
+                        min_distances[global_id] = new_dist;
                     }
                 }
             }
@@ -1295,7 +1311,7 @@ bool AlgorithmHost::check_convergence_and_update(
         word_idx++;
     }
 
-    // Process big partition destinations (逻辑与 little 相同)
+    // Process big partition destinations
     for (int i = 0; i < container.num_sparse_partitions; ++i) {
         const auto &big_partition = container.SPs[i];
         for (int local_id = 0; local_id < big_partition.num_dsts; ++local_id) {
@@ -1307,11 +1323,13 @@ bool AlgorithmHost::check_convergence_and_update(
             if (big_partition.vtx_map_rev.count(local_id)) {
                 int global_id = big_partition.vtx_map_rev.at(local_id);
                 if (global_id < m_num_vertices) {
-                    // 【已修改】“按位或”合并
-                    if (new_masks.find(global_id) == new_masks.end()) {
-                        new_masks[global_id] = dist_pod;
-                    } else {
-                        new_masks[global_id] = new_masks[global_id] | dist_pod;
+                    ap_fixed_pod_t temp_pod = dist_pod;
+                    distance_t new_dist =
+                        *reinterpret_cast<distance_t *>(&temp_pod);
+
+                    auto it = min_distances.find(global_id);
+                    if (it == min_distances.end() || new_dist < it->second) {
+                        min_distances[global_id] = new_dist;
                     }
                 }
             }
@@ -1324,35 +1342,19 @@ bool AlgorithmHost::check_convergence_and_update(
         }
     }
 
-    // --- 2. 更新全局掩码向量并检查收敛性 ---
-
-    // 【核心修复】遍历所有收到的新掩码
-    for (auto const &[global_id, new_mask_pod] : new_masks) {
-        if (global_id < m_num_vertices) {
-
-            // 获取 h_distances 中存储的旧掩码的“位模式”
-            ap_fixed_pod_t old_mask_pod =
-                *reinterpret_cast<ap_fixed_pod_t *>(&h_distances[global_id]);
-
-            if (new_mask_pod != old_mask_pod) {
-
-                // 【已修改】
-                // 1. 将 const 的 new_mask_pod 复制到一个非 const 的临时变量中
-                ap_fixed_pod_t temp_mask_pod = new_mask_pod;
-
-                // 2. 对这个非 const 的临时变量取地址并转换
-                h_distances[global_id] =
-                    *reinterpret_cast<distance_t *>(&temp_mask_pod);
-
-                changed = true;
-            }
+    // Update global distance vector and check convergence
+    for (auto const &[global_id, new_dist] : min_distances) {
+        if (global_id < m_num_vertices && new_dist < h_distances[global_id]) {
+            h_distances[global_id] = new_dist;
+            changed = true;
         }
     }
+
     if (changed) {
-        std::cout << "[INFO] Bitmasks updated. Preparing for next iteration."
+        std::cout << "[INFO] Distances updated. Preparing for next iteration."
                   << std::endl;
     } else {
-        std::cout << "[INFO] No bitmask updates. Algorithm has converged."
+        std::cout << "[INFO] No distance updates. Algorithm has converged."
                   << std::endl;
     }
 
@@ -1360,21 +1362,13 @@ bool AlgorithmHost::check_convergence_and_update(
 }
 
 const std::vector<unsigned int> &AlgorithmHost::get_results() const {
-
-    // 【已修改】静态变量类型更改为 unsigned int
-    static std::vector<unsigned int> final_bitmasks;
-    final_bitmasks.clear();
-    final_bitmasks.reserve(h_distances.size());
+    static std::vector<unsigned int> final_distances;
+    final_distances.clear();
+    final_distances.reserve(h_distances.size());
 
     for (const auto &dist : h_distances) {
-        // 【核心修复】
-        // 错误：.to_int() 会执行数值转换 (例如，位模式 0x0001
-        //       被视为 2^-15，.to_int() 结果为 0)。[cite: 671]
-        // 正确：我们使用 reinterpret_cast 将 ap_fixed<32> 变量的
-        //       32位内存，重新解释为一个 unsigned int，从而保留位模式。
-        unsigned int bitmask = *reinterpret_cast<const unsigned int *>(&dist);
-
-        final_bitmasks.push_back(bitmask);
+        int val = (dist >= INFINITY_DIST) ? INFINITY_DIST : dist.to_int();
+        final_distances.push_back(static_cast<unsigned int>(val));
     }
-    return final_bitmasks;
+    return final_distances;
 }

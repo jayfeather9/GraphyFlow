@@ -29,7 +29,7 @@
 #define WEIGHT_INTEGER_PART DISTANCE_INTEGER_PART
 #define OUT_END_MARKER_BITWIDTH 4
 #define DIST_PER_WORD 16 // AXI_BUS_WIDTH / DISTANCE_BITWIDTH = 512 / 32 = 16
-#define LOG_DIST_PER_WORD                                                      \
+#define LOG_DIST_PER_WORD                                            \
     4 // log2(AXI_BUS_WIDTH / DISTANCE_BITWIDTH) = log2(512 / 32) = log2(16) = 4
 
 // --- New Memory Word and Bus Definitions ---
@@ -91,10 +91,14 @@ struct __attribute__((packed)) update_tuple_t_little {
 };
 
 extern "C" void
-graphyflow_little(const bus_word_t *edge_props, int32_t num_nodes,
-                  int32_t num_edges, int32_t dst_num, int32_t memory_offset,
-                  hls::stream<ppb_request_pkt_t> &ppb_req_stream,
-                  hls::stream<ppb_response_pkt_t> &ppb_resp_stream,
-                  hls::stream<little_out_pkt_t> &kernel_out_stream);
+ graphyflow_little(const bus_word_t* edge_props,
+ int32_t num_nodes,
+ int32_t num_edges,
+ int32_t dst_num,
+ int32_t memory_offset,
+ hls::stream<ppb_request_pkt_t> &ppb_req_stream,
+ hls::stream<ppb_response_pkt_t> &ppb_resp_stream,
+ hls::stream<little_out_pkt_t> &kernel_out_stream 
+);
 
 #endif // __GRAPHYFLOW_GRAPHYFLOW_LITTLE_H__

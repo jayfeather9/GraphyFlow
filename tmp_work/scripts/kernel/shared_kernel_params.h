@@ -23,14 +23,14 @@
 #define WEIGHT_INTEGER_PART DISTANCE_INTEGER_PART
 #define OUT_END_MARKER_BITWIDTH 4
 #define DIST_PER_WORD 16 // AXI_BUS_WIDTH / DISTANCE_BITWIDTH = 512 / 32 = 16
-#define LOG_DIST_PER_WORD                                                      \
+#define LOG_DIST_PER_WORD                                            \
     4 // log2(AXI_BUS_WIDTH / DISTANCE_BITWIDTH) = log2(512 / 32) = log2(16) = 4
 
 // --- New Memory Word and Bus Definitions ---
 #define AXI_BUS_WIDTH 512
 
-#define BIG_MERGER_LENGTH 4
-#define LITTLE_MERGER_LENGTH 10
+#define BIG_MERGER_LENGTH 3
+#define LITTLE_MERGER_LENGTH 11
 
 #define REDUCE_MEM_WIDTH 64
 typedef ap_uint<AXI_BUS_WIDTH> bus_word_t;
@@ -66,22 +66,33 @@ struct __attribute__((packed)) in_write_burst_w_dst_pkt_t {
 };
 
 extern "C" void
-graphyflow_big(const bus_word_t *edge_props, int32_t num_nodes,
-               int32_t num_edges, int32_t dst_num, int32_t memory_offset,
-               hls::stream<cacheline_request_pkt_t> &cacheline_req_stream,
-               hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream,
-               hls::stream<write_burst_pkt_t> &kernel_out_stream);
+ graphyflow_big(const bus_word_t* edge_props,
+ int32_t num_nodes,
+ int32_t num_edges,
+ int32_t dst_num,
+ int32_t memory_offset,
+ hls::stream<cacheline_request_pkt_t> &cacheline_req_stream,
+ hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream,
+ hls::stream<write_burst_pkt_t> &kernel_out_stream 
+);
 
 extern "C" void
-graphyflow_little(const bus_word_t *edge_props, int32_t num_nodes,
-                  int32_t num_edges, int32_t dst_num, int32_t memory_offset,
-                  hls::stream<ppb_request_pkt_t> &ppb_req_stream,
-                  hls::stream<ppb_response_pkt_t> &ppb_resp_stream,
-                  hls::stream<little_out_pkt_t> &kernel_out_stream);
+ graphyflow_little(const bus_word_t* edge_props,
+ int32_t num_nodes,
+ int32_t num_edges,
+ int32_t dst_num,
+ int32_t memory_offset,
+ hls::stream<ppb_request_pkt_t> &ppb_req_stream,
+ hls::stream<ppb_response_pkt_t> &ppb_resp_stream,
+ hls::stream<little_out_pkt_t> &kernel_out_stream 
+);
+
 
 extern "C" void
-apply_kernel(bus_word_t *node_props, uint32_t little_kernel_length,
-             uint32_t big_kernel_length, uint32_t little_kernel_st_offset,
+apply_kernel(bus_word_t *node_props,
+             uint32_t little_kernel_length,
+             uint32_t big_kernel_length,
+             uint32_t little_kernel_st_offset,
              uint32_t big_kernel_st_offset,
              hls::stream<write_burst_pkt_t> &little_kernel_out_stream,
              hls::stream<write_burst_pkt_t> &big_kernel_out_stream,
@@ -89,32 +100,43 @@ apply_kernel(bus_word_t *node_props, uint32_t little_kernel_length,
 
 extern "C" void
 big_merger(hls::stream<write_burst_pkt_t> &big_kernel_1_out_stream,
-           hls::stream<write_burst_pkt_t> &big_kernel_2_out_stream,
-           hls::stream<write_burst_pkt_t> &big_kernel_3_out_stream,
-           hls::stream<write_burst_pkt_t> &big_kernel_4_out_stream,
-           hls::stream<write_burst_pkt_t> &kernel_out_stream);
+hls::stream<write_burst_pkt_t> &big_kernel_2_out_stream,
+hls::stream<write_burst_pkt_t> &big_kernel_3_out_stream,
+hls::stream<write_burst_pkt_t> &kernel_out_stream);
 
 extern "C" void
 little_merger(hls::stream<little_out_pkt_t> &little_kernel_1_out_stream,
-              hls::stream<little_out_pkt_t> &little_kernel_2_out_stream,
-              hls::stream<little_out_pkt_t> &little_kernel_3_out_stream,
-              hls::stream<little_out_pkt_t> &little_kernel_4_out_stream,
-              hls::stream<little_out_pkt_t> &little_kernel_5_out_stream,
-              hls::stream<little_out_pkt_t> &little_kernel_6_out_stream,
-              hls::stream<little_out_pkt_t> &little_kernel_7_out_stream,
-              hls::stream<little_out_pkt_t> &little_kernel_8_out_stream,
-              hls::stream<little_out_pkt_t> &little_kernel_9_out_stream,
-              hls::stream<little_out_pkt_t> &little_kernel_10_out_stream,
-              hls::stream<write_burst_pkt_t> &kernel_out_stream);
+hls::stream<little_out_pkt_t> &little_kernel_2_out_stream,
+hls::stream<little_out_pkt_t> &little_kernel_3_out_stream,
+hls::stream<little_out_pkt_t> &little_kernel_4_out_stream,
+hls::stream<little_out_pkt_t> &little_kernel_5_out_stream,
+hls::stream<little_out_pkt_t> &little_kernel_6_out_stream,
+hls::stream<little_out_pkt_t> &little_kernel_7_out_stream,
+hls::stream<little_out_pkt_t> &little_kernel_8_out_stream,
+hls::stream<little_out_pkt_t> &little_kernel_9_out_stream,
+hls::stream<little_out_pkt_t> &little_kernel_10_out_stream,
+hls::stream<little_out_pkt_t> &little_kernel_11_out_stream,
+hls::stream<write_burst_pkt_t> &kernel_out_stream);
 
-extern "C" void hbm_writer(
-    bus_word_t *src_props_1, bus_word_t *src_props_2, bus_word_t *src_props_3,
-    bus_word_t *src_props_4, bus_word_t *src_props_5, bus_word_t *src_props_6,
-    bus_word_t *src_props_7, bus_word_t *src_props_8, bus_word_t *src_props_9,
-    bus_word_t *src_props_10, bus_word_t *src_props_11,
-    bus_word_t *src_props_12, bus_word_t *src_props_13,
-    bus_word_t *src_props_14, bus_word_t *output,
-    uint32_t num_partitions_little, uint32_t num_partitions_big,
+extern "C" void
+hbm_writer(
+    bus_word_t *src_props_1,
+    bus_word_t *src_props_2,
+    bus_word_t *src_props_3,
+    bus_word_t *src_props_4,
+    bus_word_t *src_props_5,
+    bus_word_t *src_props_6,
+    bus_word_t *src_props_7,
+    bus_word_t *src_props_8,
+    bus_word_t *src_props_9,
+    bus_word_t *src_props_10,
+    bus_word_t *src_props_11,
+    bus_word_t *src_props_12,
+    bus_word_t *src_props_13,
+    bus_word_t *src_props_14,
+    bus_word_t *output,
+    uint32_t num_partitions_little,
+    uint32_t num_partitions_big,
     hls::stream<ppb_request_pkt_t> &ppb_req_stream_1,
     hls::stream<ppb_response_pkt_t> &ppb_resp_stream_1,
     hls::stream<ppb_request_pkt_t> &ppb_req_stream_2,
@@ -135,14 +157,14 @@ extern "C" void hbm_writer(
     hls::stream<ppb_response_pkt_t> &ppb_resp_stream_9,
     hls::stream<ppb_request_pkt_t> &ppb_req_stream_10,
     hls::stream<ppb_response_pkt_t> &ppb_resp_stream_10,
+    hls::stream<ppb_request_pkt_t> &ppb_req_stream_11,
+    hls::stream<ppb_response_pkt_t> &ppb_resp_stream_11,
     hls::stream<cacheline_request_pkt_t> &cacheline_req_stream_1,
     hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream_1,
     hls::stream<cacheline_request_pkt_t> &cacheline_req_stream_2,
     hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream_2,
     hls::stream<cacheline_request_pkt_t> &cacheline_req_stream_3,
     hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream_3,
-    hls::stream<cacheline_request_pkt_t> &cacheline_req_stream_4,
-    hls::stream<cacheline_response_pkt_t> &cacheline_resp_stream_4,
     hls::stream<write_burst_w_dst_pkt_t> &write_burst_stream);
 
 #endif // SHARED_KERNEL_PARAMS_H

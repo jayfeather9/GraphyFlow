@@ -29,8 +29,8 @@ bool host_bellman_ford_iteration(const GraphCSR &graph,
 }
 
 bool host_cc_iteration(const GraphCSR &graph,
-                       const std::vector<unsigned int> &bitmasks_in,
-                       std::vector<unsigned int> &bitmasks_out) {
+                           const std::vector<unsigned int> &bitmasks_in,
+                           std::vector<unsigned int> &bitmasks_out) {
 
     // 1. 将 k 状态 (in) 初始化为 k+1 状态 (out)
     // 这能确保没有入度的节点的值可以保持不变
@@ -40,25 +40,23 @@ bool host_cc_iteration(const GraphCSR &graph,
     //    只从 k 状态 (bitmasks_in) 读取
     //    只向 k+1 状态 (bitmasks_out) 写入
     for (int u = 0; u < graph.num_vertices; ++u) {
-
+        
         // 2a. 只从 k 状态 (in) 读取 'u' 的掩码
         if (bitmasks_in[u] != 0) {
-
+            
             for (int i = graph.offsets[u]; i < graph.offsets[u + 1]; ++i) {
                 int v = graph.columns[i];
 
                 if ((v & 0x40000000) != 0) {
-                    continue;
+                    continue; 
                 }
 
-                // 2b. 检查 'u' 的掩码 (in[u]) 是否有 'v' 的新掩码 (out[v])
-                // 中所没有的位
+                // 2b. 检查 'u' 的掩码 (in[u]) 是否有 'v' 的新掩码 (out[v]) 中所没有的位
                 if ((bitmasks_in[u] & ~bitmasks_out[v]) != 0) {
-
-                    // 2c. 将 'u' 的掩码 (in[u]) 合并到 'v' 的 k+1 状态 (out[v])
-                    // 中
+                    
+                    // 2c. 将 'u' 的掩码 (in[u]) 合并到 'v' 的 k+1 状态 (out[v]) 中
                     bitmasks_out[v] = bitmasks_out[v] | bitmasks_in[u];
-
+                    
                     // 注意：在 Jacobi 迭代中，我们不能在这里设置 changed = true
                     // 必须在所有计算完成后再比较
                 }

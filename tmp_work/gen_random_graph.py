@@ -121,7 +121,7 @@ def main():
     # for edge_info in graph:
     #     # 使用 ' '.join() 可以优雅地处理元组中的所有元素
     #     print(" ".join(map(str, edge_info)))
-
+    
     # write to graph.txt
     with open("graph.txt", "w") as f:
         for edge_info in graph:
