@@ -23,3 +23,26 @@ Prop32 (128-bit edges, 4 edges/512b word):
 Delta vs baseline:
 - Big kernels: `+2.437%`
 - Little kernels: `+2.437%`
+
+---
+
+## 10× edges (2048 nodes, 40960 edges input)
+
+Note: `gen_random_graph.py` defaults to `undirected=1`, so `graph.txt` has `2 * edges` lines:
+- `python3 gen_random_graph.py 2048 40960 --have_weight` → `81920` lines
+
+Baseline (packed weight):
+- Run: `tmp_work/.run/602690`
+- Profile: `tmp_work/.run/602690/hw_emu/device0/binary_0/behav_waveform/xsim/profile_kernels.csv`
+- `graphyflow_big_*` avg: `918.559 us` → `229,639.8 cycles`
+- `graphyflow_little_*` avg: `918.559 us` → `229,639.8 cycles`
+
+Prop32 (128-bit edges, 4 edges/512b word):
+- Run: `tmp_work_32b/.run/545916`
+- Profile: `tmp_work_32b/.run/545916/hw_emu/device0/binary_0/behav_waveform/xsim/profile_kernels.csv`
+- `graphyflow_big_*` avg: `976.054 us` → `244,013.5 cycles`
+- `graphyflow_little_*` avg: `976.054 us` → `244,013.5 cycles`
+
+Delta vs baseline:
+- Big kernels: `+6.259%`
+- Little kernels: `+6.259%`
