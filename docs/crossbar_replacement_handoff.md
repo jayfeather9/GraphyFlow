@@ -152,11 +152,21 @@ and the link step could fail during `config_hw_emu.elaborate`.
 
 Re-running the exact same build/run commands in an environment that allows local IPC/sockets succeeded:
 - Plain build: `generated_project/logs/agent_revalidate_plain.escalated.make_all_hw_emu.20260113_225156.log`
-- Plain run: `generated_project/logs/agent_revalidate_plain.escalated.run_hw_emu.20260113_230200.log` (prints `SUCCESS: Results match!`, but exits with a post-run segfault)
+- Plain run: `generated_project/logs/agent_revalidate_plain.escalated.run_hw_emu.20260113_230200.log` (printed `SUCCESS: Results match!`, but previously exited with a post-run segfault)
 - RR build: `generated_project/logs/agent_revalidate_rr.escalated.make_all_hw_emu.20260113_235508.log`
-- RR run: `generated_project/logs/agent_revalidate_rr.escalated.run_hw_emu.20260114_000623.log` (prints `SUCCESS: Results match!`, but exits with a post-run segfault)
+- RR run: `generated_project/logs/agent_revalidate_rr.escalated.run_hw_emu.20260114_000623.log` (printed `SUCCESS: Results match!`, but previously exited with a post-run segfault)
 
-The segfault occurs after the host has printed the final success report; treat it as an emulation-runtime quirk unless it prevents artifact generation (xrt traces, logs, etc.).
+#### Fix: disable tracing by default (and make profiling opt-in)
+Root cause: `xrt.ini` was enabling heavy tracing by default, and profiling could be enabled unintentionally. Under `hw_emu` this was both very slow and could crash during shutdown.
+
+Fix implemented in the project template:
+- tracing is OFF by default (no `XRT_INI_PATH` unless explicitly enabled)
+- `xrt_trace.ini` exists for cycle-counting runs (tracing ON)
+- `run.sh` selects `xrt_trace.ini` only when `GRAPHYFLOW_TRACE=1` (or when `XRT_INI_PATH` is explicitly set)
+- kernel link profiling is now **opt-in** via `make ... PROFILE=1`
+
+After these changes, `hw_emu` exits cleanly:
+- Plain run (no segfault, exit code 0): `generated_project/logs/agent_segfault_fix_plain.run_hw_emu.n64_e256.20260114_015555.log`
 
 ### Fast compile-only (for II=1 checks)
 If you want to rebuild only the `graphyflow_big` kernel XO (without linking the full xclbin), from `generated_project/`:

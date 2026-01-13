@@ -33,6 +33,13 @@ CLFLAGS += -g
 LDFLAGS_VPP += -g
 endif
 
+# Optional: enable Vitis profiling infrastructure in the linked xclbin.
+# Enable explicitly with:
+#   make ... PROFILE=1
+ifeq ($(PROFILE),1)
+LDFLAGS_VPP += --profile.exec all:all
+endif
+
 # --- 编译器和链接器参数 ---
 
 # VPP 在编译 .xo 文件时使用的参数。

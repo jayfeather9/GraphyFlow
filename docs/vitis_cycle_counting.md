@@ -19,13 +19,22 @@ Why this exists:
 
 `generated_project/run.sh` always exports:
 
-- `XRT_INI_PATH=./xrt.ini`
+- `XRT_INI_PATH` (only when tracing is enabled)
 
-So the file `generated_project/xrt.ini` is the runtime switchboard for trace collection.
+So `XRT_INI_PATH` (when set) points to the runtime switchboard for trace collection.
+
+This repo’s generated projects ship:
+- `generated_project/xrt_trace.ini`: full tracing ON (preferred for cycle counting)
+
+To enable tracing for a run (recommended):
+- `GRAPHYFLOW_TRACE=1 ./run.sh hw_emu`
+
+Or override explicitly:
+- `XRT_INI_PATH=./xrt_trace.ini ./run.sh hw_emu`
 
 Performance note:
 - A “full” trace configuration (e.g. `device_trace=fine`, `stall_trace=true`, `continuous_trace=true`) can make `hw_emu` runs **extremely slow** even for tiny graphs.
-- If you only need correctness, temporarily switch to a minimal `xrt.ini` (or comment out most keys) and keep the full-trace version for cycle-counting runs.
+- If you only need correctness, run without `GRAPHYFLOW_TRACE=1` so `XRT_INI_PATH` remains unset.
 
 ### 0.2 Build-time instrumentation: `PROFILE=1`
 

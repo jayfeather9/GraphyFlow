@@ -108,11 +108,12 @@ Expected success line:
 
 Important files:
 - `generated_project/run.sh` sets `XCL_EMULATION_MODE`, `LD_PRELOAD`, and picks `xclbin/graphyflow_kernels.${TARGET}.xclbin`.
+- `generated_project/run.sh` can also enable tracing by selecting `xrt_trace.ini` (cycle counting), see `docs/vitis_cycle_counting.md`.
 
 ### 1.5 Vitis/XRT trace (cycle counting)
 
 `generated_project/run.sh` also exports:
-- `XRT_INI_PATH=./xrt.ini`
+- `XRT_INI_PATH` (only when tracing is enabled)
 
 To collect trace artifacts suitable for deriving **cycle counts**, build with profiling enabled:
 
@@ -120,7 +121,7 @@ To collect trace artifacts suitable for deriving **cycle counts**, build with pr
 cd generated_project
 source /home/feiyang/set_env.sh
 make all TARGET=hw_emu PROFILE=1
-./run.sh hw_emu
+GRAPHYFLOW_TRACE=1 ./run.sh hw_emu
 ```
 
 Then open `generated_project/xrt.run_summary` in Vitis Analyzer, or follow:

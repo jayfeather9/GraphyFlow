@@ -13,8 +13,6 @@ fi
 
 echo "--- Running for target: $TARGET ---"
 
-export XRT_INI_PATH="./xrt.ini"
-
 # 1. 设置环境变量
 source /home/feiyang/set_env.sh
 
@@ -27,8 +25,21 @@ else
     echo "Running on hardware, XCL_EMULATION_MODE is unset."
 fi
 
+# Optional: runtime trace config via XRT.
+# Tracing is OFF by default (faster `hw_emu` runs, avoids shutdown crashes).
+#
+# For cycle counting, enable the trace config shipped with the project:
+#   GRAPHYFLOW_TRACE=1 ./run.sh hw_emu
+# or override explicitly:
+#   XRT_INI_PATH=./xrt_trace.ini ./run.sh hw_emu
+if [ -z "${XRT_INI_PATH:-}" ] && [ "${GRAPHYFLOW_TRACE:-0}" = "1" ] && [ -f "./xrt_trace.ini" ]; then
+    export XRT_INI_PATH="./xrt_trace.ini"
+fi
+
 # 确保 LD_PRELOAD 仍然生效
-export LD_PRELOAD=/lib/x86_64-linux-gnu/libOpenCL.so.1
+if [ -z "${LD_PRELOAD:-}" ]; then
+    export LD_PRELOAD=/lib/x86_64-linux-gnu/libOpenCL.so.1
+fi
 
 # 2. 动态构建 .xclbin 文件路径
 XCLBIN_FILE="./xclbin/${XCLBIN_NAME}.${TARGET}.xclbin"
