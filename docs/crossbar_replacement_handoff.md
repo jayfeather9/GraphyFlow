@@ -378,6 +378,8 @@ Notes / mitigations that are worth trying:
 - RR variant: commit `6f66ba5`
 - VOQ variant: commit `738deb0`
 - VOQ+RR variant: commit `f265368`
+- Optimize xbar plain+rr fmax via merge-tree arbiters: commit `711551c`
+- Docs refresh (handoff + code guide + cycle counting): commit `3ab6c30`
 
 ---
 
