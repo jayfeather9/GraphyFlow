@@ -5,7 +5,7 @@ This document records the exact steps and user instructions for building and run
 ## User Instructions (authoritative)
 
 - Enter `generated_project/`.
-- Activate the Vitis/XRT environment via: `bass source /home/feiyang/set_env.sh`.
+- Activate the Vitis/XRT environment via: `source /home/feiyang/set_env.sh`.
 - Generate a random graph using `gen_random_graph.py` before running.
 - Compile hardware emulation with: `make all TARGET=hw_emu`.
 - Run hardware emulation with: `./run.sh hw_emu`.
@@ -20,8 +20,7 @@ Run from the repo root:
 cd generated_project
 
 # 1) Activate environment (per user instruction)
-# This is a fish-shell command (bass is a fish function)
-bass source /home/feiyang/set_env.sh
+source /home/feiyang/set_env.sh
 
 # 2) Prepare log directory
 mkdir -p logs
@@ -44,7 +43,9 @@ python3 gen_random_graph.py 64 256
 
 ## Notes / Troubleshooting
 
-- If you are not using fish, replace `bass source ...` with `source /home/feiyang/set_env.sh` in a bash shell.
+- If you are using fish, the equivalent activation command is `bass source /home/feiyang/set_env.sh`.
 - Platform is set in `generated_project/Makefile` via `DEVICE := ...xilinx_u55c_gen3x16_xdma_3_202210_1.xpfm`. If your machine uses a different platform, override at build time, e.g. `make all TARGET=hw_emu DEVICE=/path/to/platform.xpfm`.
 - If you re-run builds frequently, consider `make cleanall` (also with `tee`) before rebuilding:
   `make cleanall 2>&1 | tee "logs/make_cleanall.$(date +%Y%m%d_%H%M%S).log"`.
+
+- Sandbox / restricted environments: if `v++` prints `exception getting local port: open: Operation not permitted` and/or link fails during `config_hw_emu.elaborate`, rerun the same commands in a terminal/session that allows local IPC/sockets (e.g. “full access” / non-sandboxed shell).

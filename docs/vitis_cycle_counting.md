@@ -23,6 +23,10 @@ Why this exists:
 
 So the file `generated_project/xrt.ini` is the runtime switchboard for trace collection.
 
+Performance note:
+- A “full” trace configuration (e.g. `device_trace=fine`, `stall_trace=true`, `continuous_trace=true`) can make `hw_emu` runs **extremely slow** even for tiny graphs.
+- If you only need correctness, temporarily switch to a minimal `xrt.ini` (or comment out most keys) and keep the full-trace version for cycle-counting runs.
+
 ### 0.2 Build-time instrumentation: `PROFILE=1`
 
 Even if `xrt.ini` requests traces, you generally also need the xclbin to be linked with profiling infrastructure enabled.

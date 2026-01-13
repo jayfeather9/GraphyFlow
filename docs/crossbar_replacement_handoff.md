@@ -145,6 +145,19 @@ Mitigation:
 Related sandbox symptom:
 - Vivado may also complain about not being able to write to `~/.Xilinx/.../XilinxTclStore`. That’s another sign you’re in a restricted environment; use a “full access” terminal/session.
 
+### Re-validation note (2026-01-13/14)
+When re-running `make all TARGET=hw_emu` under a restricted/sandboxed environment, we observed repeated:
+- `ERROR: exception getting local port: open: Operation not permitted`
+and the link step could fail during `config_hw_emu.elaborate`.
+
+Re-running the exact same build/run commands in an environment that allows local IPC/sockets succeeded:
+- Plain build: `generated_project/logs/agent_revalidate_plain.escalated.make_all_hw_emu.20260113_225156.log`
+- Plain run: `generated_project/logs/agent_revalidate_plain.escalated.run_hw_emu.20260113_230200.log` (prints `SUCCESS: Results match!`, but exits with a post-run segfault)
+- RR build: `generated_project/logs/agent_revalidate_rr.escalated.make_all_hw_emu.20260113_235508.log`
+- RR run: `generated_project/logs/agent_revalidate_rr.escalated.run_hw_emu.20260114_000623.log` (prints `SUCCESS: Results match!`, but exits with a post-run segfault)
+
+The segfault occurs after the host has printed the final success report; treat it as an emulation-runtime quirk unless it prevents artifact generation (xrt traces, logs, etc.).
+
 ### Fast compile-only (for II=1 checks)
 If you want to rebuild only the `graphyflow_big` kernel XO (without linking the full xclbin), from `generated_project/`:
 
@@ -267,7 +280,9 @@ All three variants were validated end-to-end via `make all TARGET=hw_emu` + `./r
 
 ### Estimated frequency for `graphyflow_big` (Vitis `system_estimate_*.xtxt`)
 
-All numbers below come from `v++ -c`’s `**** Estimated Fmax: ... MHz` line when building the **big kernel XO**:
+All numbers below come from Vitis’ `system_estimate_*.xtxt` report for the **big kernel XO**:
+- `generated_project/_x/reports/graphyflow_big.hw_emu/system_estimate_graphyflow_big.hw_emu.xtxt`
+- take the **minimum** value in the `Estimated Frequency` column under `Timing Information (MHz)` (this matches the `v++ -c` `**** Estimated Fmax: ... MHz` line).
 
 ```bash
 cd generated_project
