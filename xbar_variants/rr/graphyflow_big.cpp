@@ -465,177 +465,139 @@ switch2x2_2(int32_t i,
 // ============================================================
 // Crossbar variants (replace omega network / switch2x2 chain)
 // Variant B from docs/network_variants.md:
-//   - per-input skid buffer (1 item)
-//   - per-output fixed priority arbitration
+//   - 8 input demux tasks (route by dst)
+//   - 8 output arbiters (round-robin among inputs per output)
+//   - end_flag is broadcast per input to all outputs; each output emits one end
 // ============================================================
-static ap_uint<PE_NUM> xbar_rotl_8(ap_uint<PE_NUM> mask, ap_uint<LOG_PE_NUM> shift) {
-#pragma HLS INLINE
-    if (shift == 0) return mask;
-    return (ap_uint<PE_NUM>)((mask << shift) | (mask >> (PE_NUM - shift)));
-}
+static void xbar_input_demux_rr(
+    int in_id,
+    hls::stream<update_t_big> &in_stream,
+    hls::stream<update_t_big> out_to_arb[PE_NUM]) {
+#pragma HLS INLINE off
+#pragma HLS function_instantiate variable = in_id
+#pragma HLS ARRAY_PARTITION variable = out_to_arb complete dim = 0
+    (void)in_id;
+    bool broadcasting_end = false;
+    ap_uint<LOG_PE_NUM> end_idx = 0;
+    update_t_big end_item;
+    end_item.node_id = 0;
+    end_item.prop = 0;
+    end_item.end_flag = true;
 
-static ap_uint<PE_NUM> xbar_rotr_8(ap_uint<PE_NUM> mask, ap_uint<LOG_PE_NUM> shift) {
-#pragma HLS INLINE
-    if (shift == 0) return mask;
-    return (ap_uint<PE_NUM>)((mask >> shift) | (mask << (PE_NUM - shift)));
-}
+    while (true) {
+#pragma HLS PIPELINE II = 1
+        if (broadcasting_end) {
+            out_to_arb[end_idx].write(end_item);
+            end_idx++;
+            if (end_idx == (ap_uint<LOG_PE_NUM>)PE_NUM) {
+                break;
+            }
+            continue;
+        }
 
-static ap_uint<PE_NUM> xbar_lowest_onehot(ap_uint<PE_NUM> req_mask) {
-#pragma HLS INLINE
-    ap_uint<PE_NUM> onehot = 0;
-    bool found = false;
-    for (int i = 0; i < PE_NUM; i++) {
-#pragma HLS UNROLL
-        if (!found && req_mask[i]) {
-            onehot[i] = 1;
-            found = true;
+        update_t_big item = in_stream.read();
+        if (item.end_flag) {
+            broadcasting_end = true;
+            end_idx = 0;
+        } else {
+            ap_uint<LOG_PE_NUM> dst = item.node_id.range(LOG_PE_NUM - 1, 0);
+            out_to_arb[dst].write(item);
         }
     }
-    return onehot;
 }
 
-static ap_uint<LOG_PE_NUM> xbar_onehot_to_index(ap_uint<PE_NUM> onehot) {
-#pragma HLS INLINE
-    ap_uint<LOG_PE_NUM> idx = 0;
-    for (int i = 0; i < PE_NUM; i++) {
-#pragma HLS UNROLL
-        if (onehot[i]) {
-            idx = (ap_uint<LOG_PE_NUM>)i;
+static void xbar_merge2_rr(
+    int inst_id,
+    hls::stream<update_t_big> &in0,
+    hls::stream<update_t_big> &in1,
+    hls::stream<update_t_big> &out) {
+#pragma HLS INLINE off
+#pragma HLS function_instantiate variable = inst_id
+    (void)inst_id;
+    bool closed0 = false;
+    bool closed1 = false;
+    bool prefer0 = true;
+    update_t_big end_item;
+    end_item.node_id = 0;
+    end_item.prop = 0;
+    end_item.end_flag = true;
+
+    while (true) {
+#pragma HLS PIPELINE II = 1
+        if (closed0 && closed1) {
+            out.write(end_item);
+            break;
+        }
+
+        bool has0 = (!closed0 && !in0.empty());
+        bool has1 = (!closed1 && !in1.empty());
+        if (has0 || has1) {
+            bool take0 = has0 && (!has1 || prefer0);
+            update_t_big item = take0 ? in0.read() : in1.read();
+
+            prefer0 = !prefer0;
+            if (item.end_flag) {
+                if (take0) {
+                    closed0 = true;
+                } else {
+                    closed1 = true;
+                }
+            } else {
+                out.write(item);
+            }
         }
     }
-    return idx;
+}
+
+static void xbar_output_merge_rr(
+    int out_id,
+    hls::stream<update_t_big> in2out[PE_NUM][PE_NUM],
+    hls::stream<update_t_big> &out_stream) {
+#pragma HLS INLINE off
+#pragma HLS function_instantiate variable = out_id
+#pragma HLS DATAFLOW
+#pragma HLS ARRAY_PARTITION variable = in2out complete dim = 0
+    hls::stream<update_t_big> s1[4];
+    hls::stream<update_t_big> s2[2];
+#pragma HLS ARRAY_PARTITION variable = s1 complete dim = 0
+#pragma HLS ARRAY_PARTITION variable = s2 complete dim = 0
+#pragma HLS STREAM variable = s1 depth = 2
+#pragma HLS STREAM variable = s2 depth = 2
+
+    xbar_merge2_rr(0, in2out[0][out_id], in2out[1][out_id], s1[0]);
+    xbar_merge2_rr(1, in2out[2][out_id], in2out[3][out_id], s1[1]);
+    xbar_merge2_rr(2, in2out[4][out_id], in2out[5][out_id], s1[2]);
+    xbar_merge2_rr(3, in2out[6][out_id], in2out[7][out_id], s1[3]);
+
+    xbar_merge2_rr(4, s1[0], s1[1], s2[0]);
+    xbar_merge2_rr(5, s1[2], s1[3], s2[1]);
+
+    xbar_merge2_rr(6, s2[0], s2[1], out_stream);
 }
 
 // ============================================================
-// Crossbar: skid buffer + per-output round-robin arbitration
+// Crossbar: input demux + per-output RR arbitration (DATAFLOW)
 // ============================================================
 static void crossbar_skid_rr(
     hls::stream<update_t_big> in_streams[PE_NUM],
     hls::stream<update_t_big> out_streams[PE_NUM]) {
 #pragma HLS INLINE off
+#pragma HLS DATAFLOW
 #pragma HLS ARRAY_PARTITION variable = in_streams complete dim = 0
 #pragma HLS ARRAY_PARTITION variable = out_streams complete dim = 0
-    update_t_big input_buf[PE_NUM];
-#pragma HLS ARRAY_PARTITION variable = input_buf complete dim = 0
-    bool input_valid[PE_NUM];
-#pragma HLS ARRAY_PARTITION variable = input_valid complete dim = 0
-    bool input_closed[PE_NUM];
-#pragma HLS ARRAY_PARTITION variable = input_closed complete dim = 0
-    bool out_end_sent[PE_NUM];
-#pragma HLS ARRAY_PARTITION variable = out_end_sent complete dim = 0
-    ap_uint<LOG_PE_NUM> rr_ptr[PE_NUM];
-#pragma HLS ARRAY_PARTITION variable = rr_ptr complete dim = 0
+    hls::stream<update_t_big> in2out[PE_NUM][PE_NUM];
+#pragma HLS STREAM variable = in2out depth = 4
+#pragma HLS BIND_STORAGE variable = in2out type = fifo impl = srl
+#pragma HLS ARRAY_PARTITION variable = in2out complete dim = 0
 
-    INIT_XBAR_STATE:
-    for (int i = 0; i < PE_NUM; i++) {
+    for (int in_id = 0; in_id < PE_NUM; in_id++) {
 #pragma HLS UNROLL
-        input_valid[i] = false;
-        input_closed[i] = false;
-        out_end_sent[i] = false;
-        rr_ptr[i] = 0;
+        xbar_input_demux_rr(in_id, in_streams[in_id], in2out[in_id]);
     }
 
-    bool flushing_ends = false;
-
-    LOOP_WHILE_XBAR_SKID_RR:
-    while (true) {
-#pragma HLS PIPELINE II = 1
-        // --- Load phase: try to pull up to 1 item from each input stream into skid buffer ---
-        for (int i = 0; i < PE_NUM; i++) {
+    for (int out_id = 0; out_id < PE_NUM; out_id++) {
 #pragma HLS UNROLL
-            if (!input_closed[i] && !input_valid[i] && !in_streams[i].empty()) {
-                update_t_big item = in_streams[i].read();
-                if (item.end_flag) {
-                    input_closed[i] = true;
-                } else {
-                    input_buf[i] = item;
-                    input_valid[i] = true;
-                }
-            }
-        }
-
-        // Detect when all inputs are closed and all skid buffers are empty -> start flushing output end tokens.
-        if (!flushing_ends) {
-            bool all_inputs_closed = true;
-            bool any_buffered = false;
-            for (int i = 0; i < PE_NUM; i++) {
-#pragma HLS UNROLL
-                all_inputs_closed &= input_closed[i];
-                any_buffered |= input_valid[i];
-            }
-            if (all_inputs_closed && !any_buffered) {
-                flushing_ends = true;
-            }
-        }
-
-        // --- Data phase: fixed priority arbitration per output (one winner per output per cycle) ---
-        if (!flushing_ends) {
-            ap_uint<PE_NUM> grants[PE_NUM];
-#pragma HLS ARRAY_PARTITION variable = grants complete dim = 0
-            ap_uint<LOG_PE_NUM> winners[PE_NUM];
-#pragma HLS ARRAY_PARTITION variable = winners complete dim = 0
-            for (int out_id = 0; out_id < PE_NUM; out_id++) {
-#pragma HLS UNROLL
-                ap_uint<PE_NUM> req_mask = 0;
-                for (int in_id = 0; in_id < PE_NUM; in_id++) {
-#pragma HLS UNROLL
-                    if (input_valid[in_id]) {
-                        ap_uint<LOG_PE_NUM> dst =
-                            input_buf[in_id].node_id.range(LOG_PE_NUM - 1, 0);
-                        if ((int)dst == out_id) {
-                            req_mask[in_id] = 1;
-                        }
-                    }
-                }
-                ap_uint<PE_NUM> rotated_req = xbar_rotr_8(req_mask, rr_ptr[out_id]);
-                ap_uint<PE_NUM> rotated_grant = xbar_lowest_onehot(rotated_req);
-                ap_uint<PE_NUM> grant_onehot = xbar_rotl_8(rotated_grant, rr_ptr[out_id]);
-                if ((grant_onehot != 0) && !out_streams[out_id].full()) {
-                    ap_uint<LOG_PE_NUM> winner = xbar_onehot_to_index(grant_onehot);
-                    out_streams[out_id].write(input_buf[winner]);
-                    winners[out_id] = winner;
-                    grants[out_id] = grant_onehot;
-                } else {
-                    winners[out_id] = 0;
-                    grants[out_id] = 0;
-                }
-            }
-            for (int in_id = 0; in_id < PE_NUM; in_id++) {
-#pragma HLS UNROLL
-                bool cleared = false;
-                for (int out_id = 0; out_id < PE_NUM; out_id++) {
-#pragma HLS UNROLL
-                    cleared |= (bool)grants[out_id][in_id];
-                }
-                if (cleared) {
-                    input_valid[in_id] = false;
-                }
-            }
-            for (int out_id = 0; out_id < PE_NUM; out_id++) {
-#pragma HLS UNROLL
-                if (grants[out_id] != 0) {
-                    rr_ptr[out_id] = (ap_uint<LOG_PE_NUM>)(winners[out_id] + 1);
-                }
-            }
-        } else {
-            // --- Flush phase: send end_flag on each output stream, independently when space is available ---
-            bool all_ends_sent = true;
-            for (int out_id = 0; out_id < PE_NUM; out_id++) {
-#pragma HLS UNROLL
-                if (!out_end_sent[out_id] && !out_streams[out_id].full()) {
-                    update_t_big end_item;
-                    end_item.node_id = 0;
-                    end_item.prop = 0;
-                    end_item.end_flag = true;
-                    out_streams[out_id].write(end_item);
-                    out_end_sent[out_id] = true;
-                }
-                all_ends_sent &= out_end_sent[out_id];
-            }
-            if (all_ends_sent) {
-                break;
-            }
-        }
+        xbar_output_merge_rr(out_id, in2out, out_streams[out_id]);
     }
 }
 
