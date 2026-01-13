@@ -109,7 +109,24 @@ Expected success line:
 Important files:
 - `generated_project/run.sh` sets `XCL_EMULATION_MODE`, `LD_PRELOAD`, and picks `xclbin/graphyflow_kernels.${TARGET}.xclbin`.
 
-### 1.5 Clean / rebuild tips
+### 1.5 Vitis/XRT trace (cycle counting)
+
+`generated_project/run.sh` also exports:
+- `XRT_INI_PATH=./xrt.ini`
+
+To collect trace artifacts suitable for deriving **cycle counts**, build with profiling enabled:
+
+```bash
+cd generated_project
+source /home/feiyang/set_env.sh
+make all TARGET=hw_emu PROFILE=1
+./run.sh hw_emu
+```
+
+Then open `generated_project/xrt.run_summary` in Vitis Analyzer, or follow:
+- `docs/vitis_cycle_counting.md`
+
+### 1.6 Clean / rebuild tips
 
 If you change kernel code and want to force recompilation:
 ```bash
@@ -502,4 +519,3 @@ For persistent changes, consider:
 - Many loops assume “multiple of 8 edges” alignment; if you change packing, update padding logic in the partitioner and host packer.
 - Stream deadlocks usually come from missing end tokens or mismatched expected counts (especially in request/response services).
 - For stream topology, always consult `generated_project/system.cfg` (it is the ground truth for CU connectivity).
-
