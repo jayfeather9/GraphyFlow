@@ -158,7 +158,7 @@ Reduc_105_unit_reduce(hls::stream<update_tuple_t_little> &update_set_stm,
  uint32_t total_edge_sets,
  uint32_t rounded_num_words) {
     // --- Phase 1: Memory Declaration ---
-    const int32_t MEM_SIZE = (MAX_NUM / DISTANCES_PER_REDUCE_WORD);
+    const int32_t MEM_SIZE = MAX_NUM;
     reduce_word_t prop_mem[PE_NUM][MEM_SIZE];
 #pragma HLS ARRAY_PARTITION variable = prop_mem complete dim = 1
 #pragma HLS BIND_STORAGE variable = prop_mem type = RAM_S2P impl = URAM
@@ -202,7 +202,7 @@ Reduc_105_unit_reduce(hls::stream<update_tuple_t_little> &update_set_stm,
                 ap_uint<20> key = one_update.data[pe].node_id;
                 ap_fixed_pod_t incoming_dist_pod = one_update.data[pe].prop;
                 
-                ap_uint<15> word_addr = key.range(15, 1);
+                ap_uint<15> word_addr = key.range(14, 0);
                 
                 reduce_word_t current_word = prop_mem[pe][word_addr];
                 
@@ -225,32 +225,23 @@ Reduc_105_unit_reduce(hls::stream<update_tuple_t_little> &update_set_stm,
                 }
                 
                 reduce_word_t tmp_cur_word = current_word;
-                
-                ap_fixed_pod_t msb = current_word.range(63, 32);
-                ap_fixed_pod_t lsb = current_word.range(31, 0);
-                
-                ap_fixed_pod_t msb_out;
-                ap_fixed_pod_t lsb_out;
-                // =======  begin inline reduce logic ====
-                msb_out = (msb !=0x0) ? (((msb) < (incoming_dist_pod) ? msb : incoming_dist_pod)) : incoming_dist_pod;
-                lsb_out = (lsb !=0x0) ? (((lsb) < (incoming_dist_pod) ? lsb : incoming_dist_pod)) : incoming_dist_pod;
-                // =======  end inline reduce logic ====
-                reduce_word_t accumulate_msb;
-                reduce_word_t accumulate_lsb;
-                
-                accumulate_msb.range(63, 32) = msb_out;
-                accumulate_msb.range(31, 0) = tmp_cur_word.range(31, 0);
-                
-                accumulate_lsb.range(63, 32) = tmp_cur_word.range(63, 32);
-                accumulate_lsb.range(31, 0) = lsb_out;
-                
-                if ((key & 0x01)) {
-                    prop_mem[pe][word_addr] = accumulate_msb;
-                    cache_data_buffer[pe][L] = accumulate_msb;
-                } else {
-                    prop_mem[pe][word_addr] = accumulate_lsb;
-                    cache_data_buffer[pe][L] = accumulate_lsb;
-                }
+
+                ap_uint<32> cnt = tmp_cur_word.range(63, 32);
+                ap_fixed_pod_t cur_dist = tmp_cur_word.range(31, 0);
+
+                ap_fixed_pod_t new_dist =
+                    (cnt == 0)
+                        ? incoming_dist_pod
+                        : ((cur_dist < incoming_dist_pod) ? cur_dist
+                                                          : incoming_dist_pod);
+                ap_uint<32> new_cnt = cnt + 1;
+
+                reduce_word_t accumulated_word;
+                accumulated_word.range(31, 0) = new_dist;
+                accumulated_word.range(63, 32) = new_cnt;
+
+                prop_mem[pe][word_addr] = accumulated_word;
+                cache_data_buffer[pe][L] = accumulated_word;
                 cache_addr_buffer[pe][L] = word_addr;
             }
         }
@@ -289,25 +280,27 @@ Reduc_105_partial_drain_impl(int32_t i,
     LOOP_FOR_41:
     for (int32_t i = 0; i < rounded_num_words; i++) {
 #pragma HLS PIPELINE II = 1
-        ap_fixed_pod_t uram_res_low = max_pod;
-        ap_fixed_pod_t uram_res_high = max_pod;
+        ap_fixed_pod_t uram_res = max_pod;
+        ap_uint<32> cnt_sum = 0;
         LOOP_PARTIAL_PE:
         LOOP_FOR_40:
         for (uint32_t pe_idx = 0; pe_idx < 4; pe_idx++) {
 #pragma HLS UNROLL
             reduce_word_t word;
             word = pe_mem_in[pe_idx].read();
-            
-            ap_fixed_pod_t incoming_dist_pod_low = word.range(31, 0);
-            ap_fixed_pod_t incoming_dist_pod_high = word.range(63, 32);
-            // =======  begin inline reduce logic ====
-            uram_res_low = (incoming_dist_pod_low !=0x0) ? (((incoming_dist_pod_low) < (uram_res_low) ? incoming_dist_pod_low : uram_res_low)) : uram_res_low;
-            uram_res_high = (incoming_dist_pod_high !=0x0) ? (((incoming_dist_pod_high) < (uram_res_high) ? incoming_dist_pod_high : uram_res_high)) : uram_res_high;
-            // =======  end inline reduce logic ====
+
+            ap_fixed_pod_t incoming_dist_pod = word.range(31, 0);
+            ap_uint<32> incoming_cnt = word.range(63, 32);
+
+            if (incoming_cnt != 0) {
+                uram_res = (incoming_dist_pod < uram_res) ? incoming_dist_pod
+                                                          : uram_res;
+                cnt_sum += incoming_cnt;
+            }
         }
         reduce_word_t merged_word;
-        merged_word.range(31, 0) = uram_res_low;
-        merged_word.range(63, 32) = uram_res_high;
+        merged_word.range(31, 0) = uram_res;
+        merged_word.range(63, 32) = cnt_sum;
         partial_out_stream.write(merged_word);
     }
 }
@@ -327,20 +320,23 @@ Reduc_105_finalize_drain(hls::stream<reduce_word_t> &partial_in_first,
 #pragma HLS PIPELINE II = 1
         reduce_word_t first_word = partial_in_first.read();
         reduce_word_t second_word = partial_in_second.read();
-        
-        ap_fixed_pod_t first_low = first_word.range(31, 0);
-        ap_fixed_pod_t first_high = first_word.range(63, 32);
-        ap_fixed_pod_t second_low = second_word.range(31, 0);
-        ap_fixed_pod_t second_high = second_word.range(63, 32);
-        
-        // =======  begin inline reduce logic ====
-        first_low = (second_low !=0x0) ? (((second_low) < (first_low) ? second_low : first_low)) : first_low;
-        first_high = (second_high !=0x0) ? (((second_high) < (first_high) ? second_high : first_high)) : first_high;
-        // =======  end inline reduce logic ====
-        
+
+        ap_fixed_pod_t first_dist = first_word.range(31, 0);
+        ap_uint<32> first_cnt = first_word.range(63, 32);
+        ap_fixed_pod_t second_dist = second_word.range(31, 0);
+        ap_uint<32> second_cnt = second_word.range(63, 32);
+
+        ap_fixed_pod_t merged_dist = first_dist;
+        ap_uint<32> merged_cnt = first_cnt + second_cnt;
+
+        if (second_cnt != 0) {
+            merged_dist =
+                (second_dist < merged_dist) ? second_dist : merged_dist;
+        }
+
         reduce_word_t merged_word;
-        merged_word.range(31, 0) = first_low;
-        merged_word.range(63, 32) = first_high;
+        merged_word.range(31, 0) = merged_dist;
+        merged_word.range(63, 32) = merged_cnt;
         one_write_burst.data = merged_word;
         kernel_out_stream.write(one_write_burst);
     }
@@ -391,7 +387,7 @@ extern "C" void
     const int32_t edges_per_word = (AXI_BUS_WIDTH / (NODE_ID_BITWIDTH + NODE_ID_BITWIDTH));
     const int32_t num_wide_reads = (num_edges / edges_per_word);
     
-    const uint32_t num_words = ((dst_num + 1) >> 1);
+    const uint32_t num_words = dst_num;
     const uint32_t rounded_num_words = ((num_words + 7) & ~7);
     
     LOOP_EDL_READ:
