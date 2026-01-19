@@ -48,36 +48,115 @@ static void
 apply_func(bus_word_t* node_props,
  hls::stream<in_write_burst_w_dst_pkt_t> &write_burst_stream,
  hls::stream<write_burst_w_dst_pkt_t> &kernel_out_stream) {
+    distance_t max_val = (distance_t)(16384.0);
+    ap_fixed_pod_t max_pod = *reinterpret_cast<ap_fixed_pod_t *>(&max_val);
+
+    static const int SLOT_CNT = 4;
+    bool slot_valid[SLOT_CNT] = {false, false, false, false};
+#pragma HLS ARRAY_PARTITION variable = slot_valid complete dim = 0
+    uint32_t slot_word_addr[SLOT_CNT];
+#pragma HLS ARRAY_PARTITION variable = slot_word_addr complete dim = 0
+    bool slot_have_half0[SLOT_CNT] = {false, false, false, false};
+#pragma HLS ARRAY_PARTITION variable = slot_have_half0 complete dim = 0
+    bool slot_have_half1[SLOT_CNT] = {false, false, false, false};
+#pragma HLS ARRAY_PARTITION variable = slot_have_half1 complete dim = 0
+    bus_word_t slot_old_props[SLOT_CNT];
+#pragma HLS ARRAY_PARTITION variable = slot_old_props complete dim = 0
+    ap_fixed_pod_t slot_update_dist[SLOT_CNT][2][8];
+#pragma HLS ARRAY_PARTITION variable = slot_update_dist complete dim = 0
+    ap_uint<32> slot_update_cnt[SLOT_CNT][2][8];
+#pragma HLS ARRAY_PARTITION variable = slot_update_cnt complete dim = 0
+
     LOOP_WHILE_44:
     while (true) {
         in_write_burst_w_dst_pkt_t in_pkt = write_burst_stream.read();
         if (in_pkt.end_flag) {
+            // Expect all half-packets to be paired before termination.
             write_burst_w_dst_pkt_t end_pkt;
             end_pkt.last = true;
             kernel_out_stream.write(end_pkt);
             break;
         }
-        uint32_t dest_addr = in_pkt.dest_addr;
-        bus_word_t ori_props = node_props[dest_addr];
-        bus_word_t new_props;
-        write_burst_w_dst_pkt_t out_pkt;
-        out_pkt.dest = dest_addr;
-        out_pkt.last = false;
-        LOOP_FOR_43:
-        for (int32_t i = 0; i < 16; i++) {
+
+        uint32_t dest_half_addr = in_pkt.dest_addr;
+        uint32_t dest_word_addr = (dest_half_addr >> 1);
+        uint32_t half = (dest_half_addr & 1);
+
+        int slot = -1;
+        LOOP_FIND_SLOT:
+        for (int i = 0; i < SLOT_CNT; i++) {
 #pragma HLS UNROLL
-            ap_fixed_pod_t update = in_pkt.data.range(31 + (i << 5), (i << 5));
-            ap_fixed_pod_t old = ori_props.range(31 + (i << 5), (i << 5));
-            ap_fixed_pod_t new_prop;
-            // Begin inline fused op
-            ap_fixed_pod_t BinOp_128_res;
-            BinOp_128_res = (((old) < (update) ? old : update));
-            new_prop = BinOp_128_res;
-            // End inline fused op
-            new_props.range(31 + (i << 5), (i << 5)) = new_prop;
+            if (slot_valid[i] && slot_word_addr[i] == dest_word_addr) {
+                slot = i;
+            }
         }
-        out_pkt.data = new_props;
-        kernel_out_stream.write(out_pkt);
+        if (slot < 0) {
+            LOOP_ALLOC_SLOT:
+            for (int i = 0; i < SLOT_CNT; i++) {
+#pragma HLS UNROLL
+                if (!slot_valid[i] && slot < 0) {
+                    slot = i;
+                }
+            }
+            slot_valid[slot] = true;
+            slot_word_addr[slot] = dest_word_addr;
+            slot_have_half0[slot] = false;
+            slot_have_half1[slot] = false;
+            slot_old_props[slot] = node_props[dest_word_addr];
+        }
+
+        LOOP_UNPACK_64_UPDATES:
+        for (int i = 0; i < 8; i++) {
+#pragma HLS UNROLL
+            ap_uint<64> u64 = in_pkt.data.range(63 + (i << 6), (i << 6));
+            slot_update_dist[slot][half][i] = u64.range(31, 0);
+            slot_update_cnt[slot][half][i] = u64.range(63, 32);
+        }
+        if (half == 0) {
+            slot_have_half0[slot] = true;
+        } else {
+            slot_have_half1[slot] = true;
+        }
+
+        if (slot_have_half0[slot] && slot_have_half1[slot]) {
+            bus_word_t ori_props = slot_old_props[slot];
+            bus_word_t new_props;
+
+            write_burst_w_dst_pkt_t out_pkt;
+            out_pkt.dest = dest_word_addr;
+            out_pkt.last = false;
+
+            LOOP_APPLY_64_TO_32:
+            for (int i = 0; i < 16; i++) {
+#pragma HLS UNROLL
+                ap_fixed_pod_t old =
+                    ori_props.range(31 + (i << 5), (i << 5));
+
+                uint32_t half_sel = (i >> 3);
+                uint32_t lane = (i & 7);
+                ap_fixed_pod_t update_dist =
+                    slot_update_dist[slot][half_sel][lane];
+                ap_uint<32> update_cnt =
+                    slot_update_cnt[slot][half_sel][lane];
+
+                ap_fixed_pod_t new_prop = old;
+                if (update_cnt != 0) {
+                    new_prop = (old < update_dist) ? old : update_dist;
+                    if ((update_cnt & 3) == 0) {
+                        new_prop = 0;
+                    }
+                } else {
+                    // No update: treat as infinity, keep old.
+                    (void)max_pod;
+                }
+
+                new_props.range(31 + (i << 5), (i << 5)) = new_prop;
+            }
+            out_pkt.data = new_props;
+            kernel_out_stream.write(out_pkt);
+
+            slot_valid[slot] = false;
+        }
     }
 }
 
