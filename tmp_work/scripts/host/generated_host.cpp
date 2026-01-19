@@ -1092,26 +1092,26 @@ void AlgorithmHost::execute_kernel_iteration(
             // Mixed mode: little + big outputs
             uint32_t little_offset_words = 0;
             OCL_CHECK(err, err = apply_kernel.setArg(
-                                   arg_idx++, little_dst_word_num));
+                                   arg_idx++, little_dst_word_num * 2));
             OCL_CHECK(err,
-                      err = apply_kernel.setArg(arg_idx++, big_dst_word_num));
+                      err = apply_kernel.setArg(arg_idx++, big_dst_word_num * 2));
             OCL_CHECK(err, err = apply_kernel.setArg(
-                                   arg_idx++, little_offset_words));
+                                   arg_idx++, little_offset_words * 2));
             OCL_CHECK(err, err = apply_kernel.setArg(
-                                   arg_idx++, big_dst_offset));
+                                   arg_idx++, big_dst_offset * 2));
         } else if (has_big) {
             // Big-only mode
             OCL_CHECK(err,
-                      err = apply_kernel.setArg(arg_idx++, big_dst_word_num));
+                      err = apply_kernel.setArg(arg_idx++, big_dst_word_num * 2));
             OCL_CHECK(err, err = apply_kernel.setArg(
-                                   arg_idx++, big_dst_offset));
+                                   arg_idx++, big_dst_offset * 2));
         } else {
             // Little-only mode
             uint32_t little_offset_words = 0;
             OCL_CHECK(err, err = apply_kernel.setArg(
-                                   arg_idx++, little_dst_word_num));
+                                   arg_idx++, little_dst_word_num * 2));
             OCL_CHECK(err, err = apply_kernel.setArg(
-                                   arg_idx++, little_offset_words));
+                                   arg_idx++, little_offset_words * 2));
         }
 
 
