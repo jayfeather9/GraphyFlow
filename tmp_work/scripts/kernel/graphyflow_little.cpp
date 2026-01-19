@@ -387,8 +387,7 @@ extern "C" void
     const int32_t edges_per_word = (AXI_BUS_WIDTH / (NODE_ID_BITWIDTH + NODE_ID_BITWIDTH));
     const int32_t num_wide_reads = (num_edges / edges_per_word);
     
-    const uint32_t num_words = dst_num;
-    const uint32_t rounded_num_words = ((num_words + 7) & ~7);
+    const uint32_t rounded_num_words = ((dst_num + 15) & ~15);
     
     LOOP_EDL_READ:
     LOOP_FOR_50:

@@ -638,7 +638,8 @@ extern "C" void
 #pragma HLS STREAM variable = reduce_105_o2u_pair depth = 2
 #pragma HLS ARRAY_PARTITION variable = reduce_105_o2u_pair complete dim = 0
     
-    const uint32_t num_word_per_pe = ((dst_num + PE_NUM - 1) >> LOG_PE_NUM);
+    const uint32_t padded_dst_num = ((dst_num + 15) & ~15);
+    const uint32_t num_word_per_pe = (padded_dst_num >> LOG_PE_NUM);
     
     // --- Data Loading ---
     const int32_t edges_per_word = (AXI_BUS_WIDTH / (NODE_ID_BITWIDTH + NODE_ID_BITWIDTH));
