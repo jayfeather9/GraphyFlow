@@ -28,11 +28,11 @@
 #define SRC_BUFFER_SIZE 4096
 
 #ifdef EMULATION
-const int LITTLE_MAX_DST = 512;
-const int BIG_MAX_DST = 512;
+const int LITTLE_MAX_DST = 256;
+const int BIG_MAX_DST = 256;
 #else
-const int LITTLE_MAX_DST = 65536;
-const int BIG_MAX_DST = 524288;
+const int LITTLE_MAX_DST = 32768;
+const int BIG_MAX_DST = 262144;
 #endif
 
 // --- Host-side definition for the AXI bus word ---

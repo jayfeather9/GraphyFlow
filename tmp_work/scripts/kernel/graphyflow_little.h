@@ -13,9 +13,9 @@
 #define DBL_PE_NUM 16
 #define LOG_PE_NUM 3
 #ifdef EMULATION
-#define MAX_NUM 512
+#define MAX_NUM 256
 #else
-#define MAX_NUM 65536
+#define MAX_NUM 32768
 #endif
 #define L 3
 #define SRC_BUFFER_SIZE 4096

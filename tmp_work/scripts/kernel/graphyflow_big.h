@@ -13,9 +13,9 @@
 #define DBL_PE_NUM 16
 #define LOG_PE_NUM 3
 #ifdef EMULATION
-#define MAX_NUM 512
+#define MAX_NUM 256
 #else
-#define MAX_NUM 524288
+#define MAX_NUM 262144
 #endif
 #define L 3
 

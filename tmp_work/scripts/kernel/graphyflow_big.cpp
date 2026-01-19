@@ -466,7 +466,7 @@ Reduc_105_unit_reduce_single_pe(hls::stream<update_t_big> &kt_wrap_item_single,
  hls::stream<reduce_word_t> &pe_mem_out,
  uint32_t num_word_per_pe) {
     // --- Phase 1: Memory Declaration ---
-    const int32_t MEM_SIZE = ((MAX_NUM >> LOG_PE_NUM) / DISTANCES_PER_REDUCE_WORD);
+    const int32_t MEM_SIZE = (MAX_NUM >> LOG_PE_NUM);
     reduce_word_t prop_mem[MEM_SIZE];
 #pragma HLS BIND_STORAGE variable = prop_mem type = RAM_2P impl = URAM
 #pragma HLS dependence variable = prop_mem inter false
@@ -503,7 +503,7 @@ Reduc_105_unit_reduce_single_pe(hls::stream<update_t_big> &kt_wrap_item_single,
         ap_uint<20> key = (kt_elem.node_id >> LOG_PE_NUM);
         ap_fixed_pod_t incoming_dist_pod = kt_elem.prop;
         
-        ap_uint<20> word_addr = (key >> 1);
+        ap_uint<20> word_addr = key;
         
         reduce_word_t current_word = prop_mem[word_addr];
         
@@ -528,32 +528,21 @@ Reduc_105_unit_reduce_single_pe(hls::stream<update_t_big> &kt_wrap_item_single,
         
         reduce_word_t tmp_cur_word = current_word;
         
-        ap_fixed_pod_t msb = tmp_cur_word.range(63, 32);
-        ap_fixed_pod_t lsb = tmp_cur_word.range(31, 0);
+        ap_uint<32> cnt = tmp_cur_word.range(63, 32);
+        ap_fixed_pod_t cur_dist = tmp_cur_word.range(31, 0);
         
-        ap_fixed_pod_t msb_out;
-        ap_fixed_pod_t lsb_out;
+        ap_fixed_pod_t new_dist =
+            (cnt == 0) ? incoming_dist_pod
+                       : ((cur_dist < incoming_dist_pod) ? cur_dist
+                                                         : incoming_dist_pod);
+        ap_uint<32> new_cnt = cnt + 1;
         
-        // =======  begin inline reduce logic ====
-        msb_out = (msb !=0x0) ? (((msb) < (incoming_dist_pod) ? msb : incoming_dist_pod)) : incoming_dist_pod;
-        lsb_out = (lsb !=0x0) ? (((lsb) < (incoming_dist_pod) ? lsb : incoming_dist_pod)) : incoming_dist_pod;
-        // =======  end inline reduce logic ====
-        reduce_word_t accumulated_msb;
-        reduce_word_t accumulated_lsb;
+        reduce_word_t accumulated_word;
+        accumulated_word.range(31, 0) = new_dist;
+        accumulated_word.range(63, 32) = new_cnt;
         
-        accumulated_msb.range(63, 32) = msb_out;
-        accumulated_msb.range(31, 0) = tmp_cur_word.range(31, 0);
-        
-        accumulated_lsb.range(63, 32) = tmp_cur_word.range(63, 32);
-        accumulated_lsb.range(31, 0) = lsb_out;
-        
-        if ((key & 0x01)) {
-            prop_mem[word_addr] = accumulated_msb;
-            cache_data_buffer[L] = accumulated_msb;
-        } else {
-            prop_mem[word_addr] = accumulated_lsb;
-            cache_data_buffer[L] = accumulated_lsb;
-        }
+        prop_mem[word_addr] = accumulated_word;
+        cache_data_buffer[L] = accumulated_word;
         cache_addr_buffer[L] = word_addr;
     }
     
@@ -583,9 +572,8 @@ Reduc_105_partial_drain_four(hls::stream<reduce_word_t> (&pe_mem_in)[PE_NUM],
         for (uint32_t pe_offset = 0; pe_offset < 4; pe_offset++) {
 #pragma HLS UNROLL
             reduce_word_t tmp_word = pe_mem_in[base_idx + pe_offset].read();
-            uint32_t bit_low = (pe_offset << 5);
-            packed_out.range(31 + bit_low, bit_low) = tmp_word.range(31, 0);
-            packed_out.range(31 + bit_low + 128, bit_low + 128) = tmp_word.range(63, 32);
+            uint32_t bit_low = (pe_offset << 6);
+            packed_out.range(63 + bit_low, bit_low) = tmp_word;
         }
         partial_out_stream.write(packed_out);
     }
@@ -603,10 +591,8 @@ Reduc_105_finalize_drain(hls::stream<ap_uint<256>> &lower_pe_pack_stream,
         ap_uint<256> lower_pe_pack = lower_pe_pack_stream.read();
         ap_uint<256> upper_pe_pack = upper_pe_pack_stream.read();
         write_burst_pkt_t one_write_burst;
-        one_write_burst.data.range(127, 0) = lower_pe_pack.range(127, 0);
-        one_write_burst.data.range(255, 128) = upper_pe_pack.range(127, 0);
-        one_write_burst.data.range(383, 256) = lower_pe_pack.range(255, 128);
-        one_write_burst.data.range(511, 384) = upper_pe_pack.range(255, 128);
+        one_write_burst.data.range(255, 0) = lower_pe_pack;
+        one_write_burst.data.range(511, 256) = upper_pe_pack;
         kernel_out_stream.write(one_write_burst);
     }
 }
@@ -652,8 +638,7 @@ extern "C" void
 #pragma HLS STREAM variable = reduce_105_o2u_pair depth = 2
 #pragma HLS ARRAY_PARTITION variable = reduce_105_o2u_pair complete dim = 0
     
-    const uint32_t num_words = ((dst_num + 1) / DISTANCES_PER_REDUCE_WORD);
-    const uint32_t num_word_per_pe = ((num_words + PE_NUM - 1) >> LOG_PE_NUM);
+    const uint32_t num_word_per_pe = ((dst_num + PE_NUM - 1) >> LOG_PE_NUM);
     
     // --- Data Loading ---
     const int32_t edges_per_word = (AXI_BUS_WIDTH / (NODE_ID_BITWIDTH + NODE_ID_BITWIDTH));
