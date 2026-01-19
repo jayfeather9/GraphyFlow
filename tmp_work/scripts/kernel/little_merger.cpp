@@ -89,26 +89,26 @@ merge_tmp_prop_big_krnls:
         1;
 
 if (merge_flag) {
-            ap_fixed_pod_t uram_high = max_pod;;
-            ap_fixed_pod_t uram_low = max_pod;
+            ap_fixed_pod_t dist_min = max_pod;
+            ap_uint<32> cnt_sum = 0;
 
             //ap_fixed_pod_t uram_high = cc_ini_pod;//max_pod;;
             //ap_fixed_pod_t uram_low = cc_ini_pod;//max_pod;
 
             for (int i = 0; i < LITTLE_MERGER_LENGTH; i++) {
 #pragma HLS UNROLL
-                ap_fixed_pod_t update_low = tmp_prop_pkt[i].data.range(31, 0);
-                ap_fixed_pod_t update_high = tmp_prop_pkt[i].data.range(63, 32);
-
-                    // =======  begin inline reduce logic ====
-    uram_low = (update_low !=0x0) ? (((update_low) < (uram_low) ? update_low : uram_low)) : uram_low;
-    uram_high = (update_high !=0x0) ? (((update_high) < (uram_high) ? update_high : uram_high)) : uram_high;
-    // =======  end inline reduce logic ====
+                ap_fixed_pod_t update_dist = tmp_prop_pkt[i].data.range(31, 0);
+                ap_uint<32> update_cnt = tmp_prop_pkt[i].data.range(63, 32);
+                if (update_cnt != 0) {
+                    dist_min =
+                        (update_dist < dist_min) ? update_dist : dist_min;
+                    cnt_sum += update_cnt;
+                }
 
             }
 
-            merged_write_burst.range(31, 0) = uram_low;
-            merged_write_burst.range(63, 32) = uram_high;
+            merged_write_burst.range(31, 0) = dist_min;
+            merged_write_burst.range(63, 32) = cnt_sum;
 
             one_write_burst.range(63 + (inner_idx << 6), (inner_idx << 6)) =
                 merged_write_burst;

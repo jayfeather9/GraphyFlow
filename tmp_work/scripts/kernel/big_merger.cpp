@@ -22,8 +22,10 @@ hls::stream<write_burst_pkt_t> &kernel_out_stream) {
 
     uint32_t outer_idx = 0;
 
-    ap_fixed_pod_t tmp_prop_arrary[16];
-#pragma HLS ARRAY_PARTITION variable = tmp_prop_arrary dim = 0 complete
+    ap_fixed_pod_t tmp_dist_array[8];
+#pragma HLS ARRAY_PARTITION variable = tmp_dist_array dim = 0 complete
+    ap_uint<32> tmp_cnt_array[8];
+#pragma HLS ARRAY_PARTITION variable = tmp_cnt_array dim = 0 complete
 
     distance_t max_val = (distance_t)(16384.0);
     ap_fixed_pod_t max_pod = *reinterpret_cast<ap_fixed_pod_t *>(&max_val);
@@ -49,29 +51,37 @@ merge_tmp_prop_big_krnls:
                         1;
 
 if (merge_flag) {
-            for (int i = 0; i < 16; i++) {
+            for (int i = 0; i < 8; i++) {
 #pragma HLS UNROLL
-                tmp_prop_arrary[i] = max_pod;
+                tmp_dist_array[i] = max_pod;
+                tmp_cnt_array[i] = 0;
                 
             }
 
             for (int i = 0; i < BIG_MERGER_LENGTH; i++) {
 #pragma HLS UNROLL
-                for (int j = 0; j < 16; j++) {
+                for (int j = 0; j < 8; j++) {
 #pragma HLS UNROLL
-                    ap_fixed_pod_t update =
-                        tmp_prop_pkt[i].data.range(31 + (j << 5), (j << 5));
-                        // =======  begin inline reduce logic ====
-    tmp_prop_arrary[j] = (update !=0x0) ? (((update) < (tmp_prop_arrary[j]) ? update : tmp_prop_arrary[j])) : tmp_prop_arrary[j];
-    // =======  end inline reduce logic ====
+                    ap_uint<64> update64 =
+                        tmp_prop_pkt[i].data.range(63 + (j << 6), (j << 6));
+                    ap_fixed_pod_t update_dist = update64.range(31, 0);
+                    ap_uint<32> update_cnt = update64.range(63, 32);
+                    if (update_cnt != 0) {
+                        tmp_dist_array[j] =
+                            (update_dist < tmp_dist_array[j]) ? update_dist
+                                                              : tmp_dist_array[j];
+                        tmp_cnt_array[j] += update_cnt;
+                    }
 
                 }
             }
 
-            for (int i = 0; i < 16; i++) {
+            for (int i = 0; i < 8; i++) {
 #pragma HLS UNROLL
-                merged_write_burst.range(31 + (i << 5), (i << 5)) =
-                    tmp_prop_arrary[i];
+                ap_uint<64> out64;
+                out64.range(31, 0) = tmp_dist_array[i];
+                out64.range(63, 32) = tmp_cnt_array[i];
+                merged_write_burst.range(63 + (i << 6), (i << 6)) = out64;
             }
 
             one_write_burst.data = merged_write_burst;
