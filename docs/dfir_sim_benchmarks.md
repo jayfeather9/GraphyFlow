@@ -25,3 +25,12 @@ Notes:
 - For `rmat-19-32.txt`, parsing includes an explicit “index shift” step (`+1.969 s`) in addition to file parsing (`11.136 s`).
 - Totals include parsing + simulator setup + DFIR `run()`.
 
+## Rust Runner (one-pass) Results
+
+`rust_sim/graphyflow_sssp` implements the same **single-pass** relaxation directly over the edge list (no DFIR interpreter).
+
+| Dataset | Detect (s) | Parse+Compute (s) |
+|---|---:|---:|
+| `/data/feiyang/test/test/datasets/rmat-19-32.txt` | 0.224023 | 0.855675 |
+| `/data/feiyang/test/test/datasets/rmat-21-32.txt` | 0.270616 | 4.065209 |
+| `/data/feiyang/test/test/datasets/rmat-24-16.txt` | 0.326914 | 27.951154 |
