@@ -2,8 +2,11 @@ use std::cmp::max;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use clap::{Parser, ValueEnum};
+use std::io::Write;
+
+use clap::{ArgGroup, Parser, ValueEnum};
 use memmap2::Mmap;
+use serde::Deserialize;
 
 const INF_U32: u32 = u32::MAX / 4;
 
@@ -25,10 +28,19 @@ enum WeightMode {
     name = "graphyflow-sssp",
     about = "Fast one-pass SSSP/new_dist-style relaxation on an edge list"
 )]
+#[command(group(
+    ArgGroup::new("input")
+        .required(true)
+        .args(["plan", "dataset"]),
+))]
 struct Args {
+    /// JSON plan file. When provided, CLI flags become defaults overridden by the plan.
+    #[arg(long)]
+    plan: Option<PathBuf>,
+
     /// Path to edge list dataset (2 or 3 integers per line).
     #[arg(long)]
-    dataset: PathBuf,
+    dataset: Option<PathBuf>,
 
     /// Source node id (0-based after indexing adjustment).
     #[arg(long, default_value_t = 0)]
@@ -53,6 +65,91 @@ struct Args {
     /// Print JSON summary (default).
     #[arg(long, default_value_t = true)]
     json: bool,
+
+    /// Optional output file for results (binary).
+    /// - `--out-format full-u32-le`: writes `nodes` u32 distances (little-endian)
+    /// - `--out-format updates-u32x2-le`: writes pairs `(node_id, dist)` for all dst nodes seen in the edge list
+    #[arg(long)]
+    out: Option<PathBuf>,
+
+    /// Output format when `--out` is provided.
+    #[arg(long, value_enum, default_value_t = OutFormat::FullU32Le)]
+    out_format: OutFormat,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum OutFormat {
+    FullU32Le,
+    UpdatesU32x2Le,
+}
+
+#[derive(Debug, Deserialize)]
+struct Plan {
+    dataset: PathBuf,
+    #[serde(default)]
+    source: Option<u32>,
+    #[serde(default)]
+    num_nodes: Option<usize>,
+    #[serde(default)]
+    indexing: Option<IndexingModeSerde>,
+    #[serde(default)]
+    weight: Option<WeightModeSerde>,
+    #[serde(default)]
+    detect_sample_bytes: Option<usize>,
+    #[serde(default)]
+    out: Option<PathBuf>,
+    #[serde(default)]
+    out_format: Option<OutFormatSerde>,
+}
+
+#[derive(Copy, Clone, Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum IndexingModeSerde {
+    Auto,
+    ZeroBased,
+    OneBased,
+}
+
+#[derive(Copy, Clone, Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum WeightModeSerde {
+    Unit,
+    ThirdColumnU32,
+}
+
+#[derive(Copy, Clone, Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum OutFormatSerde {
+    FullU32Le,
+    UpdatesU32x2Le,
+}
+
+impl From<IndexingModeSerde> for IndexingMode {
+    fn from(v: IndexingModeSerde) -> Self {
+        match v {
+            IndexingModeSerde::Auto => IndexingMode::Auto,
+            IndexingModeSerde::ZeroBased => IndexingMode::ZeroBased,
+            IndexingModeSerde::OneBased => IndexingMode::OneBased,
+        }
+    }
+}
+
+impl From<WeightModeSerde> for WeightMode {
+    fn from(v: WeightModeSerde) -> Self {
+        match v {
+            WeightModeSerde::Unit => WeightMode::Unit,
+            WeightModeSerde::ThirdColumnU32 => WeightMode::ThirdColumnU32,
+        }
+    }
+}
+
+impl From<OutFormatSerde> for OutFormat {
+    fn from(v: OutFormatSerde) -> Self {
+        match v {
+            OutFormatSerde::FullU32Le => OutFormat::FullU32Le,
+            OutFormatSerde::UpdatesU32x2Le => OutFormat::UpdatesU32x2Le,
+        }
+    }
 }
 
 fn is_ws(b: u8) -> bool {
@@ -152,11 +249,59 @@ fn ensure_len(dist: &mut Vec<u32>, needed: usize) {
     dist.resize(new_len, INF_U32);
 }
 
+fn ensure_len_u8(buf: &mut Vec<u8>, needed: usize) {
+    if needed < buf.len() {
+        return;
+    }
+    let mut new_len = max(buf.len().saturating_mul(2), 1024);
+    if new_len <= needed {
+        new_len = needed + 1;
+    }
+    buf.resize(new_len, 0);
+}
+
+fn load_plan(path: &PathBuf) -> anyhow::Result<Plan> {
+    let bytes = std::fs::read(path)?;
+    let plan: Plan = serde_json::from_slice(&bytes)?;
+    Ok(plan)
+}
+
 fn main() -> anyhow::Result<()> {
     // Keep main small; errors should be clear.
-    let args = Args::parse();
+    let mut args = Args::parse();
 
-    let file = std::fs::File::open(&args.dataset)?;
+    if let Some(plan_path) = &args.plan {
+        let plan = load_plan(plan_path)?;
+        args.dataset = Some(plan.dataset);
+        if let Some(v) = plan.source {
+            args.source = v;
+        }
+        if let Some(v) = plan.num_nodes {
+            args.num_nodes = Some(v);
+        }
+        if let Some(v) = plan.indexing {
+            args.indexing = v.into();
+        }
+        if let Some(v) = plan.weight {
+            args.weight = v.into();
+        }
+        if let Some(v) = plan.detect_sample_bytes {
+            args.detect_sample_bytes = v;
+        }
+        if let Some(v) = plan.out {
+            args.out = Some(v);
+        }
+        if let Some(v) = plan.out_format {
+            args.out_format = v.into();
+        }
+    }
+
+    let dataset = args
+        .dataset
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("Missing dataset (provide --dataset or --plan with dataset)"))?;
+
+    let file = std::fs::File::open(&dataset)?;
     let mmap = unsafe { Mmap::map(&file)? };
 
     let (offset, detect_dur) = match args.indexing {
@@ -176,6 +321,7 @@ fn main() -> anyhow::Result<()> {
 
     // One-pass relaxation: new_dist starts as dist (but our default init has only source finite).
     let mut new_dist = dist.clone();
+    let mut seen_dst: Vec<u8> = Vec::new();
 
     let mut i = 0usize;
     let mut edges: u64 = 0;
@@ -217,6 +363,8 @@ fn main() -> anyhow::Result<()> {
         ensure_len(&mut dist, u_usize);
         ensure_len(&mut dist, v_usize);
         ensure_len(&mut new_dist, v_usize);
+        ensure_len_u8(&mut seen_dst, v_usize);
+        seen_dst[v_usize] = 1;
 
         if u > max_node {
             max_node = u;
@@ -252,11 +400,36 @@ fn main() -> anyhow::Result<()> {
         (max_node as usize) + 1
     };
 
+    if let Some(out_path) = &args.out {
+        let mut f = std::io::BufWriter::new(std::fs::File::create(out_path)?);
+        match args.out_format {
+            OutFormat::FullU32Le => {
+                let end = nodes.min(new_dist.len());
+                for &d in &new_dist[..end] {
+                    f.write_all(&d.to_le_bytes())?;
+                }
+            }
+            OutFormat::UpdatesU32x2Le => {
+                let end = nodes.min(new_dist.len()).min(seen_dst.len());
+                for node_id in 0..end {
+                    if seen_dst[node_id] == 0 {
+                        continue;
+                    }
+                    let nid = node_id as u32;
+                    let d = new_dist[node_id];
+                    f.write_all(&nid.to_le_bytes())?;
+                    f.write_all(&d.to_le_bytes())?;
+                }
+            }
+        }
+        f.flush()?;
+    }
+
     if args.json {
         // Manual JSON to avoid pulling serde for now.
         println!(
             "{{\"dataset\":\"{}\",\"indexing_applied\":{},\"edges\":{},\"nodes\":{},\"updates\":{},\"detect_sec\":{:.6},\"parse_and_compute_sec\":{:.6}}}",
-            args.dataset.display(),
+            dataset.display(),
             offset,
             edges,
             nodes,
@@ -265,7 +438,7 @@ fn main() -> anyhow::Result<()> {
             dur.as_secs_f64(),
         );
     } else {
-        println!("dataset: {}", args.dataset.display());
+        println!("dataset: {}", dataset.display());
         println!("indexing_applied: {}", offset);
         println!("edges: {}", edges);
         println!("nodes: {}", nodes);
