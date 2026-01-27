@@ -2,6 +2,7 @@ import graphyflow.dataflow_ir as dfir
 from graphyflow.global_graph import GlobalGraph
 from typing import Dict, List, Tuple, Any, Callable, Optional, Set, Union
 import collections
+from collections.abc import Sequence
 
 
 class UncertainArray:
@@ -22,15 +23,18 @@ class DfirSimulator:
         self.verbose = verbose
 
         # Optional fast storage for large, contiguous graphs (0..N-1 ids)
-        self._node_ids: Optional[List[int]] = None
-        self._node_prop_arrays: Optional[Dict[str, List[Any]]] = None
-        self._edge_ids: Optional[List[int]] = None
-        self._edge_src: Optional[List[int]] = None
-        self._edge_dst: Optional[List[int]] = None
-        self._edge_prop_arrays: Optional[Dict[str, List[Any]]] = None
+        self._node_ids: Optional[Sequence[int]] = None
+        self._node_prop_arrays: Optional[Dict[str, Sequence[Any]]] = None
+        self._edge_ids: Optional[Sequence[int]] = None
+        self._edge_src: Optional[Sequence[int]] = None
+        self._edge_dst: Optional[Sequence[int]] = None
+        self._edge_prop_arrays: Optional[Dict[str, Sequence[Any]]] = None
 
         # Cache compiled unit-reducer evaluators by ReduceComponent readable_id
         self._reduce_unit_cache: Dict[int, Any] = {}
+        # Cache compiled key/transform scalar evaluators by ReduceComponent readable_id
+        self._reduce_key_cache: Dict[int, Any] = {}
+        self._reduce_transform_cache: Dict[int, Any] = {}
 
     def add_nodes(self, nodes: List[int], props: Dict[int, Dict[str, Any]]):
         assert len(set(nodes)) == len(nodes)
@@ -48,7 +52,7 @@ class DfirSimulator:
         self._node_ids = None
         self._node_prop_arrays = None
 
-    def add_nodes_contiguous(self, num_nodes: int, props_by_name: Dict[str, List[Any]]):
+    def add_nodes_contiguous(self, num_nodes: int, props_by_name: Dict[str, Sequence[Any]]):
         """
         Fast path for large graphs: node ids are assumed contiguous [0..num_nodes-1].
         Provide properties by name as arrays/lists of length num_nodes.
@@ -60,7 +64,7 @@ class DfirSimulator:
             assert prop_name in props_by_name, f"Missing node property array '{prop_name}'"
             assert len(props_by_name[prop_name]) == num_nodes, f"Bad length for '{prop_name}'"
 
-        self._node_ids = list(range(num_nodes))
+        self._node_ids = range(num_nodes)
         # Keep references to provided sequences to avoid materializing huge Python lists.
         self._node_prop_arrays = dict(props_by_name)
 
@@ -88,9 +92,9 @@ class DfirSimulator:
 
     def add_edges_contiguous(
         self,
-        src: List[int],
-        dst: List[int],
-        props_by_name: Optional[Dict[str, List[Any]]] = None,
+        src: Sequence[int],
+        dst: Sequence[int],
+        props_by_name: Optional[Dict[str, Sequence[Any]]] = None,
     ):
         """
         Fast path for large graphs: edge ids are assumed contiguous [0..E-1].
@@ -98,7 +102,7 @@ class DfirSimulator:
         """
         assert len(src) == len(dst)
         num_edges = len(src)
-        self._edge_ids = list(range(num_edges))
+        self._edge_ids = range(num_edges)
         self._edge_src = src
         self._edge_dst = dst
         # Keep references to provided sequences to avoid materializing huge Python lists.
@@ -107,12 +111,12 @@ class DfirSimulator:
         # Avoid materializing dict storage for huge graphs
         self.edge_data = {}
 
-    def _get_node_ids(self) -> List[int]:
+    def _get_node_ids(self) -> Sequence[int]:
         if self._node_ids is not None:
             return self._node_ids
         return [node_id for node_id in self.node_data.keys()]
 
-    def _get_edge_ids(self) -> List[int]:
+    def _get_edge_ids(self) -> Sequence[int]:
         if self._edge_ids is not None:
             return self._edge_ids
         return [edge_id for edge_id in self.edge_data.keys()]
@@ -474,9 +478,9 @@ class DfirSimulator:
 
             # Assume comp has a 'parallel' attribute based on dfir definition
             if getattr(comp, "parallel", False):  # Check if parallel attribute exists and is True
-                assert isinstance(in1, list) and isinstance(
-                    in2, list
-                ), f"Parallel BinOp requires list inputs, got {in1=}, {in2=}"
+                assert isinstance(in1, Sequence) and isinstance(
+                    in2, Sequence
+                ), f"Parallel BinOp requires sequence inputs, got {in1=}, {in2=}"
                 # Handle potential broadcast if lengths differ? For now, assume same length.
                 assert len(in1) == len(in2), "Parallel BinOp requires inputs of same length"
                 result = [op_func(x, y) for x, y in zip(in1, in2)]
@@ -521,9 +525,9 @@ class DfirSimulator:
 
             # Assume comp has a 'parallel' attribute
             if getattr(comp, "parallel", False):
-                assert isinstance(
-                    input_val, (list, tuple)
-                ), f"Parallel UnaryOp requires list input, got {type(input_val)}"
+                assert isinstance(input_val, Sequence), (
+                    f"Parallel UnaryOp requires a sequence input, got {type(input_val)}"
+                )
                 result = [op_func(item) for item in input_val]
             else:
                 result = op_func(input_val)
@@ -534,12 +538,12 @@ class DfirSimulator:
             data_in = inputs["i_data"]
             cond_in = inputs["i_cond"]
             if comp.parallel:
-                assert isinstance(
-                    data_in, list
-                ), "Parallel ConditionalComponent expects 'i_data' to be a list"
-                assert isinstance(
-                    cond_in, list
-                ), "Parallel ConditionalComponent expects 'i_cond' to be a list"
+                assert isinstance(data_in, Sequence), (
+                    "Parallel ConditionalComponent expects 'i_data' to be a sequence"
+                )
+                assert isinstance(cond_in, Sequence), (
+                    "Parallel ConditionalComponent expects 'i_cond' to be a sequence"
+                )
                 assert len(data_in) == len(
                     cond_in
                 ), "Parallel ConditionalComponent requires 'i_data' and 'i_cond' lists to have the same length"
@@ -553,7 +557,7 @@ class DfirSimulator:
         if isinstance(comp, dfir.CollectComponent):
             # This operates on Array<Optional<T>> -> Array<T>. Handles arrays correctly. No changes needed.
             optional_data_in = inputs["i_0"]
-            assert isinstance(optional_data_in, list), "CollectComponent expects 'i_0' to be a list"
+            assert isinstance(optional_data_in, Sequence), "CollectComponent expects 'i_0' to be a sequence"
             output_list = [item for item in optional_data_in if item is not None]
             return {"o_0": output_list}
 
@@ -615,37 +619,95 @@ class DfirSimulator:
 
             transform_fused_op_out_port = comp.get_port("i_reduce_transform_out").connection
 
-            key_results_dict = self.run_flow(
-                from_ports_values=key_fused_op_inputs, to_ports=[key_fused_op_out_port]
-            )
-            all_keys = key_results_dict[key_fused_op_out_port]
+            # --- PHASE 3/4: Streaming group-by + reduction (avoid materializing all_keys/all_transforms) ---
+            # For large graphs, computing key/transform arrays and then grouping is prohibitively expensive.
+            # Instead, compile scalar evaluators for the key/transform subgraphs and stream through inputs once.
+            try:
+                key_arg_ports = list(key_fused_op_inputs.keys())
+                key_arg_seqs = [key_fused_op_inputs[p] for p in key_arg_ports]
+                transform_arg_ports = list(transform_fused_op_inputs.keys())
+                transform_arg_seqs = [transform_fused_op_inputs[p] for p in transform_arg_ports]
 
-            transform_results_dict = self.run_flow(
-                from_ports_values=transform_fused_op_inputs, to_ports=[transform_fused_op_out_port]
-            )
-            all_transforms = transform_results_dict[transform_fused_op_out_port]
+                assert key_arg_seqs, "Reduce key inputs are empty."
+                assert transform_arg_seqs, "Reduce transform inputs are empty."
 
-            # --- PHASE 3: Group transformed values by key ---
-            assert len(all_keys) == len(all_transforms)
-            # --- PHASE 4: Accumulate values within each group using the unit subgraph ---
-            # Fast path: streaming accumulation without materializing per-key lists.
-            accum_entry_0 = comp.get_port("o_reduce_unit_start_0").connection
-            accum_entry_1 = comp.get_port("o_reduce_unit_start_1").connection
-            reduce_exit = comp.get_port("i_reduce_unit_end").connection
+                n = len(key_arg_seqs[0])
+                assert all(len(s) == n for s in key_arg_seqs), "Mismatched reduce-key input lengths."
+                assert all(len(s) == n for s in transform_arg_seqs), "Mismatched reduce-transform input lengths."
 
-            reducer = self._reduce_unit_cache.get(comp.readable_id)
-            if reducer is None:
-                reducer = self._compile_unit_reducer(accum_entry_0, accum_entry_1, reduce_exit)
-                self._reduce_unit_cache[comp.readable_id] = reducer
+                key_eval = self._reduce_key_cache.get(comp.readable_id)
+                if key_eval is None:
+                    key_eval = self._compile_scalar_evaluator(key_fused_op_out_port, key_arg_ports)
+                    self._reduce_key_cache[comp.readable_id] = key_eval
 
-            accum_by_key: Dict[Any, Any] = {}
-            for key, value in zip(all_keys, all_transforms):
-                if key not in accum_by_key:
-                    accum_by_key[key] = value
+                transform_eval = self._reduce_transform_cache.get(comp.readable_id)
+                if transform_eval is None:
+                    transform_eval = self._compile_scalar_evaluator(
+                        transform_fused_op_out_port, transform_arg_ports
+                    )
+                    self._reduce_transform_cache[comp.readable_id] = transform_eval
+
+                accum_entry_0 = comp.get_port("o_reduce_unit_start_0").connection
+                accum_entry_1 = comp.get_port("o_reduce_unit_start_1").connection
+                reduce_exit = comp.get_port("i_reduce_unit_end").connection
+                reducer = self._reduce_unit_cache.get(comp.readable_id)
+                if reducer is None:
+                    reducer = self._compile_unit_reducer(accum_entry_0, accum_entry_1, reduce_exit)
+                    self._reduce_unit_cache[comp.readable_id] = reducer
+
+                accum_by_key: Dict[Any, Any] = {}
+
+                if len(key_arg_seqs) == 1 and len(transform_arg_seqs) == 1 and key_arg_seqs[0] is transform_arg_seqs[0]:
+                    seq = key_arg_seqs[0]
+                    for i in range(n):
+                        x = seq[i]
+                        k = key_eval(x)
+                        v = transform_eval(x)
+                        if k not in accum_by_key:
+                            accum_by_key[k] = v
+                        else:
+                            accum_by_key[k] = reducer(accum_by_key[k], v)
                 else:
-                    accum_by_key[key] = reducer(accum_by_key[key], value)
+                    for i in range(n):
+                        k_args = [s[i] for s in key_arg_seqs]
+                        t_args = [s[i] for s in transform_arg_seqs]
+                        k = key_eval(*k_args)
+                        v = transform_eval(*t_args)
+                        if k not in accum_by_key:
+                            accum_by_key[k] = v
+                        else:
+                            accum_by_key[k] = reducer(accum_by_key[k], v)
 
-            return {"o_0": list(accum_by_key.values())}
+                return {"o_0": list(accum_by_key.values())}
+            except Exception:
+                # Fallback to the original array-based evaluation path.
+                key_results_dict = self.run_flow(
+                    from_ports_values=key_fused_op_inputs, to_ports=[key_fused_op_out_port]
+                )
+                all_keys = key_results_dict[key_fused_op_out_port]
+
+                transform_results_dict = self.run_flow(
+                    from_ports_values=transform_fused_op_inputs, to_ports=[transform_fused_op_out_port]
+                )
+                all_transforms = transform_results_dict[transform_fused_op_out_port]
+
+                assert len(all_keys) == len(all_transforms)
+                accum_entry_0 = comp.get_port("o_reduce_unit_start_0").connection
+                accum_entry_1 = comp.get_port("o_reduce_unit_start_1").connection
+                reduce_exit = comp.get_port("i_reduce_unit_end").connection
+
+                reducer = self._reduce_unit_cache.get(comp.readable_id)
+                if reducer is None:
+                    reducer = self._compile_unit_reducer(accum_entry_0, accum_entry_1, reduce_exit)
+                    self._reduce_unit_cache[comp.readable_id] = reducer
+
+                accum_by_key: Dict[Any, Any] = {}
+                for key, value in zip(all_keys, all_transforms):
+                    if key not in accum_by_key:
+                        accum_by_key[key] = value
+                    else:
+                        accum_by_key[key] = reducer(accum_by_key[key], value)
+                return {"o_0": list(accum_by_key.values())}
         if isinstance(comp, dfir.MemoryReadComponent):
             outputs = {}
 
@@ -900,6 +962,142 @@ class DfirSimulator:
             return eval_expr(out_expr, a, b)
 
         return fast_reducer
+
+    def _compile_scalar_evaluator(
+        self, out_port: dfir.Port, arg_in_ports: List[dfir.Port]
+    ) -> Callable[..., Any]:
+        """
+        Compile a scalar evaluator for a (previously parallel) DFIR subgraph.
+
+        This is used to evaluate reduce-key and reduce-transform logic element-by-element
+        without materializing huge intermediate arrays.
+
+        Args:
+            out_port: The DFIR output port that produces the subgraph's (parallel) output.
+            arg_in_ports: The DFIR ports that receive the subgraph inputs (typically PlaceholderComponent.i_0).
+
+        Returns:
+            A callable f(*args) -> scalar value.
+        """
+        placeholder_uuid_to_arg_idx: Dict[str, int] = {}
+        for idx, p in enumerate(arg_in_ports):
+            placeholder_uuid_to_arg_idx[p.parent.uuid] = idx
+
+        def expr_for_port(port: dfir.Port):
+            producer = port.parent
+
+            if isinstance(producer, dfir.PlaceholderComponent):
+                arg_idx = placeholder_uuid_to_arg_idx.get(producer.uuid)
+                if arg_idx is None:
+                    raise ValueError(f"Unmapped PlaceholderComponent in scalar evaluator: {producer}")
+                return ("arg", arg_idx)
+
+            if isinstance(producer, dfir.ConstantComponent):
+                return ("const", producer.value)
+
+            if isinstance(producer, dfir.CopyComponent):
+                return expr_for_port(producer.get_port("i_0").connection)
+
+            if isinstance(producer, dfir.ScatterComponent):
+                out_idx = int(port.name.split("_")[1])
+                return ("idx", expr_for_port(producer.get_port("i_0").connection), out_idx)
+
+            if isinstance(producer, dfir.UnaryOpComponent):
+                in_expr = expr_for_port(producer.get_port("i_0").connection)
+                in_type = producer.get_port("i_0").data_type
+                return ("unary", producer.op, producer.select_index, in_type, in_expr)
+
+            if isinstance(producer, dfir.BinOpComponent):
+                in0_expr = expr_for_port(producer.get_port("i_0").connection)
+                in1_expr = expr_for_port(producer.get_port("i_1").connection)
+                return ("bin", producer.op, in0_expr, in1_expr)
+
+            if isinstance(producer, dfir.GatherComponent):
+                ins = []
+                for p_in in producer.in_ports:
+                    ins.append(expr_for_port(p_in.connection))
+                return ("tuple", ins)
+
+            raise ValueError(
+                f"Unsupported component type in scalar evaluator: {type(producer).__name__}"
+            )
+
+        out_expr = expr_for_port(out_port)
+
+        def eval_expr(expr, args: Tuple[Any, ...]):
+            et = expr[0]
+            if et == "arg":
+                return args[expr[1]]
+            if et == "const":
+                return expr[1]
+            if et == "idx":
+                base = eval_expr(expr[1], args)
+                return base[expr[2]]
+            if et == "unary":
+                op, select_index, in_type, in_expr = expr[1], expr[2], expr[3], expr[4]
+                v = eval_expr(in_expr, args)
+                if op == dfir.UnaryOp.SELECT:
+                    return v[select_index]
+                if op == dfir.UnaryOp.GET_LENGTH:
+                    return len(v)
+                if op == dfir.UnaryOp.NOT:
+                    return not v
+                if op == dfir.UnaryOp.NEG:
+                    return -v
+                if op == dfir.UnaryOp.CAST_BOOL:
+                    return bool(v)
+                if op == dfir.UnaryOp.CAST_INT:
+                    return int(v)
+                if op == dfir.UnaryOp.CAST_FLOAT:
+                    return float(v)
+                if op == dfir.UnaryOp.GET_ATTR:
+                    base_type = in_type.type_ if isinstance(in_type, dfir.ArrayType) else in_type
+                    assert isinstance(base_type, dfir.SpecialType), f"GET_ATTR base type not SpecialType: {in_type}"
+                    if base_type.type_name == "node":
+                        return self._get_node_attr(v, select_index)
+                    if base_type.type_name == "edge":
+                        return self._get_edge_attr(v, select_index)
+                    raise ValueError(f"Unsupported GET_ATTR base type: {base_type.type_name}")
+                raise ValueError(f"Unsupported unary op in scalar evaluator: {op}")
+            if et == "bin":
+                op, l_expr, r_expr = expr[1], expr[2], expr[3]
+                l = eval_expr(l_expr, args)
+                r = eval_expr(r_expr, args)
+                if op == dfir.BinOp.ADD:
+                    return l + r
+                if op == dfir.BinOp.SUB:
+                    return l - r
+                if op == dfir.BinOp.MUL:
+                    return l * r
+                if op == dfir.BinOp.DIV:
+                    return l / r
+                if op == dfir.BinOp.MIN:
+                    return l if l <= r else r
+                if op == dfir.BinOp.MAX:
+                    return l if l >= r else r
+                if op == dfir.BinOp.BITOR:
+                    return l | r
+                if op == dfir.BinOp.LT:
+                    return l < r
+                if op == dfir.BinOp.GT:
+                    return l > r
+                if op == dfir.BinOp.LE:
+                    return l <= r
+                if op == dfir.BinOp.GE:
+                    return l >= r
+                if op == dfir.BinOp.EQ:
+                    return l == r
+                if op == dfir.BinOp.NE:
+                    return l != r
+                raise ValueError(f"Unsupported bin op in scalar evaluator: {op}")
+            if et == "tuple":
+                return tuple(eval_expr(e, args) for e in expr[1])
+            raise ValueError(f"Unsupported expr tag: {et}")
+
+        def evaluator(*args):
+            return eval_expr(out_expr, args)
+
+        return evaluator
 
 
 if __name__ == "__main__":
