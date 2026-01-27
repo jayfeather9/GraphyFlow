@@ -13,12 +13,24 @@ class UncertainArray:
 
 
 class DfirSimulator:
-    def __init__(self, dfirs: dfir.ComponentCollection, g: GlobalGraph) -> None:
+    def __init__(self, dfirs: dfir.ComponentCollection, g: GlobalGraph, *, verbose: bool = False) -> None:
         self.dfirs = dfirs
         self.node_properties_schema = g.node_properties
         self.edge_properties_schema = g.edge_properties
         self.node_data = {}
         self.edge_data = {}
+        self.verbose = verbose
+
+        # Optional fast storage for large, contiguous graphs (0..N-1 ids)
+        self._node_ids: Optional[List[int]] = None
+        self._node_prop_arrays: Optional[Dict[str, List[Any]]] = None
+        self._edge_ids: Optional[List[int]] = None
+        self._edge_src: Optional[List[int]] = None
+        self._edge_dst: Optional[List[int]] = None
+        self._edge_prop_arrays: Optional[Dict[str, List[Any]]] = None
+
+        # Cache compiled unit-reducer evaluators by ReduceComponent readable_id
+        self._reduce_unit_cache: Dict[int, Any] = {}
 
     def add_nodes(self, nodes: List[int], props: Dict[int, Dict[str, Any]]):
         assert len(set(nodes)) == len(nodes)
@@ -32,16 +44,95 @@ class DfirSimulator:
                 assert prop_name in props[i].keys(), f"Node {i} missing property '{prop_name}'"
                 self.node_data[i][prop_name] = props[i][prop_name]
 
-    def add_edges(self, edges: Dict[int, Tuple[int, int]], props: Dict[int, Dict[str, Any]]):
+        # Invalidate fast-path storage
+        self._node_ids = None
+        self._node_prop_arrays = None
+
+    def add_nodes_contiguous(self, num_nodes: int, props_by_name: Dict[str, List[Any]]):
+        """
+        Fast path for large graphs: node ids are assumed contiguous [0..num_nodes-1].
+        Provide properties by name as arrays/lists of length num_nodes.
+        """
+        assert num_nodes >= 0
+        for prop_name in self.node_properties_schema:
+            if prop_name == "id":
+                continue
+            assert prop_name in props_by_name, f"Missing node property array '{prop_name}'"
+            assert len(props_by_name[prop_name]) == num_nodes, f"Bad length for '{prop_name}'"
+
+        self._node_ids = list(range(num_nodes))
+        # Keep references to provided sequences to avoid materializing huge Python lists.
+        self._node_prop_arrays = dict(props_by_name)
+
+        # Avoid materializing dict storage for huge graphs
+        self.node_data = {}
+
+    def add_edges(self, edges: Dict[int, Tuple[int, int]], props: Optional[Dict[int, Dict[str, Any]]] = None):
         assert len(set(edges.keys())) == len(edges.keys())
+        if props is None:
+            props = {}
         self.edge_data = {i: {"src": v[0], "dst": v[1]} for i, v in edges.items()}
         for i in self.edge_data.keys():
-            assert i in props.keys()
             for prop_name in self.edge_properties_schema:
                 if prop_name in ["src", "dst"]:
                     continue
+                assert i in props.keys()
                 assert prop_name in props[i].keys(), f"Edge {i} missing property '{prop_name}'"
                 self.edge_data[i][prop_name] = props[i][prop_name]
+
+        # Invalidate fast-path storage
+        self._edge_ids = None
+        self._edge_src = None
+        self._edge_dst = None
+        self._edge_prop_arrays = None
+
+    def add_edges_contiguous(
+        self,
+        src: List[int],
+        dst: List[int],
+        props_by_name: Optional[Dict[str, List[Any]]] = None,
+    ):
+        """
+        Fast path for large graphs: edge ids are assumed contiguous [0..E-1].
+        Provide src/dst arrays and optional per-edge properties by name.
+        """
+        assert len(src) == len(dst)
+        num_edges = len(src)
+        self._edge_ids = list(range(num_edges))
+        self._edge_src = src
+        self._edge_dst = dst
+        # Keep references to provided sequences to avoid materializing huge Python lists.
+        self._edge_prop_arrays = dict(props_by_name or {})
+
+        # Avoid materializing dict storage for huge graphs
+        self.edge_data = {}
+
+    def _get_node_ids(self) -> List[int]:
+        if self._node_ids is not None:
+            return self._node_ids
+        return [node_id for node_id in self.node_data.keys()]
+
+    def _get_edge_ids(self) -> List[int]:
+        if self._edge_ids is not None:
+            return self._edge_ids
+        return [edge_id for edge_id in self.edge_data.keys()]
+
+    def _get_node_attr(self, node_id: int, attr: str) -> Any:
+        if attr == "id":
+            return node_id
+        if self._node_prop_arrays is not None:
+            return self._node_prop_arrays[attr][node_id]
+        return self.node_data[node_id][attr]
+
+    def _get_edge_attr(self, edge_id: int, attr: str) -> Any:
+        if self._edge_src is not None:
+            if attr == "src":
+                return self._edge_src[edge_id]
+            if attr == "dst":
+                return self._edge_dst[edge_id]
+            if self._edge_prop_arrays is not None and attr in self._edge_prop_arrays:
+                return self._edge_prop_arrays[attr][edge_id]
+        return self.edge_data[edge_id][attr]
 
     def run(self, initial_graph_inputs: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -92,8 +183,8 @@ class DfirSimulator:
             to_ports=to_ports,
             run_no_input_components=no_input_components,
             data_for_io_comp={
-                "node": [node_id for node_id in self.node_data.keys()],
-                "edge": [edge_id for edge_id in self.edge_data.keys()],
+                "node": self._get_node_ids(),
+                "edge": self._get_edge_ids(),
             },
         )
 
@@ -134,7 +225,8 @@ class DfirSimulator:
             A dictionary mapping the target output ports (from to_ports) to their
             computed values.
         """
-        print(f"Starting run_flow with {from_ports_values} to {to_ports}")
+        if self.verbose:
+            print(f"Starting run_flow with {from_ports_values} to {to_ports}")
         computed_values: Dict[dfir.Port, Any] = from_ports_values.copy()
         target_ports_set = set(to_ports)
         computed_target_ports: Set[dfir.Port] = set()
@@ -406,11 +498,11 @@ class DfirSimulator:
                 dfir.UnaryOp.SELECT: lambda x: x[comp.select_index],  # Array handling?
                 dfir.UnaryOp.GET_LENGTH: lambda x: len(x),  # Array handling?
                 dfir.UnaryOp.GET_ATTR: lambda x: (  # Scalar Node/Edge ID expected here
-                    node_props[x][comp.select_index]
+                    self._get_node_attr(x, comp.select_index)
                     if isinstance(input_port_type.type_, dfir.SpecialType)
                     and input_port_type.type_.type_name == "node"
                     else (
-                        edge_props[x][comp.select_index]
+                        self._get_edge_attr(x, comp.select_index)
                         if isinstance(input_port_type.type_, dfir.SpecialType)
                         and input_port_type.type_.type_name == "edge"
                         else (_ for _ in ()).throw(
@@ -432,9 +524,6 @@ class DfirSimulator:
                 assert isinstance(
                     input_val, (list, tuple)
                 ), f"Parallel UnaryOp requires list input, got {type(input_val)}"
-                print(
-                    f"UnaryOpComponent {comp.op} operating in parallel mode on input: {input_val}"
-                )  # Debug print
                 result = [op_func(item) for item in input_val]
             else:
                 result = op_func(input_val)
@@ -538,41 +627,25 @@ class DfirSimulator:
 
             # --- PHASE 3: Group transformed values by key ---
             assert len(all_keys) == len(all_transforms)
-            groups = collections.defaultdict(list)
-            for key, value in zip(all_keys, all_transforms):
-                groups[key].append(value)
-
             # --- PHASE 4: Accumulate values within each group using the unit subgraph ---
-            final_results = []
-
+            # Fast path: streaming accumulation without materializing per-key lists.
             accum_entry_0 = comp.get_port("o_reduce_unit_start_0").connection
             accum_entry_1 = comp.get_port("o_reduce_unit_start_1").connection
             reduce_exit = comp.get_port("i_reduce_unit_end").connection
 
-            for key, elements_in_group in groups.items():
-                if not elements_in_group:
-                    continue
+            reducer = self._reduce_unit_cache.get(comp.readable_id)
+            if reducer is None:
+                reducer = self._compile_unit_reducer(accum_entry_0, accum_entry_1, reduce_exit)
+                self._reduce_unit_cache[comp.readable_id] = reducer
 
-                print(f"Reducing group with key {key} and elements {elements_in_group}")
-                accumulated_value = elements_in_group[0]
+            accum_by_key: Dict[Any, Any] = {}
+            for key, value in zip(all_keys, all_transforms):
+                if key not in accum_by_key:
+                    accum_by_key[key] = value
+                else:
+                    accum_by_key[key] = reducer(accum_by_key[key], value)
 
-                for i in range(1, len(elements_in_group)):
-                    current_element = elements_in_group[i]
-
-                    reduction_result_dict = self.run_flow(
-                        from_ports_values={
-                            accum_entry_0: [accumulated_value],
-                            accum_entry_1: [current_element],
-                        },
-                        to_ports=[reduce_exit],
-                    )
-                    assert len(reduction_result_dict) == 1
-                    assert len(reduction_result_dict[reduce_exit]) == 1
-                    accumulated_value = reduction_result_dict[reduce_exit][0]
-
-                final_results.append(accumulated_value)
-
-            return {"o_0": final_results}
+            return {"o_0": list(accum_by_key.values())}
         if isinstance(comp, dfir.MemoryReadComponent):
             outputs = {}
 
@@ -586,14 +659,11 @@ class DfirSimulator:
 
                 for i, key in enumerate(path):
                     if current_type == "node":
-                        assert current_val in node_props, f"Node ID {current_val} not found in node_props."
-                        current_val = node_props[current_val][key]
+                        current_val = self._get_node_attr(current_val, key)
                         current_type = node_prop_types[key].type_name
                     elif current_type == "edge":
-                        assert current_val in edge_props, f"Edge ID {current_val} not found in edge_props."
-                        prop = edge_props[current_val][key]
+                        current_val = self._get_edge_attr(current_val, key)
                         current_type = edge_prop_types[key].type_name
-                        current_val = prop
                         # If we get a special type (like 'src' or 'dst'), update type for next iteration
                         if current_type not in ("node", "edge"):
                             # Ensure we are at the end of the path if we hit a non-special type value
@@ -696,6 +766,140 @@ class DfirSimulator:
             raise NotImplementedError(
                 f"Simulation logic not implemented in _simulate_component for: {type(comp).__name__}"
             )
+
+    def _compile_unit_reducer(
+        self, unit_in0: dfir.Port, unit_in1: dfir.Port, unit_out: dfir.Port
+    ) -> Callable[[Any, Any], Any]:
+        """
+        Compiles the unit-reduction subgraph (reduce_method) into a Python callable reducer(a, b).
+        If compilation fails (unexpected component types), falls back to a slow but correct run_flow call.
+        """
+
+        # Identify the placeholder components that correspond to the 2 reducer arguments.
+        arg_by_placeholder_uuid: Dict[str, int] = {}
+        if isinstance(unit_in0.parent, dfir.PlaceholderComponent):
+            arg_by_placeholder_uuid[unit_in0.parent.uuid] = 0
+        if isinstance(unit_in1.parent, dfir.PlaceholderComponent):
+            arg_by_placeholder_uuid[unit_in1.parent.uuid] = 1
+
+        def expr_for_port(port: dfir.Port):
+            producer = port.parent
+
+            if isinstance(producer, dfir.PlaceholderComponent):
+                arg_idx = arg_by_placeholder_uuid.get(producer.uuid)
+                if arg_idx is None:
+                    # Try mapping by input-port identity (more robust when components are deep-copied)
+                    if producer.get_port("i_0") == unit_in0:
+                        arg_idx = 0
+                    elif producer.get_port("i_0") == unit_in1:
+                        arg_idx = 1
+                    else:
+                        raise ValueError(f"Unknown PlaceholderComponent in unit reducer: {producer}")
+                return ("arg", arg_idx)
+
+            if isinstance(producer, dfir.ConstantComponent):
+                return ("const", producer.value)
+
+            if isinstance(producer, dfir.CopyComponent):
+                return expr_for_port(producer.get_port("i_0").connection)
+
+            if isinstance(producer, dfir.ScatterComponent):
+                out_idx = int(port.name.split("_")[1])
+                return ("idx", expr_for_port(producer.get_port("i_0").connection), out_idx)
+
+            if isinstance(producer, dfir.UnaryOpComponent):
+                in_expr = expr_for_port(producer.get_port("i_0").connection)
+                return ("unary", producer.op, producer.select_index, in_expr)
+
+            if isinstance(producer, dfir.BinOpComponent):
+                in0_expr = expr_for_port(producer.get_port("i_0").connection)
+                in1_expr = expr_for_port(producer.get_port("i_1").connection)
+                return ("bin", producer.op, in0_expr, in1_expr)
+
+            if isinstance(producer, dfir.GatherComponent):
+                ins = []
+                for p_in in producer.in_ports:
+                    ins.append(expr_for_port(p_in.connection))
+                return ("tuple", ins)
+
+            raise ValueError(f"Unsupported component type in unit reducer: {type(producer).__name__}")
+
+        try:
+            out_expr = expr_for_port(unit_out)
+        except Exception:
+            def slow_reducer(a, b):
+                res = self.run_flow(
+                    from_ports_values={unit_in0: [a], unit_in1: [b]},
+                    to_ports=[unit_out],
+                )
+                return res[unit_out][0]
+
+            return slow_reducer
+
+        def eval_expr(expr, a, b):
+            et = expr[0]
+            if et == "arg":
+                return a if expr[1] == 0 else b
+            if et == "const":
+                return expr[1]
+            if et == "idx":
+                base = eval_expr(expr[1], a, b)
+                return base[expr[2]]
+            if et == "unary":
+                op, select_index, in_expr = expr[1], expr[2], expr[3]
+                v = eval_expr(in_expr, a, b)
+                if op == dfir.UnaryOp.SELECT:
+                    return v[select_index]
+                if op == dfir.UnaryOp.NOT:
+                    return not v
+                if op == dfir.UnaryOp.NEG:
+                    return -v
+                if op == dfir.UnaryOp.CAST_BOOL:
+                    return bool(v)
+                if op == dfir.UnaryOp.CAST_INT:
+                    return int(v)
+                if op == dfir.UnaryOp.CAST_FLOAT:
+                    return float(v)
+                raise ValueError(f"Unsupported unary op in unit reducer: {op}")
+            if et == "bin":
+                op, l_expr, r_expr = expr[1], expr[2], expr[3]
+                l = eval_expr(l_expr, a, b)
+                r = eval_expr(r_expr, a, b)
+                if op == dfir.BinOp.ADD:
+                    return l + r
+                if op == dfir.BinOp.SUB:
+                    return l - r
+                if op == dfir.BinOp.MUL:
+                    return l * r
+                if op == dfir.BinOp.DIV:
+                    return l / r
+                if op == dfir.BinOp.MIN:
+                    return l if l <= r else r
+                if op == dfir.BinOp.MAX:
+                    return l if l >= r else r
+                if op == dfir.BinOp.BITOR:
+                    return l | r
+                if op == dfir.BinOp.LT:
+                    return l < r
+                if op == dfir.BinOp.GT:
+                    return l > r
+                if op == dfir.BinOp.LE:
+                    return l <= r
+                if op == dfir.BinOp.GE:
+                    return l >= r
+                if op == dfir.BinOp.EQ:
+                    return l == r
+                if op == dfir.BinOp.NE:
+                    return l != r
+                raise ValueError(f"Unsupported bin op in unit reducer: {op}")
+            if et == "tuple":
+                return tuple(eval_expr(e, a, b) for e in expr[1])
+            raise ValueError(f"Unsupported expr tag: {et}")
+
+        def fast_reducer(a, b):
+            return eval_expr(out_expr, a, b)
+
+        return fast_reducer
 
 
 if __name__ == "__main__":
